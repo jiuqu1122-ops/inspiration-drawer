@@ -1905,7 +1905,19 @@ export const chooseLocalVideosForCanvasGeneratorImpl = async (ctx: Pick<canvasWo
         .filter((value): value is string => typeof value === 'string' && !!value);
       if (paths.length === 0) return;
 
-      const maxVideoReferences = target.ai?.type === 'video-generator' && isSeedanceLikeVideoModel(target.ai.model) ? 3 : 1;
+      const activeCandidate = target.ai?.providerCandidates?.find(candidate => (
+        candidate.provider === target.ai?.provider
+        && (candidate.providerChannelId || '') === (target.ai?.providerChannelId || '')
+      )) || target.ai?.providerCandidates?.find(candidate => candidate.provider === target.ai?.provider)
+        || target.ai?.providerCandidates?.[0];
+      const structuredCapabilities = activeCandidate?.modelCapabilities;
+      const maxVideoReferences = target.ai?.type === 'video-generator'
+        ? structuredCapabilities?.supportsReferenceVideo === false
+          ? 0
+          : structuredCapabilities?.maxReferenceVideos !== undefined
+          ? Number(structuredCapabilities.maxReferenceVideos)
+          : isSeedanceLikeVideoModel(target.ai.model) ? 3 : 1
+        : 1;
       const created = await Promise.all(paths.slice(0, maxVideoReferences).map((path, index) => createCanvasVideoItemFromPath(path, index)));
       const videos = created.filter((item): item is CanvasImageItem => !!item).map((item, index) => ({
         ...item,

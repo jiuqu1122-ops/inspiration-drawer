@@ -3,7 +3,8 @@ import { listen } from '@tauri-apps/api/event';
 import React,{ startTransition } from 'react';
 import { type RoundedSelectOption } from '../../components/RoundedSelect';
 import { isPermanentInspirationAnalysisFailure,requeueInspirationAnalysisItemAfterRestart } from '../../features/appAgent/inspirationMemory';
-import { getCanvasAiPublicImageModelName } from '../../features/canvasAiImage';
+import { getCanvasAiPublicImageModelName,getCanvasAiVideoModelCandidates } from '../../features/canvasAiImage';
+import { findAiCatalogModel,getAiCatalogModels,getDefaultAiCatalogModelId } from '../../features/aiModelCapabilities';
 import { isCanvasAiEnhancementType,type RifeEngineProgress } from '../../features/canvasLocalMediaTools';
 import { type CanvasAiCredentialSource,type CanvasImageItem,type CanvasItemBox } from '../../features/canvasModel';
 import { FLOATING_NOTE_DESTROY_BRIDGE_KEY,FLOATING_NOTE_SOURCE_BRIDGE_KEY,FLOATING_NOTE_TEXT_BRIDGE_KEY,FLOATING_NOTE_TITLE_BRIDGE_KEY,OPEN_FLOATING_NOTES_STORAGE_KEY,floatingNoteStorageKey,readFloatingNoteSnapshot,readOpenFloatingNoteLabels,writeOpenFloatingNoteLabels } from '../../features/floatingNotes';
@@ -14,6 +15,7 @@ import { BufferItem,Folder } from '../../types';
 import type { CanvasImageSourceCacheEntry } from '../../types/canvasMedia';
 import type { CanvasContextMenuState,CanvasFolderMediaPickerState,CanvasReferenceDragState,CanvasReferenceReplaceTarget,CanvasUndoSnapshot,CanvasViewportRect } from '../../types/canvasRuntime';
 import type { CanvasAiPromptPreset } from '../../types/canvasWorkflow';
+import type { CloudImageModelsResult } from '../../types/license';
 import { parseCanvasAiModelChoiceValue } from '../../utils/canvasAiConfig';
 import { getAiGeneratedImageFolderIds } from '../../utils/canvasGeneratedFolders';
 import { type CanvasImageFusionRole } from '../../utils/canvasImageFusion';
@@ -528,16 +530,75 @@ export const runAppLifecycleEffect20 = (ctx: Pick<appLifecycleEffectContext, 'ai
 
 };
 
-export const runAppLifecycleEffect21 = (ctx: Pick<appLifecycleEffectContext, 'canvasAiCredentialSource' | 'canvasAiUnifiedImageModelOptions' | 'isCanvasMode' | 'updateCanvasItemsImmediate'>) => {
-  const { canvasAiCredentialSource, canvasAiUnifiedImageModelOptions, isCanvasMode, updateCanvasItemsImmediate } = ctx;
-    if (!isCanvasMode || canvasAiUnifiedImageModelOptions.length === 0) return;
+type appLifecycleCatalogEffectContext = appLifecycleEffectContext & {
+  canvasAiCloudImageModels: CloudImageModelsResult | null;
+};
+
+export const runAppLifecycleEffect21 = (ctx: Pick<appLifecycleCatalogEffectContext, 'canvasAiCloudImageModels' | 'canvasAiCredentialSource' | 'canvasAiUnifiedImageModelOptions' | 'isCanvasMode' | 'updateCanvasItemsImmediate'>) => {
+  const { canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiUnifiedImageModelOptions, isCanvasMode, updateCanvasItemsImmediate } = ctx;
+    if (!isCanvasMode) return;
     const availableChoices = canvasAiUnifiedImageModelOptions
       .map(option => parseCanvasAiModelChoiceValue(option.value))
       .filter((choice): choice is NonNullable<ReturnType<typeof parseCanvasAiModelChoiceValue>> => !!choice);
+    const videoCatalog = canvasAiCredentialSource === 'wallet'
+      ? getAiCatalogModels(canvasAiCloudImageModels, 'video')
+      : [];
     updateCanvasItemsImmediate(previous => {
       let changed = false;
       const next = previous.map(item => {
-        if (item.ai?.type !== 'image-generator') return item;
+        if (item.ai?.type === 'video-generator' && videoCatalog.length > 0) {
+          const currentCanonicalId = item.ai.providerCandidates
+            ?.find(candidate => candidate.canonicalModelId)?.canonicalModelId
+            || item.ai.model;
+          const catalogModel = findAiCatalogModel(videoCatalog, currentCanonicalId)
+            || findAiCatalogModel(
+              videoCatalog,
+              getDefaultAiCatalogModelId(canvasAiCloudImageModels!, 'video'),
+            );
+          if (!catalogModel) return item;
+          const nextCandidates = getCanvasAiVideoModelCandidates(
+            catalogModel.id,
+            'wallet',
+            item.ai.provider,
+            canvasAiCloudImageModels?.videoChannels,
+            videoCatalog,
+          );
+          const firstCandidate = nextCandidates[0];
+          if (!firstCandidate) return item;
+          const sameCandidates = (item.ai.providerCandidates || []).length === nextCandidates.length
+            && (item.ai.providerCandidates || []).every((candidate, index) => {
+              const nextCandidate = nextCandidates[index];
+              return nextCandidate
+                && candidate.source === nextCandidate.source
+                && candidate.provider === nextCandidate.provider
+                && candidate.model === nextCandidate.model
+                && (candidate.canonicalModelId || '') === (nextCandidate.canonicalModelId || '')
+                && (candidate.displayName || '') === (nextCandidate.displayName || '')
+                && (candidate.providerChannelId || '') === (nextCandidate.providerChannelId || '')
+                && (candidate.providerChannelName || '') === (nextCandidate.providerChannelName || '')
+                && JSON.stringify(candidate.capabilities || null) === JSON.stringify(nextCandidate.capabilities || null)
+                && JSON.stringify(candidate.modelCapabilities || null) === JSON.stringify(nextCandidate.modelCapabilities || null);
+            });
+          const alreadySynchronized = item.ai.credentialSource === 'wallet'
+            && item.ai.provider === firstCandidate.provider
+            && item.ai.model === catalogModel.id
+            && (item.ai.providerChannelId || '') === (firstCandidate.providerChannelId || '')
+            && sameCandidates;
+          if (alreadySynchronized) return item;
+          changed = true;
+          return {
+            ...item,
+            ai: {
+              ...item.ai,
+              provider: firstCandidate.provider,
+              model: catalogModel.id,
+              providerChannelId: firstCandidate.providerChannelId,
+              credentialSource: 'wallet' as const,
+              providerCandidates: nextCandidates,
+            },
+          };
+        }
+        if (item.ai?.type !== 'image-generator' || availableChoices.length === 0) return item;
         const hasSuccessfulOutput = (item.ai.outputs || []).some(output => (
           output.status === 'success' && Boolean(output.url || output.path)
         ));
@@ -576,7 +637,12 @@ export const runAppLifecycleEffect21 = (ctx: Pick<appLifecycleEffectContext, 'ca
               && candidate.source === next.source
               && candidate.provider === next.provider
               && candidate.model === next.model
-              && (candidate.providerChannelId || '') === (next.providerChannelId || '');
+              && (candidate.canonicalModelId || '') === (next.canonicalModelId || '')
+              && (candidate.displayName || '') === (next.displayName || '')
+              && (candidate.providerChannelId || '') === (next.providerChannelId || '')
+              && (candidate.providerChannelName || '') === (next.providerChannelName || '')
+              && JSON.stringify(candidate.capabilities || null) === JSON.stringify(next.capabilities || null)
+              && JSON.stringify(candidate.modelCapabilities || null) === JSON.stringify(next.modelCapabilities || null);
           });
         const alreadySynchronized = item.ai.credentialSource === matchingChoice.source
           && item.ai.provider === matchingChoice.provider

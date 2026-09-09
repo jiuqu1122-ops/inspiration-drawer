@@ -7,7 +7,7 @@ import { BufferItem } from '../../../types';
 import type { CanvasContextMenuState,CanvasReferenceDragState,CanvasReferenceReplaceTarget } from '../../../types/canvasRuntime';
 import type { CloudAccountSummary,CloudImageModelsResult } from '../../../types/license';
 import { CANVAS_AI_DEFAULT_ASPECT_RATIO,parseCanvasAspectRatioValue } from '../../../utils/canvasAiAspectRatio';
-import { CANVAS_AI_DEFAULT_COUNT,CANVAS_AI_DEFAULT_OUTPUT_FORMAT,CANVAS_AI_DEFAULT_VIDEO_DURATION,CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,CANVAS_AI_IMAGE_REFERENCE_SHARE_KEEPALIVE_MS,CANVAS_AI_VIDEO_REFERENCE_SHARE_KEEPALIVE_MS,canvasAiGatewayKindForProvider,getCanvasAiEndpointForRequest,getStoredCanvasAiApiKey,getStoredCanvasAiApiProvider,getStoredCanvasAiEndpoint,getStoredCanvasAiHeadersText,isCanvasAiXaisWorkerModel,normalizeCanvasAiProvider,parseCanvasAiHeaders,parseCanvasAiModelChoiceValue } from '../../../utils/canvasAiConfig';
+import { CANVAS_AI_DEFAULT_COUNT,CANVAS_AI_DEFAULT_IMAGE_RESOLUTION,CANVAS_AI_DEFAULT_OUTPUT_FORMAT,CANVAS_AI_DEFAULT_VIDEO_DURATION,CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,CANVAS_AI_IMAGE_REFERENCE_SHARE_KEEPALIVE_MS,CANVAS_AI_VIDEO_REFERENCE_SHARE_KEEPALIVE_MS,canvasAiGatewayKindForProvider,getCanvasAiEndpointForRequest,getStoredCanvasAiApiKey,getStoredCanvasAiApiProvider,getStoredCanvasAiEndpoint,getStoredCanvasAiHeadersText,isCanvasAiXaisWorkerModel,normalizeCanvasAiProvider,parseCanvasAiHeaders,parseCanvasAiModelChoiceValue } from '../../../utils/canvasAiConfig';
 import { AI_GENERATED_FOLDER_NAME,getCanvasGeneratedImageFolderName } from '../../../utils/canvasGeneratedFolders';
 import { buildCanvasImageFusionPrompt,getCanvasImageFusionInputIds,isCanvasImageFusionAi,normalizeCanvasImageFusionConfig,removeCanvasImageFusionInput } from '../../../utils/canvasImageFusion';
 import { canUseCanvasItemAsAiInput,canUseCanvasItemAsAiTarget,canUseCanvasItemAsFrameInterpolationVideoInput,canUseCanvasItemAsImageEnhancementInput,canUseCanvasItemAsVideoEnhancementInput,createCanvasAiOutputBufferItem,getCanvasAiOutputDisplaySource,getCanvasAiOutputSize,getCanvasAiSuccessfulOutputs,hasCanvasAiGeneratedResults,isCanvasAgentTextTarget } from '../../../utils/canvasItemSelectors';
@@ -17,8 +17,8 @@ import { getCanvasWorkflowGroup } from '../../../utils/canvasWorkflowRuntime';
 import { isCanvasAudioFileName } from '../../../utils/localMediaPaths';
 import { buildFinalImagePrompt,truncatePromptToUtf8ByteLimit } from '../../appAgent/imageQuality/imageRulePromptBuilder';
 import type { AiGatewayKind } from '../../agentModel';
-import { CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES,CANVAS_AI_VIDEO_TASK_TIMEOUT_MS,debugXaisImage2,filterCanvasAiVideoModelCandidates,generateCanvasAiProviderImages,generateCanvasAiProviderVideos,getCanvasAiImageResolutionValuesForCandidates,getCanvasAiPublicImageModelName,getCanvasAiSlotClientRequestId,getCanvasAiVideoModelCandidates,getDefaultNewApiImageProtocol,hydrateCanvasAiModelCandidateCapabilities,isMiniMaxH3VideoModel,isOpenAiLikeCanvasAiProvider,isSeedanceLikeVideoModel,mergeCanvasAiReferenceSourceItems,normalizeCanvasAiImageResolutionForCandidates,normalizeCanvasAiImageResolutionForModel,shouldUseCanvasAiNativeImageBatchRequest,shouldUsePortableWalletImageReferences,supportsCanvasAiImageResolution } from '../../canvasAiImage';
-import { CANVAS_AI_MAX_OUTPUT_COUNT } from '../../canvasAiNodeLayout';
+import { CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES,CANVAS_AI_VIDEO_TASK_TIMEOUT_MS,debugXaisImage2,filterCanvasAiVideoModelCandidates,generateCanvasAiProviderImages,generateCanvasAiProviderVideos,getCanvasAiImageResolutionValuesForCandidates,getCanvasAiPublicImageModelName,getCanvasAiSlotClientRequestId,getCanvasAiVideoModelCandidates,getDefaultNewApiImageProtocol,hydrateCanvasAiModelCandidateCapabilities,isMiniMaxH3VideoModel,isOpenAiLikeCanvasAiProvider,isSeedanceLikeVideoModel,mergeCanvasAiReferenceSourceItems,normalizeCanvasAiImageResolutionForCandidates,normalizeCanvasAiImageResolutionForModel,resolveCanvasAiImageModelCapabilities,resolveCanvasAiVideoModelCapabilities,shouldUseCanvasAiNativeImageBatchRequest,shouldUsePortableWalletImageReferences,supportsCanvasAiImageResolution } from '../../canvasAiImage';
+import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,normalizeCapabilityDuration,normalizeCapabilityOption } from '../../aiModelCapabilities';
 import { buildCanvasAiOutputRemoteResultPatch,recoverCanvasAiOutputWithUsableResult } from '../../canvasAiOutputs';
 import { claimCanvasAiRun,createCanvasAiClientRequestId,releaseCanvasAiRun } from '../../canvasAiRunGuard';
 import { getCanvasAiMediaType,getCanvasAiNodeTitle,isCanvasAiGeneratorType } from '../../canvasAiRuntime';
@@ -34,10 +34,48 @@ type TemporaryReferenceShare = {
   id: string;
 };
 
+type StructuredModelCapabilities = NonNullable<CanvasAiModelCandidate['modelCapabilities']>;
+
+const getActiveStructuredCapabilities = (target?: CanvasImageItem | null) => {
+  const candidates = target?.ai?.providerCandidates || [];
+  const activeCandidate = candidates.find(candidate => (
+    candidate.provider === target?.ai?.provider
+    && (candidate.providerChannelId || '') === (target?.ai?.providerChannelId || '')
+  )) || candidates.find(candidate => candidate.provider === target?.ai?.provider)
+    || candidates[0];
+  return activeCandidate?.modelCapabilities ? [activeCandidate.modelCapabilities] : [];
+};
+
+const supportsStructuredReference = (
+  capabilities: readonly StructuredModelCapabilities[],
+  supportKey: 'supportsReferenceImages' | 'supportsReferenceVideo' | 'supportsAudioReference',
+  limitKey: 'maxReferenceImages' | 'maxReferenceVideos' | 'maxReferenceAudios',
+  legacyFallback: boolean,
+) => {
+  const hasExplicitSupport = capabilities.some(value => value[supportKey] !== undefined);
+  if (hasExplicitSupport) return capabilities.some(value => value[supportKey] === true);
+  const explicitLimits = capabilities.flatMap(value => (
+    value[limitKey] !== undefined ? [Number(value[limitKey])] : []
+  ));
+  return explicitLimits.length > 0 ? Math.max(...explicitLimits) > 0 : legacyFallback;
+};
+
 export const chooseLocalAudiosForCanvasGeneratorImpl = async (ctx: Pick<canvasGenerationActionContext, 'appendCanvasItems' | 'canvasItemsRef' | 'connectCanvasItemsToGenerator' | 'createCanvasAudioItemFromPath' | 'showToast'>, targetId: string) => {
   const { appendCanvasItems, canvasItemsRef, connectCanvasItemsToGenerator, createCanvasAudioItemFromPath, showToast } = ctx;
     const target = canvasItemsRef.current.find(item => item.id === targetId);
-    if (!target || target.ai?.type !== 'video-generator' || !isSeedanceLikeVideoModel(target.ai.model)) return;
+    const structuredCapabilities = getActiveStructuredCapabilities(target);
+    const explicitAudioLimits = structuredCapabilities.flatMap(capabilities => (
+      capabilities?.maxReferenceAudios !== undefined
+        ? [Number(capabilities.maxReferenceAudios)]
+        : []
+    ));
+    const supportsAudioReference = supportsStructuredReference(
+      structuredCapabilities as StructuredModelCapabilities[],
+      'supportsAudioReference',
+      'maxReferenceAudios',
+      isSeedanceLikeVideoModel(target?.ai?.model),
+    );
+    if (!target || target.ai?.type !== 'video-generator' || !supportsAudioReference) return;
     try {
       const selected = await open({
         multiple: true,
@@ -46,7 +84,9 @@ export const chooseLocalAudiosForCanvasGeneratorImpl = async (ctx: Pick<canvasGe
       });
       const paths = (Array.isArray(selected) ? selected : selected ? [selected] : [])
         .filter((value): value is string => typeof value === 'string' && !!value)
-        .slice(0, 3);
+        .slice(0, explicitAudioLimits.length > 0
+          ? Math.max(...explicitAudioLimits)
+          : 3);
       if (paths.length === 0) return;
       const created = await Promise.all(paths.map((path, index) => createCanvasAudioItemFromPath(path, index)));
       const audios = created.filter((item): item is CanvasImageItem => !!item).map((item, index) => ({
@@ -71,10 +111,29 @@ export const startPickCanvasImageForGeneratorImpl = (ctx: Pick<canvasGenerationA
   const { canvasItemsRef, setCanvasContextMenu, setCanvasInputMenuForId, setCanvasInputPickTargetId, showToast, updateCanvasSelection } = ctx;
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !canUseCanvasItemAsAiTarget(target)) return;
-    const allowVideoReference = target.ai?.type === 'video-generator' && target.ai?.videoInputMode !== 'FLF';
+    const structuredVideoCapabilities = getActiveStructuredCapabilities(target);
+    const allowImageReference = supportsStructuredReference(
+      structuredVideoCapabilities,
+      'supportsReferenceImages',
+      'maxReferenceImages',
+      true,
+    );
+    const allowVideoReference = target.ai?.type === 'video-generator'
+      && target.ai?.videoInputMode !== 'FLF'
+      && supportsStructuredReference(
+        structuredVideoCapabilities,
+        'supportsReferenceVideo',
+        'maxReferenceVideos',
+        true,
+      );
     const allowAudioReference = target.ai?.type === 'video-generator'
       && target.ai.videoInputMode !== 'FLF'
-      && isSeedanceLikeVideoModel(target.ai.model);
+      && supportsStructuredReference(
+        structuredVideoCapabilities,
+        'supportsAudioReference',
+        'maxReferenceAudios',
+        isSeedanceLikeVideoModel(target.ai.model),
+      );
     const isFrameInterpolationTarget = target.ai?.type === 'frame-interpolation';
     const isVideoEnhancementTarget = target.ai?.type === 'video-enhancement';
     const isImageEnhancementTarget = target.ai?.type === 'image-enhancement';
@@ -91,7 +150,9 @@ export const startPickCanvasImageForGeneratorImpl = (ctx: Pick<canvasGenerationA
             ? '点击画布里的图片素材或图片生成结果作为清晰度增强输入，Esc 取消'
             : (allowAudioReference || allowVideoReference)
               ? '点击画布里的图片、视频或生成节点作为输入，Esc 取消'
-              : '点击画布里的图片或图片生成节点作为输入，Esc 取消'
+              : allowImageReference
+                ? '点击画布里的图片或图片生成节点作为输入，Esc 取消'
+                : '当前模型不支持参考素材'
     );
 
 };
@@ -100,10 +161,29 @@ export const pickCanvasImageForGeneratorImpl = (ctx: Pick<canvasGenerationAction
   const { canReplaceCanvasImageReferenceForTarget, canvasItemsRef, canvasReferenceReplaceTargetRef, connectCanvasItems, replaceCanvasGeneratorReference, setCanvasInputPickTargetId, showToast } = ctx;
     const source = canvasItemsRef.current.find(item => item.id === sourceId);
     const target = canvasItemsRef.current.find(item => item.id === targetId);
-    const allowVideoReference = target?.ai?.type === 'video-generator' && target.ai.videoInputMode !== 'FLF';
+    const structuredVideoCapabilities = getActiveStructuredCapabilities(target);
+    const allowImageReference = supportsStructuredReference(
+      structuredVideoCapabilities,
+      'supportsReferenceImages',
+      'maxReferenceImages',
+      true,
+    );
+    const allowVideoReference = target?.ai?.type === 'video-generator'
+      && target.ai.videoInputMode !== 'FLF'
+      && supportsStructuredReference(
+        structuredVideoCapabilities,
+        'supportsReferenceVideo',
+        'maxReferenceVideos',
+        true,
+      );
     const allowAudioReference = target?.ai?.type === 'video-generator'
       && target.ai.videoInputMode !== 'FLF'
-      && isSeedanceLikeVideoModel(target.ai.model);
+      && supportsStructuredReference(
+        structuredVideoCapabilities,
+        'supportsAudioReference',
+        'maxReferenceAudios',
+        isSeedanceLikeVideoModel(target.ai.model),
+      );
     const isFrameInterpolationTarget = target?.ai?.type === 'frame-interpolation';
     const isVideoEnhancementTarget = target?.ai?.type === 'video-enhancement';
     const isImageEnhancementTarget = target?.ai?.type === 'image-enhancement';
@@ -115,9 +195,9 @@ export const pickCanvasImageForGeneratorImpl = (ctx: Pick<canvasGenerationAction
           : isImageEnhancementTarget
             ? canUseCanvasItemAsImageEnhancementInput(source)
         : (
-          source.item.type === 'image'
-          || source.ai?.type === 'image-generator'
-          || source.ai?.type === 'workflow'
+          (allowImageReference && source.item.type === 'image')
+          || (allowImageReference && source.ai?.type === 'image-generator')
+          || (allowImageReference && source.ai?.type === 'workflow')
           || (allowVideoReference && (source.item.type === 'video' || source.ai?.type === 'video-generator'))
           || (allowAudioReference && source.item.type === 'file' && isCanvasAudioFileName(source.item.name || source.item.path))
         )
@@ -590,6 +670,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
           canvasAiCredentialSource,
           targetProvider,
           canvasAiCloudImageModels?.videoChannels,
+          canvasAiCloudImageModels?.catalog,
         );
         // A wallet response may temporarily omit the MiniMax channel. Keep the
         // provider explicit and let the server select its configured channel;
@@ -745,9 +826,49 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
     });
     let temporaryReferenceShares: TemporaryReferenceShare[] = [];
     try {
+      const hasServerCatalogRoute = selectedProviderCandidates.some(candidate => (
+        candidate.canonicalModelId
+        && candidate.provider === provider
+        && candidate.model === selectedModel
+      ));
       const requestModel = isCanvasAiLicenseManaged && effectiveCanvasAiModel
         ? effectiveCanvasAiModel
-        : getCanvasAiResolvedModel(provider, selectedModel, mediaType);
+        : hasServerCatalogRoute
+          ? selectedModel
+          : getCanvasAiResolvedModel(provider, selectedModel, mediaType);
+      const selectedCatalogModel = findAiCatalogModel(
+        getAiCatalogModels(useCloudWallet ? canvasAiCloudImageModels : null, mediaType),
+        selectedProviderCandidates.find(candidate => candidate.canonicalModelId)?.canonicalModelId
+          || targetAi.model
+          || selectedModel,
+      );
+      const selectedRouteCandidate = selectedProviderCandidates.find(candidate => (
+        candidate.provider === provider && candidate.model === requestModel
+      )) || selectedProviderCandidates[0];
+      const selectedChannel = (mediaType === 'video'
+        ? canvasAiCloudImageModels?.videoChannels
+        : canvasAiCloudImageModels?.channels)?.find(channel => channel.id === selectedChannelId);
+      const selectedRouteCapabilities = selectedRouteCandidate?.modelCapabilities
+        || getChannelModelCapabilities(
+          selectedChannel,
+          selectedRouteCandidate?.model,
+          selectedCatalogModel?.id,
+        );
+      const resolvedImageCapabilities = resolveCanvasAiImageModelCapabilities({
+        provider,
+        model: requestModel,
+        channelCapabilities: selectedModelCapabilities,
+        canonical: selectedCatalogModel?.capabilities,
+        route: selectedRouteCapabilities,
+      });
+      const resolvedVideoCapabilities = resolveCanvasAiVideoModelCapabilities({
+        provider,
+        model: mediaType === 'video' && selectedCatalogModel
+          ? selectedCatalogModel.id
+          : requestModel,
+        canonical: selectedCatalogModel?.capabilities,
+        route: selectedRouteCapabilities,
+      });
       const usePortableWalletReferences = shouldUsePortableWalletImageReferences(
         useCloudWallet,
         mediaType,
@@ -824,6 +945,12 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       let inputImages = preparedInputs.images;
       let inputVideos = preparedInputs.videos;
       let inputAudios = preparedInputs.audios;
+      const minimumReferenceImages = mediaType === 'video'
+        ? resolvedVideoCapabilities.minReferenceImages
+        : resolvedImageCapabilities.minReferenceImages;
+      if (inputImages.length < minimumReferenceImages) {
+        throw new Error(`当前模型至少需要 ${minimumReferenceImages} 张参考图`);
+      }
       let negativePrompt: string | undefined;
       let preserveReferenceIdentity = false;
       temporaryReferenceShares = preparedInputs.temporaryShareIds;
@@ -861,7 +988,19 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         }
       }
       prompt = truncatePromptToUtf8ByteLimit(prompt);
-      const requestedCount = currentOutputs.length || clamp(Math.round(Number(targetAi.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
+      const requestedCount = clamp(
+        currentOutputs.length || Math.round(Number(targetAi.count) || CANVAS_AI_DEFAULT_COUNT),
+        1,
+        mediaType === 'video'
+          ? resolvedVideoCapabilities.maxOutputs
+          : resolvedImageCapabilities.maxOutputs,
+      );
+      if (currentOutputs.length > requestedCount) {
+        setCanvasAiOutputs(currentOutputs.slice(0, requestedCount), {
+          status: 'working',
+          error: undefined,
+        });
+      }
       const providerRuntime = (runtimeProvider: CanvasAiProvider) => {
         const runtimeKey = runtimeProvider === canvasAiProvider ? canvasAiApiKey.trim() : getStoredCanvasAiApiKey(runtimeProvider).trim();
         try {
@@ -947,6 +1086,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         cloudWallet: useCloudWallet,
         providerChannelId: useCloudWallet ? selectedChannelId : undefined,
         providerCandidates: selectedProviderCandidates.length > 1
+          || (mediaType === 'video' && Boolean(selectedCatalogModel))
           ? selectedProviderCandidates
           : undefined,
         prepareInputImagesForCandidate: mediaType === 'image' && selectedProviderCandidates.length > 1
@@ -976,7 +1116,9 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         prompt,
         negativePrompt,
         preserveReferenceIdentity,
-        model: requestModel,
+        model: mediaType === 'video' && selectedCatalogModel
+          ? selectedCatalogModel.id
+          : requestModel,
         imageProtocol,
         clientRequestId,
         headers: isCanvasAiLicenseManaged
@@ -989,7 +1131,17 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         inputAudios,
         aspectRatio: targetAi.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
         resolution: mediaType === 'video'
-          ? targetAi.resolution || CANVAS_AI_DEFAULT_VIDEO_RESOLUTION
+          ? normalizeCapabilityOption(
+            resolvedVideoCapabilities.resolutions,
+            targetAi.resolution,
+            CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,
+          )
+          : resolvedImageCapabilities.source === 'server'
+            ? normalizeCapabilityOption(
+              resolvedImageCapabilities.resolutions,
+              targetAi.resolution,
+              CANVAS_AI_DEFAULT_IMAGE_RESOLUTION,
+            )
           : selectedCandidateImageResolutionValues.length > 0
             ? normalizeCanvasAiImageResolutionForCandidates(
               selectedProviderCandidates,
@@ -1004,10 +1156,18 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
               )
               : targetAi.resolution,
         outputFormat: targetAi.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
-        duration: targetAi.duration || CANVAS_AI_DEFAULT_VIDEO_DURATION,
+        duration: mediaType === 'video'
+          ? normalizeCapabilityDuration(
+            resolvedVideoCapabilities.durations,
+            targetAi.duration,
+            CANVAS_AI_DEFAULT_VIDEO_DURATION,
+          )
+          : undefined,
         inputMode: targetAi.videoInputMode || 'REF',
         timeoutSecs: mediaType === 'image' ? CANVAS_AI_IMAGE_TASK_TIMEOUT_MS / 1000 : undefined,
         count: 1,
+        imageCapabilities: mediaType === 'image' ? resolvedImageCapabilities : undefined,
+        videoCapabilities: mediaType === 'video' ? resolvedVideoCapabilities : undefined,
       };
       const generatedOutputs: CanvasAiGeneratedOutput[] = [];
       const seenGeneratedUrls = new Set<string>();

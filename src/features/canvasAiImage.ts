@@ -6,6 +6,8 @@ import type {
   CanvasAiProvider,
   NewApiImageProtocol,
 } from './canvasModel';
+import type { AiCatalogModel,AiModelCapabilities } from '../types/license';
+import { findAiCatalogModel,getChannelModelCapabilities,mergeAiModelCapabilities,normalizeCapabilityOption,resolveImageModelCapabilities,resolveVideoModelCapabilities,type ResolvedImageModelCapabilities,type ResolvedVideoModelCapabilities } from './aiModelCapabilities';
 
 export type { NewApiImageProtocol } from './canvasModel';
 
@@ -148,9 +150,11 @@ export const getCanvasAiVideoModelOptionValue = (model?: string | null) => {
 
 export type CanvasAiVideoChannelSnapshot = {
   id?: string | null;
+  name?: string | null;
   provider?: string | null;
   models?: readonly string[] | null;
   capabilities?: readonly string[] | null;
+  modelCapabilities?: Record<string, AiModelCapabilities> | null;
   error?: string | null;
 };
 
@@ -195,8 +199,10 @@ export const getCanvasAiVideoModelCandidates = (
   source: CanvasAiCredentialSource = 'wallet',
   preferredProvider?: CanvasAiImageProvider | null,
   videoChannels?: readonly CanvasAiVideoChannelSnapshot[] | null,
+  catalog?: readonly AiCatalogModel[] | null,
 ): CanvasAiModelCandidate[] => {
-  const selectedModel = getCanvasAiVideoModelOptionValue(model);
+  const catalogModel = findAiCatalogModel(catalog, model);
+  const selectedModel = catalogModel?.id || getCanvasAiVideoModelOptionValue(model);
   if (source === 'wallet' && videoChannels && videoChannels.length > 0) {
     const availableChannels = videoChannels
       .filter(channel => !channel.error)
@@ -206,7 +212,7 @@ export const getCanvasAiVideoModelCandidates = (
       }))
       .filter((entry): entry is { channel: CanvasAiVideoChannelSnapshot; provider: CanvasAiProvider } => (
         !!entry.provider
-          && (!entry.channel.capabilities || entry.channel.capabilities.some(capability => {
+          && (Boolean(catalogModel) || !entry.channel.capabilities || entry.channel.capabilities.some(capability => {
             const normalizedCapability = String(capability).toUpperCase();
             return normalizedCapability === 'VIDEO' || normalizedCapability === 'VIDEO_MINIMAX';
           }))
@@ -217,6 +223,11 @@ export const getCanvasAiVideoModelCandidates = (
         Array.isArray(channel.models) && channel.models.some(modelId => String(modelId || '').trim())
       ));
       const compatibleChannels = availableChannels.filter(({ channel, provider }) => {
+        if (catalogModel) {
+          return (channel.models || []).some(routeModel => (
+            findAiCatalogModel(catalog, routeModel)?.id === catalogModel.id
+          ));
+        }
         if (selectedModel === MINIMAX_H3_VIDEO_MODEL && provider !== 'minimax') return false;
         const channelModels = (channel.models || [])
           .map(value => String(value || '').trim())
@@ -241,11 +252,36 @@ export const getCanvasAiVideoModelCandidates = (
       return routedChannels.map(({ channel, provider }) => ({
         source,
         provider,
-        model: videoModelForProvider(provider, selectedModel),
+        model: catalogModel
+          ? (channel.models || []).find(routeModel => (
+            findAiCatalogModel(catalog, routeModel)?.id === catalogModel.id
+          )) || selectedModel
+          : videoModelForProvider(provider, selectedModel),
+        canonicalModelId: catalogModel?.id,
+        displayName: catalogModel?.displayName,
         providerChannelId: String(channel.id).trim(),
+        providerChannelName: String(channel.name || '').trim() || undefined,
         capabilities: channel.capabilities ? [...channel.capabilities].map(value => String(value).toUpperCase()) : undefined,
+        modelCapabilities: mergeAiModelCapabilities(
+          catalogModel?.capabilities,
+          getChannelModelCapabilities(
+            channel as CanvasAiVideoChannelSnapshot & { modelCapabilities?: Record<string, AiModelCapabilities> },
+            (channel.models || []).find(routeModel => findAiCatalogModel(catalog, routeModel)?.id === catalogModel?.id),
+            catalogModel?.id,
+          ),
+        ),
       }));
     }
+  }
+  if (catalogModel) {
+    return [{
+      source,
+      provider: preferredProvider || 'new-api',
+      model: catalogModel.id,
+      canonicalModelId: catalogModel.id,
+      displayName: catalogModel.displayName,
+      modelCapabilities: catalogModel.capabilities,
+    }];
   }
   if (preferredProvider === 'mikoto' && selectedModel && providerSupportsPublicVideoModel(preferredProvider, selectedModel)) {
     return [{ source, provider: 'mikoto', model: selectedModel }];
@@ -285,6 +321,7 @@ export const filterCanvasAiVideoModelCandidates = (
   const selectedToken = normalizeVideoModelToken(selectedModel);
   if (!selectedToken) return [];
   return (candidates || []).filter(candidate => {
+    if (candidate.canonicalModelId) return candidate.canonicalModelId === String(model || '').trim();
     const provider = String(candidate.provider || '').trim().toLowerCase();
     const candidateModel = getCanvasAiVideoModelOptionValue(candidate.model);
     if (normalizeVideoModelToken(candidateModel) !== selectedToken) return false;
@@ -515,6 +552,8 @@ export type CanvasAiBaseImageOptions = {
   resolution?: string;
   outputFormat?: string;
   count?: number;
+  imageCapabilities?: ResolvedImageModelCapabilities;
+  videoCapabilities?: ResolvedVideoModelCapabilities;
   headers?: Record<string, string>;
 };
 
@@ -586,6 +625,13 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
     || `canvas-image-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const model = String(options.model || '').trim();
   try {
+    const outputFormat = options.imageCapabilities?.outputFormats.length
+      ? normalizeCapabilityOption(
+        options.imageCapabilities.outputFormats,
+        options.outputFormat,
+        options.imageCapabilities.outputFormats[0],
+      )
+      : normalizeOutputFormat(options.outputFormat);
     const requestPromise = invoke<CloudImageGenerationResult>('generate_cloud_images', {
       request: {
         clientRequestId,
@@ -598,12 +644,26 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
         prompt: options.prompt.trim(),
         negativePrompt: options.negativePrompt?.trim() || undefined,
         preserveReferenceIdentity: options.preserveReferenceIdentity === true,
-        inputImages: (options.inputImages || []).filter(Boolean).slice(0, options.provider === 'new-api' ? 9 : 8),
-        aspectRatio: normalizeCloudWalletImageAspectRatio(options.aspectRatio),
+        inputImages: (options.inputImages || []).filter(Boolean).slice(
+          0,
+          options.imageCapabilities?.referenceImageLimit ?? (options.provider === 'new-api' ? 9 : 8),
+        ),
+        aspectRatio: options.imageCapabilities?.source === 'server'
+          && options.imageCapabilities.aspectRatios.length > 0
+          ? normalizeCapabilityOption(
+            options.imageCapabilities.aspectRatios,
+            options.aspectRatio,
+            options.imageCapabilities.aspectRatios[0],
+          )
+          : normalizeCloudWalletImageAspectRatio(options.aspectRatio),
         resolution: options.resolution?.trim() || undefined,
-        outputFormat: normalizeOutputFormat(options.outputFormat),
-        background: normalizeOutputFormat(options.outputFormat) === 'png' ? 'transparent' : undefined,
-        count: Math.max(1, Math.min(4, Math.round(options.count || 1))),
+        outputFormat,
+        background: outputFormat.toLowerCase() === 'png'
+          && (options.imageCapabilities?.source !== 'server'
+            || options.imageCapabilities.supportsTransparentBackground)
+          ? 'transparent'
+          : undefined,
+        count: Math.max(1, Math.min(options.imageCapabilities?.maxOutputs ?? 4, Math.round(options.count || 1))),
       },
     });
     let requestError: unknown = null;
@@ -671,13 +731,19 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
   // The channel id is authoritative, while the provider keeps the server's
   // capability constraint intact when a node has no persisted channel id.
   const provider = normalizeCloudWalletVideoProvider(options.provider);
-  const requestCount = Math.max(1, Math.min(4, Math.round(options.count || 1)));
+  const requestCount = Math.max(1, Math.min(options.videoCapabilities?.maxOutputs ?? 4, Math.round(options.count || 1)));
   const isSeedanceLike = isSeedanceLikeVideoModel(options.model);
-  const isFirstLastFrame = options.inputMode === 'FLF';
+  const isFirstLastFrame = options.inputMode === 'FLF'
+    && (options.videoCapabilities?.firstLastFrame ?? true);
   const inputImages = (options.inputImages || []).filter(Boolean);
   const inputVideos = (options.inputVideos || []).filter(Boolean);
   const inputAudios = (options.inputAudios || []).filter(Boolean);
-  const referenceError = validateCanvasAiVideoReferences(options.model, options.inputMode, inputImages.length);
+  const referenceError = validateCanvasAiVideoReferences(
+    options.model,
+    options.inputMode,
+    inputImages.length,
+    options.videoCapabilities,
+  );
   if (referenceError) throw new Error(referenceError);
   try {
     const result = await invoke<CloudVideoGenerationResult>('generate_cloud_videos', {
@@ -687,13 +753,19 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
         providerChannelId: options.providerChannelId?.trim() || undefined,
         model: String(options.model || '').trim(),
         prompt: options.prompt.trim(),
-        inputImages: inputImages.slice(0, isFirstLastFrame ? 2 : isSeedanceLike ? 9 : provider === 'xais-chat' ? 13 : 8),
-        inputVideos: isSeedanceLike && !isFirstLastFrame ? inputVideos.slice(0, 3) : [],
-        inputAudios: isSeedanceLike && !isFirstLastFrame ? inputAudios.slice(0, 3) : [],
+        inputImages: inputImages.slice(0, isFirstLastFrame
+          ? 2
+          : options.videoCapabilities?.referenceImages ?? (isSeedanceLike ? 9 : provider === 'xais-chat' ? 13 : 8)),
+        inputVideos: !isFirstLastFrame
+          ? inputVideos.slice(0, options.videoCapabilities?.referenceVideos ?? (isSeedanceLike ? 3 : 0))
+          : [],
+        inputAudios: !isFirstLastFrame
+          ? inputAudios.slice(0, options.videoCapabilities?.referenceAudios ?? (isSeedanceLike ? 3 : 0))
+          : [],
         aspectRatio: String(options.aspectRatio || '16:9'),
         resolution: options.resolution?.trim() || undefined,
         duration: options.duration,
-        inputMode: options.inputMode || 'REF',
+        inputMode: isFirstLastFrame ? 'FLF' : 'REF',
         count: requestCount,
       },
     });
@@ -1324,10 +1396,17 @@ export const getCanvasAiVideoReferenceSlots = (
   model?: string | null,
   inputMode?: CanvasAiVideoInputMode | string | null,
   provider?: CanvasAiImageProvider | string | null,
+  resolvedCapabilities?: ResolvedVideoModelCapabilities | null,
 ) => {
-  const supportsFirstLastFrame = !isSora2VideoModel(model);
+  const supportsFirstLastFrame = resolvedCapabilities?.firstLastFrame ?? !isSora2VideoModel(model);
   const mode: CanvasAiVideoInputMode = inputMode === 'FLF' && supportsFirstLastFrame ? 'FLF' : 'REF';
   if (mode === 'FLF') return { mode, imageSlots: 2, videoSlots: 0, audioSlots: 0 };
+  if (resolvedCapabilities) return {
+    mode,
+    imageSlots: resolvedCapabilities.referenceImages,
+    videoSlots: resolvedCapabilities.referenceVideos,
+    audioSlots: resolvedCapabilities.referenceAudios,
+  };
   if (isSeedanceLikeVideoModel(model)) return { mode, ...SEEDANCE_2_REFERENCE_SLOTS };
   if (provider === 'mikoto' && /^kling-video$/i.test(String(model || '').trim())) {
     return { mode, imageSlots: 2, videoSlots: 0, audioSlots: 0 };
@@ -1345,9 +1424,13 @@ export const getCanvasAiVideoReferenceSlotLabels = (
   model?: string | null,
   inputMode?: CanvasAiVideoInputMode | string | null,
   provider?: CanvasAiImageProvider | string | null,
+  resolvedCapabilities?: ResolvedVideoModelCapabilities | null,
 ) => {
-  const slots = getCanvasAiVideoReferenceSlots(model, inputMode, provider);
+  const slots = getCanvasAiVideoReferenceSlots(model, inputMode, provider, resolvedCapabilities);
   if (slots.mode === 'FLF') return ['首帧', '尾帧'];
+  if (resolvedCapabilities?.source === 'server') {
+    return Array.from({ length: slots.imageSlots }, (_, index) => `参考图${index + 1}`);
+  }
   if (provider === 'mikoto' && /^kling-video$/i.test(String(model || '').trim())) return ['首帧', '尾帧'];
   if (provider === 'mikoto' && /^kling-omni-video$/i.test(String(model || '').trim())) {
     return Array.from({ length: slots.imageSlots }, (_, index) => `主体${index + 1}`);
@@ -1365,8 +1448,10 @@ export const validateCanvasAiVideoReferences = (
   model: string | null | undefined,
   inputMode: CanvasAiVideoInputMode | string | null | undefined,
   imageCount: number,
+  resolvedCapabilities?: ResolvedVideoModelCapabilities | null,
 ) => {
-  if (inputMode === 'FLF' && !isSora2VideoModel(model) && imageCount !== 2) {
+  const supportsFirstLastFrame = resolvedCapabilities?.firstLastFrame ?? !isSora2VideoModel(model);
+  if (inputMode === 'FLF' && supportsFirstLastFrame && imageCount !== 2) {
     return '首尾帧模式需要同时连接首帧和尾帧两张图片；如果只使用一张图片，请切换到“参考图”模式';
   }
   return '';
@@ -1413,28 +1498,41 @@ export const newApiVideoRequestParams = (options: {
   duration?: number;
   inputMode?: CanvasAiVideoInputMode;
   count?: number;
+  capabilities?: ResolvedVideoModelCapabilities;
 }) => {
   const model = options.model.trim();
   const isSeedance = isSeedance20VideoModel(model);
-  const isFirstLastFrame = options.inputMode === 'FLF';
+  const isFirstLastFrame = options.inputMode === 'FLF'
+    && (options.capabilities?.firstLastFrame ?? true);
+  const capabilities = options.capabilities;
   const inputImages = (options.inputImages || [])
     .filter(Boolean)
-    .slice(0, isFirstLastFrame ? 2 : isSeedance ? SEEDANCE_2_REFERENCE_SLOTS.imageSlots : getNewApiVideoReferenceLimit(model));
-  const inputVideos = isSeedance && !isFirstLastFrame
-    ? (options.inputVideos || []).filter(Boolean).slice(0, SEEDANCE_2_REFERENCE_SLOTS.videoSlots)
+    .slice(0, isFirstLastFrame
+      ? 2
+      : capabilities?.referenceImages ?? (isSeedance ? SEEDANCE_2_REFERENCE_SLOTS.imageSlots : getNewApiVideoReferenceLimit(model)));
+  const inputVideos = !isFirstLastFrame && (capabilities ? capabilities.referenceVideos > 0 : isSeedance)
+    ? (options.inputVideos || []).filter(Boolean).slice(0, capabilities?.referenceVideos ?? SEEDANCE_2_REFERENCE_SLOTS.videoSlots)
     : [];
-  const inputAudios = isSeedance && !isFirstLastFrame
-    ? (options.inputAudios || []).filter(Boolean).slice(0, SEEDANCE_2_REFERENCE_SLOTS.audioSlots)
+  const inputAudios = !isFirstLastFrame && (capabilities ? capabilities.referenceAudios > 0 : isSeedance)
+    ? (options.inputAudios || []).filter(Boolean).slice(0, capabilities?.referenceAudios ?? SEEDANCE_2_REFERENCE_SLOTS.audioSlots)
     : [];
-  const aspectRatio = isSeedance
+  const aspectRatio = capabilities?.aspectRatios.length
+    ? capabilities.aspectRatios.find(value => value.toLowerCase() === String(options.aspectRatio || '').trim().toLowerCase())
+      || capabilities.aspectRatios[0]
+    : isSeedance
     ? normalizeSeedanceVideoAspectRatio(options.aspectRatio)
     : normalizeNewApiVideoAspectRatio(options.aspectRatio);
-  const resolution = normalizeNewApiVideoResolutionForModel(model, options.resolution);
-  const duration = normalizeNewApiVideoDurationForModel(model, options.duration);
+  const resolution = capabilities?.resolutions.length
+    ? capabilities.resolutions.find(value => value.toLowerCase() === String(options.resolution || '').trim().toLowerCase())
+      || capabilities.resolutions[0]
+    : normalizeNewApiVideoResolutionForModel(model, options.resolution);
+  const duration = capabilities?.durations.length
+    ? capabilities.durations.find(value => value === Number(options.duration)) || capabilities.durations[0]
+    : normalizeNewApiVideoDurationForModel(model, options.duration);
   const dimensions = getNewApiVideoDimensions(aspectRatio, resolution);
   return {
     model,
-    prompt: buildNewApiVideoPrompt(model, options.prompt, options.inputMode, inputImages.length),
+    prompt: buildNewApiVideoPrompt(model, options.prompt, isFirstLastFrame ? 'FLF' : 'REF', inputImages.length),
     duration,
     size: `${dimensions.width}x${dimensions.height}`,
     ...(inputImages.length > 0 ? { images: inputImages } : {}),
@@ -1830,12 +1928,23 @@ export const getCanvasAiImageResolutionValuesForCandidates = (
  */
 export const hydrateCanvasAiModelCandidateCapabilities = (
   candidates: readonly CanvasAiModelCandidate[],
-  channels?: ReadonlyArray<{ id?: string | null; capabilities?: readonly string[] | null }> | null,
+  channels?: ReadonlyArray<{
+    id?: string | null;
+    capabilities?: readonly string[] | null;
+    modelCapabilities?: Record<string, AiModelCapabilities> | null;
+  }> | null,
 ) => candidates.map(candidate => {
-  if (candidate.capabilities && candidate.capabilities.length > 0) return candidate;
   const channel = channels?.find(item => item.id && item.id === candidate.providerChannelId);
-  if (!channel?.capabilities || channel.capabilities.length === 0) return candidate;
-  return { ...candidate, capabilities: [...channel.capabilities] };
+  const modelCapabilities = candidate.modelCapabilities
+    || getChannelModelCapabilities(channel, candidate.model, candidate.canonicalModelId);
+  const capabilities = candidate.capabilities && candidate.capabilities.length > 0
+    ? candidate.capabilities
+    : channel?.capabilities && channel.capabilities.length > 0
+      ? [...channel.capabilities]
+      : undefined;
+  return modelCapabilities || capabilities
+    ? { ...candidate, capabilities, modelCapabilities }
+    : candidate;
 });
 
 export const normalizeCanvasAiImageResolutionForCandidates = (
@@ -1877,6 +1986,80 @@ export const selectCanvasAiImageCandidatesForResolution = (
     if (first.provider !== 'xais-chat') return [first];
     const exact = route.find(candidate => xaisImageModelResolution(candidate.model) === normalizedResolution);
     return [exact ?? first];
+  });
+};
+
+/** Structured server data wins; all model-name checks below are legacy fallback. */
+export const resolveCanvasAiImageModelCapabilities = (options: {
+  provider?: string | null;
+  model?: string | null;
+  channelCapabilities?: readonly string[] | null;
+  canonical?: AiModelCapabilities | null;
+  route?: AiModelCapabilities | null;
+}) => resolveImageModelCapabilities({
+  canonical: options.canonical,
+  route: options.route,
+  legacy: {
+    resolutions: getCanvasAiImageResolutionValues(
+      options.provider,
+      options.model,
+      options.channelCapabilities,
+    ),
+    maxReferenceImages: options.provider === 'new-api' ? 9 : 8,
+    supportsReferenceImages: true,
+    supportedOutputFormats: ['jpg', 'png'],
+    supportsTransparentBackground: supportsCanvasAiTransparentPng(options.provider, options.model),
+    maxOutputs: 4,
+  },
+});
+
+/** Structured server data wins; Seedance/MiniMax/Veo/Kling remain fallback. */
+export const resolveCanvasAiVideoModelCapabilities = (options: {
+  provider?: CanvasAiImageProvider | string | null;
+  model?: string | null;
+  canonical?: AiModelCapabilities | null;
+  route?: AiModelCapabilities | null;
+}) => {
+  const provider = String(options.provider || '').trim();
+  const model = String(options.model || '').trim();
+  const isMikoto = provider === 'mikoto';
+  const isMiniMax = provider === 'minimax' && isMiniMaxH3VideoModel(model);
+  const isSeedance = isSeedanceLikeVideoModel(model);
+  const isNewApi = provider === 'new-api';
+  const resolutions = isMikoto
+    ? getMikotoVideoResolutionValues(model)
+    : isMiniMax
+      ? getMiniMaxH3VideoResolutionValues()
+      : isSeedance
+        ? getMikotoVideoResolutionValues(model)
+        : isNewApi
+          ? getNewApiVideoResolutionValues(model)
+          : ['480p', '720p', '1080p'];
+  const durations = isMikoto || isSeedance
+    ? getMikotoVideoDurationValues(model)
+    : isNewApi
+      ? getNewApiVideoDurationValues(model)
+      : Array.from({ length: 12 }, (_, index) => index + 4);
+  const slots = getCanvasAiVideoReferenceSlots(model, 'REF', provider);
+  const supportsFirstLastFrame = !(isNewApi && isSora2VideoModel(model));
+  return resolveVideoModelCapabilities({
+    canonical: options.canonical,
+    route: options.route,
+    legacy: {
+      resolutions,
+      durations,
+      maxReferenceImages: slots.imageSlots,
+      maxReferenceVideos: slots.videoSlots,
+      maxReferenceAudios: slots.audioSlots,
+      supportsReferenceImages: slots.imageSlots > 0,
+      supportsReferenceVideo: slots.videoSlots > 0,
+      supportsAudioReference: slots.audioSlots > 0,
+      supportsFirstLastFrame,
+      supportedInputModes: supportsFirstLastFrame
+        ? ['reference', 'first_last_frame']
+        : ['reference'],
+      maxOutputs: 4,
+    },
   });
 };
 
@@ -2746,18 +2929,24 @@ const generateXaisWorkerTaskVideos = async (options: CanvasAiVideoOptions) => {
 
   const model = (options.model || XAIS_CHAT_VIDEO_MODEL_DEFAULT).trim() || XAIS_CHAT_VIDEO_MODEL_DEFAULT;
   const endpoint = normalizeXaisWorkerEndpoint(options.endpoint || '');
-  const requestCount = Math.max(1, Math.min(4, Math.round(options.count || 1)));
+  const requestCount = Math.max(1, Math.min(options.videoCapabilities?.maxOutputs ?? 4, Math.round(options.count || 1)));
   const isSeedance = isSeedance20VideoModel(model);
-  const inputMode = normalizeXaisVideoInputMode(options.inputMode);
-  const maxReferenceCount = inputMode === 'FLF' ? 2 : isSeedance ? 9 : XAIS_VIDEO_REF_MODE_MAX_REFERENCES;
+  const inputMode = normalizeXaisVideoInputMode(
+    options.inputMode === 'FLF' && options.videoCapabilities?.firstLastFrame === false
+      ? 'REF'
+      : options.inputMode,
+  );
+  const maxReferenceCount = inputMode === 'FLF'
+    ? 2
+    : options.videoCapabilities?.referenceImages ?? (isSeedance ? 9 : XAIS_VIDEO_REF_MODE_MAX_REFERENCES);
   const inputRefs = (options.inputImages || [])
     .filter(source => isRemoteHttpImageSource(source))
     .slice(0, maxReferenceCount);
-  const inputVideoRefs = isSeedance && inputMode !== 'FLF'
-    ? (options.inputVideos || []).filter(source => isRemoteHttpImageSource(source)).slice(0, 3)
+  const inputVideoRefs = inputMode !== 'FLF' && (options.videoCapabilities ? options.videoCapabilities.referenceVideos > 0 : isSeedance)
+    ? (options.inputVideos || []).filter(source => isRemoteHttpImageSource(source)).slice(0, options.videoCapabilities?.referenceVideos ?? 3)
     : [];
-  const inputAudioRefs = isSeedance && inputMode !== 'FLF'
-    ? (options.inputAudios || []).filter(source => isRemoteHttpImageSource(source)).slice(0, 3)
+  const inputAudioRefs = inputMode !== 'FLF' && (options.videoCapabilities ? options.videoCapabilities.referenceAudios > 0 : isSeedance)
+    ? (options.inputAudios || []).filter(source => isRemoteHttpImageSource(source)).slice(0, options.videoCapabilities?.referenceAudios ?? 3)
     : [];
   if (inputRefs.length + inputVideoRefs.length + inputAudioRefs.length === 0) {
     throw new Error('seedance2 参考模式没有拿到公网参考素材 URL：请确认视频节点已连接参考图/参考视频，且 cloudflared 公网分享可用');
@@ -3512,12 +3701,23 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
   if (!model) throw new Error('请先在视频节点选择 NewAPI 视频模型');
 
   const endpoint = normalizeNewApiEndpoint(options.endpoint || '', 'videos');
-  const inputImages = (options.inputImages || []).filter(Boolean).slice(0, isSeedance20VideoModel(model) ? 9 : 8);
-  const inputVideos = isSeedance20VideoModel(model) ? (options.inputVideos || []).filter(Boolean).slice(0, 3) : [];
-  const inputAudios = isSeedance20VideoModel(model) ? (options.inputAudios || []).filter(Boolean).slice(0, 3) : [];
-  const referenceError = validateCanvasAiVideoReferences(model, options.inputMode, inputImages.length);
+  const inputImages = (options.inputImages || []).filter(Boolean).slice(
+    0,
+    options.inputMode === 'FLF' && (options.videoCapabilities?.firstLastFrame ?? true)
+      ? 2
+      : options.videoCapabilities?.referenceImages ?? (isSeedance20VideoModel(model) ? 9 : 8),
+  );
+  const inputVideos = !(options.inputMode === 'FLF' && (options.videoCapabilities?.firstLastFrame ?? true))
+    && (options.videoCapabilities ? options.videoCapabilities.referenceVideos > 0 : isSeedance20VideoModel(model))
+    ? (options.inputVideos || []).filter(Boolean).slice(0, options.videoCapabilities?.referenceVideos ?? 3)
+    : [];
+  const inputAudios = !(options.inputMode === 'FLF' && (options.videoCapabilities?.firstLastFrame ?? true))
+    && (options.videoCapabilities ? options.videoCapabilities.referenceAudios > 0 : isSeedance20VideoModel(model))
+    ? (options.inputAudios || []).filter(Boolean).slice(0, options.videoCapabilities?.referenceAudios ?? 3)
+    : [];
+  const referenceError = validateCanvasAiVideoReferences(model, options.inputMode, inputImages.length, options.videoCapabilities);
   if (referenceError) throw new Error(referenceError);
-  const requestCount = Math.max(1, Math.min(4, Math.round(options.count || 1)));
+  const requestCount = Math.max(1, Math.min(options.videoCapabilities?.maxOutputs ?? 4, Math.round(options.count || 1)));
   const output: string[] = [];
 
   for (let index = 0; index < requestCount; index += 1) {
@@ -3532,6 +3732,7 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
       duration: options.duration,
       inputMode: options.inputMode,
       count: 1,
+      capabilities: options.videoCapabilities,
     });
     const started = await postJsonViaTauri(endpoint, apiKey, body, options);
     const immediate = collectNewApiVideoResults(started, [...inputImages, ...inputVideos, ...inputAudios]);

@@ -312,12 +312,14 @@ import { addCanvasAiGeneratorNodeForSourcesImpl,addCanvasAiVideoGeneratorNodeFor
 import { addCanvasDroppedFilesImpl,addCanvasDroppedPathsImpl,addCanvasDroppedTemplateJsonSourcesImpl,addCanvasTemplateValuesAtDropImpl,cloneCanvasWorkflowModuleForRerunImpl,createDrawerMediaCanvasNodeImpl,generateCanvasWorkflowModuleNodeImpl,growCanvasNearViewportEdgeImpl,retryCanvasCollapsedWorkflowOutputImpl,retryCanvasExpandedWorkflowOutputImpl,retryCanvasWorkflowOutputImpl,runCanvasExpandedWorkflowFromNodeImpl,runCanvasWorkflowModuleNodeImpl,runSelectedCanvasWorkflowModulesImpl } from './features/canvas/controllers/canvasWorkflowRuntimeActions';
 import {
 CANVAS_AI_IMAGE_MODEL_MENU_NAMES,
+CANVAS_AI_VIDEO_MODEL_OPTIONS,
 getCanvasAiImageResolutionValues,
 getCanvasAiImageResolutionValuesForCandidates,
 getCanvasAiPublicImageModelId,
 getCanvasAiPublicImageModelVariantName,
 isCanvasAiPublicImageModel
 } from './features/canvasAiImage';
+import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,getDefaultAiCatalogModelId,mergeAiModelCapabilities } from './features/aiModelCapabilities';
 import {
 CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT
 } from './features/canvasAiOutputs';
@@ -1854,6 +1856,54 @@ function MainApp() {
     const candidates: CanvasAiModelCandidate[] = [];
     if (canvasAiCredentialSource === 'wallet' && canvasAiCloudImageModels) {
       const channels = canvasAiCloudImageModels.channels || [];
+      const catalog = getAiCatalogModels(canvasAiCloudImageModels, 'image');
+      if (catalog.length > 0) {
+        const defaultModelId = getDefaultAiCatalogModelId(canvasAiCloudImageModels, 'image');
+        const orderedCatalog = [...catalog].sort((left, right) => (
+          Number(right.id === defaultModelId) - Number(left.id === defaultModelId)
+        ));
+        return orderedCatalog.map(catalogModel => {
+          const routes = channels.flatMap(channel => (channel.models || []).flatMap(routeModel => {
+            const matched = findAiCatalogModel(catalog, routeModel);
+            if (matched?.id !== catalogModel.id) return [];
+            return [{
+              source: 'wallet' as const,
+              provider: canvasAiProviderForCloudKind(channel.provider),
+              model: routeModel,
+              canonicalModelId: catalogModel.id,
+              displayName: catalogModel.displayName,
+              providerChannelId: channel.id,
+              providerChannelName: channel.name,
+              capabilities: channel.capabilities,
+              modelCapabilities: mergeAiModelCapabilities(
+                catalogModel.capabilities,
+                getChannelModelCapabilities(channel, routeModel, catalogModel.id),
+              ),
+            }];
+          }));
+          const fallbackProvider = channels[0]
+            ? canvasAiProviderForCloudKind(channels[0].provider)
+            : canvasAiProviderForCloudKind(canvasAiCloudImageModels.provider);
+          const resolvedRoutes = routes.length > 0 ? routes : [{
+            source: 'wallet' as const,
+            provider: fallbackProvider,
+            model: catalogModel.id,
+            canonicalModelId: catalogModel.id,
+            displayName: catalogModel.displayName,
+            modelCapabilities: catalogModel.capabilities,
+          }];
+          const first = resolvedRoutes[0];
+          return {
+            value: canvasAiGroupedModelChoiceValue('wallet', {
+              ...first,
+              model: catalogModel.id,
+              canonicalModelId: catalogModel.id,
+              displayName: catalogModel.displayName,
+            }, resolvedRoutes),
+            label: catalogModel.displayName,
+          };
+        });
+      }
       if (channels.length > 0) {
         channels.forEach(channel => channel.models.forEach(model => candidates.push({
           source: 'wallet',
@@ -1916,7 +1966,16 @@ function MainApp() {
     });
   }, [canvasAiApiKey, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiMikotoModels, canvasAiNewApiModels, canvasAiOpenAiModels, canvasAiProvider, canvasAiXaisModels]);
 
-  useEffect(() => { return runAppLifecycleEffect21({ canvasAiCredentialSource, canvasAiUnifiedImageModelOptions, isCanvasMode, updateCanvasItemsImmediate }); }, [canvasAiCredentialSource, canvasAiUnifiedImageModelOptions, isCanvasMode]);
+  const canvasAiUnifiedVideoModelOptions = useMemo<RoundedSelectOption[]>(() => {
+    const catalog = getAiCatalogModels(canvasAiCloudImageModels, 'video');
+    if (canvasAiCredentialSource !== 'wallet' || catalog.length === 0) return CANVAS_AI_VIDEO_MODEL_OPTIONS;
+    const defaultModelId = getDefaultAiCatalogModelId(canvasAiCloudImageModels!, 'video');
+    return [...catalog]
+      .sort((left, right) => Number(right.id === defaultModelId) - Number(left.id === defaultModelId))
+      .map(model => ({ value: model.id, label: model.displayName }));
+  }, [canvasAiCloudImageModels, canvasAiCredentialSource]);
+
+  useEffect(() => { return runAppLifecycleEffect21({ canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiUnifiedImageModelOptions, isCanvasMode, updateCanvasItemsImmediate }); }, [canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiUnifiedImageModelOptions, isCanvasMode]);
 
   const getCanvasAiUnifiedImageModelValue = (
     provider: CanvasAiProvider,
@@ -2079,11 +2138,11 @@ function MainApp() {
 
   const checkCanvasAiXaisBalance = async () => { return checkCanvasAiXaisBalanceImpl({ canvasAiApiKey, canvasAiEndpoint, canvasAiHeadersText, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiGatewayKind, effectiveCanvasAiModel, isCanvasAiLicenseManaged, setCanvasAiXaisBalance, showToast }); };
 
-  const refreshCanvasAiOpenAiModels = async (silent = false) => { return refreshCanvasAiOpenAiModelsImpl({ canvasAiApiKey, canvasAiEndpoint, canvasAiHeadersText, canvasAiModelRefreshSignatureRef, canvasAiNewApiVideoKey, canvasAiProvider, canvasAiUsesCloudImageModels, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiGatewayKind, effectiveCanvasAiModel, effectiveCanvasAiProvider, isCanvasAiLicenseManaged, setCanvasAiCloudImageModels, setCanvasAiMikotoModels, setCanvasAiNewApiModels, setCanvasAiOpenAiModelError, setCanvasAiOpenAiModels, setCanvasAiXaisModels, setIsRefreshingCanvasAiOpenAiModels, showToast, updateCanvasItemsImmediate }, silent); };
+  const refreshCanvasAiOpenAiModels = async (silent = false) => { return refreshCanvasAiOpenAiModelsImpl({ canvasAiApiKey, canvasAiCloudImageModels, canvasAiEndpoint, canvasAiHeadersText, canvasAiModelRefreshSignatureRef, canvasAiNewApiVideoKey, canvasAiProvider, canvasAiUsesCloudImageModels, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiGatewayKind, effectiveCanvasAiModel, effectiveCanvasAiProvider, isCanvasAiLicenseManaged, setCanvasAiCloudImageModels, setCanvasAiMikotoModels, setCanvasAiNewApiModels, setCanvasAiOpenAiModelError, setCanvasAiOpenAiModels, setCanvasAiXaisModels, setIsRefreshingCanvasAiOpenAiModels, showToast, updateCanvasItemsImmediate }, silent); };
 
   useEffect(() => { return runSettingsEffect02({ canvasAiApiKey, canvasAiEndpoint, canvasAiHeadersText, canvasAiModelRefreshSignatureRef, canvasAiNewApiVideoKey, canvasAiUsesCloudImageModels, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiGatewayKind, effectiveCanvasAiModel, effectiveCanvasAiProvider, isCanvasAiLicenseManaged, isCanvasMode, isDrawerAgentOpen, refreshCanvasAiOpenAiModels }); }, [isCanvasMode, isDrawerAgentOpen, effectiveCanvasAiProvider, effectiveCanvasAiGatewayKind, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiModel, canvasAiApiKey, canvasAiNewApiVideoKey, canvasAiEndpoint, canvasAiHeadersText, isCanvasAiLicenseManaged, canvasAiUsesCloudImageModels]);
 
-  useEffect(() => { return runSettingsEffect03({ canvasAiUsesCloudImageModels, effectiveCanvasAiProvider, isCanvasMode, setCanvasAiCloudImageModels }); }, [isCanvasMode, canvasAiUsesCloudImageModels, effectiveCanvasAiProvider]);
+  useEffect(() => { return runSettingsEffect03({ canvasAiUsesCloudImageModels, effectiveCanvasAiProvider, isCanvasMode, setCanvasAiCloudImageModels, updateCanvasItemsImmediate }); }, [isCanvasMode, canvasAiUsesCloudImageModels, effectiveCanvasAiProvider]);
 
   const getAiAnalysisConfig = (): AiAnalysisConfig => ({
     provider: aiApiProvider,
@@ -4039,7 +4098,7 @@ function MainApp() {
     preset?: CanvasAiPromptPreset,
     inputIds: string[] = [],
     mediaType: 'image' | 'video' = 'image'
-  ): CanvasImageItem => { return buildCanvasAiGeneratorNodeImpl({ canvasAiProvider, canvasAiUnifiedImageModelOptions, createAssetId, getCanvasAiResolvedModel, makeCanvasNodeId }, pos, preset, inputIds, mediaType); };
+  ): CanvasImageItem => { return buildCanvasAiGeneratorNodeImpl({ canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiProvider, canvasAiUnifiedImageModelOptions, canvasAiUnifiedVideoModelOptions, createAssetId, getCanvasAiResolvedModel, makeCanvasNodeId }, pos, preset, inputIds, mediaType); };
 
   const buildCanvasImageFusionNode = (
     pos: { x: number; y: number },

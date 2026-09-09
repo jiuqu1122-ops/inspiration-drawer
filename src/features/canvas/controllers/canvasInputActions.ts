@@ -7,6 +7,7 @@ import { CANVAS_TEMPLATE_EXPORT_TYPE,CANVAS_TEMPLATE_EXPORT_VERSION,getCanvasAiP
 import { BufferItem } from '../../../types';
 import type { CanvasAiPromptPreset } from '../../../types/canvasWorkflow';
 import type { ConfirmDialogState } from '../../../types/dialogs';
+import type { CloudImageModelsResult } from '../../../types/license';
 import { CANVAS_AI_DEFAULT_ASPECT_RATIO } from '../../../utils/canvasAiAspectRatio';
 import { CANVAS_AI_DEFAULT_COUNT,CANVAS_AI_DEFAULT_IMAGE_RESOLUTION,CANVAS_AI_DEFAULT_OUTPUT_FORMAT,CANVAS_AI_DEFAULT_VIDEO_DURATION,CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,canvasAiGatewayKindForProvider,getCanvasAiDefaultModel,getCanvasAiEndpointForRequest,getStoredCanvasAiApiKey,getStoredCanvasAiApiProvider,getStoredCanvasAiEndpoint,getStoredCanvasAiHeadersText,normalizeCanvasAiProvider,parseCanvasAiHeaders,parseCanvasAiModelChoiceValue } from '../../../utils/canvasAiConfig';
 import { isRemoteHttpImageSource,isXaisAttachmentImageRef } from '../../../utils/canvasImageData';
@@ -16,7 +17,7 @@ import { cloneDrawerValue,isDataMediaSourceValue } from '../../../utils/canvasSe
 import { CANVAS_AI_PROMPT_PRESETS,createCanvasImagePolicy,validateCanvasWorkflowTemplate } from '../../../utils/canvasWorkflowDefinitions';
 import { getCanvasWorkflowOutputSlotTemplates } from '../../../utils/canvasWorkflowRuntime';
 import { isCanvasAudioFileName } from '../../../utils/localMediaPaths';
-import { NEW_API_VIDEO_MODEL_DEFAULT,debugXaisImage2,getCanvasAiReferencePublicationMaxUrlLength,getCanvasAiVideoProviderForModel,isOpenAiLikeCanvasAiProvider,normalizeNewApiVideoDurationForModel,orderCanvasAiReferenceSources,resolveCanvasAiReferenceProvider,supportsCanvasAiImageResolution } from '../../canvasAiImage';
+import { NEW_API_VIDEO_MODEL_DEFAULT,debugXaisImage2,getCanvasAiReferencePublicationMaxUrlLength,getCanvasAiVideoModelCandidates,getCanvasAiVideoProviderForModel,isOpenAiLikeCanvasAiProvider,normalizeNewApiVideoDurationForModel,orderCanvasAiReferenceSources,resolveCanvasAiReferenceProvider,supportsCanvasAiImageResolution } from '../../canvasAiImage';
 import { getCanvasAiNodeAutoSize } from '../../canvasAiNodeLayout';
 import { type CanvasAiProvider,type CanvasImageItem,type CanvasItemBox,type CanvasWorkflowRuntime } from '../../canvasModel';
 import { publishCanvasReferencesInOrder } from '../../canvasReferencePublication';
@@ -159,7 +160,7 @@ export const publishLocalAiInputsImpl = async (ctx: Pick<canvasInputsActionConte
 
 export const uploadWalletReferenceInputsImpl = async (ctx: Record<never, never>, sources: string[]) => {
   const {  } = ctx;
-    const cleanSources = sources.map(source => source.trim()).filter(Boolean).slice(0, 13);
+    const cleanSources = sources.map(source => source.trim()).filter(Boolean).slice(0, 32);
     if (cleanSources.length === 0) return [] as string[];
     const objectKeys = await invoke<string[]>('upload_wallet_reference_images', { sources: cleanSources });
     const output = (objectKeys || []).map(value => value.trim()).filter(value => value.startsWith('reference-images/'));
@@ -846,20 +847,37 @@ export const deleteSelectedCanvasPromptPresetsImpl = (ctx: Pick<canvasInputsActi
 
 };
 
-export const buildCanvasAiGeneratorNodeImpl = (ctx: Pick<canvasInputsActionContext, 'canvasAiProvider' | 'canvasAiUnifiedImageModelOptions' | 'createAssetId' | 'getCanvasAiResolvedModel' | 'makeCanvasNodeId'>, pos: { x: number; y: number }, preset?: CanvasAiPromptPreset, inputIds: string[] = [], mediaType: 'image' | 'video' = 'image'): CanvasImageItem => {
-  const { canvasAiProvider, canvasAiUnifiedImageModelOptions, createAssetId, getCanvasAiResolvedModel, makeCanvasNodeId } = ctx;
+export const buildCanvasAiGeneratorNodeImpl = (ctx: Pick<canvasInputsActionContext, 'canvasAiProvider' | 'canvasAiUnifiedImageModelOptions' | 'createAssetId' | 'getCanvasAiResolvedModel' | 'makeCanvasNodeId'> & {
+  canvasAiCloudImageModels: CloudImageModelsResult | null;
+  canvasAiCredentialSource: 'wallet' | 'local';
+  canvasAiUnifiedVideoModelOptions: RoundedSelectOption[];
+}, pos: { x: number; y: number }, preset?: CanvasAiPromptPreset, inputIds: string[] = [], mediaType: 'image' | 'video' = 'image'): CanvasImageItem => {
+  const { canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiProvider, canvasAiUnifiedImageModelOptions, canvasAiUnifiedVideoModelOptions, createAssetId, getCanvasAiResolvedModel, makeCanvasNodeId } = ctx;
     const itemId = createAssetId();
     const presetPrompt = getCanvasAiPresetPrompt(preset);
     const isVideo = mediaType === 'video';
     const defaultImageChoice = !isVideo && canvasAiUnifiedImageModelOptions.length > 0
       ? parseCanvasAiModelChoiceValue(canvasAiUnifiedImageModelOptions[0].value)
       : null;
+    const defaultVideoModel = isVideo ? canvasAiUnifiedVideoModelOptions[0]?.value : '';
+    const defaultVideoCandidates = isVideo
+      ? getCanvasAiVideoModelCandidates(
+        defaultVideoModel,
+        canvasAiCredentialSource,
+        canvasAiProvider,
+        canvasAiCloudImageModels?.videoChannels,
+        canvasAiCloudImageModels?.catalog,
+      )
+      : [];
     const provider = isVideo
-      ? canvasAiProvider === 'mikoto'
-        ? 'mikoto'
-        : getCanvasAiVideoProviderForModel(NEW_API_VIDEO_MODEL_DEFAULT)
+      ? defaultVideoCandidates[0]?.provider
+        || (canvasAiProvider === 'mikoto'
+          ? 'mikoto'
+          : getCanvasAiVideoProviderForModel(defaultVideoModel || NEW_API_VIDEO_MODEL_DEFAULT))
       : defaultImageChoice?.provider || canvasAiProvider;
-    const model = defaultImageChoice?.model || getCanvasAiResolvedModel(provider, '', mediaType);
+    const model = isVideo
+      ? defaultVideoModel || getCanvasAiResolvedModel(provider, '', mediaType)
+      : defaultImageChoice?.model || getCanvasAiResolvedModel(provider, '', mediaType);
     const name = preset ? `AI ${preset.label}` : (isVideo ? 'AI 视频节点' : 'AI 生图节点');
     const aspectRatio = preset?.aspectRatio || (isVideo ? '9:16' : CANVAS_AI_DEFAULT_ASPECT_RATIO);
     const count = preset?.count || CANVAS_AI_DEFAULT_COUNT;
@@ -895,9 +913,11 @@ export const buildCanvasAiGeneratorNodeImpl = (ctx: Pick<canvasInputsActionConte
         type: isVideo ? 'video-generator' : 'image-generator',
         provider,
         model,
-        providerChannelId: defaultImageChoice?.providerChannelId,
-        credentialSource: defaultImageChoice?.source,
-        providerCandidates: defaultImageChoice?.providerCandidates,
+        providerChannelId: isVideo ? defaultVideoCandidates[0]?.providerChannelId : defaultImageChoice?.providerChannelId,
+        credentialSource: isVideo ? canvasAiCredentialSource : defaultImageChoice?.source,
+        providerCandidates: isVideo
+          ? defaultVideoCandidates.length > 0 ? defaultVideoCandidates : undefined
+          : defaultImageChoice?.providerCandidates,
         prompt: '',
         presetId: preset?.id,
         presetLabel: preset?.label,

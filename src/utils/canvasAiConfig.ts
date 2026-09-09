@@ -281,7 +281,7 @@ export const canvasAiGroupedModelChoiceValue = (
   candidate.provider,
   candidate.model,
   candidate.providerChannelId || '',
-  candidates.length > 1 ? candidates : undefined,
+  candidates.length > 0 ? candidates : undefined,
 ]);
 export const parseCanvasAiModelChoiceValue = (value: string) => {
   try {
@@ -302,6 +302,12 @@ export const parseCanvasAiModelChoiceValue = (value: string) => {
           source: candidate.source,
           provider: candidate.provider as CanvasAiProvider,
           model: candidate.model.trim(),
+          canonicalModelId: typeof candidate.canonicalModelId === 'string' && candidate.canonicalModelId.trim()
+            ? candidate.canonicalModelId.trim()
+            : undefined,
+          displayName: typeof candidate.displayName === 'string' && candidate.displayName.trim()
+            ? candidate.displayName.trim()
+            : undefined,
           providerChannelId: typeof candidate.providerChannelId === 'string' && candidate.providerChannelId.trim()
             ? candidate.providerChannelId.trim()
             : undefined,
@@ -314,6 +320,9 @@ export const parseCanvasAiModelChoiceValue = (value: string) => {
               .map(capability => capability.trim().toUpperCase())
               .filter(Boolean)))
             : undefined,
+          modelCapabilities: candidate.modelCapabilities && typeof candidate.modelCapabilities === 'object'
+            ? candidate.modelCapabilities
+            : undefined,
         } as CanvasAiModelCandidate];
       })
       : undefined;
@@ -324,7 +333,7 @@ export const parseCanvasAiModelChoiceValue = (value: string) => {
       providerChannelId: typeof providerChannelId === 'string' && providerChannelId.trim()
         ? providerChannelId.trim()
         : undefined,
-      providerCandidates: providerCandidates && providerCandidates.length > 1 ? providerCandidates : undefined,
+      providerCandidates: providerCandidates && providerCandidates.length > 0 ? providerCandidates : undefined,
     };
   } catch {
     return null;

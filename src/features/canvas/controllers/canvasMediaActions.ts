@@ -16,7 +16,7 @@ import { createCanvasAiOutputBufferItem,getCanvasAiInputSourceCandidates,getCanv
 import { cloneDrawerValue,isDataMediaSourceValue } from '../../../utils/canvasSerialization';
 import { applyCanvasTextContextRouting,type CanvasContextRoutingTarget } from '../../../utils/canvasTextContextRouting';
 import { isCanvasAudioFileName,isCanvasImageFileName,isCanvasVideoFileName } from '../../../utils/localMediaPaths';
-import { getCanvasAiSlotClientRequestId,getCanvasAiVideoReferenceSlots } from '../../canvasAiImage';
+import { getCanvasAiSlotClientRequestId,getCanvasAiVideoReferenceSlots,resolveCanvasAiImageModelCapabilities,resolveCanvasAiVideoModelCapabilities } from '../../canvasAiImage';
 import { CANVAS_AI_MAX_OUTPUT_COUNT } from '../../canvasAiNodeLayout';
 import { getCanvasAiMediaType } from '../../canvasAiRuntime';
 import { cloneCanvasAiForPaste } from '../../canvasClipboard';
@@ -1851,12 +1851,40 @@ export const getCanvasImageInputBufferItemsForNodeImpl = (ctx: Pick<canvasMediaA
     const mediaInputs: BufferItem[] = [];
     const isVideoGenerator = canvasItem.ai?.type === 'video-generator';
     const isImageFusion = isCanvasImageFusionAi(canvasItem.ai);
-    const canvasVideoReferenceSlots = isVideoGenerator
-      ? getCanvasAiVideoReferenceSlots(canvasItem.ai?.model, canvasItem.ai?.videoInputMode, canvasItem.ai?.provider)
+    const selectedCandidate = canvasItem.ai?.providerCandidates?.find(candidate => (
+      candidate.provider === canvasItem.ai?.provider
+      && (candidate.providerChannelId || '') === (canvasItem.ai?.providerChannelId || '')
+    )) || canvasItem.ai?.providerCandidates?.[0];
+    const structuredCapabilities = selectedCandidate?.modelCapabilities;
+    const resolvedImageCapabilities = structuredCapabilities && !isVideoGenerator
+      ? resolveCanvasAiImageModelCapabilities({
+        provider: selectedCandidate?.provider || canvasItem.ai?.provider,
+        model: selectedCandidate?.model || canvasItem.ai?.model,
+        canonical: structuredCapabilities,
+      })
       : null;
-    const maxImageInputs = isImageFusion ? 2 : isVideoGenerator ? (canvasVideoReferenceSlots?.imageSlots || 9) : 8;
-    const maxVideoInputs = isVideoGenerator ? (canvasVideoReferenceSlots?.videoSlots || 0) : 0;
-    const maxAudioInputs = isVideoGenerator ? (canvasVideoReferenceSlots?.audioSlots || 0) : 0;
+    const resolvedVideoCapabilities = structuredCapabilities && isVideoGenerator
+      ? resolveCanvasAiVideoModelCapabilities({
+        provider: selectedCandidate?.provider || canvasItem.ai?.provider,
+        model: selectedCandidate?.model || canvasItem.ai?.model,
+        canonical: structuredCapabilities,
+      })
+      : null;
+    const canvasVideoReferenceSlots = isVideoGenerator
+      ? getCanvasAiVideoReferenceSlots(
+        canvasItem.ai?.model,
+        canvasItem.ai?.videoInputMode,
+        canvasItem.ai?.provider,
+        resolvedVideoCapabilities,
+      )
+      : null;
+    const maxImageInputs = isImageFusion
+      ? 2
+      : isVideoGenerator
+        ? canvasVideoReferenceSlots?.imageSlots ?? 9
+        : resolvedImageCapabilities?.referenceImageLimit ?? 8;
+    const maxVideoInputs = isVideoGenerator ? canvasVideoReferenceSlots?.videoSlots ?? 0 : 0;
+    const maxAudioInputs = isVideoGenerator ? canvasVideoReferenceSlots?.audioSlots ?? 0 : 0;
     let imageInputCount = 0;
     let videoInputCount = 0;
     let audioInputCount = 0;
