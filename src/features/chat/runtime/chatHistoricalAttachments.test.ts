@@ -46,6 +46,7 @@ describe('historical Chat image attachments', () => {
     '同样保留以上对话的特点',
     '建筑不要纹理太复杂',
     'Make the material warmer while keeping the previous design features',
+    '三个方案都分别出图我看看',
   ]) (
     'recognizes an explicit continuation: %s',
     text => expect(isHistoricalImageContinuation(text)).toBe(true),
@@ -171,5 +172,26 @@ describe('historical Chat image attachments', () => {
     const selection = selectChatImageAttachments([source, latest], latest.content);
     expect(selection.reusedFromHistory).toBe(false);
     expect(selection.attachments.map(attachment => attachment.path)).toEqual(['C:\\new.png']);
+  });
+
+  it('reuses earlier references when the user asks to render the proposed variants', () => {
+    const source = message('message-1', '帮我看看怎么重新设计一下', ['C:\\a.png', 'C:\\b.png'], 1);
+    const latest = message('message-2', '三个方案都分别出图我看看', [], 2);
+    const selection = selectChatImageAttachments([source, latest], latest.content);
+
+    expect(selection.reusedFromHistory).toBe(true);
+    expect(selection.attachments.map(attachment => attachment.path)).toEqual(['C:\\a.png', 'C:\\b.png']);
+    expect(selection.toolIntentText).toContain(latest.content);
+  });
+
+  it('keeps the pending image request when references arrive in the next message', () => {
+    const request = message('message-1', '三个方案都分别出图我看看', [], 1);
+    const references = message('message-2', '这是参考图', ['C:\\a.png', 'C:\\b.png'], 2);
+    const selection = selectChatImageAttachments([request, references], references.content);
+
+    expect(selection.reusedFromHistory).toBe(false);
+    expect(selection.sourceMessage?.id).toBe(references.id);
+    expect(selection.attachments.map(attachment => attachment.path)).toEqual(['C:\\a.png', 'C:\\b.png']);
+    expect(selection.toolIntentText).toBe([request.content, references.content].join('\n'));
   });
 });

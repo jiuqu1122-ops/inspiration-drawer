@@ -136,6 +136,15 @@ describe('Chat tool exposure', () => {
     expect(resolveDirectVisualTool('出图', true, 0)).toBe('generate_image');
   });
 
+  it('does not mistake 分别出图 for a negated image request', () => {
+    const text = '三个方案都分别出图我看看';
+    expect(shouldDirectGenerateImage(text)).toBe(true);
+    expect(shouldUseIndependentImageVariants(text)).toBe(true);
+    expect(getChatToolDefinitions(text).map(tool => tool.function.name))
+      .toContain('generate_image_variants');
+    expect(shouldDirectGenerateImage('先别出图')).toBe(false);
+  });
+
   it('lets the model choose among relevant image tools for a multi-image task', () => {
     expect(shouldExposeBatchImageOperation('把每张都换成白色背景', 3)).toBe(true);
     expect(shouldExposeBatchImageOperation('帮我把这几张图都排一下版', 6)).toBe(true);
