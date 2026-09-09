@@ -148,7 +148,10 @@ export const getCanvasImageUnitCredits = (
   const token = imageModelToken(rawModel);
   const pricingToken = imagePricingToken(rawModel, capabilities);
   const selectedResolution = getPricedImageResolution(rawModel, resolution);
-  const configuredModel = pricing?.imageModels.find(item => imageModelToken(item.model) === pricingToken)
+  // Canonical server pricing is authoritative. Token normalization below is
+  // retained only for legacy route ids and older pricing responses.
+  const configuredModel = pricing?.imageModels.find(item => item.model === rawModel.trim())
+    || pricing?.imageModels.find(item => imageModelToken(item.model) === pricingToken)
     || (pricingToken !== token
       ? pricing?.imageModels.find(item => imageModelToken(item.model) === token)
       : undefined);
@@ -196,7 +199,9 @@ const hasConfiguredImageModel = (
   pricing?: CanvasAiCreditPricing | null,
 ) => {
   const token = imageModelToken(model);
-  return Boolean(token && pricing?.imageModels.some(item => imageModelToken(item.model) === token));
+  const exact = String(model || '').trim();
+  return Boolean(exact && pricing?.imageModels.some(item => item.model === exact))
+    || Boolean(token && pricing?.imageModels.some(item => imageModelToken(item.model) === token));
 };
 
 type CanvasImageCreditInput = Pick<
@@ -224,7 +229,9 @@ export const getCanvasVideoCreditsPerSecond = (
   pricing?: CanvasAiCreditPricing | null,
 ) => {
   const token = videoModelToken(model);
-  const configuredModel = pricing?.videoModels.find(item => videoModelToken(item.model) === token);
+  const exactModel = String(model || '').trim();
+  const configuredModel = pricing?.videoModels.find(item => item.model === exactModel)
+    || pricing?.videoModels.find(item => videoModelToken(item.model) === token);
   const configuredCredits = Number(
     configuredModel?.creditsPerSecond
       ?? configuredModel?.credits
@@ -244,7 +251,9 @@ export const getCanvasVideoRequestCredits = (
   references: { imageCount?: number | null; videoCount?: number | null } = {},
 ) => {
   const token = videoModelToken(model);
-  const configuredModel = pricing?.videoModels.find(item => videoModelToken(item.model) === token);
+  const exactModel = String(model || '').trim();
+  const configuredModel = pricing?.videoModels.find(item => item.model === exactModel)
+    || pricing?.videoModels.find(item => videoModelToken(item.model) === token);
   const safeDuration = Math.max(1, Math.ceil(Number(duration) || 15));
   const safeCount = Math.max(1, Math.ceil(Number(count) || 1));
   const durationKey = String(safeDuration);

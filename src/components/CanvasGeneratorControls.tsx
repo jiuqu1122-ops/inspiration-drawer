@@ -45,6 +45,7 @@ type CanvasGeneratorControlsProps = {
   videoCfrMode: string;
   onVideoCfrModeChange: (value: string) => void;
   count: number;
+  countOptions?: RoundedSelectOption[];
   onCountChange: (value: string) => void;
 };
 
@@ -80,6 +81,7 @@ export function CanvasGeneratorControls({
   videoCfrMode,
   onVideoCfrModeChange,
   count,
+  countOptions = CANVAS_AI_COUNT_OPTIONS,
   onCountChange,
 }: CanvasGeneratorControlsProps) {
   return (
@@ -228,7 +230,7 @@ export function CanvasGeneratorControls({
         data-no-drag="true"
         deferChange
         value={String(count)}
-        options={CANVAS_AI_COUNT_OPTIONS}
+        options={countOptions}
         onChange={onCountChange}
         labelClassName="text-center text-[11px] leading-none"
         chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}

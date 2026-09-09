@@ -31,6 +31,30 @@ describe('canvas generation credits', () => {
     expect(getCanvasImageUnitCredits('unknown-model', '2k')).toBe(100);
   });
 
+  it('prefers exact canonical image pricing before legacy token aliases', () => {
+    const pricing = {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3', imageDefaultCredits: '55', videoDefaultCredits: '500',
+      imageModels: [
+        { model: 'canonical-image-x', credits2k: '12', credits4k: '18' },
+        { model: 'canonical_image_x', credits2k: '99', credits4k: '99' },
+      ],
+      videoModels: [],
+    };
+    expect(getCanvasImageUnitCredits('canonical-image-x', '2K', pricing)).toBe(12);
+  });
+
+  it('prefers exact canonical video pricing before legacy token aliases', () => {
+    const pricing = {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3', imageDefaultCredits: '55', videoDefaultCredits: '500',
+      imageModels: [],
+      videoModels: [
+        { model: 'canonical-video-x', credits: '31' },
+        { model: 'canonical_video_x', credits: '88' },
+      ],
+    };
+    expect(getCanvasVideoRequestCredits('canonical-video-x', 5, 1, '720p', pricing)).toBe(155);
+  });
+
   it('charges each requested image output', () => {
     expect(estimateCanvasImageGenerationCredits({
       model: 'Nano Banana Pro',

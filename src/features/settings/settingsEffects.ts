@@ -9,6 +9,7 @@ import type { AiGatewayKind } from '../agentModel';
 import { getCanvasAiEndpointForModels,isCanvasAiRemoteModelProvider } from '../../utils/canvasAiConfig';
 import { NEW_API_SEEDANCE_2_MODEL,XAIS_CHAT_VIDEO_MODEL_DEFAULT,getCanvasAiVideoModelCandidates } from '../canvasAiImage';
 import { type CanvasAiCredentialSource,type CanvasAiProvider,type CanvasImageItem } from '../canvasModel';
+import { cacheSuccessfulAiCatalog,getCachedAiCatalog,reconcileStaleCanvasAiModels } from '../aiModelCapabilities';
 
 type settingsEffectContext = { isCanvasMode: boolean; updateCanvasItemsImmediate: (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => CanvasImageItem[]; canvasAiCredentialSource: CanvasAiCredentialSource; canvasAiCloudImageModels: CloudImageModelsResult | null; isDrawerAgentOpen: boolean; canvasAiModelRefreshSignatureRef: React.RefObject<string>; canvasAiUsesCloudImageModels: boolean; effectiveCanvasAiProvider: CanvasAiProvider; isCanvasAiLicenseManaged: boolean; canvasAiApiKey: string; canvasAiNewApiVideoKey: string; effectiveCanvasAiEndpoint: string; canvasAiEndpoint: string; effectiveCanvasAiGatewayKind: AiGatewayKind; effectiveCanvasAiApiProvider: string; effectiveCanvasAiModel: string; canvasAiHeadersText: string; refreshCanvasAiOpenAiModels: (silent?: boolean) => Promise<void>; setCanvasAiCloudImageModels: React.Dispatch<React.SetStateAction<CloudImageModelsResult | null>>; startupAutoCloseTimerRef: React.RefObject<any>; idleAutoCloseTimerRef: React.RefObject<any>; setShortcut: React.Dispatch<React.SetStateAction<string>>; setSnipShortcut: React.Dispatch<React.SetStateAction<string>>; setTextShortcut: React.Dispatch<React.SetStateAction<string>>; setSearchShortcut: React.Dispatch<React.SetStateAction<string>>; setTriggerShortcut: React.Dispatch<React.SetStateAction<string>>; setNoteShortcut: React.Dispatch<React.SetStateAction<string>>; setCanvasShortcut: React.Dispatch<React.SetStateAction<string>>; setIsAutoStart: React.Dispatch<React.SetStateAction<boolean>>; setLocalIP: React.Dispatch<React.SetStateAction<string>>; setMobilePairUrl: React.Dispatch<React.SetStateAction<string>>; refreshLicenseStatus: (silent?: boolean) => Promise<void>; cloudStartupSyncStartedRef: React.RefObject<boolean>; refreshCloudAccount: (silent?: boolean) => Promise<CloudAccountSummary>; showWebImageCollector: boolean; webImageCollectorPanelRef: React.RefObject<HTMLDivElement | null>; closeWebImageCollector: () => void; handleLocalVisionModelProgress: (progress: { stage?: string; message: string; progress?: number; }) => void; checkLocalVisionModelStatus: (options?: { silent?: boolean; }) => Promise<boolean>; showSettings: boolean; setShowSettings: React.Dispatch<React.SetStateAction<boolean>>; folderContextMenu: FolderContextMenuState | null; setFolderContextMenu: React.Dispatch<React.SetStateAction<FolderContextMenuState | null>>; stateRef: React.RefObject<{ isOpen: boolean; isPinned: boolean; showTextInput: boolean; isSearchActive: boolean; isAntiTouchMode: boolean; }>; isAntiTouchMode: boolean; enforceAntiTouchClosed: (showFeedback?: boolean) => void; toggleTriggerMode: () => void; setIsDark: React.Dispatch<React.SetStateAction<boolean>>; showToast: (message: string) => void; isDrawerAiClassificationMode: boolean; setActiveDrawerAiClassificationLabel: React.Dispatch<React.SetStateAction<string>>; activeDrawerAiClassificationLabel: string; drawerAiClassificationGroups: AiClassificationGroup[]; };
 
@@ -79,8 +80,8 @@ export const runSettingsEffect02 = (ctx: Pick<settingsEffectContext, 'canvasAiAp
 
 };
 
-export const runSettingsEffect03 = (ctx: Pick<settingsEffectContext, 'canvasAiUsesCloudImageModels' | 'effectiveCanvasAiProvider' | 'isCanvasMode' | 'setCanvasAiCloudImageModels'>) => {
-  const { canvasAiUsesCloudImageModels, effectiveCanvasAiProvider, isCanvasMode, setCanvasAiCloudImageModels } = ctx;
+export const runSettingsEffect03 = (ctx: Pick<settingsEffectContext, 'canvasAiUsesCloudImageModels' | 'effectiveCanvasAiProvider' | 'isCanvasMode' | 'setCanvasAiCloudImageModels' | 'updateCanvasItemsImmediate'>) => {
+  const { canvasAiUsesCloudImageModels, effectiveCanvasAiProvider, isCanvasMode, setCanvasAiCloudImageModels, updateCanvasItemsImmediate } = ctx;
     if (!isCanvasMode || !canvasAiUsesCloudImageModels) return;
     let disposed = false;
     const refreshCloudPricing = () => {
@@ -88,24 +89,24 @@ export const runSettingsEffect03 = (ctx: Pick<settingsEffectContext, 'canvasAiUs
         provider: effectiveCanvasAiProvider,
       }).then((result) => {
         if (disposed) return;
-        setCanvasAiCloudImageModels(current => {
-          if (current) return { ...current, pricing: result.pricing ?? current.pricing };
-          const channels = (result.channels || []).map(channel => ({
-            ...channel,
-            models: Array.from(new Set([
-              ...(channel.models || []).map(model => model.trim()).filter(Boolean),
-              ...(String(channel.defaultModel || '').trim() ? [String(channel.defaultModel).trim()] : []),
-            ])),
-          }));
-          return {
-            ...result,
-            channels,
-            models: Array.from(new Set([
-              ...(result.models || []).map(model => model.trim()).filter(Boolean),
-              ...channels.flatMap(channel => channel.models),
-            ])),
-          };
+        const channels = (result.channels || []).map(channel => ({
+          ...channel,
+          models: Array.from(new Set([
+            ...(channel.models || []).map(model => model.trim()).filter(Boolean),
+            ...(String(channel.defaultModel || '').trim() ? [String(channel.defaultModel).trim()] : []),
+          ])),
+        }));
+        const snapshot = cacheSuccessfulAiCatalog({
+          ...result,
+          channels,
+          models: Array.from(new Set([
+            ...(result.models || []).map(model => model.trim()).filter(Boolean),
+            ...channels.flatMap(channel => channel.models),
+          ])),
+          pricing: result.pricing ?? getCachedAiCatalog()?.pricing,
         });
+        setCanvasAiCloudImageModels(snapshot);
+        updateCanvasItemsImmediate(previous => reconcileStaleCanvasAiModels(previous, snapshot));
       }).catch(() => {
         // Keep the last known pricing while temporarily offline.
       });

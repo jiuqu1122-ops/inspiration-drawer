@@ -1,6 +1,7 @@
 import { BufferItem } from '../types';
 import type { ImagePolicy } from './appAgent/imageQuality/imageRuleCapsules';
 import type { CanvasThreeSceneData } from './three/model/threeSceneTypes';
+import type { AiModelCapabilities } from '../types/license';
 
 export type CanvasWorkflowSlotAsset = {
   sourceItemId?: string;
@@ -110,11 +111,16 @@ export type CanvasAiCredentialSource = 'wallet' | 'local';
 export type CanvasAiModelCandidate = {
   source: CanvasAiCredentialSource;
   provider: CanvasAiProvider;
+  /** Actual route model sent to the provider. */
   model: string;
+  /** Stable public SKU used by UI, saved nodes and pricing. */
+  canonicalModelId?: string;
+  displayName?: string;
   providerChannelId?: string;
   /** Human-readable wallet channel name, used for channel-specific public labels. */
   providerChannelName?: string;
   capabilities?: string[];
+  modelCapabilities?: AiModelCapabilities;
 };
 
 export type CanvasAiMediaType = 'image' | 'video';

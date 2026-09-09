@@ -1,5 +1,5 @@
 import { CANVAS_AI_DEFAULT_ASPECT_RATIO } from '../../utils/canvasAiAspectRatio';
-import { CANVAS_AI_DEFAULT_OUTPUT_FORMAT,CANVAS_AI_DEFAULT_VIDEO_DURATION,CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,CANVAS_AI_IMAGE_RESOLUTION_OPTIONS,CANVAS_AI_OUTPUT_FORMAT_OPTIONS,CANVAS_AI_VIDEO_DURATIONS,CANVAS_AI_VIDEO_DURATION_OPTIONS,CANVAS_AI_VIDEO_RESOLUTIONS,CANVAS_AI_VIDEO_RESOLUTION_OPTIONS,canvasAiProviderForCloudKind,getCanvasAiDefaultModel,normalizeCanvasAiProvider,parseCanvasAiModelChoiceValue } from '../../utils/canvasAiConfig';
+import { CANVAS_AI_DEFAULT_OUTPUT_FORMAT,CANVAS_AI_DEFAULT_VIDEO_DURATION,CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,CANVAS_AI_OUTPUT_FORMAT_OPTIONS,CANVAS_AI_VIDEO_DURATIONS,CANVAS_AI_VIDEO_RESOLUTIONS,canvasAiProviderForCloudKind,getCanvasAiDefaultModel,normalizeCanvasAiProvider,parseCanvasAiModelChoiceValue } from '../../utils/canvasAiConfig';
 import { createCanvasAiOutputBufferItem,getCanvasAiOutputDisplaySource,getCanvasAiSuccessfulOutputs,getCanvasItemDisplaySource,getCanvasOriginalImageSource,getCanvasWorkflowTemplateFromNode,isCanvasAgentTextTarget,isCanvasWorkflowReferenceBridge } from '../../utils/canvasItemSelectors';
 import { getCanvasAiOutputPreviewSlots,getCanvasWorkflowGroup } from '../../utils/canvasWorkflowRuntime';
 import { getCanvasAiImageResolutionValues,getCanvasAiImageResolutionValuesForCandidates,getCanvasAiVideoReferenceSlotLabels,getCanvasAiVideoReferenceSlots,getMikotoVideoDurationValues,getMikotoVideoResolutionValues,getMiniMaxH3VideoResolutionValues,getNewApiVideoDurationValues,getNewApiVideoResolutionValues,hydrateCanvasAiModelCandidateCapabilities,isMiniMaxH3VideoModel,isSeedance20VideoModel,isSeedanceLikeVideoModel,normalizeCanvasAiImageResolutionForCandidates,normalizeCanvasAiImageResolutionForModel,normalizeCanvasAiOutputFormat,normalizeMikotoVideoDuration,normalizeMikotoVideoResolution,normalizeMiniMaxH3VideoResolution,normalizeNewApiVideoDurationForModel,normalizeNewApiVideoResolutionForModel,selectCanvasAiImageCandidatesForResolution,supportsCanvasAiTransparentPng } from '../canvasAiImage';
@@ -9,14 +9,14 @@ import { getCanvasAiMediaType,isCanvasAiGeneratedType,isCanvasAiGeneratorType } 
 import { estimateCanvasImageGenerationCredits,estimateCanvasTextAgentCredits,estimateCanvasVideoGenerationCredits,estimateCanvasWorkflowCredits,shouldShowCanvasGenerationCredits } from '../canvasGenerationCredits';
 import type { CanvasImageItem } from '../canvasModel';
 import type { BufferItem } from '../../types';
-import type { CloudImageModelsResult } from '../../types/license';
 import { getCanvasWorkflowInternalSlotNodes,isReplaceableInternalImageSlot } from '../canvasWorkflowInternalSlots';
 import { normalizeCanvasWorkflowUserInput } from '../canvasWorkflowUserInput';
 import { normalizeDesignAgentConfig } from '../designAgentNode';
+import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,normalizeCapabilityDuration,normalizeCapabilityOption,resolveImageModelCapabilities,resolveVideoModelCapabilities } from '../aiModelCapabilities';
 
 export type CanvasNodeViewModelScope = Record<string, any>;
 
-export function buildCanvasNodeViewModel(scope: CanvasNodeViewModelScope, canvasItem: CanvasImageItem) {
+function buildCanvasNodeViewModelInternal(scope: CanvasNodeViewModelScope, canvasItem: CanvasImageItem) {
   const { canvasAgent, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiExpandedOutputNodeIds, canvasAiPromptEditingId, canvasAiProvider, canvasItems, canvasItemsById, canvasRenderScale, canvasSelectedIdsSet, canvasTextAgentRunningIds, getCanvasAiNodeDesignSizeForItem, getCanvasAiResolvedModel, getCanvasAiUnifiedImageModelValue, getCanvasImageInputBufferItemsForNode, getStableCanvasImageSource } = scope;
 const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           const isTextCanvasItem = canvasItem.item.type === 'text';
@@ -58,37 +58,92 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           const canvasAiItemProvider = normalizeCanvasAiProvider(
                             canvasItem.ai?.provider || (canvasAiMediaType === 'video' ? 'xais-chat' : canvasAiProvider)
                           );
-                          const canvasAiItemModel = getCanvasAiResolvedModel(canvasAiItemProvider, canvasItem.ai?.model, canvasAiMediaType);
-                          const canvasAiItemCapabilities = canvasAiMediaType === 'image'
-                            ? canvasAiCloudImageModels?.channels?.find((channel: NonNullable<CloudImageModelsResult['channels']>[number]) => (
+                          const canvasAiItemCatalogCandidate = canvasItem.ai?.providerCandidates?.find(candidate => (
+                            candidate.canonicalModelId
+                            && candidate.provider === canvasAiItemProvider
+                            && (candidate.providerChannelId || '') === (canvasItem.ai?.providerChannelId || '')
+                          )) || canvasItem.ai?.providerCandidates?.find(candidate => (
+                            candidate.canonicalModelId && candidate.provider === canvasAiItemProvider
+                          ));
+                          const canvasAiItemModel = canvasAiItemCatalogCandidate?.model
+                            || getCanvasAiResolvedModel(canvasAiItemProvider, canvasItem.ai?.model, canvasAiMediaType);
+                          const canvasAiCatalog = canvasAiCredentialSource === 'wallet'
+                            && canvasItem.ai?.credentialSource !== 'local'
+                            ? getAiCatalogModels(canvasAiCloudImageModels, canvasAiMediaType)
+                            : [];
+                          const canvasAiCatalogModel = findAiCatalogModel(
+                            canvasAiCatalog,
+                            canvasItem.ai?.providerCandidates?.find(candidate => candidate.canonicalModelId)?.canonicalModelId
+                              || canvasAiItemModel,
+                          );
+                          const canvasAiSelectedChannel = (canvasAiMediaType === 'video'
+                            ? canvasAiCloudImageModels?.videoChannels
+                            : canvasAiCloudImageModels?.channels)?.find((channel: { id: string; provider: string }) => (
                               channel.id === canvasItem.ai?.providerChannelId
                               && canvasAiProviderForCloudKind(channel.provider) === canvasAiItemProvider
-                            ))?.capabilities
-                              || canvasItem.ai?.providerCandidates?.find(candidate => (
-                                candidate.provider === canvasAiItemProvider
-                                && candidate.model === canvasAiItemModel
-                              ))?.capabilities
+                            ));
+                          const canvasAiSelectedCandidate = canvasItem.ai?.providerCandidates?.find(candidate => (
+                            candidate.provider === canvasAiItemProvider
+                            && (candidate.model === canvasAiItemModel
+                              || candidate.canonicalModelId === canvasAiCatalogModel?.id)
+                          ));
+                          const canvasAiItemCapabilities = canvasAiMediaType === 'image'
+                            ? canvasAiSelectedChannel?.capabilities || canvasAiSelectedCandidate?.capabilities
                             : undefined;
+                          const canvasAiRouteModelCapabilities = canvasAiSelectedCandidate?.modelCapabilities
+                            || getChannelModelCapabilities(
+                              canvasAiSelectedChannel,
+                              canvasAiSelectedCandidate?.model,
+                              canvasAiCatalogModel?.id,
+                            );
                           const canvasAiItemProviderCandidates = hydrateCanvasAiModelCandidateCapabilities(
                             canvasItem.ai?.providerCandidates || [],
-                            canvasAiCloudImageModels?.channels,
+                            canvasAiMediaType === 'video'
+                              ? canvasAiCloudImageModels?.videoChannels
+                              : canvasAiCloudImageModels?.channels,
                           );
-                          const canvasAiCandidateImageResolutionValues = getCanvasAiImageResolutionValuesForCandidates(
+                          const canvasAiLegacyCandidateImageResolutionValues = getCanvasAiImageResolutionValuesForCandidates(
                             canvasAiItemProviderCandidates,
                           );
-                          const canvasAiImageResolutionValues = canvasAiCandidateImageResolutionValues.length > 0
-                            ? canvasAiCandidateImageResolutionValues
+                          const canvasAiLegacyImageResolutionValues = canvasAiLegacyCandidateImageResolutionValues.length > 0
+                            ? canvasAiLegacyCandidateImageResolutionValues
                             : getCanvasAiImageResolutionValues(
                               canvasAiItemProvider,
                               canvasAiItemModel,
                               canvasAiItemCapabilities,
                             );
+                          const canvasAiResolvedImageCapabilities = resolveImageModelCapabilities({
+                            canonical: canvasAiCatalogModel?.capabilities,
+                            route: canvasAiRouteModelCapabilities,
+                            legacy: {
+                              resolutions: canvasAiLegacyImageResolutionValues,
+                              maxReferenceImages: 8,
+                              supportsReferenceImages: true,
+                              supportedOutputFormats: ['jpg', 'png'],
+                              supportsTransparentBackground: supportsCanvasAiTransparentPng(
+                                canvasAiItemProvider,
+                                canvasAiItemModel,
+                              ),
+                              maxOutputs: 4,
+                            },
+                          });
+                          const canvasAiCandidateImageResolutionValues = canvasAiResolvedImageCapabilities.source === 'server'
+                            ? canvasAiResolvedImageCapabilities.resolutions
+                            : canvasAiLegacyCandidateImageResolutionValues;
+                          const canvasAiImageResolutionValues = canvasAiResolvedImageCapabilities.resolutions;
                           const canvasAiSupportsImageResolution = canvasAiMediaType === 'image'
                             && canvasAiImageResolutionValues.length > 0;
-                          const canvasAiImageResolutionOptions = CANVAS_AI_IMAGE_RESOLUTION_OPTIONS.filter(option => (
-                            canvasAiImageResolutionValues.includes(option.value as '1k' | '2k' | '4k')
-                          ));
-                          const canvasAiItemImageResolution = canvasAiCandidateImageResolutionValues.length > 0
+                          const canvasAiImageResolutionOptions = canvasAiImageResolutionValues.map(value => ({
+                            value,
+                            label: value.toUpperCase(),
+                          }));
+                          const canvasAiItemImageResolution = canvasAiResolvedImageCapabilities.source === 'server'
+                            ? normalizeCapabilityOption(
+                              canvasAiImageResolutionValues,
+                              canvasItem.ai?.resolution,
+                              '2K',
+                            )
+                            : canvasAiCandidateImageResolutionValues.length > 0
                             ? normalizeCanvasAiImageResolutionForCandidates(
                               canvasAiItemProviderCandidates,
                               canvasItem.ai?.resolution,
@@ -110,7 +165,7 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           const isCanvasAiMikotoVideo = canvasAiMediaType === 'video' && canvasAiItemProvider === 'mikoto';
                           const isCanvasAiMikotoKlingVideo = isCanvasAiMikotoVideo
                             && /^kling(?:-omni)?-video$/i.test(String(canvasAiItemModel || '').trim());
-                          const canvasAiVideoResolutionValues = isCanvasAiMikotoVideo
+                          const canvasAiLegacyVideoResolutionValues = isCanvasAiMikotoVideo
                             ? getMikotoVideoResolutionValues(canvasAiItemModel)
                             : isCanvasAiMiniMaxVideo
                             ? getMiniMaxH3VideoResolutionValues()
@@ -119,12 +174,41 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             : isCanvasAiNewApiVideo
                               ? getNewApiVideoResolutionValues(canvasAiItemModel)
                               : CANVAS_AI_VIDEO_RESOLUTIONS;
-                          const canvasAiVideoResolutionOptions = isCanvasAiMiniMaxVideo
-                            ? canvasAiVideoResolutionValues.map(value => ({ value, label: value }))
-                            : CANVAS_AI_VIDEO_RESOLUTION_OPTIONS.filter(option => (
-                              canvasAiVideoResolutionValues.includes(option.value)
-                            ));
-                          const canvasAiVideoResolution = isCanvasAiMikotoVideo
+                          const canvasAiLegacyVideoDurationValues = isCanvasAiMikotoVideo
+                            ? getMikotoVideoDurationValues(canvasAiItemModel)
+                            : isCanvasAiSeedanceLikeVideo
+                            ? getMikotoVideoDurationValues(canvasAiItemModel)
+                            : isCanvasAiNewApiVideo
+                            ? getNewApiVideoDurationValues(canvasAiItemModel)
+                            : CANVAS_AI_VIDEO_DURATIONS;
+                          const canvasAiLegacyVideoReferenceSlots = getCanvasAiVideoReferenceSlots(
+                            canvasAiItemModel,
+                            canvasItem.ai?.videoInputMode,
+                            canvasAiItemProvider,
+                          );
+                          const canvasAiResolvedVideoCapabilities = resolveVideoModelCapabilities({
+                            canonical: canvasAiCatalogModel?.capabilities,
+                            route: canvasAiRouteModelCapabilities,
+                            legacy: {
+                              resolutions: canvasAiLegacyVideoResolutionValues,
+                              durations: canvasAiLegacyVideoDurationValues,
+                              aspectRatios: [],
+                              maxReferenceImages: canvasAiLegacyVideoReferenceSlots.imageSlots,
+                              maxReferenceVideos: canvasAiLegacyVideoReferenceSlots.videoSlots,
+                              maxReferenceAudios: canvasAiLegacyVideoReferenceSlots.audioSlots,
+                              supportsReferenceImages: canvasAiLegacyVideoReferenceSlots.imageSlots > 0,
+                              supportsReferenceVideo: canvasAiLegacyVideoReferenceSlots.videoSlots > 0,
+                              supportsAudioReference: canvasAiLegacyVideoReferenceSlots.audioSlots > 0,
+                              supportsFirstLastFrame: !(isCanvasAiNewApiVideo && canvasAiItemModel === 'sora-2'),
+                              supportedInputModes: !(isCanvasAiNewApiVideo && canvasAiItemModel === 'sora-2')
+                                ? ['reference', 'first_last_frame']
+                                : ['reference'],
+                              maxOutputs: 4,
+                            },
+                          });
+                          const canvasAiVideoResolutionValues = canvasAiResolvedVideoCapabilities.resolutions;
+                          const canvasAiVideoResolutionOptions = canvasAiVideoResolutionValues.map(value => ({ value, label: value }));
+                          const canvasAiLegacyVideoResolution = isCanvasAiMikotoVideo
                             ? normalizeMikotoVideoResolution(canvasAiItemModel, canvasItem.ai?.resolution)
                             : isCanvasAiMiniMaxVideo
                             ? normalizeMiniMaxH3VideoResolution(canvasItem.ai?.resolution)
@@ -133,37 +217,50 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             : isCanvasAiNewApiVideo
                               ? normalizeNewApiVideoResolutionForModel(canvasAiItemModel, canvasItem.ai?.resolution)
                               : canvasItem.ai?.resolution || CANVAS_AI_DEFAULT_VIDEO_RESOLUTION;
-                          const canvasAiVideoDurationValues = isCanvasAiMikotoVideo
-                            ? getMikotoVideoDurationValues(canvasAiItemModel)
-                            : isCanvasAiSeedanceLikeVideo
-                            ? getMikotoVideoDurationValues(canvasAiItemModel)
-                            : isCanvasAiNewApiVideo
-                            ? getNewApiVideoDurationValues(canvasAiItemModel)
-                            : CANVAS_AI_VIDEO_DURATIONS;
-                          const canvasAiVideoDurationOptions = CANVAS_AI_VIDEO_DURATION_OPTIONS.filter(option => (
-                            canvasAiVideoDurationValues.includes(Number(option.value))
-                          ));
-                          const canvasAiVideoDuration = isCanvasAiMikotoVideo
+                          const canvasAiVideoResolution = canvasAiResolvedVideoCapabilities.source === 'server'
+                            ? normalizeCapabilityOption(
+                              canvasAiVideoResolutionValues,
+                              canvasItem.ai?.resolution,
+                              CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,
+                            )
+                            : canvasAiLegacyVideoResolution;
+                          const canvasAiVideoDurationValues = canvasAiResolvedVideoCapabilities.durations;
+                          const canvasAiVideoDurationOptions = canvasAiVideoDurationValues.map(value => ({
+                            value: String(value),
+                            label: `${value}秒`,
+                          }));
+                          const canvasAiLegacyVideoDuration = isCanvasAiMikotoVideo
                             ? normalizeMikotoVideoDuration(canvasAiItemModel, canvasItem.ai?.duration)
                             : isCanvasAiSeedanceLikeVideo
                             ? normalizeMikotoVideoDuration(canvasAiItemModel, canvasItem.ai?.duration)
                             : isCanvasAiNewApiVideo
                             ? normalizeNewApiVideoDurationForModel(canvasAiItemModel, canvasItem.ai?.duration)
                             : canvasItem.ai?.duration || CANVAS_AI_DEFAULT_VIDEO_DURATION;
-                          const canvasAiVideoSupportsFirstLastFrame = !(
-                            isCanvasAiNewApiVideo && canvasAiItemModel === 'sora-2'
-                          );
-                          const canvasAiSupportsTransparentPng = supportsCanvasAiTransparentPng(
-                            canvasAiItemProvider,
-                            canvasAiItemModel,
-                          );
-                          const canvasAiOutputFormat = normalizeCanvasAiOutputFormat(
-                            canvasAiItemProvider,
-                            canvasAiItemModel,
-                            canvasItem.ai?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
-                          );
-                          const canvasAiOutputFormatOptions = CANVAS_AI_OUTPUT_FORMAT_OPTIONS.map(option => (
-                            option.value === 'png' && !canvasAiSupportsTransparentPng
+                          const canvasAiVideoDuration = canvasAiResolvedVideoCapabilities.source === 'server'
+                            ? normalizeCapabilityDuration(
+                              canvasAiVideoDurationValues,
+                              canvasItem.ai?.duration,
+                              CANVAS_AI_DEFAULT_VIDEO_DURATION,
+                            )
+                            : canvasAiLegacyVideoDuration;
+                          const canvasAiVideoSupportsFirstLastFrame = canvasAiResolvedVideoCapabilities.firstLastFrame;
+                          const canvasAiSupportsTransparentPng = canvasAiResolvedImageCapabilities.supportsTransparentBackground;
+                          const canvasAiOutputFormatValues = canvasAiResolvedImageCapabilities.outputFormats;
+                          const canvasAiOutputFormat = canvasAiResolvedImageCapabilities.source === 'server'
+                            ? normalizeCapabilityOption(
+                              canvasAiOutputFormatValues,
+                              canvasItem.ai?.outputFormat,
+                              CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
+                            )
+                            : normalizeCanvasAiOutputFormat(
+                              canvasAiItemProvider,
+                              canvasAiItemModel,
+                              canvasItem.ai?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
+                            );
+                          const canvasAiOutputFormatOptions = canvasAiResolvedImageCapabilities.source === 'server'
+                            ? canvasAiOutputFormatValues.map(value => ({ value, label: value.toUpperCase() }))
+                            : CANVAS_AI_OUTPUT_FORMAT_OPTIONS.map(option => (
+                              option.value === 'png' && !canvasAiSupportsTransparentPng
                               ? {
                                 ...option,
                                 disabled: true,
@@ -171,6 +268,14 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                               }
                               : option
                           ));
+                          const canvasAiAspectRatioValues = canvasAiMediaType === 'video'
+                            ? canvasAiResolvedVideoCapabilities.aspectRatios
+                            : canvasAiResolvedImageCapabilities.aspectRatios;
+                          const canvasAiCountOptions = Array.from({
+                            length: canvasAiMediaType === 'video'
+                              ? canvasAiResolvedVideoCapabilities.maxOutputs
+                              : canvasAiResolvedImageCapabilities.maxOutputs,
+                          }, (_, index) => ({ value: String(index + 1), label: String(index + 1) }));
                           const isCanvasWorkflowAllOutputMode = isCanvasWorkflowItem && canvasItem.ai?.workflowOutputMode !== 'final';
                           const canvasWorkflow = isCanvasWorkflowItem ? getCanvasWorkflowTemplateFromNode(canvasItem) : null;
                           const canvasWorkflowInternalSlots = isCanvasWorkflowItem
@@ -210,7 +315,9 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                               canvasAiItemImageResolution,
                             )
                             : [];
-                          const canvasImagePricingModel = canvasImagePricingCandidates[0]?.model || canvasAiItemModel;
+                          const canvasImagePricingModel = canvasAiCatalogModel?.id
+                            || canvasImagePricingCandidates[0]?.model
+                            || canvasAiItemModel;
                           const canvasImagePricingCapabilities = canvasImagePricingCandidates[0]?.capabilities
                             || canvasAiItemCapabilities;
                           const canvasWorkflowCreditEstimate = showCanvasRunCreditEstimate && isCanvasWorkflowItem
@@ -238,7 +345,7 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           };
                           const canvasVideoCreditEstimate = showCanvasRunCreditEstimate && canvasItem.ai?.type === 'video-generator'
                             ? estimateCanvasVideoGenerationCredits({
-                              model: canvasAiItemModel,
+                              model: canvasAiCatalogModel?.id || canvasAiItemModel,
                               count: canvasItem.ai.count,
                               duration: canvasAiVideoDuration,
                               resolution: canvasAiVideoResolution,
@@ -351,17 +458,28 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             canvasAiItemModel,
                             canvasItem.ai?.videoInputMode,
                             canvasAiItemProvider,
+                            canvasAiResolvedVideoCapabilities,
                           );
                           const canvasVideoInputMode = canvasVideoReferenceSlots.mode;
                           const canvasVideoReferenceSlotLabels = getCanvasAiVideoReferenceSlotLabels(
                             canvasAiItemModel,
                             canvasVideoInputMode,
                             canvasAiItemProvider,
+                            canvasAiResolvedVideoCapabilities,
                           );
-                          const canvasAllowsSeedanceOmniReferences = !isCanvasAiSeedanceVideo
-                            || canvasVideoReferenceSlots.mode === 'REF';
+                          const canvasAllowsSeedanceOmniReferences = canvasAiResolvedVideoCapabilities.source === 'server'
+                            ? canvasVideoReferenceSlots.mode === 'REF'
+                            : !isCanvasAiSeedanceVideo || canvasVideoReferenceSlots.mode === 'REF';
                           const isCanvasVeoIngredientMode = isCanvasAiNewApiVideo
                             && canvasAiItemModel !== 'sora-2'
                             && canvasVideoInputMode === 'REF';
-  return { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlainMode, canvasDesignAgentConfig, isCanvasAiGeneratorItem, isCanvasFrameInterpolationItem, isCanvasImageEnhancementItem, isCanvasVideoEnhancementItem, isQuickVideoEnhancementItem, isCanvasEnhancementItem, isCanvasSingleVideoInputItem, isCanvasWorkflowItem, isCanvasReferenceBridgeItem, isCanvasAiNodeItem, isCanvasThreeSceneItem, canvasThreeSceneReferences, canvasAiMediaType, canvasAiItemProvider, canvasAiItemModel, canvasAiItemCapabilities, canvasAiItemProviderCandidates, canvasAiCandidateImageResolutionValues, canvasAiImageResolutionValues, canvasAiSupportsImageResolution, canvasAiImageResolutionOptions, canvasAiItemImageResolution, isCanvasAiNewApiVideo, isCanvasAiSeedanceVideo, isCanvasAiSeedanceLikeVideo, isCanvasAiMiniMaxVideo, isCanvasAiMikotoVideo, isCanvasAiMikotoKlingVideo, canvasAiVideoResolutionValues, canvasAiVideoResolutionOptions, canvasAiVideoResolution, canvasAiVideoDurationValues, canvasAiVideoDurationOptions, canvasAiVideoDuration, canvasAiVideoSupportsFirstLastFrame, canvasAiSupportsTransparentPng, canvasAiOutputFormat, canvasAiOutputFormatOptions, isCanvasWorkflowAllOutputMode, canvasWorkflow, canvasWorkflowInternalSlots, canvasExpandedWorkflowGroup, canvasExpandedWorkflow, canvasExpandedInternalSlotNode, canvasExpandedInternalSlot, canvasWalletPricing, showCanvasRunCreditEstimate, canvasImagePricingChoice, canvasImagePricingCandidates, canvasImagePricingModel, canvasImagePricingCapabilities, canvasWorkflowCreditEstimate, canvasImageCreditEstimate, canvasVideoPricingReferences, canvasVideoPricingReferenceCounts, canvasVideoCreditEstimate, isCanvasAgentWalletFunding, canvasTextCreditEstimate, canvasWorkflowCreditNodeLabel, canvasRunCreditLabel, canvasRunCreditTitle, canvasWorkflowUserInput, canvasWorkflowAllowsImages, canvasWorkflowAllowsFiles, showCanvasAiAttachmentControl, canvasAiOutputs, canvasAiImagePreviewGallery, isCanvasAiOutputsExpanded, canvasAiVisibleOutputs, canvasAiHiddenOutputCount, canvasAiRealOutputs, showCanvasAiOutputPreview, isCanvasAiPromptExpanded, canvasImageSource, hasCanvasImageBackingSource, hasCanvasImageDisplaySource, isGeneratedMediaItem, isGeneratedVideoItem, isGeneratedMediaPending, isGeneratedMediaError, rawCanvasInputPreviewItems, canvasBridgeInputItems, canvasAiOutputAspectRatio, canvasAiNodeDesignSize, canvasAiMainColumnLayoutWidth, isImageRulePanelExpanded, canvasAiOutputTileLayout, canvasAiNodeScale, canvasAiMenuScale, canvasRenderedItemWidth, canvasAiPromptHeight, canvasVideoReferenceSlots, canvasVideoInputMode, canvasVideoReferenceSlotLabels, canvasAllowsSeedanceOmniReferences, isCanvasVeoIngredientMode };
+  return { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlainMode, canvasDesignAgentConfig, isCanvasAiGeneratorItem, isCanvasFrameInterpolationItem, isCanvasImageEnhancementItem, isQuickVideoEnhancementItem, isCanvasEnhancementItem, isCanvasSingleVideoInputItem, isCanvasWorkflowItem, isCanvasReferenceBridgeItem, isCanvasAiNodeItem, isCanvasThreeSceneItem, canvasThreeSceneReferences, canvasAiMediaType, canvasAiItemProvider, canvasAiItemModel, canvasAiItemCapabilities, canvasAiItemProviderCandidates, canvasAiCandidateImageResolutionValues, canvasAiImageResolutionValues, canvasAiSupportsImageResolution, canvasAiImageResolutionOptions, canvasAiItemImageResolution, isCanvasAiNewApiVideo, isCanvasAiSeedanceVideo, isCanvasAiSeedanceLikeVideo, isCanvasAiMiniMaxVideo, isCanvasAiMikotoVideo, isCanvasAiMikotoKlingVideo, canvasAiVideoResolutionValues, canvasAiVideoResolutionOptions, canvasAiVideoResolution, canvasAiVideoDurationValues, canvasAiVideoDurationOptions, canvasAiVideoDuration, canvasAiVideoSupportsFirstLastFrame, canvasAiSupportsTransparentPng, canvasAiOutputFormat, canvasAiOutputFormatOptions, canvasAiAspectRatioValues, canvasAiCountOptions, canvasAiCatalogModel, canvasAiResolvedImageCapabilities, canvasAiResolvedVideoCapabilities, isCanvasWorkflowAllOutputMode, canvasWorkflow, canvasWorkflowInternalSlots, canvasExpandedWorkflowGroup, canvasExpandedWorkflow, canvasExpandedInternalSlotNode, canvasExpandedInternalSlot, canvasWalletPricing, showCanvasRunCreditEstimate, canvasImagePricingChoice, canvasImagePricingCandidates, canvasImagePricingModel, canvasImagePricingCapabilities, canvasWorkflowCreditEstimate, canvasImageCreditEstimate, canvasVideoPricingReferences, canvasVideoPricingReferenceCounts, canvasVideoCreditEstimate, isCanvasAgentWalletFunding, canvasTextCreditEstimate, canvasWorkflowCreditNodeLabel, canvasRunCreditLabel, canvasRunCreditTitle, canvasWorkflowUserInput, canvasWorkflowAllowsImages, canvasWorkflowAllowsFiles, showCanvasAiAttachmentControl, canvasAiOutputs, canvasAiImagePreviewGallery, isCanvasAiOutputsExpanded, canvasAiVisibleOutputs, canvasAiHiddenOutputCount, canvasAiRealOutputs, showCanvasAiOutputPreview, isCanvasAiPromptExpanded, canvasImageSource, hasCanvasImageBackingSource, hasCanvasImageDisplaySource, isGeneratedMediaItem, isGeneratedVideoItem, isGeneratedMediaPending, isGeneratedMediaError, rawCanvasInputPreviewItems, canvasBridgeInputItems, canvasAiOutputAspectRatio, canvasAiNodeDesignSize, canvasAiMainColumnLayoutWidth, isImageRulePanelExpanded, canvasAiOutputTileLayout, canvasAiNodeScale, canvasAiMenuScale, canvasRenderedItemWidth, canvasAiPromptHeight, canvasVideoReferenceSlots, canvasVideoInputMode, canvasVideoReferenceSlotLabels, canvasAllowsSeedanceOmniReferences, isCanvasVeoIngredientMode };
 }
+
+export const buildCanvasNodeViewModel = (
+  scope: CanvasNodeViewModelScope,
+  canvasItem: CanvasImageItem,
+) => ({
+  ...buildCanvasNodeViewModelInternal(scope, canvasItem),
+  isCanvasVideoEnhancementItem: canvasItem.ai?.type === 'video-enhancement',
+});

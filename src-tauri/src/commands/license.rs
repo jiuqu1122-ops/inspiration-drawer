@@ -200,13 +200,74 @@ pub struct CloudImageGenerationLookup {
 pub struct CloudImageModelsResponse {
     provider: String,
     default_model: Option<String>,
+    #[serde(default)]
+    default_image_model: Option<String>,
+    #[serde(default)]
+    default_video_model: Option<String>,
     models: Vec<String>,
+    #[serde(default)]
+    catalog: Vec<CloudAiCatalogModel>,
+    #[serde(default)]
+    capabilities: std::collections::HashMap<String, CloudAiModelCapabilities>,
     #[serde(default)]
     channels: Vec<CloudImageModelChannel>,
     #[serde(default)]
     video_channels: Vec<CloudVideoModelChannel>,
     #[serde(default)]
     pricing: Option<CloudAiPricing>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudAiCatalogModel {
+    id: String,
+    display_name: String,
+    modality: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    capabilities: Option<CloudAiModelCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    visible: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    is_default: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudAiModelCapabilities {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolutions: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    aspect_ratios: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    durations: Option<Vec<f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_reference_images: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_reference_videos: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_reference_audios: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    min_reference_images: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_reference_images: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_reference_video: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_audio_reference: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_first_last_frame: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supported_input_modes: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supported_output_formats: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_transparent_background: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_outputs: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,6 +329,8 @@ pub struct CloudImageModelChannel {
     models: Vec<String>,
     #[serde(default)]
     capabilities: Vec<String>,
+    #[serde(default)]
+    model_capabilities: std::collections::HashMap<String, CloudAiModelCapabilities>,
     error: Option<String>,
 }
 
@@ -282,6 +345,8 @@ pub struct CloudVideoModelChannel {
     models: Vec<String>,
     #[serde(default)]
     capabilities: Vec<String>,
+    #[serde(default)]
+    model_capabilities: std::collections::HashMap<String, CloudAiModelCapabilities>,
     error: Option<String>,
 }
 
@@ -1004,12 +1069,9 @@ pub async fn generate_cloud_images(
             prompt.len()
         ));
     }
-    let max_reference_images = if request.provider.as_deref() == Some("xais-chat") {
-        8
-    } else {
-        9
-    };
-    if !(1..=4).contains(&request.count) || request.input_images.len() > max_reference_images {
+    // Model-specific limits are owned by the server catalog. Keep only a
+    // conservative bridge-level transport bound here.
+    if !(1..=4).contains(&request.count) || request.input_images.len() > 32 {
         return Err("invalid_request: 生图数量或参考图数量无效".to_string());
     }
     request.input_images =
@@ -1124,33 +1186,15 @@ pub async fn generate_cloud_videos(
     if model.is_empty() || model.len() > 200 || prompt.is_empty() || prompt.len() > 50_000 {
         return Err("invalid_request: 视频模型或提示词无效".to_string());
     }
-    let model_token = model.to_ascii_lowercase().replace([' ', '_', '-', '.'], "");
-    let is_seedance20 = matches!(
-        model_token.as_str(),
-        "seedance2"
-            | "seedance20"
-            | "seedance2fast"
-            | "seedance20fast"
-            | "sourcemix20"
-            | "sourcemix20fast"
-    );
-    let is_minimax_h3 = model_token == "minimaxh3";
     let is_first_last_frame = request
         .input_mode
         .as_deref()
         .map(|value| value.eq_ignore_ascii_case("FLF"))
         .unwrap_or(false);
-    let max_image_references = if is_first_last_frame {
-        2
-    } else if is_seedance20 || is_minimax_h3 {
-        9
-    } else {
-        13
-    };
     if !(1..=4).contains(&request.count)
-        || request.input_images.len() > max_image_references
-        || request.input_videos.len() > 3
-        || request.input_audios.len() > 3
+        || request.input_images.len() > 32
+        || request.input_videos.len() > 8
+        || request.input_audios.len() > 8
     {
         return Err("invalid_request: 视频数量或参考素材数量无效".to_string());
     }
@@ -1163,13 +1207,8 @@ pub async fn generate_cloud_videos(
     }
     request.input_images =
         normalize_cloud_image_references(std::mem::take(&mut request.input_images))?;
-    if is_seedance20 || is_minimax_h3 {
-        request.input_mode = Some(if is_first_last_frame {
-            "FLF".to_string()
-        } else {
-            "REF".to_string()
-        });
-    }
+    // Model-specific limits and input modes are owned by the server catalog.
+    // This bridge only enforces conservative transport safety bounds.
     let access_token = cloud_access_token(&app_handle).await?;
     post_cloud_with_bearer_timeout::<CloudVideoGenerationResult>(
         "/v1/ai/videos",
@@ -1536,6 +1575,49 @@ mod tests {
         assert_eq!(
             value["pricing"]["inspirationAnalysisCredits"],
             serde_json::json!("3")
+        );
+    }
+
+    #[test]
+    fn preserves_public_catalog_capabilities_without_route_secrets() {
+        let response: CloudImageModelsResponse = serde_json::from_value(serde_json::json!({
+            "provider": "NEW_API",
+            "defaultModel": "test-image-x",
+            "defaultImageModel": "test-image-x",
+            "defaultVideoModel": "test-video-x",
+            "models": ["route-image-v2"],
+            "channels": [{
+                "id": "image-route",
+                "name": "Image route",
+                "provider": "NEW_API",
+                "models": ["route-image-v2"],
+                "modelCapabilities": {
+                    "route-image-v2": { "resolutions": ["2K"] }
+                }
+            }],
+            "catalog": [{
+                "id": "test-image-x",
+                "displayName": "Test Image X",
+                "modality": "image",
+                "aliases": ["route-image-v2"],
+                "capabilities": {
+                    "resolutions": ["2K", "4K"],
+                    "maxReferenceImages": 7,
+                    "supportedOutputFormats": ["jpg", "png"]
+                }
+            }]
+        }))
+        .unwrap();
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["catalog"][0]["id"], serde_json::json!("test-image-x"));
+        assert_eq!(
+            value["catalog"][0]["capabilities"]["maxReferenceImages"],
+            serde_json::json!(7)
+        );
+        assert!(value["catalog"][0].get("provider").is_none());
+        assert_eq!(
+            value["channels"][0]["modelCapabilities"]["route-image-v2"]["resolutions"],
+            serde_json::json!(["2K"])
         );
     }
 }

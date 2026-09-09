@@ -12,6 +12,7 @@ import type { AgentApiBalanceResult,AgentApiConnectionResult,AgentCanvasToolExec
 import { NEW_API_SEEDANCE_2_FAST_MODEL,NEW_API_SEEDANCE_2_MODEL,NEW_API_VIDEO_MODEL_DEFAULT,NEW_API_VIDEO_MODEL_OPTIONS,XAIS_CHAT_VIDEO_MODEL_DEFAULT,getCanvasAiVideoModelOptionValue,isOpenAiLikeCanvasAiProvider,normalizeXaisImage2Model } from '../canvasAiImage';
 import { type CanvasAiCreditPricing } from '../canvasGenerationCredits';
 import { type CanvasAiProvider,type CanvasImageItem } from '../canvasModel';
+import { cacheSuccessfulAiCatalog,getAiCatalogModels,getCachedAiCatalog,reconcileStaleCanvasAiModels } from '../aiModelCapabilities';
 import { clamp } from '../common';
 import { type TriggerMode } from '../triggerModel';
 import { type AiAnalysisConfig } from '../visionAnalysisConfig';
@@ -96,8 +97,12 @@ export const checkCanvasAiXaisBalanceImpl = async (ctx: Pick<settingsActionConte
 
 };
 
-export const refreshCanvasAiOpenAiModelsImpl = async (ctx: Pick<settingsActionContext, 'canvasAiApiKey' | 'canvasAiEndpoint' | 'canvasAiHeadersText' | 'canvasAiModelRefreshSignatureRef' | 'canvasAiNewApiVideoKey' | 'canvasAiProvider' | 'canvasAiUsesCloudImageModels' | 'effectiveCanvasAiApiProvider' | 'effectiveCanvasAiEndpoint' | 'effectiveCanvasAiGatewayKind' | 'effectiveCanvasAiModel' | 'effectiveCanvasAiProvider' | 'isCanvasAiLicenseManaged' | 'setCanvasAiCloudImageModels' | 'setCanvasAiMikotoModels' | 'setCanvasAiNewApiModels' | 'setCanvasAiOpenAiModelError' | 'setCanvasAiOpenAiModels' | 'setCanvasAiXaisModels' | 'setIsRefreshingCanvasAiOpenAiModels' | 'showToast' | 'updateCanvasItemsImmediate'>, silent: boolean = false) => {
-  const { canvasAiApiKey, canvasAiEndpoint, canvasAiHeadersText, canvasAiModelRefreshSignatureRef, canvasAiNewApiVideoKey, canvasAiProvider, canvasAiUsesCloudImageModels, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiGatewayKind, effectiveCanvasAiModel, effectiveCanvasAiProvider, isCanvasAiLicenseManaged, setCanvasAiCloudImageModels, setCanvasAiMikotoModels, setCanvasAiNewApiModels, setCanvasAiOpenAiModelError, setCanvasAiOpenAiModels, setCanvasAiXaisModels, setIsRefreshingCanvasAiOpenAiModels, showToast, updateCanvasItemsImmediate } = ctx;
+type settingsCatalogActionContext = settingsActionContext & {
+  canvasAiCloudImageModels: CloudImageModelsResult | null;
+};
+
+export const refreshCanvasAiOpenAiModelsImpl = async (ctx: Pick<settingsCatalogActionContext, 'canvasAiApiKey' | 'canvasAiCloudImageModels' | 'canvasAiEndpoint' | 'canvasAiHeadersText' | 'canvasAiModelRefreshSignatureRef' | 'canvasAiNewApiVideoKey' | 'canvasAiProvider' | 'canvasAiUsesCloudImageModels' | 'effectiveCanvasAiApiProvider' | 'effectiveCanvasAiEndpoint' | 'effectiveCanvasAiGatewayKind' | 'effectiveCanvasAiModel' | 'effectiveCanvasAiProvider' | 'isCanvasAiLicenseManaged' | 'setCanvasAiCloudImageModels' | 'setCanvasAiMikotoModels' | 'setCanvasAiNewApiModels' | 'setCanvasAiOpenAiModelError' | 'setCanvasAiOpenAiModels' | 'setCanvasAiXaisModels' | 'setIsRefreshingCanvasAiOpenAiModels' | 'showToast' | 'updateCanvasItemsImmediate'>, silent: boolean = false) => {
+  const { canvasAiApiKey, canvasAiCloudImageModels, canvasAiEndpoint, canvasAiHeadersText, canvasAiModelRefreshSignatureRef, canvasAiNewApiVideoKey, canvasAiProvider, canvasAiUsesCloudImageModels, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiGatewayKind, effectiveCanvasAiModel, effectiveCanvasAiProvider, isCanvasAiLicenseManaged, setCanvasAiCloudImageModels, setCanvasAiMikotoModels, setCanvasAiNewApiModels, setCanvasAiOpenAiModelError, setCanvasAiOpenAiModels, setCanvasAiXaisModels, setIsRefreshingCanvasAiOpenAiModels, showToast, updateCanvasItemsImmediate } = ctx;
     if (!canvasAiUsesCloudImageModels && !isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider)) return;
     const provider = effectiveCanvasAiProvider;
     const endpoint = getCanvasAiEndpointForModels(provider, effectiveCanvasAiEndpoint || canvasAiEndpoint);
@@ -120,9 +125,18 @@ export const refreshCanvasAiOpenAiModelsImpl = async (ctx: Pick<settingsActionCo
       let detectedChannels: NonNullable<CloudImageModelsResult['channels']> = [];
       let detectedVideoChannels: NonNullable<CloudImageModelsResult['videoChannels']> = [];
       let detectedPricing: CanvasAiCreditPricing | null | undefined;
+      let detectedCatalog: CloudImageModelsResult['catalog'];
+      let detectedCapabilities: CloudImageModelsResult['capabilities'];
+      let detectedDefaultImageModel: string | null | undefined;
+      let detectedDefaultVideoModel: string | null | undefined;
+      let hasServerDrivenImageCatalog = false;
       const successfulModels = canvasAiUsesCloudImageModels
         ? await (async () => {
           const result = await invoke<CloudImageModelsResult>('get_cloud_image_models', { provider });
+          detectedCatalog = result.catalog;
+          detectedCapabilities = result.capabilities;
+          detectedDefaultImageModel = result.defaultImageModel;
+          detectedDefaultVideoModel = result.defaultVideoModel;
           detectedProvider = canvasAiProviderForCloudKind(result.provider);
           detectedDefaultModel = String(result.defaultModel || '').trim();
           detectedVideoChannels = result.videoChannels || [];
@@ -170,14 +184,24 @@ export const refreshCanvasAiOpenAiModelsImpl = async (ctx: Pick<settingsActionCo
             .map(model => normalizeXaisImage2Model(model)))))
         : sortCanvasAiModelsForProvider(detectedProvider, Array.from(new Set(rawModels)));
       if (canvasAiUsesCloudImageModels) {
-        setCanvasAiCloudImageModels(current => ({
+        const snapshot = cacheSuccessfulAiCatalog({
           provider: detectedProvider,
           defaultModel: detectedDefaultModel || null,
+          defaultImageModel: detectedDefaultImageModel,
+          defaultVideoModel: detectedDefaultVideoModel,
           models: normalized,
+          catalog: detectedCatalog,
+          capabilities: detectedCapabilities,
           channels: detectedChannels,
           videoChannels: detectedVideoChannels,
-          pricing: detectedPricing ?? current?.pricing,
-        }));
+          pricing: detectedPricing ?? canvasAiCloudImageModels?.pricing ?? getCachedAiCatalog()?.pricing,
+        });
+        hasServerDrivenImageCatalog = getAiCatalogModels(snapshot, 'image').length > 0;
+        setCanvasAiCloudImageModels(snapshot);
+        if (getAiCatalogModels(snapshot, 'image').length > 0
+          || getAiCatalogModels(snapshot, 'video').length > 0) {
+          updateCanvasItemsImmediate(previous => reconcileStaleCanvasAiModels(previous, snapshot));
+        }
       } else if (detectedProvider === 'xais-chat') {
         setCanvasAiXaisModels(normalized);
       } else if (detectedProvider === 'new-api') {
@@ -201,7 +225,7 @@ export const refreshCanvasAiOpenAiModelsImpl = async (ctx: Pick<settingsActionCo
       const defaultChannel = detectedChannels.find(channel => (
         !channel.error && channel.models.includes(nextDefaultModel)
       )) || detectedChannels.find(channel => !channel.error && channel.models.length > 0);
-      if (normalized.length > 0) {
+      if (normalized.length > 0 && !hasServerDrivenImageCatalog) {
         updateCanvasItemsImmediate(prev => prev.map(item => {
           const hasSuccessfulOutput = item.ai?.type === 'image-generator'
             && (item.ai.outputs || []).some(output => (
@@ -251,6 +275,9 @@ export const refreshCanvasAiOpenAiModelsImpl = async (ctx: Pick<settingsActionCo
       if (!silent) showToast(normalized.length > 0 ? `已刷新 ${normalized.length} 个模型` : '没有读取到可用模型');
     } catch (err: any) {
       const msg = String(err || '刷新模型列表失败');
+      if (canvasAiUsesCloudImageModels) {
+        setCanvasAiCloudImageModels(current => current || getCachedAiCatalog());
+      }
       setCanvasAiOpenAiModelError(msg);
       if (!silent) showToast('刷新模型列表失败');
     } finally {

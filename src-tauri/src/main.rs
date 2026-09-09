@@ -12352,7 +12352,7 @@ async fn upload_wallet_reference_images(
     tauri::async_runtime::spawn_blocking(move || {
         let prepared = sources
             .iter()
-            .take(13)
+            .take(32)
             .map(|source| {
                 let object = source_to_r2_object(source)?;
                 if !object.content_type.starts_with("image/") {

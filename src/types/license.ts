@@ -71,28 +71,69 @@ export type CloudCreditUsageResult = {
   nextCursor?: string | null;
 };
 
+export type AiModelModality = 'chat' | 'image' | 'video';
+
+/**
+ * Public, server-owned model behaviour. This intentionally contains no
+ * provider credentials or private upstream route identifiers.
+ */
+export type AiModelCapabilities = {
+  resolutions?: string[];
+  aspectRatios?: string[];
+  durations?: number[];
+  maxReferenceImages?: number;
+  maxReferenceVideos?: number;
+  maxReferenceAudios?: number;
+  minReferenceImages?: number;
+  supportsReferenceImages?: boolean;
+  supportsReferenceVideo?: boolean;
+  supportsAudioReference?: boolean;
+  supportsFirstLastFrame?: boolean;
+  supportedInputModes?: string[];
+  supportedOutputFormats?: string[];
+  supportsTransparentBackground?: boolean;
+  maxOutputs?: number;
+};
+
+export type AiCatalogModel = {
+  id: string;
+  displayName: string;
+  modality: AiModelModality;
+  /** Exact aliases are server-owned; the client never fuzzy-matches them. */
+  aliases?: string[];
+  capabilities?: AiModelCapabilities;
+  enabled?: boolean;
+  visible?: boolean;
+  isDefault?: boolean;
+};
+
+export type AiModelCapabilitiesById = Record<string, AiModelCapabilities>;
+
+export type CloudModelChannel = {
+  id: string;
+  name: string;
+  provider: string;
+  defaultModel?: string | null;
+  models?: string[];
+  /** Legacy channel feature flags. */
+  capabilities?: string[];
+  /** Optional safe, route-specific structured overrides keyed by exact model id. */
+  modelCapabilities?: AiModelCapabilitiesById;
+  error?: string | null;
+};
+
 export type CloudImageModelsResult = {
   provider: string;
   defaultModel?: string | null;
+  defaultImageModel?: string | null;
+  defaultVideoModel?: string | null;
   models: string[];
-  channels?: Array<{
-    id: string;
-    name: string;
-    provider: string;
-    defaultModel?: string | null;
-    models: string[];
-    capabilities?: string[];
-    error?: string | null;
-  }>;
-  videoChannels?: Array<{
-    id: string;
-    name: string;
-    provider: string;
-    defaultModel?: string | null;
-    models?: string[];
-    capabilities?: string[];
-    error?: string | null;
-  }>;
+  /** New servers return a public canonical catalog. Older servers omit it. */
+  catalog?: AiCatalogModel[];
+  /** Transitional response shape for servers extending the existing endpoint. */
+  capabilities?: AiModelCapabilitiesById;
+  channels?: Array<CloudModelChannel & { models: string[] }>;
+  videoChannels?: CloudModelChannel[];
   pricing?: CanvasAiCreditPricing | null;
 };
 
