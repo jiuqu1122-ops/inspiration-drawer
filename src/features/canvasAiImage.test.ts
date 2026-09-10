@@ -779,6 +779,14 @@ describe('image resolution routing', () => {
     expect(gptImage2SizeFromAspectRatio('3:4', '4K')).toBe('2400x3200');
     expect(gptImage2SizeFromAspectRatio('2064x1376', '2K')).toBe('2064x1376');
     expect(gptImage2SizeFromAspectRatio('3520x2352', '4K')).toBe('3520x2352');
+    expect(newApiImageRequestParams('gpt-image-2.5', 1, '3520x2352', '4K')).toMatchObject({
+      size: '3520x2352',
+      quality: 'medium',
+    });
+    expect(newApiImageRequestParams('gpt-image-medium', 1, '2048x1152', '2K')).toMatchObject({
+      size: '2048x1152',
+      quality: 'medium',
+    });
   });
 
   it('converts GPT Image 2 dimension options into wallet aspect ratios', () => {

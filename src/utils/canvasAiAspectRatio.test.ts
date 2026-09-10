@@ -26,6 +26,8 @@ describe('canvas AI aspect ratios', () => {
     expect(usesCanvasAiImage2DimensionOptions('Xais Img2_2K', '2k')).toBe(true);
     expect(usesCanvasAiImage2DimensionOptions('Xais Img2_4K', '4k')).toBe(true);
     expect(usesCanvasAiImage2DimensionOptions('Xais Img2_2K', '1k')).toBe(false);
+    expect(usesCanvasAiImage2DimensionOptions('gpt-image-2.5', '2k')).toBe(true);
+    expect(usesCanvasAiImage2DimensionOptions('gpt-image-medium', '4k')).toBe(true);
 
     const options = getCanvasAiAspectRatioOptionsForModel('Xais Img2_2K', '2k');
     expect(options[0]).toEqual({ value: '2048x2048', label: '2048×2048 (1:1)' });

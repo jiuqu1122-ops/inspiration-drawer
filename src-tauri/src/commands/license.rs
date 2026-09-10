@@ -243,6 +243,9 @@ pub struct CloudAiModelCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     aspect_ratios: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    aspect_ratios_by_resolution:
+        Option<std::collections::HashMap<String, Vec<String>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     durations: Option<Vec<f64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_reference_images: Option<u32>,
@@ -1602,6 +1605,10 @@ mod tests {
                 "aliases": ["route-image-v2"],
                 "capabilities": {
                     "resolutions": ["2K", "4K"],
+                    "aspectRatiosByResolution": {
+                        "2K": ["2048x2048", "2048x1152"],
+                        "4K": ["2880x2880", "3840x2160"]
+                    },
                     "maxReferenceImages": 7,
                     "supportedOutputFormats": ["jpg", "png"]
                 }
@@ -1613,6 +1620,10 @@ mod tests {
         assert_eq!(
             value["catalog"][0]["capabilities"]["maxReferenceImages"],
             serde_json::json!(7)
+        );
+        assert_eq!(
+            value["catalog"][0]["capabilities"]["aspectRatiosByResolution"]["4K"],
+            serde_json::json!(["2880x2880", "3840x2160"])
         );
         assert!(value["catalog"][0].get("provider").is_none());
         assert_eq!(
