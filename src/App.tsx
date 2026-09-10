@@ -4882,7 +4882,7 @@ function MainApp() {
     return !!target.closest('textarea, input, [contenteditable="true"], [data-canvas-wheel-scroll="true"]');
   };
 
-  useEffect(() => { return runCanvasInteractionsEffect01({ canvasSurfaceRef, getCanvasNestedWheelScroller, isCanvasMode, normalizeCanvasWheelDelta, scheduleCanvasWheelZoom, shouldBlockCanvasWheelZoomTarget }); }, [isCanvasMode]);
+  useEffect(() => { return runCanvasInteractionsEffect01({ canvasSurfaceRef, getCanvasNestedWheelScroller, isCanvasMode, isMacDesktopWindow, normalizeCanvasWheelDelta, scheduleCanvasWheelZoom, shouldBlockCanvasWheelZoomTarget }); }, [isCanvasMode, isMacDesktopWindow]);
 
   useEffect(() => { return runCanvasInteractionsEffect02({ canvasPanRef, canvasScrollLockRef, canvasScrollWriteGuardRef, canvasStateSaveDeferredDuringZoomRef, canvasSurfaceRef, canvasViewportDeferredDuringZoomRef, growCanvasNearViewportEdge, isCanvasMode, isCanvasSpacePressedRef, isCanvasZoomingRef, scheduleCanvasStateSave, scheduleCanvasViewportUpdate, writeCanvasSurfaceScroll }); }, [isCanvasMode]);
 

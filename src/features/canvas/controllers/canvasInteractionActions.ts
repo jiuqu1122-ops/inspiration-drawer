@@ -1247,7 +1247,7 @@ export const scheduleCanvasWheelZoomImpl = (ctx: Pick<canvasInteractionsActionCo
     const pending = canvasWheelZoomPayloadRef.current;
     canvasWheelZoomPayloadRef.current = pending
       ? { clientX, clientY, deltaY: clamp(pending.deltaY + deltaY, -240, 240) }
-      : { clientX, clientY, deltaY };
+      : { clientX, clientY, deltaY: clamp(deltaY, -240, 240) };
     if (canvasWheelZoomFrameRef.current !== null) return;
     canvasWheelZoomFrameRef.current = window.requestAnimationFrame(() => {
       canvasWheelZoomFrameRef.current = null;
