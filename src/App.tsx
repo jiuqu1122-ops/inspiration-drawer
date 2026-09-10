@@ -566,7 +566,10 @@ const CALENDAR_NEW_NOTE_TARGET = '__new_calendar_schedule_note__';
 const IMAGE_THUMBNAIL_MAX_CONCURRENCY = 2;
 const IMAGE_THUMBNAIL_QUEUE_LIMIT = 32;
 const IMAGE_THUMBNAIL_UPDATE_BATCH_MS = 90;
-const CANVAS_AI_OUTPUT_CACHE_STALE_MS = 75_000;
+// Keep pending longer than the native 4K download plus its one UI retry. The
+// recovery effect must not launch a duplicate cache job while the first one is
+// still downloading through object storage.
+const CANVAS_AI_OUTPUT_CACHE_STALE_MS = 8 * 60_000;
 const CANVAS_AI_OUTPUT_SOURCE_RECOVERY_RETRY_DELAY_MS = 8_000;
 const GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS = [1_500];
 const CANVAS_IMAGE_SOURCE_UPGRADE_CONCURRENCY = 1;
