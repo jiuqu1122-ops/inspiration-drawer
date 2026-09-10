@@ -706,18 +706,27 @@ export const resetWebImageCacheDirImpl = async (ctx: Pick<appLifecycleActionCont
 
 export const getCanvasAiUnifiedImageModelValueImpl = (ctx: Pick<appLifecycleActionContext, 'canvasAiCloudImageModels' | 'canvasAiCredentialSource' | 'canvasAiUnifiedImageModelOptions'>, provider: CanvasAiProvider, model: string, providerChannelId?: string) => {
   const { canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiUnifiedImageModelOptions } = ctx;
-    const matchingExactOption = canvasAiUnifiedImageModelOptions.find(option => {
-      const choice = parseCanvasAiModelChoiceValue(option.value);
+    const parsedOptions = canvasAiUnifiedImageModelOptions.map(option => ({
+      option,
+      choice: parseCanvasAiModelChoiceValue(option.value),
+    }));
+    // A provider can expose the same upstream model id from multiple channels
+    // that are intentionally mapped to different public SKUs. In that case the
+    // channel-specific route is more precise than treating the id as canonical.
+    const matchingRouteOption = parsedOptions.find(({ choice }) => (
+      choice?.providerCandidates?.some(candidate => (
+        candidate.provider === provider
+        && candidate.model === model
+        && (!providerChannelId || candidate.providerChannelId === providerChannelId)
+      ))
+    ));
+    if (matchingRouteOption) return matchingRouteOption.option.value;
+    const matchingCanonicalOption = parsedOptions.find(({ choice }) => {
       if (!choice) return false;
-      if (choice.model === model) return true;
-      return choice.providerCandidates?.some(candidate => (
-        candidate.canonicalModelId === model
-        || (candidate.provider === provider
-          && candidate.model === model
-          && (candidate.providerChannelId || '') === (providerChannelId || ''))
-      ));
+      return choice.model === model
+        || choice.providerCandidates?.some(candidate => candidate.canonicalModelId === model);
     });
-    if (matchingExactOption) return matchingExactOption.value;
+    if (matchingCanonicalOption) return matchingCanonicalOption.option.value;
     const channel = providerChannelId
       ? canvasAiCloudImageModels?.channels?.find(item => item.id === providerChannelId)
       : undefined;

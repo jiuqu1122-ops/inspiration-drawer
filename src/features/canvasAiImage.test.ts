@@ -26,6 +26,7 @@ import {
   getCanvasAiPublicImageModelId,
   getCanvasAiImageResolutionValues,
   getCanvasAiImageResolutionValuesForCandidates,
+  getCanvasAiCandidateRequestModel,
   hydrateCanvasAiModelCandidateCapabilities,
   getCanvasAiSlotClientRequestId,
   getCanvasAiVideoReferenceSlotLabels,
@@ -100,6 +101,30 @@ describe('wallet provider protocol compatibility', () => {
     expect(normalizeCloudWalletVideoProvider('mikoto')).toBe('mikoto');
     expect(normalizeCloudWalletVideoProvider('bigmodel')).toBeUndefined();
     expect(normalizeCloudWalletVideoProvider('xais-chat')).toBe('xais-chat');
+  });
+
+  it('submits a wallet catalog SKU instead of its upstream route id', () => {
+    expect(getCanvasAiCandidateRequestModel({
+      source: 'wallet',
+      provider: 'new-api',
+      model: 'image2',
+      canonicalModelId: 'gpt-image-medium',
+    })).toBe('gpt-image-medium');
+    expect(getCanvasAiCandidateRequestModel({
+      source: 'wallet',
+      provider: 'new-api',
+      model: 'gpt-image-2',
+      canonicalModelId: 'image2',
+    })).toBe('image2');
+  });
+
+  it('keeps direct/local provider model ids unchanged', () => {
+    expect(getCanvasAiCandidateRequestModel({
+      source: 'local',
+      provider: 'new-api',
+      model: 'vendor/gpt-image-2.5-high',
+      canonicalModelId: 'gpt-image-medium',
+    })).toBe('vendor/gpt-image-2.5-high');
   });
 });
 
