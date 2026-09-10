@@ -482,7 +482,7 @@ export const getDefaultNewApiImageProtocol = (
 
 export const isGptImage2LikeModel = (model?: string | null) => {
   const token = toImageModelToken(model);
-  return token.includes('gptimage2') || token === 'gptimagemedium';
+  return token.includes('gptimage2') || token === 'gptimagemedium' || token === 'image2';
 };
 
 const supportsNewApiImageFamilyResolution = (model?: string | null) => {
@@ -1884,6 +1884,9 @@ export const getCanvasAiImageResolutionValues = (
     if (normalizedCapabilities.has('IMAGE_GPT_1K')
       && !normalizedCapabilities.has('IMAGE_GPT')
       && !normalizedCapabilities.has('IMAGE')) return ['1k'];
+    if (normalizedCapabilities.has('IMAGE_GPT')
+      && !normalizedCapabilities.has('IMAGE_GPT_1K')
+      && !normalizedCapabilities.has('IMAGE')) return ['2k', '4k'];
     return ['1k', '2k', '4k'];
   }
   if (family === 'nano-banana-pro') {
@@ -1920,7 +1923,20 @@ export const getCanvasAiImageResolutionValuesForCandidates = (
   candidates?: readonly CanvasAiModelCandidate[] | null,
 ): CanvasAiImageResolution[] => {
   const supported = new Set((candidates || []).flatMap(candidate => (
-    getCanvasAiImageResolutionValues(candidate.provider, candidate.model, candidate.capabilities)
+    (() => {
+      const routeValues = getCanvasAiImageResolutionValues(
+        candidate.provider,
+        candidate.model,
+        candidate.capabilities,
+      );
+      return routeValues.length > 0
+        ? routeValues
+        : getCanvasAiImageResolutionValues(
+          candidate.provider,
+          candidate.canonicalModelId,
+          candidate.capabilities,
+        );
+    })()
   )));
   return (['1k', '2k', '4k'] as const).filter(resolution => supported.has(resolution));
 };
