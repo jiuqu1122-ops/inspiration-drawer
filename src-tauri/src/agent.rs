@@ -2664,6 +2664,9 @@ async fn agent_wallet_chat(
         if let Some(model) = request.model {
             payload["model"] = Value::String(model);
         }
+        if let Some(usage_context) = request.usage_context {
+            payload["usageContext"] = Value::String(usage_context);
+        }
         submit_wallet_task(
             &client,
             direct_client.as_ref(),

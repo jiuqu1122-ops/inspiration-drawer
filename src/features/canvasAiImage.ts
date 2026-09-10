@@ -687,6 +687,7 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
       });
     const recoveredImagesPromise = (async () => {
       const deadline = Date.now() + CLOUD_WALLET_IMAGE_RECOVERY_WINDOW_MS;
+      await delay(Math.min(1_200, CLOUD_WALLET_IMAGE_RECOVERY_WINDOW_MS));
       while (!requestReturnedUsableImages && Date.now() <= deadline) {
         if (requestError && !shouldReconcileCloudWalletImageError(requestError)) return null;
         try {

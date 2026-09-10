@@ -596,6 +596,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
     )}`;
 
     const clientRequestId = options.clientRequestId || createCanvasAiClientRequestId(target.id);
+    const nodeStartedAt = Date.now();
 
     const mediaType = getCanvasAiMediaType(targetAi);
     const taskTimeoutMinutes = mediaType === 'image'
@@ -944,6 +945,17 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         usePortableWalletReferences,
         provider,
       );
+      const referencePreparationCompletedAt = Date.now();
+      if (mediaType === 'image') {
+        console.info('[canvas_image_reference_timing]', {
+          clientRequestId,
+          model: requestModel,
+          referenceCount: preparedInputs.images.length,
+          nodeSetupMs: referencePreparationStartedAt - nodeStartedAt,
+          referencePreparationMs: referencePreparationCompletedAt - referencePreparationStartedAt,
+          elapsedMs: referencePreparationCompletedAt - nodeStartedAt,
+        });
+      }
       if (isImageFusion && preparedInputs.images.length < 2) {
         throw new Error('基图或意向图读取失败，溶图需要两张可用图片');
       }
@@ -1488,10 +1500,32 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
             requestedCount,
             returnedCount,
             responseKinds,
+            nodeSetupMs: referencePreparationStartedAt - nodeStartedAt,
+            referencePreparationMs: referencePreparationCompletedAt - referencePreparationStartedAt,
+            readyToDispatchMs: batchStartedAt - referencePreparationCompletedAt,
+            nodeToDispatchMs: batchStartedAt - nodeStartedAt,
             requestMs: (responseReceivedAt || finishedAt) - batchStartedAt,
             placementMs: responseReceivedAt ? finishedAt - responseReceivedAt : 0,
             totalMs: finishedAt - batchStartedAt,
           });
+          void invoke('append_ai_debug_log', {
+            name: 'canvas-image-timing',
+            line: JSON.stringify({
+              at: new Date().toISOString(),
+              label: 'imageGeneration',
+              value: {
+                clientRequestId,
+                model: submittedModel,
+                nodeSetupMs: referencePreparationStartedAt - nodeStartedAt,
+                referencePreparationMs: referencePreparationCompletedAt - referencePreparationStartedAt,
+                readyToDispatchMs: batchStartedAt - referencePreparationCompletedAt,
+                nodeToDispatchMs: batchStartedAt - nodeStartedAt,
+                requestMs: (responseReceivedAt || finishedAt) - batchStartedAt,
+                placementMs: responseReceivedAt ? finishedAt - responseReceivedAt : 0,
+                totalMs: finishedAt - batchStartedAt,
+              },
+            }),
+          }).catch(() => {});
         }
       };
       const runOutputSlot = async (index: number) => {
