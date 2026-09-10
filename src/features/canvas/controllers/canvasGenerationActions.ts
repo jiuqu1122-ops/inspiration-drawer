@@ -639,17 +639,29 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
           Boolean(choice && choice.source === imageCredentialSource)
         ))
       : [];
+    const targetCanonicalModelId = targetAi.providerCandidates?.find(candidate => (
+      candidate.canonicalModelId
+      && candidate.provider === targetProvider
+      && (!targetAi.providerChannelId || candidate.providerChannelId === targetAi.providerChannelId)
+    ))?.canonicalModelId
+      || targetAi.providerCandidates?.find(candidate => candidate.canonicalModelId)?.canonicalModelId;
     const targetRawPublicModel = getCanvasAiPublicImageModelName(targetProvider, targetAi.model);
     const targetPublicModel = targetRawPublicModel === 'GPT Image 2 H'
       ? 'GPT Image 2'
       : targetRawPublicModel;
     const matchingSourceChoice = sourceChoices.find(choice => (
-      choice.provider === targetProvider
-      && choice.model === targetAi.model
+      Boolean(targetCanonicalModelId)
+      && (choice.model === targetCanonicalModelId
+        || choice.providerCandidates?.some(candidate => candidate.canonicalModelId === targetCanonicalModelId))
     )) || sourceChoices.find(choice => (
       choice.providerCandidates?.some(candidate => (
-        candidate.provider === targetProvider && candidate.model === targetAi.model
+        candidate.provider === targetProvider
+        && candidate.model === targetAi.model
+        && (!targetAi.providerChannelId || candidate.providerChannelId === targetAi.providerChannelId)
       ))
+    )) || sourceChoices.find(choice => (
+      choice.provider === targetProvider
+      && choice.model === targetAi.model
     )) || (targetPublicModel
       ? sourceChoices.find(choice => (
         getCanvasAiPublicImageModelName(choice.provider, choice.model) === targetPublicModel
@@ -659,6 +671,11 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       candidate.source === imageCredentialSource
       && candidate.provider === targetProvider
       && candidate.model === targetAi.model
+      && (!targetAi.providerChannelId || candidate.providerChannelId === targetAi.providerChannelId)
+    )) || matchingSourceChoice?.providerCandidates?.find(candidate => (
+      candidate.source === imageCredentialSource
+      && candidate.provider === targetProvider
+      && (!targetAi.providerChannelId || candidate.providerChannelId === targetAi.providerChannelId)
     )) || matchingSourceChoice?.providerCandidates?.find(candidate => candidate.source === imageCredentialSource);
     const storedVideoCandidates = mediaType === 'video'
       ? filterCanvasAiVideoModelCandidates(targetAi.model, targetAi.providerCandidates)
@@ -838,10 +855,17 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
           : getCanvasAiResolvedModel(provider, selectedModel, mediaType);
       const selectedCatalogModel = findAiCatalogModel(
         getAiCatalogModels(useCloudWallet ? canvasAiCloudImageModels : null, mediaType),
-        selectedProviderCandidates.find(candidate => candidate.canonicalModelId)?.canonicalModelId
+        targetCanonicalModelId
+          || selectedProviderCandidates.find(candidate => (
+            candidate.canonicalModelId === targetAi.model
+          ))?.canonicalModelId
+          || selectedProviderCandidates.find(candidate => candidate.canonicalModelId)?.canonicalModelId
           || targetAi.model
           || selectedModel,
       );
+      const submittedModel = useCloudWallet && selectedCatalogModel
+        ? selectedCatalogModel.id
+        : requestModel;
       const selectedRouteCandidate = selectedProviderCandidates.find(candidate => (
         candidate.provider === provider && candidate.model === requestModel
       )) || selectedProviderCandidates[0];
@@ -863,9 +887,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       });
       const resolvedVideoCapabilities = resolveCanvasAiVideoModelCapabilities({
         provider,
-        model: mediaType === 'video' && selectedCatalogModel
-          ? selectedCatalogModel.id
-          : requestModel,
+        model: submittedModel,
         canonical: selectedCatalogModel?.capabilities,
         route: selectedRouteCapabilities,
       });
@@ -1116,9 +1138,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         prompt,
         negativePrompt,
         preserveReferenceIdentity,
-        model: mediaType === 'video' && selectedCatalogModel
-          ? selectedCatalogModel.id
-          : requestModel,
+        model: submittedModel,
         imageProtocol,
         clientRequestId,
         headers: isCanvasAiLicenseManaged
@@ -1463,7 +1483,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
           const finishedAt = Date.now();
           console.info('[newapi_image_client_timing]', {
             clientRequestId,
-            model: requestModel,
+            model: submittedModel,
             protocol: imageProtocol,
             requestedCount,
             returnedCount,

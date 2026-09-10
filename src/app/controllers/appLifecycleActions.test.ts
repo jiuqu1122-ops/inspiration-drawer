@@ -56,6 +56,17 @@ describe('getCanvasAiUnifiedImageModelValueImpl', () => {
     }, 'new-api', 'route-image-b', 'channel-b')).toBe(second.value);
   });
 
+  it('uses the channel to disambiguate one upstream id mapped to two Catalog models', () => {
+    const image2 = catalogOption('image2', 'GPT Image 2', 'image2', 'channel-image-2');
+    const image25 = catalogOption('gpt-image-medium', 'GPT Image 2.5', 'image2', 'channel-image-2-5');
+
+    expect(getCanvasAiUnifiedImageModelValueImpl({
+      canvasAiCloudImageModels: null,
+      canvasAiCredentialSource: 'wallet',
+      canvasAiUnifiedImageModelOptions: [image2, image25],
+    }, 'new-api', 'image2', 'channel-image-2-5')).toBe(image25.value);
+  });
+
   it('hydrates a stale video selection with the default Catalog route', () => {
     let items = [{
       id: 'video-node',

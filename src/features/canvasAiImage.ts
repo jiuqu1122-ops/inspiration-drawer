@@ -2092,6 +2092,18 @@ export const resolveCanvasAiCandidateInputImages = async (
   ? prepareInputImagesForCandidate(candidate)
   : (inputImages || []);
 
+/**
+ * Wallet requests must identify the public catalog SKU, while direct/local
+ * requests must keep the provider-specific model id. Sending a wallet route's
+ * upstream id here can make a node labelled as one SKU resolve to another SKU
+ * on the server (for example GPT Image 2.5 falling back to `image2`).
+ */
+export const getCanvasAiCandidateRequestModel = (
+  candidate: CanvasAiModelCandidate,
+) => candidate.source === 'wallet' && candidate.canonicalModelId?.trim()
+  ? candidate.canonicalModelId.trim()
+  : candidate.model;
+
 export const shouldUsePortableWalletImageReferences = (
   cloudWallet: boolean,
   mediaType: 'image' | 'video',
@@ -3819,7 +3831,7 @@ export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptio
           return await generateCanvasAiProviderImages({
             ...options,
             provider: candidate.provider,
-            model: candidate.model,
+            model: getCanvasAiCandidateRequestModel(candidate),
             providerChannelId: candidate.providerChannelId,
             cloudWallet: candidate.source === 'wallet',
             apiKey: runtime?.apiKey ?? options.apiKey,
@@ -3873,7 +3885,7 @@ export const generateCanvasAiProviderVideos = async (options: CanvasAiVideoOptio
         return await generateCanvasAiProviderVideos({
           ...options,
           provider: candidate.provider,
-          model: candidate.model,
+          model: getCanvasAiCandidateRequestModel(candidate),
           providerChannelId: candidate.providerChannelId,
           cloudWallet: candidate.source === 'wallet',
           apiKey: runtime?.apiKey ?? options.apiKey,
