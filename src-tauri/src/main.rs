@@ -12873,6 +12873,12 @@ fn is_obvious_non_media_content_type(content_type: &str) -> bool {
         || lower.starts_with("text/xml")
 }
 
+// 4K PNG/WebP results can take noticeably longer than small previews to pass
+// through the stable result endpoint, its signed storage redirect and the
+// user's proxy. This command runs on a blocking worker thread, so allowing a
+// longer transfer does not freeze the renderer.
+const GENERATED_MEDIA_CACHE_DOWNLOAD_TIMEOUT_SECS: u64 = 180;
+
 fn cache_web_image_impl(
     app_handle: tauri::AppHandle,
     url: String,
@@ -12957,7 +12963,7 @@ fn cache_web_image_impl(
             input,
             &out_path,
             proxy.as_deref(),
-            45,
+            GENERATED_MEDIA_CACHE_DOWNLOAD_TIMEOUT_SECS,
             DownloadOptions {
                 expected_content: DownloadContentExpectation::ImageOrVideo,
                 atomic_write: true,
