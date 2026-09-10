@@ -8,6 +8,7 @@ import {
   getAiCatalogModels,
   getCachedAiCatalog,
   getDefaultAiCatalogModelId,
+  getImageAspectRatioOptionsForResolution,
   mergeAiModelCapabilities,
   reconcileStaleCanvasAiModels,
   resolveImageModelCapabilities,
@@ -94,6 +95,26 @@ describe('server-driven AI model capabilities', () => {
     expect(resolved.resolutions).toEqual(['2K', '4K']);
     expect(resolved.referenceImageLimit).toBe(7);
     expect(resolved.maxOutputs).toBe(3);
+  });
+
+  it('keeps exact Image2 dimensions isolated by resolution', () => {
+    const resolved = resolveImageModelCapabilities({
+      canonical: {
+        resolutions: ['1K', '2K', '4K'],
+        aspectRatios: ['1:1', '16:9'],
+        aspectRatiosByResolution: {
+          '2K': ['2048x2048', '2048x1152'],
+          '4K': ['2880x2880', '3840x2160'],
+        },
+      },
+    });
+    expect(getImageAspectRatioOptionsForResolution(resolved, '2k')).toEqual([
+      '2048x2048', '2048x1152',
+    ]);
+    expect(getImageAspectRatioOptionsForResolution(resolved, '4K')).toEqual([
+      '2880x2880', '3840x2160',
+    ]);
+    expect(getImageAspectRatioOptionsForResolution(resolved, '1K')).toEqual(['1:1', '16:9']);
   });
 
   it('drives a new video model resolutions, durations, reference slots and FLF mode', () => {

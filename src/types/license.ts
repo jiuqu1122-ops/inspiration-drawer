@@ -80,6 +80,7 @@ export type AiModelModality = 'chat' | 'image' | 'video';
 export type AiModelCapabilities = {
   resolutions?: string[];
   aspectRatios?: string[];
+  aspectRatiosByResolution?: Record<string, string[]>;
   durations?: number[];
   maxReferenceImages?: number;
   maxReferenceVideos?: number;

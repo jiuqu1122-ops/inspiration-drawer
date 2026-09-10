@@ -43,7 +43,7 @@ const getCanvasAspectRatioLabel = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO)
   const divisor = width || 1;
   return `${Math.round(rawW / divisor)}:${Math.round(rawH / divisor)}`;
 };
-const formatCanvasAiResolutionOptionLabel = (value: string) => {
+export const formatCanvasAiAspectRatioOptionLabel = (value: string) => {
   const trimmed = String(value || '').trim();
   if (!/^\d+\s*[x×]\s*\d+$/i.test(trimmed)) return trimmed;
   return `${trimmed.replace(/x/i, '×')} (${getCanvasAspectRatioLabel(trimmed)})`;
@@ -64,7 +64,7 @@ export const getCanvasAiAspectRatioOptionsForModel = (
   if (usesCanvasAiImage2DimensionOptions(model, resolution)) {
     return getXaisImage2RatioOptions(getCanvasAiImage2RatioModel(resolution)).map(value => ({
       value,
-      label: formatCanvasAiResolutionOptionLabel(value),
+      label: formatCanvasAiAspectRatioOptionLabel(value),
     }));
   }
   return CANVAS_AI_ASPECT_RATIO_OPTIONS;

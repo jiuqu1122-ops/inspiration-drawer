@@ -12,6 +12,7 @@ export type ResolvedImageModelCapabilities = {
   source: 'server' | 'legacy';
   resolutions: string[];
   aspectRatios: string[];
+  aspectRatiosByResolution: Record<string, string[]>;
   referenceImageLimit: number;
   minReferenceImages: number;
   outputFormats: string[];
@@ -55,6 +56,16 @@ const normalizeDurations = (value?: readonly number[] | null) => Array.from(new 
     .filter(item => Number.isFinite(item) && item > 0),
 ));
 
+const normalizeStringArrayMap = (value?: Record<string, string[]> | null) => Object.fromEntries(
+  Object.entries(value || {}).flatMap(([key, options]) => {
+    const normalizedKey = String(key || '').trim().toLowerCase();
+    const normalizedOptions = normalizeStrings(options);
+    return normalizedKey && normalizedOptions.length > 0
+      ? [[normalizedKey, normalizedOptions] as const]
+      : [];
+  }),
+);
+
 const normalizeLimit = (value: unknown, fallback = 0) => {
   const parsed = Math.floor(Number(value));
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
@@ -90,6 +101,9 @@ export const normalizeAiModelCapabilities = (
   const normalized: AiModelCapabilities = {};
   if (value.resolutions !== undefined) normalized.resolutions = normalizeStrings(value.resolutions);
   if (value.aspectRatios !== undefined) normalized.aspectRatios = normalizeStrings(value.aspectRatios);
+  if (value.aspectRatiosByResolution !== undefined) {
+    normalized.aspectRatiosByResolution = normalizeStringArrayMap(value.aspectRatiosByResolution);
+  }
   if (value.durations !== undefined) normalized.durations = normalizeDurations(value.durations);
   if (value.supportedInputModes !== undefined) normalized.supportedInputModes = normalizeStrings(value.supportedInputModes);
   if (value.supportedOutputFormats !== undefined) normalized.supportedOutputFormats = normalizeStrings(value.supportedOutputFormats);
@@ -248,6 +262,12 @@ export const resolveImageModelCapabilities = (options: {
   const source = hasStructuredCapabilities(canonical, route) ? 'server' : 'legacy';
   const resolutions = normalizeStrings(firstDefined(canonical?.resolutions, route?.resolutions, legacy?.resolutions, []));
   const aspectRatios = normalizeStrings(firstDefined(canonical?.aspectRatios, route?.aspectRatios, legacy?.aspectRatios, []));
+  const aspectRatiosByResolution = normalizeStringArrayMap(firstDefined(
+    canonical?.aspectRatiosByResolution,
+    route?.aspectRatiosByResolution,
+    legacy?.aspectRatiosByResolution,
+    {},
+  ));
   const referenceImageLimit = normalizeLimit(firstDefined(
     canonical?.maxReferenceImages,
     route?.maxReferenceImages,
@@ -264,6 +284,7 @@ export const resolveImageModelCapabilities = (options: {
     source,
     resolutions,
     aspectRatios,
+    aspectRatiosByResolution,
     referenceImageLimit: supportsReferenceImages ? referenceImageLimit : 0,
     minReferenceImages: normalizeLimit(firstDefined(
       canonical?.minReferenceImages,
@@ -291,6 +312,16 @@ export const resolveImageModelCapabilities = (options: {
       false,
     ),
   };
+};
+
+export const getImageAspectRatioOptionsForResolution = (
+  capabilities: Pick<ResolvedImageModelCapabilities, 'aspectRatios' | 'aspectRatiosByResolution'>,
+  resolution?: string | null,
+) => {
+  const key = String(resolution || '').trim().toLowerCase();
+  return capabilities.aspectRatiosByResolution[key]?.length
+    ? capabilities.aspectRatiosByResolution[key]
+    : capabilities.aspectRatios;
 };
 
 export const resolveVideoModelCapabilities = (options: {

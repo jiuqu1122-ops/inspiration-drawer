@@ -12,7 +12,7 @@ import type { BufferItem } from '../../types';
 import { getCanvasWorkflowInternalSlotNodes,isReplaceableInternalImageSlot } from '../canvasWorkflowInternalSlots';
 import { normalizeCanvasWorkflowUserInput } from '../canvasWorkflowUserInput';
 import { normalizeDesignAgentConfig } from '../designAgentNode';
-import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,normalizeCapabilityDuration,normalizeCapabilityOption,resolveImageModelCapabilities,resolveVideoModelCapabilities } from '../aiModelCapabilities';
+import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,getImageAspectRatioOptionsForResolution,normalizeCapabilityDuration,normalizeCapabilityOption,resolveImageModelCapabilities,resolveVideoModelCapabilities } from '../aiModelCapabilities';
 
 export type CanvasNodeViewModelScope = Record<string, any>;
 
@@ -270,7 +270,10 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           ));
                           const canvasAiAspectRatioValues = canvasAiMediaType === 'video'
                             ? canvasAiResolvedVideoCapabilities.aspectRatios
-                            : canvasAiResolvedImageCapabilities.aspectRatios;
+                            : getImageAspectRatioOptionsForResolution(
+                              canvasAiResolvedImageCapabilities,
+                              canvasAiItemImageResolution,
+                            );
                           const canvasAiCountOptions = Array.from({
                             length: canvasAiMediaType === 'video'
                               ? canvasAiResolvedVideoCapabilities.maxOutputs

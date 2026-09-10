@@ -7,7 +7,7 @@ import type {
   NewApiImageProtocol,
 } from './canvasModel';
 import type { AiCatalogModel,AiModelCapabilities } from '../types/license';
-import { findAiCatalogModel,getChannelModelCapabilities,mergeAiModelCapabilities,normalizeCapabilityOption,resolveImageModelCapabilities,resolveVideoModelCapabilities,type ResolvedImageModelCapabilities,type ResolvedVideoModelCapabilities } from './aiModelCapabilities';
+import { findAiCatalogModel,getChannelModelCapabilities,getImageAspectRatioOptionsForResolution,mergeAiModelCapabilities,normalizeCapabilityOption,resolveImageModelCapabilities,resolveVideoModelCapabilities,type ResolvedImageModelCapabilities,type ResolvedVideoModelCapabilities } from './aiModelCapabilities';
 
 export type { NewApiImageProtocol } from './canvasModel';
 
@@ -480,9 +480,10 @@ export const getDefaultNewApiImageProtocol = (
   hasInputImages = false,
 ): NewApiImageProtocol => hasInputImages ? 'images_edits' : 'images_generations';
 
-export const isGptImage2LikeModel = (model?: string | null) => (
-  toImageModelToken(model).includes('gptimage2')
-);
+export const isGptImage2LikeModel = (model?: string | null) => {
+  const token = toImageModelToken(model);
+  return token.includes('gptimage2') || token === 'gptimagemedium';
+};
 
 const supportsNewApiImageFamilyResolution = (model?: string | null) => {
   const family = getNewApiImageModelFamily(model);
@@ -648,14 +649,18 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
           0,
           options.imageCapabilities?.referenceImageLimit ?? (options.provider === 'new-api' ? 9 : 8),
         ),
-        aspectRatio: options.imageCapabilities?.source === 'server'
-          && options.imageCapabilities.aspectRatios.length > 0
-          ? normalizeCapabilityOption(
-            options.imageCapabilities.aspectRatios,
-            options.aspectRatio,
-            options.imageCapabilities.aspectRatios[0],
-          )
-          : normalizeCloudWalletImageAspectRatio(options.aspectRatio),
+        aspectRatio: (() => {
+          if (options.imageCapabilities?.source !== 'server') {
+            return normalizeCloudWalletImageAspectRatio(options.aspectRatio);
+          }
+          const allowed = getImageAspectRatioOptionsForResolution(
+            options.imageCapabilities,
+            options.resolution,
+          );
+          return allowed.length > 0
+            ? normalizeCapabilityOption(allowed, options.aspectRatio, allowed[0])
+            : normalizeCloudWalletImageAspectRatio(options.aspectRatio);
+        })(),
         resolution: options.resolution?.trim() || undefined,
         outputFormat,
         background: outputFormat.toLowerCase() === 'png'

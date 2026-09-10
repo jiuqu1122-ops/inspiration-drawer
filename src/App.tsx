@@ -132,6 +132,7 @@ WebImageSearchDescription
 } from './types/webImageCollector';
 import {
 CANVAS_AI_DEFAULT_ASPECT_RATIO,
+formatCanvasAiAspectRatioOptionLabel,
 getCanvasAiAspectRatioOptionsForModel,
 normalizeCanvasAiAspectRatioForModel
 } from './utils/canvasAiAspectRatio';
@@ -319,7 +320,7 @@ getCanvasAiPublicImageModelId,
 getCanvasAiPublicImageModelVariantName,
 isCanvasAiPublicImageModel
 } from './features/canvasAiImage';
-import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,getDefaultAiCatalogModelId,mergeAiModelCapabilities } from './features/aiModelCapabilities';
+import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,getDefaultAiCatalogModelId,getImageAspectRatioOptionsForResolution,mergeAiModelCapabilities,normalizeCapabilityOption,resolveImageModelCapabilities } from './features/aiModelCapabilities';
 import {
 CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT
 } from './features/canvasAiOutputs';
@@ -5760,12 +5761,23 @@ useEffect(() => {
     ? parseCanvasAiModelChoiceValue(activeChatImageModelChoice.value)
     : null;
   const activeChatImageModelCandidates = activeChatImageModelConfig?.providerCandidates || [];
-  const chatImageResolutionValues = activeChatImageModelCandidates.length > 0
+  const activeChatImageModelCandidate = activeChatImageModelCandidates[0];
+  const activeChatImageCatalogModel = findAiCatalogModel(
+    getAiCatalogModels(canvasAiCloudImageModels, 'image'),
+    activeChatImageModelCandidate?.canonicalModelId || activeChatImageModelConfig?.model,
+  );
+  const chatLegacyImageResolutionValues = activeChatImageModelCandidates.length > 0
     ? getCanvasAiImageResolutionValuesForCandidates(activeChatImageModelCandidates)
     : getCanvasAiImageResolutionValues(
       activeChatImageModelConfig?.provider,
       activeChatImageModelConfig?.model,
     );
+  const chatResolvedImageCapabilities = resolveImageModelCapabilities({
+    canonical: activeChatImageCatalogModel?.capabilities,
+    route: activeChatImageModelCandidate?.modelCapabilities,
+    legacy: { resolutions: chatLegacyImageResolutionValues },
+  });
+  const chatImageResolutionValues = chatResolvedImageCapabilities.resolutions;
   const chatImageResolutionOptions = useMemo<ChatImageModelOption[]>(() => (
     chatImageResolutionValues.length > 0
       ? chatImageResolutionValues.map(value => ({ value, label: value.toUpperCase() }))
@@ -5777,20 +5789,35 @@ useEffect(() => {
   const activeChatImageResolution = chatImageResolutionOptions.some(option => option.value === chatImageResolution)
     ? chatImageResolution
     : chatImageResolutionOptions[0]?.value || '';
+  const chatImageAspectRatioValues = getImageAspectRatioOptionsForResolution(
+    chatResolvedImageCapabilities,
+    activeChatImageResolution,
+  );
   const chatImageAspectRatioOptions = useMemo<ChatImageModelOption[]>(() => (
-    getCanvasAiAspectRatioOptionsForModel(
-      activeChatImageModelConfig?.model,
-      activeChatImageResolution,
-    ).map(option => ({ value: option.value, label: option.label, hint: option.hint }))
-  ), [activeChatImageModelConfig?.model, activeChatImageResolution]);
+    chatImageAspectRatioValues.length > 0
+      ? chatImageAspectRatioValues.map(value => ({
+        value,
+        label: formatCanvasAiAspectRatioOptionLabel(value),
+      }))
+      : getCanvasAiAspectRatioOptionsForModel(
+        activeChatImageModelConfig?.model,
+        activeChatImageResolution,
+      ).map(option => ({ value: option.value, label: option.label, hint: option.hint }))
+  ), [activeChatImageModelConfig?.model, activeChatImageResolution, chatImageAspectRatioValues.join('|')]);
   const [chatImageAspectRatio, setChatImageAspectRatio] = useState(() => (
     localStorage.getItem(CHAT_IMAGE_ASPECT_RATIO_STORAGE_KEY) || CANVAS_AI_DEFAULT_ASPECT_RATIO
   ));
-  const activeChatImageAspectRatio = normalizeCanvasAiAspectRatioForModel(
-    activeChatImageModelConfig?.model,
-    chatImageAspectRatio,
-    activeChatImageResolution,
-  );
+  const activeChatImageAspectRatio = chatImageAspectRatioValues.length > 0
+    ? normalizeCapabilityOption(
+      chatImageAspectRatioValues,
+      chatImageAspectRatio,
+      CANVAS_AI_DEFAULT_ASPECT_RATIO,
+    )
+    : normalizeCanvasAiAspectRatioForModel(
+      activeChatImageModelConfig?.model,
+      chatImageAspectRatio,
+      activeChatImageResolution,
+    );
   useEffect(() => {
     if (!activeChatImageModel || activeChatImageModel === chatImageModel) return;
     setChatImageModel(activeChatImageModel);
