@@ -584,7 +584,7 @@ describe('unified wallet image model families', () => {
       },
     ];
     expect(selectCanvasAiImageCandidatesForResolution(candidates, '1k'))
-      .toHaveLength(2);
+      .toEqual([expect.objectContaining({ providerChannelId: 'mikoto-1k' })]);
     expect(selectCanvasAiImageCandidatesForResolution(candidates, '4k'))
       .toEqual([expect.objectContaining({ providerChannelId: 'new-api-full' })]);
   });
@@ -714,6 +714,9 @@ describe('image resolution routing', () => {
     expect(supportsCanvasAiImageResolution('new-api', 'gpt-image-2')).toBe(true);
     expect(supportsCanvasAiImageResolution('custom', 'gpt_image_2_guan')).toBe(true);
     expect(supportsCanvasAiImageResolution('openai-compatible', 'gptimage2')).toBe(true);
+    expect(supportsCanvasAiImageResolution('new-api', 'image2')).toBe(true);
+    expect(getCanvasAiImageResolutionValues('new-api', 'image2')).toEqual(['1k', '2k', '4k']);
+    expect(getCanvasAiImageResolutionValues('new-api', 'gpt-image-medium')).toEqual(['1k', '2k', '4k']);
     expect(getCanvasAiImageModelFamily('bigmodel', 'gemini-3-pro-image-preview')).toBe('nano-banana-pro');
     expect(getCanvasAiImageModelFamily('mikoto', 'gemini-3-pro-image-preview')).toBe('nano-banana-pro');
     expect(getCanvasAiImageModelFamily('mikoto', 'gemini-3.1-flash-image-preview')).toBe('nano-banana-2');
@@ -729,7 +732,31 @@ describe('image resolution routing', () => {
     expect(supportsCanvasAiImageResolution('new-api', 'gemini-lite-image')).toBe(false);
     expect(supportsCanvasAiImageResolution('mikoto', 'gpt-image-2', ['IMAGE_GPT_1K'])).toBe(true);
     expect(getCanvasAiImageResolutionValues('mikoto', 'gpt-image-2', ['IMAGE_GPT_1K'])).toEqual(['1k']);
+    expect(getCanvasAiImageResolutionValues('new-api', 'gpt-image-2.5', ['IMAGE_GPT']))
+      .toEqual(['2k', '4k']);
     expect(normalizeCanvasAiImageResolutionForModel('mikoto', 'gpt-image-2', '4k', ['IMAGE_GPT_1K'])).toBe('1k');
+    expect(getCanvasAiImageResolutionValuesForCandidates([
+      {
+        source: 'wallet',
+        provider: 'new-api',
+        model: 'gpt-image-2.5',
+        capabilities: ['IMAGE_GPT_1K'],
+      },
+      {
+        source: 'wallet',
+        provider: 'new-api',
+        model: 'gpt-image-2.5',
+        capabilities: ['IMAGE_GPT'],
+      },
+    ])).toEqual(['1k', '2k', '4k']);
+    expect(getCanvasAiImageResolutionValuesForCandidates([
+      {
+        source: 'wallet',
+        provider: 'new-api',
+        model: 'unknown-upstream-name',
+        canonicalModelId: 'gpt-image-medium',
+      },
+    ])).toEqual(['1k', '2k', '4k']);
   });
 
   it('uses Mikoto-specific Kling duration choices', () => {

@@ -5781,7 +5781,10 @@ useEffect(() => {
     route: activeChatImageModelCandidate?.modelCapabilities,
     legacy: { resolutions: chatLegacyImageResolutionValues },
   });
-  const chatImageResolutionValues = chatResolvedImageCapabilities.resolutions;
+  const chatImageResolutionValues = Array.from(new Set([
+    ...chatResolvedImageCapabilities.resolutions,
+    ...chatLegacyImageResolutionValues,
+  ]));
   const chatImageResolutionOptions = useMemo<ChatImageModelOption[]>(() => (
     chatImageResolutionValues.length > 0
       ? chatImageResolutionValues.map(value => ({ value, label: value.toUpperCase() }))
