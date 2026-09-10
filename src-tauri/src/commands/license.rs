@@ -682,6 +682,7 @@ async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
     request_body: &impl Serialize,
     timeout: Duration,
 ) -> Result<T, String> {
+    let request_started_at = Instant::now();
     let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(timeout)
@@ -696,11 +697,20 @@ async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
         .send()
         .await
         .map_err(|err| format!("cloud_unavailable: 无法连接额度服务器：{err}"))?;
+    let response_received_at = Instant::now();
     let status = response.status();
     let body = response
         .text()
         .await
         .map_err(|err| format!("cloud_invalid_response: 无法读取额度服务器响应：{err}"))?;
+    if path == "/v1/ai/images/generations" {
+        eprintln!(
+            "[cloud_image_http_timing] responseWaitMs={} bodyReadMs={} totalMs={}",
+            response_received_at.duration_since(request_started_at).as_millis(),
+            response_received_at.elapsed().as_millis(),
+            request_started_at.elapsed().as_millis(),
+        );
+    }
     if !status.is_success() {
         let parsed = serde_json::from_str::<CloudApiError>(&body).ok();
         let fallback = cloud_http_fallback(status, &body);
@@ -1051,6 +1061,7 @@ pub async fn generate_cloud_images(
     app_handle: tauri::AppHandle,
     mut request: CloudImageGenerationRequest,
 ) -> Result<CloudImageGenerationResult, String> {
+    let command_started_at = Instant::now();
     let client_request_id = request.client_request_id.trim();
     let model = request.model.trim();
     let prompt = request.prompt.trim();
@@ -1079,6 +1090,7 @@ pub async fn generate_cloud_images(
     }
     request.input_images =
         normalize_cloud_image_references(std::mem::take(&mut request.input_images))?;
+    let references_normalized_at = Instant::now();
     if request
         .input_images
         .iter()
@@ -1088,13 +1100,40 @@ pub async fn generate_cloud_images(
     }
 
     let access_token = cloud_access_token(&app_handle).await?;
-    post_cloud_with_bearer_timeout::<CloudImageGenerationResult>(
+    let token_ready_at = Instant::now();
+    let result = post_cloud_with_bearer_timeout::<CloudImageGenerationResult>(
         "/v1/ai/images/generations",
         &access_token,
         &request,
         CLOUD_IMAGE_GENERATION_TIMEOUT,
     )
-    .await
+    .await;
+    eprintln!(
+        "[cloud_image_command_timing] clientRequestId={} referenceNormalizeMs={} tokenMs={} requestMs={} totalMs={}",
+        request.client_request_id,
+        references_normalized_at.duration_since(command_started_at).as_millis(),
+        token_ready_at.duration_since(references_normalized_at).as_millis(),
+        token_ready_at.elapsed().as_millis(),
+        command_started_at.elapsed().as_millis(),
+    );
+    let _ = crate::append_ai_debug_log(
+        app_handle,
+        "canvas-image-timing".to_string(),
+        serde_json::json!({
+            "at": chrono::Utc::now().to_rfc3339(),
+            "label": "cloudImageCommand",
+            "value": {
+                "clientRequestId": request.client_request_id,
+                "referenceNormalizeMs": references_normalized_at.duration_since(command_started_at).as_millis(),
+                "tokenMs": token_ready_at.duration_since(references_normalized_at).as_millis(),
+                "requestMs": token_ready_at.elapsed().as_millis(),
+                "totalMs": command_started_at.elapsed().as_millis(),
+                "succeeded": result.is_ok(),
+            },
+        })
+        .to_string(),
+    );
+    result
 }
 
 #[tauri::command]

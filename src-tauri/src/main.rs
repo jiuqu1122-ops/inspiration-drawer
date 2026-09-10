@@ -12345,10 +12345,13 @@ async fn upload_wallet_reference_images(
     app_handle: tauri::AppHandle,
     sources: Vec<String>,
 ) -> Result<Vec<String>, String> {
+    let command_started_at = Instant::now();
     if sources.is_empty() {
         return Err("没有需要上传的参考图".to_string());
     }
     let access_token = commands::license::cloud_access_token(&app_handle).await?;
+    let token_ready_at = Instant::now();
+    let timing_app_handle = app_handle.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let prepared = sources
             .iter()
@@ -12361,6 +12364,7 @@ async fn upload_wallet_reference_images(
                 Ok(object)
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let references_prepared_at = Instant::now();
         let ticket_client = reqwest::blocking::Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(30))
@@ -12372,8 +12376,7 @@ async fn upload_wallet_reference_images(
             .timeout(Duration::from_secs(120))
             .build()
             .map_err(|error| format!("参考图直传连接初始化失败：{error}"))?;
-        let mut object_keys = Vec::with_capacity(prepared.len());
-        for (index, object) in prepared.into_iter().enumerate() {
+        let upload_one = |index: usize, object: R2PreparedObject| -> Result<(usize, String), String> {
             let extension = object.ext.trim().trim_start_matches('.');
             let filename = format!("reference-{}.{}", index + 1, extension);
             let ticket_response = ticket_client
@@ -12427,9 +12430,60 @@ async fn upload_wallet_reference_images(
             if !status.is_success() {
                 return Err(format!("参考图直传 COS 失败（HTTP {}）", status.as_u16()));
             }
-            object_keys.push(ticket.object_key);
+            Ok((index, ticket.object_key))
+        };
+        let mut indexed_object_keys = Vec::with_capacity(prepared.len());
+        let mut pending = prepared.into_iter().enumerate();
+        loop {
+            let batch = pending.by_ref().take(4).collect::<Vec<_>>();
+            if batch.is_empty() {
+                break;
+            }
+            let results = thread::scope(|scope| {
+                let upload_one = &upload_one;
+                batch
+                    .into_iter()
+                    .map(|(index, object)| scope.spawn(move || upload_one(index, object)))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .map(|handle| {
+                        handle
+                            .join()
+                            .map_err(|_| "参考图直传任务异常终止".to_string())?
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })?;
+            indexed_object_keys.extend(results);
         }
-        Ok(object_keys)
+        indexed_object_keys.sort_by_key(|(index, _)| *index);
+        eprintln!(
+            "[wallet_reference_upload_timing] count={} tokenMs={} localPreparationMs={} uploadMs={} totalMs={}",
+            indexed_object_keys.len(),
+            token_ready_at.duration_since(command_started_at).as_millis(),
+            references_prepared_at.duration_since(token_ready_at).as_millis(),
+            references_prepared_at.elapsed().as_millis(),
+            command_started_at.elapsed().as_millis(),
+        );
+        let _ = append_ai_debug_log(
+            timing_app_handle,
+            "canvas-image-timing".to_string(),
+            serde_json::json!({
+                "at": chrono::Utc::now().to_rfc3339(),
+                "label": "walletReferenceUpload",
+                "value": {
+                    "count": indexed_object_keys.len(),
+                    "tokenMs": token_ready_at.duration_since(command_started_at).as_millis(),
+                    "localPreparationMs": references_prepared_at.duration_since(token_ready_at).as_millis(),
+                    "uploadMs": references_prepared_at.elapsed().as_millis(),
+                    "totalMs": command_started_at.elapsed().as_millis(),
+                },
+            })
+            .to_string(),
+        );
+        Ok(indexed_object_keys
+            .into_iter()
+            .map(|(_, object_key)| object_key)
+            .collect())
     })
     .await
     .map_err(|error| format!("参考图直传任务失败：{error}"))?
