@@ -314,10 +314,9 @@ export const startSnipImpl = async (ctx: Pick<windowSnipActionContext, 'closeTim
 
     // Freeze the desktop before the transparent selection window is shown. A persistent
     // transparent/topmost window can make hardware-decoded video disappear from later
-    // desktop captures. The frozen frame stays stable however long selection takes.
+    // desktop captures. The frozen frame stays in memory; the overlay itself stays light.
     void restore;
-    frozenBackgroundPath = await invoke<string>('capture_screen_to_file');
-    await invoke('show_snip_window', { backgroundPath: frozenBackgroundPath });
+    await invoke('capture_screen_to_file');
 
     const prepareChrome = null;
 

@@ -21,11 +21,6 @@ export function SnipOverlay() {
   const captureInFlightRef = useRef(false);
   const backgroundPathRef = useRef('');
 
-  const waitForTransparentSnipFrame = () => new Promise<void>((resolve) => {
-    requestAnimationFrame(() => {
-      window.setTimeout(resolve, 0);
-    });
-  });
 
   const recoverAfterSnip = async () => {
     const size = getStoredDrawerSize();
@@ -105,7 +100,6 @@ export function SnipOverlay() {
       setIsCaptureOverlayHidden(true);
       setSelection(null);
     });
-    await waitForTransparentSnipFrame();
 
     const payload = {
       x: rect.x,
@@ -182,7 +176,7 @@ export function SnipOverlay() {
             <div className="absolute left-0 right-0 bottom-0 bg-black/38" style={{ top: selection.y + selection.h }} />
           </div>
           <div
-            className="absolute pointer-events-none rounded-[4px] border-2 border-emerald-400 shadow-[0_0_0_1px_rgba(255,255,255,0.7)]"
+            className="absolute pointer-events-none rounded-[4px] outline outline-2 outline-emerald-400 -outline-offset-0 shadow-[0_0_0_1px_rgba(255,255,255,0.7)]"
             style={{ left: selection.x, top: selection.y, width: selection.w, height: selection.h }}
           >
             <div className="absolute inset-0 bg-white/10" />

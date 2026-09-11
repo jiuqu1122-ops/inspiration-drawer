@@ -89,7 +89,13 @@ export const selectBatchImageAttachments = (
   const selectedIds = normalizeAttachmentIds(attachmentIds);
   if (selectedIds.length === 0) return images;
   const byId = new Map(images.map(attachment => [attachment.id, attachment]));
-  return selectedIds.flatMap(id => byId.has(id) ? [byId.get(id)!] : []);
+  const selected = selectedIds.flatMap(id => byId.has(id) ? [byId.get(id)!] : []);
+  // A batch plan can be confirmed several turns after it was created. In
+  // that case an attachment id supplied by the model may no longer match the
+  // hydrated historical message (for example after an attachment cache
+  // refresh). Treat an entirely stale id list as "use the current images"
+  // instead of silently producing an empty batch and skipping canvas grouping.
+  return selected.length > 0 ? selected : images;
 };
 
 const buildResult = (

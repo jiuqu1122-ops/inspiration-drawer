@@ -11,6 +11,10 @@ const syncCanvasChatOffset = () => {
     const base = Number(element.dataset.canvasChatOffsetBase || 0);
     element.style.right = `${Math.max(0, base + offset)}px`;
   });
+  document.querySelectorAll<HTMLElement>('[data-canvas-chat-margin-base]').forEach(element => {
+    const base = Number(element.dataset.canvasChatMarginBase || 0);
+    element.style.marginRight = `${Math.max(0, base + offset)}px`;
+  });
 };
 
 export const getCanvasChatVisibility = () => canvasChatVisible;

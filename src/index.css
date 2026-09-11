@@ -136,6 +136,8 @@ body,
 }
 
 [data-drawer-settings-panel="true"] {
+  position: relative;
+  z-index: 100065;
   border-bottom-style: solid;
 }
 
@@ -222,6 +224,7 @@ body,
 
 /* Unified drawer theme. Keep light mode white; do not match dark:* utilities in light mode. */
 .drawer-theme {
+  --app-font-scale: 1;
   --background: #ffffff;
   --surface: #ffffff;
   --surface-subtle: #fafafa;
@@ -258,6 +261,44 @@ body,
   --drawer-shadow: 0 2px 10px rgba(24, 24, 27, 0.06);
   color: var(--foreground);
   font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.drawer-theme[data-app-font-size="medium"] {
+  --app-font-scale: 1.1;
+}
+
+.drawer-theme[data-app-font-size="large"] {
+  --app-font-scale: 1.2;
+}
+
+/* The chat surface uses a dedicated pixel-based stylesheet. Scale its text
+   regions (rather than the entire surface) so generated images and the chat
+   panel geometry keep their original dimensions. */
+.drawer-theme [data-chat-view="true"] :is(
+  .chat-composer,
+  .chat-message__text,
+  .chat-markdown,
+  .chat-tool,
+  .chat-message__actions,
+  .chat-message__error,
+  .chat-message__stop,
+  .chat-generated-file,
+  .chat-generated-media__actions,
+  .chat-empty,
+  .chat-load-older
+) {
+  zoom: var(--app-font-scale);
+}
+
+/* The image-generator prompt is intentionally the only canvas text control
+   affected by this preference; node geometry, previews and canvas zoom stay
+   unchanged. */
+.drawer-theme textarea[data-canvas-node-prompt="true"][class~="text-[15px]"] {
+  font-size: calc(15px * var(--app-font-scale)) !important;
+}
+
+.drawer-theme textarea[data-canvas-node-prompt="true"][class~="text-[12px]"] {
+  font-size: calc(12px * var(--app-font-scale)) !important;
 }
 
 .drawer-theme.dark {
@@ -1397,6 +1438,46 @@ body,
 .drawer-theme.dark [data-settings-section-content="true"] button[class*="text-white"],
 .drawer-theme.dark [data-settings-section-content="true"] button[class*="text-white"] * {
   color: #18181b !important;
+}
+
+.drawer-theme [data-settings-section-content="true"] button[data-app-font-size-option="true"] {
+  color: #3f3f46 !important;
+  background: #ffffff !important;
+  border: 1px solid #e4e4e7 !important;
+  border-radius: 999px !important;
+  box-shadow: none !important;
+}
+
+.drawer-theme [data-settings-section-content="true"] button[data-app-font-size-option="true"]:hover {
+  color: #27272a !important;
+  background: #fafafa !important;
+  border-color: #d4d4d8 !important;
+}
+
+.drawer-theme [data-settings-section-content="true"] button[data-app-font-size-option="true"][data-active="true"],
+.drawer-theme [data-settings-section-content="true"] button[data-app-font-size-option="true"][data-active="true"]:hover {
+  color: #ffffff !important;
+  background: #18181b !important;
+  border-color: #18181b !important;
+}
+
+.drawer-theme.dark [data-settings-section-content="true"] button[data-app-font-size-option="true"] {
+  color: #d4d4d8 !important;
+  background: #18181b !important;
+  border-color: #3f3f46 !important;
+}
+
+.drawer-theme.dark [data-settings-section-content="true"] button[data-app-font-size-option="true"]:hover {
+  color: #f4f4f5 !important;
+  background: #202024 !important;
+  border-color: #52525b !important;
+}
+
+.drawer-theme.dark [data-settings-section-content="true"] button[data-app-font-size-option="true"][data-active="true"],
+.drawer-theme.dark [data-settings-section-content="true"] button[data-app-font-size-option="true"][data-active="true"]:hover {
+  color: #18181b !important;
+  background: #f4f4f5 !important;
+  border-color: #f4f4f5 !important;
 }
 
 .drawer-theme [data-drawer-tabs="true"] {

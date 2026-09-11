@@ -182,7 +182,9 @@ export const ChatView = memo(function ChatView({
       }]);
     }
   }, []);
-  const shellStyle = variant === 'canvas' ? { width: canvasRenderedWidth, top: topOffset } : undefined;
+  const shellStyle = variant === 'canvas'
+    ? { width: canvasRenderedWidth, top: `var(--canvas-chat-top, ${topOffset}px)` }
+    : undefined;
   return (
     <section
       className={`chat-shell chat-shell--${variant} ${historyOpen ? 'is-history-open' : 'is-history-closed'}`}

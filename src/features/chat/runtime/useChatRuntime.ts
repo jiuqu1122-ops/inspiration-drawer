@@ -61,8 +61,6 @@ import {
 import { extractChatBatchImagePlan } from './chatBatchImagePlan';
 import {
   fallbackBatchPlanDecision,
-  parseBatchPlanDecision,
-  type BatchPlanDecision,
 } from './chatBatchPlanReply';
 import { isHistoricalImageContinuation, selectChatImageAttachments } from './chatHistoricalAttachments';
 import { resolveChatReferenceArguments } from './chatReferenceArguments';
@@ -182,76 +180,6 @@ const SUMMARY_KEEP_RECENT = 28;
 const LEGACY_PROVIDER_MODELS = new Set(['codex', 'openai-compatible', 'default']);
 const CHAT_WEB_SEARCH_ENABLED_STORAGE_KEY = 'drawer_chat_web_search_enabled';
 const STREAM_RENDER_INTERVAL_MS = 64;
-
-const classifyBatchPlanReply = async (input: {
-  model: string;
-  analysisSummary: string;
-  userReply: string;
-  hasNewAttachments: boolean;
-}): Promise<BatchPlanDecision> => {
-  const requestId = createChatId('chat-batch-plan-decision');
-  try {
-    const result = await runInternalAgentModelRequest({
-      savedModel: input.model,
-      usageContext: 'system_internal',
-      requestId,
-      createRequestId: () => createChatId('chat-batch-plan-model-fallback'),
-      request: requestModel => requestChatCompletion({
-        requestId: requestModel.requestId,
-        model: requestModel.model,
-        usageContext: requestModel.usageContext,
-        stream: false,
-        messages: [
-          {
-            role: 'system',
-            content: [
-            '你负责判断用户对图片批处理执行方案的自然语言回复。',
-            'confirm：用户认可方案、表示继续、让你开始做或开始生图，即使没有使用固定口令。',
-            'revise：用户提出任何新增要求、否定项、修改意见，或带来了新的附件。',
-            'cancel：用户明确表示取消、停止或暂时不做。',
-            '不要回答用户，不要解释，只调用 decide_batch_plan_reply 一次。',
-            ].join('\n'),
-          },
-          {
-            role: 'user',
-            content: [
-            `当前方案：\n${input.analysisSummary.slice(0, 6_000)}`,
-            `用户回复：\n${input.userReply.slice(0, 2_000)}`,
-            `用户是否新增附件：${input.hasNewAttachments ? '是' : '否'}`,
-            ].join('\n\n'),
-          },
-        ],
-        tools: [{
-          type: 'function',
-          function: {
-          name: 'decide_batch_plan_reply',
-          description: '判断用户是在确认执行、修改方案还是取消任务。',
-          parameters: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              action: { type: 'string', enum: ['confirm', 'revise', 'cancel'] },
-            },
-            required: ['action'],
-          },
-          },
-        }],
-        toolChoice: {
-          type: 'function',
-          function: { name: 'decide_batch_plan_reply' },
-        },
-      }),
-    });
-    const toolDecision = result.toolCalls
-      .find(call => call.name === 'decide_batch_plan_reply')?.arguments;
-    return parseBatchPlanDecision(toolDecision)
-      || parseBatchPlanDecision(result.content)
-      || fallbackBatchPlanDecision(input.userReply);
-  } catch (error) {
-    console.warn('LLM 判断批处理方案回复失败，使用本地兜底:', error);
-    return fallbackBatchPlanDecision(input.userReply);
-  }
-};
 
 const createBatchGroupName = (instruction: string) => {
   const subject = instruction
@@ -1826,12 +1754,14 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       const planArguments = parseArguments(pendingBatchCall.argumentsJson);
       const analysisSummary = normalizeVisibleChatText(planArguments.analysisSummary);
       updateConversationBusy(conversation.id, true);
-      const planDecision = await classifyBatchPlanReply({
-        model: pendingPlan.requestModel,
-        analysisSummary,
-        userReply: text || '我补充了新的图片附件。',
-        hasNewAttachments: pendingAttachments.length > 0,
-      });
+      // This reply is deliberately classified locally.  A second internal LLM
+      // request here used to leave the composer spinning indefinitely when that
+      // request stalled, even though the user had already submitted a reply.
+      // The deterministic matcher is also safer for the explicit confirmation
+      // and cancellation phrases shown in the plan message.
+      const planDecision = pendingAttachments.length > 0
+        ? 'revise'
+        : fallbackBatchPlanDecision(text);
       const confirmsPlan = planDecision === 'confirm' && pendingAttachments.length === 0;
       pendingApprovalsRef.current.delete(conversation.id);
       if (!confirmsPlan) {

@@ -207,6 +207,7 @@ getCanvasWorkflowGroup
 import {
 isCanvasImageFileName
 } from './utils/localMediaPaths';
+import { AppFontSizeProvider,useAppFontSize } from './features/preferences/AppFontSizeContext';
 
 const ENABLE_THREE_SCENE_CREATION = false;
 
@@ -1370,6 +1371,7 @@ function MainApp() {
 
   const [isDark, setIsDark] = useState(() => localStorage.getItem('theme') === 'dark');
   useEffect(() => { localStorage.setItem('theme', isDark ? 'dark' : 'light'); }, [isDark]);
+  const { appFontSize, appFontScale } = useAppFontSize();
 
   const [drawerSidebarLayout, setDrawerSidebarLayout] = useState<DrawerSidebarLayout>(() => (
     normalizeDrawerSidebarLayout(localStorage.getItem(DRAWER_SIDEBAR_LAYOUT_STORAGE_KEY))
@@ -6502,7 +6504,9 @@ useEffect(() => {
   return (
       <div
         data-drawer-theme="true"
+        data-app-font-size={appFontSize}
         className={`${isDark ? 'dark' : ''} drawer-theme w-screen h-screen bg-transparent relative overflow-hidden font-sans select-none flex items-center justify-start pointer-events-none`}
+        style={{ '--app-font-scale': appFontScale } as React.CSSProperties}
         // 把全局拖拽接管挂在最外层
     >
       <AppToastHost />
@@ -6535,5 +6539,9 @@ export default function App() {
       </React.Suspense>
     );
   }
-  return <MainApp />;
+  return (
+    <AppFontSizeProvider>
+      <MainApp />
+    </AppFontSizeProvider>
+  );
 }

@@ -59,6 +59,12 @@ describe('batch_image_operation', () => {
     expect(generate).toHaveBeenCalledTimes(2);
   });
 
+  it('falls back to all current images when a historical plan has stale attachment ids', () => {
+    const images = attachments(3);
+    expect(selectBatchImageAttachments(images, ['selection-old-1', 'selection-old-2']))
+      .toEqual(images);
+  });
+
   it('combines the analyzed shared plan with the matching per-image instruction', async () => {
     const images = attachments(2);
     const prompts = new Map<string, string>();

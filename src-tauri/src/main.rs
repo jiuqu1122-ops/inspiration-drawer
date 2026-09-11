@@ -8,6 +8,7 @@ mod browser_extension;
 mod commands;
 mod db;
 mod license;
+mod snip_desktop;
 mod native_drag;
 mod native_drop;
 mod repositories;
@@ -38,7 +39,7 @@ use std::time::{Duration, Instant, SystemTime};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    Emitter, LogicalPosition, LogicalSize, Manager, Monitor, PhysicalPosition, WebviewUrl,
+    Emitter, LogicalPosition, LogicalSize, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder,
 };
 use tauri_plugin_updater::UpdaterExt;
@@ -69,6 +70,8 @@ static ANTI_TOUCH_LOCKED: AtomicU16 = AtomicU16::new(0);
 static MAIN_WORKBENCH_ACTIVE: AtomicBool = AtomicBool::new(false);
 static POST_INSTALL_LAUNCH_PENDING: AtomicBool = AtomicBool::new(false);
 static SNIP_BACKGROUND_PATH: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static SNIP_FROZEN_DESKTOP: OnceLock<Mutex<Option<crate::snip_desktop::FrozenSnipDesktop>>> =
+    OnceLock::new();
 const POST_INSTALL_LAUNCH_MARKER: &str = ".inspiration-drawer-post-install";
 
 fn store_snip_background_path(path: String) {
@@ -86,6 +89,47 @@ fn take_snip_background_path(preferred: Option<String>) -> Option<String> {
     preferred
         .filter(|value| !value.trim().is_empty())
         .or(stored)
+}
+
+fn store_snip_frozen_desktop(desktop: crate::snip_desktop::FrozenSnipDesktop) {
+    if let Ok(mut current) = SNIP_FROZEN_DESKTOP.get_or_init(|| Mutex::new(None)).lock() {
+        *current = Some(desktop);
+    }
+}
+
+fn take_snip_frozen_desktop() -> Option<crate::snip_desktop::FrozenSnipDesktop> {
+    SNIP_FROZEN_DESKTOP
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|mut current| current.take())
+}
+
+fn clear_snip_frozen_frame() {
+    if let Ok(mut current) = SNIP_FROZEN_DESKTOP.get_or_init(|| Mutex::new(None)).lock() {
+        *current = None;
+    }
+}
+
+fn save_snip_png_fast(
+    path: &std::path::Path,
+    image: &screenshots::image::RgbaImage,
+) -> Result<(), String> {
+    let file = File::create(path).map_err(|e| e.to_string())?;
+    let writer = BufWriter::new(file);
+    let encoder = screenshots::image::codecs::png::PngEncoder::new_with_quality(
+        writer,
+        screenshots::image::codecs::png::CompressionType::Fast,
+        screenshots::image::codecs::png::FilterType::NoFilter,
+    );
+    screenshots::image::ImageEncoder::write_image(
+        encoder,
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        screenshots::image::ColorType::Rgba8,
+    )
+    .map_err(|e| e.to_string())
 }
 
 struct CloudflaredShare {
@@ -16375,63 +16419,25 @@ fn capture_screen_area(
 #[tauri::command]
 async fn capture_screen_to_file(
     app_handle: tauri::AppHandle,
-    window: WebviewWindow,
+    _window: WebviewWindow,
 ) -> Result<String, String> {
+    let handle = app_handle.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let current_monitor = window
-            .current_monitor()
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "no current monitor".to_string())?;
-        let monitor_pos = current_monitor.position();
-        let screens = screenshots::Screen::all().map_err(|e| e.to_string())?;
-        if screens.is_empty() {
-            return Err("no screen available".to_string());
-        }
-        let screen = screens
-            .iter()
-            .find(|s| s.display_info.x == monitor_pos.x && s.display_info.y == monitor_pos.y)
-            .unwrap_or(&screens[0])
-            .clone();
-
-        // Freeze exactly what the user can currently see, including the drawer. Keeping
-        // the transparent selection window above a hardware-accelerated video can make
-        // DWM return a black frame after a short delay, so every later crop uses this
-        // initial frame instead of capturing the live desktop again.
-        if let Some(snip) = app_handle.get_webview_window("snip") {
+        // Freeze every connected display before the overlay appears. Dual-screen
+        // users need to snip a monitor that does not contain the drawer window,
+        // and a later live capture through the overlay can return a black frame
+        // on hardware-decoded video.
+        if let Some(snip) = handle.get_webview_window("snip") {
             let _ = snip.hide();
         }
-        let image = screen.capture().map_err(|e| e.to_string())?;
-        let out_dir = read_web_image_cache_dir(&app_handle);
-        fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
-        let file_name = format!(
-            "drawer_snip_background_{}.png",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| e.to_string())?
-                .as_millis()
-        );
-        let out_path = out_dir.join(file_name);
-        let file = File::create(&out_path).map_err(|e| e.to_string())?;
-        let writer = BufWriter::new(file);
-        let encoder = screenshots::image::codecs::png::PngEncoder::new_with_quality(
-            writer,
-            screenshots::image::codecs::png::CompressionType::Fast,
-            screenshots::image::codecs::png::FilterType::NoFilter,
-        );
-        screenshots::image::ImageEncoder::write_image(
-            encoder,
-            image.as_raw(),
-            image.width(),
-            image.height(),
-            screenshots::image::ColorType::Rgba8,
-        )
-        .map_err(|e| e.to_string())?;
-        let saved_path = out_path.to_string_lossy().to_string();
-        store_snip_background_path(saved_path.clone());
-        Ok(saved_path)
+        let desktop = crate::snip_desktop::capture_all_screens()?;
+        store_snip_frozen_desktop(desktop);
+        Ok::<(), String>(())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    show_snip_window(app_handle, None)?;
+    Ok(String::new())
 }
 
 fn crop_image_file_to_file_impl(
@@ -16667,17 +16673,10 @@ async fn complete_snip_selection(
     background_path: Option<String>,
 ) -> Result<(), String> {
     let background_path = take_snip_background_path(background_path);
+    let frozen_desktop = take_snip_frozen_desktop();
     let snip = app_handle
         .get_webview_window("snip")
         .ok_or_else(|| "snip window not found".to_string())?;
-    let window_pos = snip.outer_position().map_err(|e| e.to_string())?;
-    let window_size = snip.outer_size().map_err(|e| e.to_string())?;
-    let scale_x = window_size.width as f64 / viewport_width.max(1.0);
-    let scale_y = window_size.height as f64 / viewport_height.max(1.0);
-    let physical_x = window_pos.x + (x * scale_x).round() as i32;
-    let physical_y = window_pos.y + (y * scale_y).round() as i32;
-    let physical_w = (width * scale_x).round().max(1.0) as u32;
-    let physical_h = (height * scale_y).round().max(1.0) as u32;
 
     let _ = snip.hide();
     let _ = snip.set_position(LogicalPosition::new(-32000.0, -32000.0));
@@ -16689,8 +16688,29 @@ async fn complete_snip_selection(
     let app_for_capture = app_handle.clone();
     let frozen_background_path = background_path.clone();
     let capture_result = tauri::async_runtime::spawn_blocking(move || {
-        if let Some(path) = frozen_background_path.as_deref() {
-            let result = crop_image_file_to_file_impl(
+        let result = if let Some(desktop) = frozen_desktop {
+            let cropped = crate::snip_desktop::crop_from_screens(
+                &desktop,
+                x,
+                y,
+                width,
+                height,
+                viewport_width,
+                viewport_height,
+            );
+            let out_dir = read_web_image_cache_dir(&app_for_capture);
+            fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+            let out_path = unique_file_path(out_dir.join(format!(
+                "drawer_snip_area_{}.png",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| e.to_string())?
+                    .as_millis()
+            )));
+            save_snip_png_fast(&out_path, &cropped)?;
+            Ok(out_path.to_string_lossy().to_string())
+        } else if let Some(path) = frozen_background_path.as_deref() {
+            crop_image_file_to_file_impl(
                 &app_for_capture,
                 path,
                 x,
@@ -16700,18 +16720,14 @@ async fn complete_snip_selection(
                 viewport_width,
                 viewport_height,
                 None,
-            );
-            remove_snip_background_file(&app_for_capture, Some(path));
-            result
-        } else {
-            capture_physical_area_to_file(
-                Some(&app_for_capture),
-                physical_x,
-                physical_y,
-                physical_w,
-                physical_h,
             )
+        } else {
+            Err("snip frame missing".to_string())
+        };
+        if let Some(path) = frozen_background_path.as_deref() {
+            remove_snip_background_file(&app_for_capture, Some(path));
         }
+        result
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -17266,16 +17282,20 @@ fn show_snip_window(
         .get_webview_window("main")
         .or_else(|| app_handle.get_webview_window("edge"))
         .ok_or_else(|| "anchor window not found".to_string())?;
-    let monitor = anchor
-        .current_monitor()
-        .map_err(|e| e.to_string())?
-        .or_else(|| {
-            anchor
-                .available_monitors()
-                .ok()
-                .and_then(|mut monitors| monitors.pop())
-        })
-        .ok_or_else(|| "no current monitor".to_string())?;
+    let desktop = crate::snip_desktop::DesktopRect::union_bounds(
+        anchor
+            .available_monitors()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .map(|monitor| {
+                let pos = monitor.position();
+                let size = monitor.size();
+                (pos.x, pos.y, size.width, size.height)
+            }),
+    )
+    .ok_or_else(|| "no current monitor".to_string())?;
+    let desktop_position = PhysicalPosition::new(desktop.x, desktop.y);
+    let desktop_size = PhysicalSize::new(desktop.width, desktop.height);
 
     if let Some(main) = main.as_ref() {
         let _ = main.set_ignore_cursor_events(true);
@@ -17285,9 +17305,9 @@ fn show_snip_window(
     snip.set_ignore_cursor_events(false).ok();
     snip.set_always_on_top(true).ok();
     snip.set_shadow(false).ok();
-    snip.set_position(*monitor.position())
+    snip.set_position(desktop_position)
         .map_err(|e| e.to_string())?;
-    snip.set_size(*monitor.size()).map_err(|e| e.to_string())?;
+    snip.set_size(desktop_size).map_err(|e| e.to_string())?;
     let _ = snip.emit(
         "snip-reset",
         serde_json::json!({ "backgroundPath": background_path }),
@@ -17298,7 +17318,7 @@ fn show_snip_window(
     #[cfg(target_os = "windows")]
     {
         use winapi::um::winuser::{
-            SetForegroundWindow, SetWindowPos, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+            SetForegroundWindow, SetWindowPos, HWND_TOPMOST, SWP_SHOWWINDOW,
         };
 
         if let Ok(hwnd) = snip.hwnd() {
@@ -17307,11 +17327,11 @@ fn show_snip_window(
                 SetWindowPos(
                     hwnd,
                     HWND_TOPMOST,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                    desktop.x,
+                    desktop.y,
+                    desktop.width as i32,
+                    desktop.height as i32,
+                    SWP_SHOWWINDOW,
                 );
                 SetForegroundWindow(hwnd);
             }
@@ -17347,6 +17367,7 @@ fn recover_after_snip(
     background_path: Option<String>,
 ) -> Result<(), String> {
     let background_path = take_snip_background_path(background_path);
+    clear_snip_frozen_frame();
     remove_snip_background_file(&app_handle, background_path.as_deref());
     let _ = width;
     if let Some(snip) = app_handle.get_webview_window("snip") {

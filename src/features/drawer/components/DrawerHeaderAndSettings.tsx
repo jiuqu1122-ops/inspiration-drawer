@@ -1,5 +1,5 @@
 import { AnimatePresence,motion } from 'framer-motion';
-import { ArrowUp,CalendarDays,Check,CheckSquare,ChevronDown,ChevronRight,Download,FolderOpen,History,Image as ImageIcon,Info,Keyboard,LayoutGrid,Lightbulb,Link,LogOut,Minus,Monitor,Move,Palette,Pin,Power,RefreshCw,RotateCcw,Search,Settings,Smartphone,Sparkles,Square,StickyNote,Sun,Trash2,Wallet,X } from 'lucide-react';
+import { ArrowUp,CalendarDays,Check,CheckSquare,ChevronDown,ChevronRight,Download,FolderOpen,History,Image as ImageIcon,Info,Keyboard,LayoutGrid,Lightbulb,Link,LogOut,Minus,Monitor,Move,Palette,Pin,Power,RefreshCw,RotateCcw,Search,Settings,Smartphone,Sparkles,Square,StickyNote,Sun,Trash2,Type,Wallet,X } from 'lucide-react';
 import { DrawerAiClassificationBar } from '../../../components/DrawerAiClassificationBar';
 import { DrawerOrganizationPanel } from '../../../components/DrawerOrganizationPanel';
 import { CANVAS_AI_PROVIDER_SELECT_OPTIONS,getCanvasAiApiKeyPlaceholder,getCanvasAiEndpointPlaceholder,getStoredCanvasAiApiKey,getStoredCanvasAiApiProvider,getStoredCanvasAiEndpoint,getStoredCanvasAiHeadersText,isCanvasAiEndpointVisible,isCanvasAiRemoteModelProvider,normalizeCanvasAiProvider } from '../../../utils/canvasAiConfig';
@@ -12,6 +12,8 @@ import { CanvasSearchResults } from '../CanvasSearchResults';
 import { CANVAS_SEARCH_CANDIDATE_LIMIT } from '../useDrawerSearch';
 import type { BufferItem } from '../../../types';
 import type { DrawerTabType } from '../../../types/drawer';
+import { APP_FONT_SIZE_OPTIONS } from '../../../utils/appFontScale';
+import { useAppFontSize } from '../../preferences/AppFontSizeContext';
 
 export type DrawerHeaderAndSettingsScope = Record<string, any> & {
   displayItems: BufferItem[];
@@ -23,6 +25,7 @@ export type DrawerHeaderAndSettingsScope = Record<string, any> & {
 };
 
 export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSettingsScope }) {
+  const { appFontSize, setAppFontSize } = useAppFontSize();
   const { activateSearch, activeDrawerAiClassificationLabel, activeFolderId, activeSettingCategory, activeTab, addCanvasSearchMediaCandidate, agentCustomApiKey, agentCustomBaseUrl, agentCustomProvider, agentCustomSaving, agentModels, agentModelsLoading, appVersion, assignDrawerImageToCanvasWorkflowSlot, autoAiAnalysisProgress, calendarNotificationsEnabled, cancelByokCustomization, canvasAgent, canvasAiApiKey, canvasAiCanRefreshModels, canvasAiCredentialSource, canvasAiEndpoint, canvasAiHasApiCredential, canvasAiHeadersText, canvasAiNewApiVideoKey, canvasAiOpenAiModelError, canvasAiProvider, canvasAiRemoteModelCount, canvasAiRemoteModelEmptyHint, canvasAiUsesCloudImageModels, canvasAiXaisBalance, canvasAiXaisBalanceText, canvasDrawerSourceItemIds, canvasSearchCandidateLimit, canvasSearchMediaResults, canvasShortcut, canvasWorkflowSlotPickTarget, checkCanvasAiXaisBalance, checkLocalVisionModelStatus, cloudAccount, cloudAccountSyncError, confirmCloudAccountLogout, connectSelectedCanvasItemsToGenerator, creditRedemptionCode, creditRedemptionError, displayItems, DRAWER_TOOL_BUTTON_BASE_CLASS, drawerAiAnalysisSummary, drawerAiClassificationDimension, drawerAiClassificationGroups, drawerClassificationView, drawerScopedItems, eagleImportMode, eagleImportStatus, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiProvider, enterCanvasMode, folders, handleAppUpdatePromptClick, handleExportSelectedItems, handleRecordShortcut, handleTogglePin, hasLocalXaisAccount, importFromEagle, importFromEagleLibrary, installOllamaSilently, isAutoStart, isAutoStartChanging, isByokUnlocked, isCanvasAiLicenseManaged, isCanvasChromeHidden, isCanvasMode, isCanvasWorkbenchActive, isCanvasWorkbenchMode, isCheckingAppUpdate, isCloudAccountLoading, isCloudAccountLoggingOut, isDark, isDrawerAiClassificationMode, isDrawerWorkbenchActive, isDrawerWorkbenchMode, isFolderSidebarLayout, isInstallingOllama, isLicenseLoading, isLocalVisionModelChecking, isMainWorkbenchActive, isMobileConnected, isPinned, isRecording, isRecordingCanvas, isRecordingNote, isRecordingSearch, isRecordingSnip, isRecordingText, isRecordingTrigger, isRedeemingCredits, isRefreshingCanvasAiOpenAiModels, isSearchActive, isSelectMode, isTestingCanvasAiConnection, items, lastSelectedDrawerItemIdRef, LICENSE_EDITION_LABELS, LICENSE_STATE_LABELS, licenseAiAccess, licenseStatus, localVisionModelDownload, localVisionModelLastError, managedCanvasAiProviderLabel, normalizedDeferredSearchQuery, noteShortcut, openCloudCreditUsage, openOllamaDownloadPage, redeemCloudCredits, refreshCanvasAiOpenAiModels, refreshCloudAccount, refreshVisibleBalances, requestDeleteDrawerItems, requestExitCanvasMode, retryLocalVisionModelDownload, runCanvasWorkbenchWindowAction, runDrawerWorkbenchWindowAction, saveAgentCustomApi, screenshotAutoPinNote, searchInputRef, searchQuery, searchShortcut, selectedCanvasAiGenerator, selectedCanvasConnectableCount, selectedIds, setActiveDrawerAiClassificationLabel, setActiveSettingCategory, setActiveTab, setAgentCustomApiKey, setAgentCustomBaseUrl, setAgentCustomProvider, setCanvasAiApiKey, setCanvasAiApiProvider, setCanvasAiCredentialSource, setCanvasAiEndpoint, setCanvasAiHeadersText, setCanvasAiNewApiVideoKey, setCanvasAiProvider, setCanvasSearchCandidateLimit, setCanvasShortcut, setCanvasWorkflowSlotPickTarget, setCreditRedemptionCode, setCreditRedemptionError, setDrawerAiClassificationDimension, setDrawerClassificationView, setEagleImportMode, setIsDark, setIsRecording, setIsRecordingCanvas, setIsRecordingNote, setIsRecordingSearch, setIsRecordingSnip, setIsRecordingText, setIsRecordingTrigger, setIsSearchActive, setIsSelectMode, setNoteShortcut, setSearchQuery, setSearchShortcut, setSelectedIds, setShortcut, setShowAboutSoftware, setShowMoveFolderModal, setShowQR, setShowSettings, setShowStoragePath, setSnipShortcut, setTextShortcut, setTriggerShortcut, shortcut, shouldShowLegacyAiSettings, showAppUpdatePromptArrow, showSettings, showToast, snipShortcut, startDrawerTitleDrag, switchAgentFundingSource, TABS, testCanvasAiConnection, textShortcut, toggleAutoStartSetting, toggleCalendarNotificationsSetting, toggleCanvasWorkbenchMode, toggleDrawerSidebarLayout, toggleDrawerWorkbenchMode, toggleScreenshotAutoPinNoteSetting, toggleSettings, toggleTriggerMode, triggerMode, triggerShortcut, webImageCacheDir } = scope;
   return (
 <>
@@ -392,7 +395,7 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                     <motion.div
                       initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.15, ease: "easeOut" }}
                       data-drawer-settings-panel="true"
-                      className="bg-stone-50/95 dark:bg-stone-900/95 backdrop-blur-md border-b border-stone-200/50 dark:border-stone-800/50 overflow-hidden relative z-[99] will-change-transform" onMouseDown={e => e.stopPropagation()}
+                      className="bg-stone-50/95 dark:bg-stone-900/95 backdrop-blur-md border-b border-stone-200/50 dark:border-stone-800/50 overflow-hidden relative z-[100065] will-change-transform" onMouseDown={e => e.stopPropagation()}
                     >
                       <div data-settings-scroll="true" className="p-3 space-y-2 max-h-[60vh] overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600 [&::-webkit-scrollbar-thumb]:rounded-full">
 
@@ -411,6 +414,29 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                                       {isDark ? '切换浅色' : '切换深色'}
                                     </button>
                                   </div>
+                                  <div data-app-font-size-setting="true" className="flex items-center justify-between gap-3 rounded-[16px] border border-transparent px-2.5 py-2">
+                                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                                      <Type className="h-3.5 w-3.5 text-blue-500" /> 界面字号
+                                    </span>
+                                    <div role="group" aria-label="界面字号" className="flex items-center gap-1.5">
+                                      {APP_FONT_SIZE_OPTIONS.map(option => (
+                                        <button
+                                          key={option.value}
+                                          type="button"
+                                          data-app-font-size-option="true"
+                                          data-active={appFontSize === option.value ? 'true' : 'false'}
+                                          aria-pressed={appFontSize === option.value}
+                                          onClick={() => setAppFontSize(option.value)}
+                                          className="min-w-[48px] rounded-full border border-stone-200 bg-white px-2.5 py-1.5 text-[10px] font-semibold text-stone-600 transition-colors dark:border-stone-600 dark:bg-stone-900 dark:text-stone-300"
+                                        >
+                                          {option.label}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                  <p className="px-2.5 text-[10px] leading-relaxed text-stone-400 dark:text-stone-500">
+                                    小号为当前默认；字号限制在 100%–120%，不会缩放图片和画布。
+                                  </p>
                                   <button
                                     type="button"
                                     onClick={toggleDrawerSidebarLayout}
