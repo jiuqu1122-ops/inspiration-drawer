@@ -32,6 +32,11 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
   const [referralInviteCodeDraft, setReferralInviteCodeDraft] = useState('');
   const [isReferralBinding, setIsReferralBinding] = useState(false);
   const { activateSearch, activeDrawerAiClassificationLabel, activeFolderId, activeSettingCategory, activeTab, addCanvasSearchMediaCandidate, agentCustomApiKey, agentCustomBaseUrl, agentCustomProvider, agentCustomSaving, agentModels, agentModelsLoading, appVersion, assignDrawerImageToCanvasWorkflowSlot, autoAiAnalysisProgress, calendarNotificationsEnabled, cancelByokCustomization, canvasAgent, canvasAiApiKey, canvasAiCanRefreshModels, canvasAiCredentialSource, canvasAiEndpoint, canvasAiHasApiCredential, canvasAiHeadersText, canvasAiNewApiVideoKey, canvasAiOpenAiModelError, canvasAiProvider, canvasAiRemoteModelCount, canvasAiRemoteModelEmptyHint, canvasAiUsesCloudImageModels, canvasAiXaisBalance, canvasAiXaisBalanceText, canvasDrawerSourceItemIds, canvasSearchCandidateLimit, canvasSearchMediaResults, canvasShortcut, canvasWorkflowSlotPickTarget, checkCanvasAiXaisBalance, checkLocalVisionModelStatus, cloudAccount, cloudAccountSyncError, confirmCloudAccountLogout, connectSelectedCanvasItemsToGenerator, creditRedemptionCode, creditRedemptionError, displayItems, DRAWER_TOOL_BUTTON_BASE_CLASS, drawerAiAnalysisSummary, drawerAiClassificationDimension, drawerAiClassificationGroups, drawerClassificationView, drawerScopedItems, eagleImportMode, eagleImportStatus, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiProvider, enterCanvasMode, folders, handleAppUpdatePromptClick, handleExportSelectedItems, handleRecordShortcut, handleTogglePin, hasLocalXaisAccount, importFromEagle, importFromEagleLibrary, installOllamaSilently, isAutoStart, isAutoStartChanging, isByokUnlocked, isCanvasAiLicenseManaged, isCanvasChromeHidden, isCanvasMode, isCanvasWorkbenchActive, isCanvasWorkbenchMode, isCheckingAppUpdate, isCloudAccountLoading, isCloudAccountLoggingOut, isDark, isDrawerAiClassificationMode, isDrawerWorkbenchActive, isDrawerWorkbenchMode, isFolderSidebarLayout, isInstallingOllama, isLicenseLoading, isLocalVisionModelChecking, isMainWorkbenchActive, isMobileConnected, isPinned, isRecording, isRecordingCanvas, isRecordingNote, isRecordingSearch, isRecordingSnip, isRecordingText, isRecordingTrigger, isRedeemingCredits, isRefreshingCanvasAiOpenAiModels, isSearchActive, isSelectMode, isTestingCanvasAiConnection, items, lastSelectedDrawerItemIdRef, LICENSE_EDITION_LABELS, LICENSE_STATE_LABELS, licenseAiAccess, licenseStatus, localVisionModelDownload, localVisionModelLastError, managedCanvasAiProviderLabel, normalizedDeferredSearchQuery, noteShortcut, openCloudCreditUsage, openOllamaDownloadPage, redeemCloudCredits, refreshCanvasAiOpenAiModels, refreshCloudAccount, refreshVisibleBalances, requestDeleteDrawerItems, requestExitCanvasMode, retryLocalVisionModelDownload, runCanvasWorkbenchWindowAction, runDrawerWorkbenchWindowAction, saveAgentCustomApi, screenshotAutoPinNote, searchInputRef, searchQuery, searchShortcut, selectedCanvasAiGenerator, selectedCanvasConnectableCount, selectedIds, setActiveDrawerAiClassificationLabel, setActiveSettingCategory, setActiveTab, setAgentCustomApiKey, setAgentCustomBaseUrl, setAgentCustomProvider, setCanvasAiApiKey, setCanvasAiApiProvider, setCanvasAiCredentialSource, setCanvasAiEndpoint, setCanvasAiHeadersText, setCanvasAiNewApiVideoKey, setCanvasAiProvider, setCanvasSearchCandidateLimit, setCanvasShortcut, setCanvasWorkflowSlotPickTarget, setCreditRedemptionCode, setCreditRedemptionError, setDrawerAiClassificationDimension, setDrawerClassificationView, setEagleImportMode, setIsDark, setIsRecording, setIsRecordingCanvas, setIsRecordingNote, setIsRecordingSearch, setIsRecordingSnip, setIsRecordingText, setIsRecordingTrigger, setIsSearchActive, setIsSelectMode, setNoteShortcut, setSearchQuery, setSearchShortcut, setSelectedIds, setShortcut, setShowAboutSoftware, setShowMoveFolderModal, setShowQR, setShowSettings, setShowStoragePath, setSnipShortcut, setTextShortcut, setTriggerShortcut, shortcut, shouldShowLegacyAiSettings, showAppUpdatePromptArrow, showSettings, showToast, snipShortcut, startDrawerTitleDrag, switchAgentFundingSource, TABS, testCanvasAiConnection, textShortcut, toggleAutoStartSetting, toggleCalendarNotificationsSetting, toggleCanvasWorkbenchMode, toggleDrawerSidebarLayout, toggleDrawerWorkbenchMode, toggleScreenshotAutoPinNoteSetting, toggleSettings, toggleTriggerMode, triggerMode, triggerShortcut, webImageCacheDir } = scope;
+  // The account panel is server-membership based; retain these scope fields for legacy callers.
+  void isLicenseLoading;
+  void LICENSE_EDITION_LABELS;
+  void LICENSE_STATE_LABELS;
+
   const copyReferralInviteCode = async () => {
     const code = cloudAccount?.referral?.inviteCode;
     if (!code) return;
@@ -998,17 +1003,22 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                                         )}
                                       </div>
                                       <span className="shrink-0 rounded-[8px] bg-stone-100 px-2.5 py-1 text-[9px] font-bold text-stone-600 dark:bg-stone-800 dark:text-stone-300">
-                                        {isLicenseLoading ? '读取中' : LICENSE_STATE_LABELS[licenseStatus?.state || 'unlicensed']}
+                                        {isCloudAccountLoading ? '读取中' : cloudAccount?.membership?.plan.name || '普通用户'}
                                       </span>
                                     </div>
-                                    <div className="mt-3 grid grid-cols-2 gap-3 border-t border-stone-100 pt-2.5 text-[10px] dark:border-stone-800">
-                                      <div>
-                                        <div className="text-stone-400 dark:text-stone-500">版本</div>
-                                        <div className="mt-0.5 font-semibold text-stone-700 dark:text-stone-200">{licenseStatus?.edition ? LICENSE_EDITION_LABELS[licenseStatus.edition] : '-'}</div>
-                                      </div>
-                                      <div>
-                                        <div className="text-stone-400 dark:text-stone-500">到期时间</div>
-                                        <div className="mt-0.5 font-semibold tabular-nums text-stone-700 dark:text-stone-200">{licenseStatus?.expire_at || '-'}</div>
+                                  </div>
+
+                                  <div className="mt-3 grid grid-cols-2 gap-3 border-t border-stone-100 pt-2.5 text-[10px] dark:border-stone-800">
+                                    <div>
+                                      <div className="text-stone-400 dark:text-stone-500">会员</div>
+                                      <div className="mt-0.5 font-semibold text-stone-700 dark:text-stone-200">{cloudAccount?.membership?.plan.name || '普通用户'}</div>
+                                    </div>
+                                    <div>
+                                      <div className="text-stone-400 dark:text-stone-500">会员到期时间</div>
+                                      <div className="mt-0.5 font-semibold tabular-nums text-stone-700 dark:text-stone-200">
+                                        {cloudAccount?.membership?.expiresAt
+                                          ? new Date(cloudAccount.membership.expiresAt).toLocaleDateString('zh-CN')
+                                          : '无会员期限'}
                                       </div>
                                     </div>
                                   </div>
