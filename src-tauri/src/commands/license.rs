@@ -60,6 +60,8 @@ struct EmailVerificationRequest<'a> {
     display_name: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     legacy_license: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    invite_code: Option<&'a str>,
     app_version: &'a str,
 }
 
@@ -947,6 +949,7 @@ pub async fn verify_email_registration(
     challenge_id: String,
     code: String,
     display_name: Option<String>,
+    invite_code: Option<String>,
 ) -> Result<LicenseStatus, String> {
     let email = validate_email(&email)?;
     let display_name = match display_name {
@@ -973,6 +976,7 @@ pub async fn verify_email_registration(
             machine_id: &machine_id,
             display_name: display_name.as_deref(),
             legacy_license,
+            invite_code: invite_code.as_deref().map(str::trim).filter(|value| !value.is_empty()),
             app_version: env!("CARGO_PKG_VERSION"),
         },
     )

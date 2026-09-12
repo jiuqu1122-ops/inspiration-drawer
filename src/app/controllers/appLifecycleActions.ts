@@ -626,8 +626,8 @@ export const cancelByokCustomizationImpl = async (ctx: Pick<appLifecycleActionCo
 
 };
 
-export const verifyEmailAccountImpl = async (ctx: Pick<appLifecycleActionContext, 'emailChallengeId' | 'emailVerificationCode' | 'formatLicenseCommandError' | 'refreshCloudAccount' | 'registrationDisplayName' | 'registrationEmail' | 'setEmailChallengeId' | 'setEmailRegistrationError' | 'setEmailVerificationCode' | 'setIsEmailVerifying' | 'setLicenseStatus' | 'showToast'>) => {
-  const { emailChallengeId, emailVerificationCode, formatLicenseCommandError, refreshCloudAccount, registrationDisplayName, registrationEmail, setEmailChallengeId, setEmailRegistrationError, setEmailVerificationCode, setIsEmailVerifying, setLicenseStatus, showToast } = ctx;
+export const verifyEmailAccountImpl = async (ctx: Pick<appLifecycleActionContext, 'emailChallengeId' | 'emailVerificationCode' | 'formatLicenseCommandError' | 'refreshCloudAccount' | 'registrationDisplayName' | 'registrationEmail' | 'setEmailChallengeId' | 'setEmailRegistrationError' | 'setEmailVerificationCode' | 'setIsEmailVerifying' | 'setLicenseStatus' | 'showToast'> & { registrationInviteCode: string }) => {
+  const { emailChallengeId, emailVerificationCode, formatLicenseCommandError, refreshCloudAccount, registrationDisplayName, registrationEmail, registrationInviteCode, setEmailChallengeId, setEmailRegistrationError, setEmailVerificationCode, setIsEmailVerifying, setLicenseStatus, showToast } = ctx;
     const email = registrationEmail.trim().toLowerCase();
     const displayName = registrationDisplayName.trim();
     const code = emailVerificationCode.trim();
@@ -652,6 +652,7 @@ export const verifyEmailAccountImpl = async (ctx: Pick<appLifecycleActionContext
         challengeId: emailChallengeId,
         code,
         displayName: displayName || null,
+        inviteCode: registrationInviteCode.trim() || null,
       });
       setLicenseStatus(nextStatus);
       setEmailVerificationCode('');

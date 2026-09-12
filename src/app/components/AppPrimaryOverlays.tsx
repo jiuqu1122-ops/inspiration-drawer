@@ -10,7 +10,7 @@ export type AppPrimaryOverlaysScope = Record<string, any> & {
 };
 
 export function AppPrimaryOverlays({ scope }: { scope: AppPrimaryOverlaysScope }) {
-  const { addInspirationSpaceShareAndReturnToCanvas, cancelVirtualDropJob, canRegisterByEmail, confirmSnip, deleteDrawerFolders, emailChallengeId, emailRegistrationError, emailVerificationCode, folderContextMenu, folders, formatVirtualDropBytes, getFolderActionIds, handleOpenFolderModal, inspirationSpaceTemplateOptions, isEmailCodeSending, isEmailVerifying, isInspirationSpaceOpen, isLicenseGateActive, isLicenseLoading, isMouseDown, keepDrawerOpenByPointer, LazyInspirationSpaceWindow, licenseGateMessage, licenseGateTitle, loadInspirationSpaceDrawerImages, openMoveExistingFolderModal, prepareInspirationSpaceTemplate, readInspirationSpaceDrawerImage, registrationDisplayName, registrationEmail, requestEmailCode, selection, setActiveFolderId, setEditingFolderId, setEmailChallengeId, setEmailRegistrationError, setEmailVerificationCode, setFolderContextMenu, setIsInspirationSpaceOpen, setRegistrationDisplayName, setRegistrationEmail, setRenameValue, setSelection, snipMode, startPos, verifyEmailAccount, virtualDropJobs } = scope;
+  const { addInspirationSpaceShareAndReturnToCanvas, cancelVirtualDropJob, canRegisterByEmail, confirmSnip, deleteDrawerFolders, emailChallengeId, emailRegistrationError, emailVerificationCode, folderContextMenu, folders, formatVirtualDropBytes, getFolderActionIds, handleOpenFolderModal, inspirationSpaceTemplateOptions, isEmailCodeSending, isEmailVerifying, isInspirationSpaceOpen, isLicenseGateActive, isLicenseLoading, isMouseDown, keepDrawerOpenByPointer, LazyInspirationSpaceWindow, licenseGateMessage, licenseGateTitle, loadInspirationSpaceDrawerImages, openMoveExistingFolderModal, prepareInspirationSpaceTemplate, readInspirationSpaceDrawerImage, registrationDisplayName, registrationEmail, registrationInviteCode, requestEmailCode, selection, setActiveFolderId, setEditingFolderId, setEmailChallengeId, setEmailRegistrationError, setEmailVerificationCode, setEmailInviteCode, setFolderContextMenu, setIsInspirationSpaceOpen, setRegistrationDisplayName, setRegistrationEmail, setRenameValue, setSelection, snipMode, startPos, verifyEmailAccount, virtualDropJobs } = scope;
   return (
 <>
 <AnimatePresence>
@@ -339,6 +339,18 @@ export function AppPrimaryOverlays({ scope }: { scope: AppPrimaryOverlaysScope }
                       className="h-11 w-full rounded-[14px] border border-blue-100 bg-white px-3 text-sm font-bold text-stone-800 outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-blue-400/20 dark:bg-stone-950 dark:text-stone-100"
                     />
                     <small className="text-[10px] leading-4 text-stone-500 dark:text-stone-400">仅用于后台识别，无需填写真实姓名</small>
+                  </label>
+
+                  <label className="mt-3 grid gap-2">
+                    <span className="text-[11px] font-black text-stone-600 dark:text-stone-300">邀请码（可选）</span>
+                    <input
+                      value={registrationInviteCode || ''}
+                      onChange={(event) => setEmailInviteCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 16))}
+                      maxLength={16}
+                      autoComplete="off"
+                      placeholder="填写邀请人的邀请码，双方可获得积分"
+                      className="h-11 w-full rounded-[14px] border border-blue-100 bg-white px-3 text-sm font-bold tracking-[0.14em] text-stone-800 outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-blue-400/20 dark:bg-stone-950 dark:text-stone-100"
+                    />
                   </label>
 
                   <label className="mt-3 grid gap-2">

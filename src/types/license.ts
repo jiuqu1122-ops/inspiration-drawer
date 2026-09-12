@@ -54,6 +54,15 @@ export type CloudAccountSummary = {
   email?: string | null;
   displayName?: string | null;
   wallet: CloudWalletSummary;
+  membership?: {
+    id: string;
+    status: string;
+    startsAt: string;
+    expiresAt: string;
+    source?: string | null;
+    plan: { id: string; code: string; name: string; description?: string | null };
+  } | null;
+  referral?: { inviteCode: string } | null;
 };
 
 export type CloudCreditUsageEntry = {

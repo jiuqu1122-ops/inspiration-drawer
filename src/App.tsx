@@ -1637,6 +1637,7 @@ function MainApp() {
   const [isLicenseLoading, setIsLicenseLoading] = useState(false);
   const [registrationEmail, setRegistrationEmail] = useState('');
   const [registrationDisplayName, setRegistrationDisplayName] = useState('');
+  const [registrationInviteCode, setRegistrationInviteCode] = useState('');
   const [emailVerificationCode, setEmailVerificationCode] = useState('');
   const [emailChallengeId, setEmailChallengeId] = useState('');
   const [emailRegistrationError, setEmailRegistrationError] = useState('');
@@ -1781,7 +1782,7 @@ function MainApp() {
 
   const cancelByokCustomization = async () => { return cancelByokCustomizationImpl({ canvasAgent, setCanvasAiCredentialSource, setIsByokUnlocked, showToast }); };
 
-  const verifyEmailAccount = async () => { return verifyEmailAccountImpl({ emailChallengeId, emailVerificationCode, formatLicenseCommandError, refreshCloudAccount, registrationDisplayName, registrationEmail, setEmailChallengeId, setEmailRegistrationError, setEmailVerificationCode, setIsEmailVerifying, setLicenseStatus, showToast }); };
+  const verifyEmailAccount = async () => { return verifyEmailAccountImpl({ emailChallengeId, emailVerificationCode, formatLicenseCommandError, refreshCloudAccount, registrationDisplayName, registrationEmail, registrationInviteCode, setEmailChallengeId, setEmailRegistrationError, setEmailVerificationCode, setIsEmailVerifying, setLicenseStatus, showToast }); };
   const textInputDialogResolverRef = useRef<((value: string | null) => void) | null>(null);
   const textInputDialogInputRef = useRef<HTMLInputElement | null>(null);
   const [textInputDialog, setTextInputDialog] = useState<TextInputDialogState>({
@@ -6383,7 +6384,7 @@ useEffect(() => {
   const licenseGateMessage = isLicenseLoading && !licenseStatus
     ? '正在读取本机授权状态，请稍候。'
     : canRegisterByEmail
-      ? '新邮箱注册自动获得 30 天高级版；已有邮箱登录会继承原账户的授权到期时间。'
+      ? '普通账户长期可用；会员权益和价格由服务端按到期时间管理，注册时填写邀请码可获得双方奖励。'
       : licenseStatus?.message || '请导入有效 license 后使用抽屉。';
 
   useEffect(() => { return runDerivedUiEffect07({ clearIdleAutoClose, closeTimerRef, drawerHeightRef, drawerWidthRef, isLicenseGateActive, isPointerInsideDrawerRef, isPostInstallLaunchRef, isStartupOverlayActive, licenseStatus, setDrawerState, setIsOpen, startupAutoCloseSuppressedRef, startupAutoCloseTimerRef, stateRef, triggerModeRef }); }, [isLicenseGateActive, isStartupOverlayActive]);
@@ -6512,7 +6513,7 @@ useEffect(() => {
       <AppToastHost />
 
 <AppPrimaryOverlays
-  scope={{ addInspirationSpaceShareAndReturnToCanvas, cancelVirtualDropJob, canRegisterByEmail, confirmSnip, deleteDrawerFolders, emailChallengeId, emailRegistrationError, emailVerificationCode, folderContextMenu, folders, formatVirtualDropBytes, getFolderActionIds, handleOpenFolderModal, inspirationSpaceTemplateOptions, isEmailCodeSending, isEmailVerifying, isInspirationSpaceOpen, isLicenseGateActive, isLicenseLoading, isMouseDown, keepDrawerOpenByPointer, LazyInspirationSpaceWindow, licenseGateMessage, licenseGateTitle, loadInspirationSpaceDrawerImages, openMoveExistingFolderModal, prepareInspirationSpaceTemplate, readInspirationSpaceDrawerImage, registrationDisplayName, registrationEmail, requestEmailCode, selection, setActiveFolderId, setEditingFolderId, setEmailChallengeId, setEmailRegistrationError, setEmailVerificationCode, setFolderContextMenu, setIsInspirationSpaceOpen, setRegistrationDisplayName, setRegistrationEmail, setRenameValue, setSelection, snipMode, startPos, verifyEmailAccount, virtualDropJobs }}
+  scope={{ addInspirationSpaceShareAndReturnToCanvas, cancelVirtualDropJob, canRegisterByEmail, confirmSnip, deleteDrawerFolders, emailChallengeId, emailRegistrationError, emailVerificationCode, folderContextMenu, folders, formatVirtualDropBytes, getFolderActionIds, handleOpenFolderModal, inspirationSpaceTemplateOptions, isEmailCodeSending, isEmailVerifying, isInspirationSpaceOpen, isLicenseGateActive, isLicenseLoading, isMouseDown, keepDrawerOpenByPointer, LazyInspirationSpaceWindow, licenseGateMessage, licenseGateTitle, loadInspirationSpaceDrawerImages, openMoveExistingFolderModal, prepareInspirationSpaceTemplate, readInspirationSpaceDrawerImage, registrationDisplayName, registrationEmail, registrationInviteCode, requestEmailCode, selection, setActiveFolderId, setEditingFolderId, setEmailChallengeId, setEmailRegistrationError, setEmailVerificationCode, setEmailInviteCode: setRegistrationInviteCode, setFolderContextMenu, setIsInspirationSpaceOpen, setRegistrationDisplayName, setRegistrationEmail, setRenameValue, setSelection, snipMode, startPos, verifyEmailAccount, virtualDropJobs }}
 />
 
 <DrawerShell
