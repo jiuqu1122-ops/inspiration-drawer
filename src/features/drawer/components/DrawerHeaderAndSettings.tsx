@@ -1,5 +1,8 @@
+import { invoke } from '@tauri-apps/api/core';
 import { AnimatePresence,motion } from 'framer-motion';
-import { ArrowUp,CalendarDays,Check,CheckSquare,ChevronDown,ChevronRight,Download,FolderOpen,History,Image as ImageIcon,Info,Keyboard,LayoutGrid,Lightbulb,Link,LogOut,Minus,Monitor,Move,Palette,Pin,Power,RefreshCw,RotateCcw,Search,Settings,Smartphone,Sparkles,Square,StickyNote,Sun,Trash2,Type,Wallet,X } from 'lucide-react';
+import { ArrowUp,CalendarDays,Check,CheckSquare,ChevronDown,ChevronRight,Copy,Download,FolderOpen,History,Image as ImageIcon,Info,Keyboard,LayoutGrid,Lightbulb,Link,LogOut,Minus,Monitor,Move,Palette,Pin,Power,RefreshCw,RotateCcw,Search,Settings,Smartphone,Sparkles,Square,StickyNote,Sun,Trash2,Type,Wallet,X } from 'lucide-react';
+import { useState } from 'react';
+import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { DrawerAiClassificationBar } from '../../../components/DrawerAiClassificationBar';
 import { DrawerOrganizationPanel } from '../../../components/DrawerOrganizationPanel';
 import { CANVAS_AI_PROVIDER_SELECT_OPTIONS,getCanvasAiApiKeyPlaceholder,getCanvasAiEndpointPlaceholder,getStoredCanvasAiApiKey,getStoredCanvasAiApiProvider,getStoredCanvasAiEndpoint,getStoredCanvasAiHeadersText,isCanvasAiEndpointVisible,isCanvasAiRemoteModelProvider,normalizeCanvasAiProvider } from '../../../utils/canvasAiConfig';
@@ -26,7 +29,39 @@ export type DrawerHeaderAndSettingsScope = Record<string, any> & {
 
 export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSettingsScope }) {
   const { appFontSize, setAppFontSize } = useAppFontSize();
+  const [referralInviteCodeDraft, setReferralInviteCodeDraft] = useState('');
+  const [isReferralBinding, setIsReferralBinding] = useState(false);
   const { activateSearch, activeDrawerAiClassificationLabel, activeFolderId, activeSettingCategory, activeTab, addCanvasSearchMediaCandidate, agentCustomApiKey, agentCustomBaseUrl, agentCustomProvider, agentCustomSaving, agentModels, agentModelsLoading, appVersion, assignDrawerImageToCanvasWorkflowSlot, autoAiAnalysisProgress, calendarNotificationsEnabled, cancelByokCustomization, canvasAgent, canvasAiApiKey, canvasAiCanRefreshModels, canvasAiCredentialSource, canvasAiEndpoint, canvasAiHasApiCredential, canvasAiHeadersText, canvasAiNewApiVideoKey, canvasAiOpenAiModelError, canvasAiProvider, canvasAiRemoteModelCount, canvasAiRemoteModelEmptyHint, canvasAiUsesCloudImageModels, canvasAiXaisBalance, canvasAiXaisBalanceText, canvasDrawerSourceItemIds, canvasSearchCandidateLimit, canvasSearchMediaResults, canvasShortcut, canvasWorkflowSlotPickTarget, checkCanvasAiXaisBalance, checkLocalVisionModelStatus, cloudAccount, cloudAccountSyncError, confirmCloudAccountLogout, connectSelectedCanvasItemsToGenerator, creditRedemptionCode, creditRedemptionError, displayItems, DRAWER_TOOL_BUTTON_BASE_CLASS, drawerAiAnalysisSummary, drawerAiClassificationDimension, drawerAiClassificationGroups, drawerClassificationView, drawerScopedItems, eagleImportMode, eagleImportStatus, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiProvider, enterCanvasMode, folders, handleAppUpdatePromptClick, handleExportSelectedItems, handleRecordShortcut, handleTogglePin, hasLocalXaisAccount, importFromEagle, importFromEagleLibrary, installOllamaSilently, isAutoStart, isAutoStartChanging, isByokUnlocked, isCanvasAiLicenseManaged, isCanvasChromeHidden, isCanvasMode, isCanvasWorkbenchActive, isCanvasWorkbenchMode, isCheckingAppUpdate, isCloudAccountLoading, isCloudAccountLoggingOut, isDark, isDrawerAiClassificationMode, isDrawerWorkbenchActive, isDrawerWorkbenchMode, isFolderSidebarLayout, isInstallingOllama, isLicenseLoading, isLocalVisionModelChecking, isMainWorkbenchActive, isMobileConnected, isPinned, isRecording, isRecordingCanvas, isRecordingNote, isRecordingSearch, isRecordingSnip, isRecordingText, isRecordingTrigger, isRedeemingCredits, isRefreshingCanvasAiOpenAiModels, isSearchActive, isSelectMode, isTestingCanvasAiConnection, items, lastSelectedDrawerItemIdRef, LICENSE_EDITION_LABELS, LICENSE_STATE_LABELS, licenseAiAccess, licenseStatus, localVisionModelDownload, localVisionModelLastError, managedCanvasAiProviderLabel, normalizedDeferredSearchQuery, noteShortcut, openCloudCreditUsage, openOllamaDownloadPage, redeemCloudCredits, refreshCanvasAiOpenAiModels, refreshCloudAccount, refreshVisibleBalances, requestDeleteDrawerItems, requestExitCanvasMode, retryLocalVisionModelDownload, runCanvasWorkbenchWindowAction, runDrawerWorkbenchWindowAction, saveAgentCustomApi, screenshotAutoPinNote, searchInputRef, searchQuery, searchShortcut, selectedCanvasAiGenerator, selectedCanvasConnectableCount, selectedIds, setActiveDrawerAiClassificationLabel, setActiveSettingCategory, setActiveTab, setAgentCustomApiKey, setAgentCustomBaseUrl, setAgentCustomProvider, setCanvasAiApiKey, setCanvasAiApiProvider, setCanvasAiCredentialSource, setCanvasAiEndpoint, setCanvasAiHeadersText, setCanvasAiNewApiVideoKey, setCanvasAiProvider, setCanvasSearchCandidateLimit, setCanvasShortcut, setCanvasWorkflowSlotPickTarget, setCreditRedemptionCode, setCreditRedemptionError, setDrawerAiClassificationDimension, setDrawerClassificationView, setEagleImportMode, setIsDark, setIsRecording, setIsRecordingCanvas, setIsRecordingNote, setIsRecordingSearch, setIsRecordingSnip, setIsRecordingText, setIsRecordingTrigger, setIsSearchActive, setIsSelectMode, setNoteShortcut, setSearchQuery, setSearchShortcut, setSelectedIds, setShortcut, setShowAboutSoftware, setShowMoveFolderModal, setShowQR, setShowSettings, setShowStoragePath, setSnipShortcut, setTextShortcut, setTriggerShortcut, shortcut, shouldShowLegacyAiSettings, showAppUpdatePromptArrow, showSettings, showToast, snipShortcut, startDrawerTitleDrag, switchAgentFundingSource, TABS, testCanvasAiConnection, textShortcut, toggleAutoStartSetting, toggleCalendarNotificationsSetting, toggleCanvasWorkbenchMode, toggleDrawerSidebarLayout, toggleDrawerWorkbenchMode, toggleScreenshotAutoPinNoteSetting, toggleSettings, toggleTriggerMode, triggerMode, triggerShortcut, webImageCacheDir } = scope;
+  const copyReferralInviteCode = async () => {
+    const code = cloudAccount?.referral?.inviteCode;
+    if (!code) return;
+    try {
+      await writeText(code);
+      showToast('邀请码已复制');
+    } catch (error) {
+      console.warn('复制邀请码失败:', error);
+      showToast('邀请码复制失败');
+    }
+  };
+  const bindReferralInviteCode = async () => {
+    const code = referralInviteCodeDraft.trim().toUpperCase();
+    if (code.length < 6) {
+      showToast('请输入有效的邀请码');
+      return;
+    }
+    try {
+      setIsReferralBinding(true);
+      await invoke('bind_cloud_referral', { inviteCode: code });
+      setReferralInviteCodeDraft('');
+      await refreshCloudAccount(true);
+      showToast('邀请码绑定成功，双方奖励已到账');
+    } catch (error) {
+      const message = String(error || '邀请码绑定失败').replace(/^[a-z_]+:\s*/i, '').trim();
+      showToast(message || '邀请码绑定失败');
+    } finally {
+      setIsReferralBinding(false);
+    }
+  };
   return (
 <>
 {/* 🌟 标题栏区域：安全的动态拖拽魔法 */}
@@ -977,6 +1012,52 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                                       </div>
                                     </div>
                                   </div>
+
+                                  {cloudAccount?.referral?.inviteCode && (
+                                    <div className="rounded-[14px] border border-blue-100 bg-blue-50/55 p-3.5 dark:border-blue-400/20 dark:bg-blue-400/10">
+                                      <div className="flex items-center justify-between gap-3">
+                                        <span className="text-[10px] font-semibold text-blue-700 dark:text-blue-200">我的邀请码</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => void copyReferralInviteCode()}
+                                          className="inline-flex items-center gap-1 rounded-[8px] px-2 py-1 text-[9px] font-bold text-blue-600 transition-colors hover:bg-blue-100 dark:text-blue-200 dark:hover:bg-blue-400/20"
+                                          title="复制邀请码"
+                                        >
+                                          <Copy className="h-3 w-3" /> 复制
+                                        </button>
+                                      </div>
+                                      <div className="mt-2 rounded-[10px] border border-blue-100 bg-white px-3 py-2 text-center font-mono text-[15px] font-black tracking-[0.2em] text-blue-800 dark:border-blue-400/20 dark:bg-stone-950/50 dark:text-blue-100">
+                                        {cloudAccount.referral.inviteCode}
+                                      </div>
+                                      {cloudAccount.referral.bound ? (
+                                        <div className="mt-2 text-[9px] leading-4 text-stone-500 dark:text-stone-400">你已绑定邀请关系，邀请码不能更换。</div>
+                                      ) : cloudAccount.referral.canBind !== true ? (
+                                        <div className="mt-2 text-[9px] leading-4 text-amber-700 dark:text-amber-200">已生图或获得过积分，当前账号不能再绑定邀请码。</div>
+                                      ) : (
+                                        <div className="mt-3 flex gap-1.5">
+                                          <input
+                                            value={referralInviteCodeDraft}
+                                            onChange={event => setReferralInviteCodeDraft(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 16))}
+                                            onKeyDown={event => {
+                                              if (event.key === 'Enter' && !isReferralBinding) void bindReferralInviteCode();
+                                            }}
+                                            maxLength={16}
+                                            autoComplete="off"
+                                            placeholder="输入好友的邀请码"
+                                            className="min-w-0 flex-1 rounded-[10px] border border-blue-100 bg-white px-3 py-1.5 text-[11px] font-medium tracking-[0.1em] text-stone-700 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20 dark:border-blue-400/20 dark:bg-stone-950/50 dark:text-stone-100"
+                                          />
+                                          <button
+                                            type="button"
+                                            onClick={() => void bindReferralInviteCode()}
+                                            disabled={isReferralBinding || referralInviteCodeDraft.trim().length < 6}
+                                            className="shrink-0 rounded-[10px] bg-blue-600 px-3 py-1.5 text-[10px] font-bold text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-45"
+                                          >
+                                            {isReferralBinding ? '绑定中…' : '绑定'}
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
 
                                   <div className="rounded-[14px] border border-stone-200/80 bg-white p-3.5 dark:border-stone-700/70 dark:bg-stone-900/45">
                                     <div className="flex items-center justify-between gap-3">

@@ -62,7 +62,12 @@ export type CloudAccountSummary = {
     source?: string | null;
     plan: { id: string; code: string; name: string; description?: string | null };
   } | null;
-  referral?: { inviteCode: string } | null;
+  referral?: {
+    inviteCode: string;
+    bound?: boolean;
+    canBind?: boolean;
+    bindBlockedReason?: string | null;
+  } | null;
 };
 
 export type CloudCreditUsageEntry = {

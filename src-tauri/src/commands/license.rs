@@ -85,6 +85,8 @@ struct EmailVerificationResponse {
 struct CloudAccountResponse {
     user: CloudUserResponse,
     wallet: Option<CloudWalletSummary>,
+    membership: Option<CloudMembershipSummary>,
+    referral: Option<CloudReferralSummary>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -92,6 +94,35 @@ struct CloudAccountResponse {
 struct CloudUserResponse {
     email: Option<String>,
     display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudMembershipSummary {
+    id: String,
+    status: String,
+    starts_at: String,
+    expires_at: String,
+    source: Option<String>,
+    plan: CloudMembershipPlan,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudMembershipPlan {
+    id: String,
+    code: String,
+    name: String,
+    description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudReferralSummary {
+    invite_code: String,
+    bound: Option<bool>,
+    can_bind: Option<bool>,
+    bind_blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +140,8 @@ pub struct CloudAccountSummary {
     email: Option<String>,
     display_name: Option<String>,
     wallet: CloudWalletSummary,
+    membership: Option<CloudMembershipSummary>,
+    referral: Option<CloudReferralSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,6 +167,12 @@ pub struct CloudCreditUsageResult {
 #[derive(Serialize)]
 struct CreditRedemptionRequest<'a> {
     code: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReferralBindRequest<'a> {
+    invite_code: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -781,6 +820,8 @@ fn summarize_cloud_account(
         email: response.account.user.email.clone(),
         display_name: response.account.user.display_name.clone(),
         wallet,
+        membership: response.account.membership.clone(),
+        referral: response.account.referral.clone(),
     })
 }
 
@@ -1023,6 +1064,26 @@ pub async fn get_cloud_account(
 ) -> Result<CloudAccountSummary, String> {
     let response = sync_cloud_account(&app_handle).await?;
     summarize_cloud_account(&response)
+}
+
+#[tauri::command]
+pub async fn bind_cloud_referral(
+    app_handle: tauri::AppHandle,
+    invite_code: String,
+) -> Result<CloudAccountSummary, String> {
+    let invite_code = invite_code.trim().to_ascii_uppercase();
+    if invite_code.len() < 6 || invite_code.len() > 32 {
+        return Err("invalid_invite_code: 邀请码格式无效".to_string());
+    }
+    let synced = sync_cloud_account(&app_handle).await?;
+    let _: serde_json::Value = post_cloud_with_bearer(
+        "/v1/referrals/bind",
+        &synced.access_token,
+        &ReferralBindRequest { invite_code: &invite_code },
+    )
+    .await?;
+    let refreshed = sync_cloud_account(&app_handle).await?;
+    summarize_cloud_account(&refreshed)
 }
 
 #[tauri::command]
