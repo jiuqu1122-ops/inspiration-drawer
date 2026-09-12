@@ -1114,6 +1114,22 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         }
         return candidatePreparedInputs.images;
       };
+      // Take the ratio from the imperative canvas state immediately before
+      // dispatch. The render that opened this run may still contain an older
+      // `canvasItem` while a transition is being committed.
+      const latestRequestTarget = options.getLatestTarget?.()
+        || canvasItemsRef.current.find(item => item.id === target.id);
+      const requestAspectRatio = latestRequestTarget?.ai?.aspectRatio
+        || targetAi.aspectRatio
+        || CANVAS_AI_DEFAULT_ASPECT_RATIO;
+      console.info('[canvas_image_request_snapshot]', {
+        clientRequestId,
+        provider,
+        providerChannelId: selectedChannelId,
+        model: submittedModel,
+        resolution: targetAi.resolution,
+        aspectRatio: requestAspectRatio,
+      });
       let generateOptions = {
         provider,
         apiKey,
@@ -1161,7 +1177,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         inputImages,
         inputVideos,
         inputAudios,
-        aspectRatio: targetAi.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+        aspectRatio: requestAspectRatio,
         resolution: mediaType === 'video'
           ? normalizeCapabilityOption(
             resolvedVideoCapabilities.resolutions,

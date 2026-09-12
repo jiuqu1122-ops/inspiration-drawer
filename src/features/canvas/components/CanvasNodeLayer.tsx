@@ -6,7 +6,7 @@ import type { CanvasAiGeneratedOutput,CanvasImageItem } from '../../canvasModel'
 
 export type CanvasNodeLayerScope = Record<string, any>;
 
-export function CanvasNodeLayer({ scope }: { scope: CanvasNodeLayerScope }) {
+export function CanvasNodeLayer({ scope, canvasItemsRef }: { scope: CanvasNodeLayerScope; canvasItemsRef: { current: any[] } }) {
   const { activeThreeSceneId, canvasAgent, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiExpandedOutputNodeIds, canvasAiPromptEditingId, canvasAiProvider, canvasAiUnifiedImageModelOptions, canvasConnectionDraft, canvasInputMenuForId, canvasInputPickTargetId, canvasItemsById, canvasPromptOptimizingId, canvasRenderableItems, canvasRenderScale, canvasScaledNodeRadius, canvasSelectedIdsSet, canvasTextAgentRunningIds, canvasWorkflowSingleEditGroupIds, canvasWorkflowTemplates, canvasWorkingTimerTick, threeSceneAnalyzingIds } = scope;
   return (
 <>
@@ -41,7 +41,7 @@ export function CanvasNodeLayer({ scope }: { scope: CanvasNodeLayerScope }) {
                               canvasItem.ai?.status === 'working' ? canvasWorkingTimerTick : null,
                               ...(canvasItem.inputs || []).map((inputId: string) => canvasItemsById.get(inputId)),
                             ]}
-                            render={() => <CanvasNode scope={scope} canvasItem={canvasItem} />}
+                            render={() => <CanvasNode scope={scope} canvasItem={canvasItem} canvasItemsRef={canvasItemsRef} />}
                           />
                         ))}
 </>

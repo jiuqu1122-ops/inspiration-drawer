@@ -68,6 +68,7 @@ import {
   normalizeCanvasAiImageResolutionForModel,
   normalizeCanvasAiImageResolutionForCandidates,
   normalizeCloudWalletImageAspectRatio,
+  resolveCloudWalletImageAspectRatio,
   normalizeCloudWalletImageProvider,
   normalizeCloudWalletVideoProvider,
   normalizeNewApiBaseEndpoint,
@@ -125,6 +126,22 @@ describe('wallet provider protocol compatibility', () => {
       model: 'vendor/gpt-image-2.5-high',
       canonicalModelId: 'gpt-image-medium',
     })).toBe('vendor/gpt-image-2.5-high');
+  });
+
+  it.each(['1:1', '4:3', '9:16', '16:9'])('preserves the selected standard ratio when wallet capabilities are stale (%s)', aspectRatio => {
+    expect(resolveCloudWalletImageAspectRatio(aspectRatio, {
+      source: 'server',
+      aspectRatios: ['1:1'],
+      aspectRatiosByResolution: { '1k': ['1:1'] },
+    }, '1k')).toBe(aspectRatio);
+  });
+
+  it('keeps exact wallet dimensions when the selected resolution advertises them', () => {
+    expect(resolveCloudWalletImageAspectRatio('16:9', {
+      source: 'server',
+      aspectRatios: [],
+      aspectRatiosByResolution: { '1k': ['1280x720'] },
+    }, '1k')).toBe('1280x720');
   });
 });
 

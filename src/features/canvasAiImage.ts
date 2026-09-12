@@ -633,6 +633,19 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
         options.imageCapabilities.outputFormats[0],
       )
       : normalizeOutputFormat(options.outputFormat);
+    const aspectRatio = resolveCloudWalletImageAspectRatio(
+      options.aspectRatio,
+      options.imageCapabilities,
+      options.resolution,
+    );
+    console.info('[cloud_wallet_image_request]', {
+      clientRequestId,
+      provider: normalizeCloudWalletImageProvider(options.provider),
+      providerChannelId: options.providerChannelId?.trim() || undefined,
+      model,
+      resolution: options.resolution?.trim() || undefined,
+      aspectRatio,
+    });
     const requestPromise = invoke<CloudImageGenerationResult>('generate_cloud_images', {
       request: {
         clientRequestId,
@@ -649,18 +662,7 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
           0,
           options.imageCapabilities?.referenceImageLimit ?? (options.provider === 'new-api' ? 9 : 8),
         ),
-        aspectRatio: (() => {
-          if (options.imageCapabilities?.source !== 'server') {
-            return normalizeCloudWalletImageAspectRatio(options.aspectRatio);
-          }
-          const allowed = getImageAspectRatioOptionsForResolution(
-            options.imageCapabilities,
-            options.resolution,
-          );
-          return allowed.length > 0
-            ? normalizeCapabilityOption(allowed, options.aspectRatio, allowed[0])
-            : normalizeCloudWalletImageAspectRatio(options.aspectRatio);
-        })(),
+        aspectRatio,
         resolution: options.resolution?.trim() || undefined,
         outputFormat,
         background: outputFormat.toLowerCase() === 'png'
@@ -1242,6 +1244,32 @@ export const normalizeCloudWalletImageAspectRatio = (aspectRatio?: string | null
     const candidateDifference = Math.abs(Math.log(requestedRatio / (candidateWidth / candidateHeight)));
     return candidateDifference < bestDifference ? candidate : best;
   }, CLOUD_WALLET_IMAGE_ASPECT_RATIOS[0]);
+};
+
+/**
+ * Resolve the wallet payload ratio without silently turning a valid user
+ * selection into the first (usually 1:1) capability entry. Capability data
+ * can be briefly stale while the wallet catalog refreshes; preserving the
+ * normalized standard ratio lets the server validate the original intent.
+ */
+export const resolveCloudWalletImageAspectRatio = (
+  aspectRatio: string | null | undefined,
+  capabilities?: Pick<ResolvedImageModelCapabilities, 'source' | 'aspectRatios' | 'aspectRatiosByResolution'> | null,
+  resolution?: string | null,
+) => {
+  const normalizedRequested = normalizeCloudWalletImageAspectRatio(aspectRatio);
+  if (capabilities?.source !== 'server') return normalizedRequested;
+  const allowed = getImageAspectRatioOptionsForResolution(capabilities, resolution);
+  if (allowed.length === 0) return normalizedRequested;
+  const exact = allowed.find(value => value.toLowerCase() === String(aspectRatio || '').trim().toLowerCase());
+  if (exact) return exact;
+  const normalizedAllowed = allowed.map(value => normalizeCloudWalletImageAspectRatio(value));
+  if (normalizedAllowed.includes(normalizedRequested)) {
+    return allowed[normalizedAllowed.indexOf(normalizedRequested)] || normalizedRequested;
+  }
+  // Do not downgrade a standard ratio to `allowed[0]` when the catalog is
+  // incomplete. A server-side validation error is safer than a wrong shape.
+  return normalizedRequested;
 };
 
 export const gptImage2SizeFromAspectRatio = (aspectRatio?: string, resolution?: string) => {
