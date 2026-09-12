@@ -1008,17 +1008,19 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                                     </div>
                                   </div>
 
-                                  <div className="mt-3 grid grid-cols-2 gap-3 border-t border-stone-100 pt-2.5 text-[10px] dark:border-stone-800">
-                                    <div>
-                                      <div className="text-stone-400 dark:text-stone-500">会员</div>
-                                      <div className="mt-0.5 font-semibold text-stone-700 dark:text-stone-200">{cloudAccount?.membership?.plan.name || '普通用户'}</div>
-                                    </div>
-                                    <div>
-                                      <div className="text-stone-400 dark:text-stone-500">会员到期时间</div>
-                                      <div className="mt-0.5 font-semibold tabular-nums text-stone-700 dark:text-stone-200">
-                                        {cloudAccount?.membership?.expiresAt
-                                          ? new Date(cloudAccount.membership.expiresAt).toLocaleDateString('zh-CN')
-                                          : '无会员期限'}
+                                  <div className="mt-3 border-t border-stone-100 pt-2.5 dark:border-stone-800">
+                                    <div className="grid grid-cols-2 gap-3 px-3.5 text-[10px]">
+                                      <div>
+                                        <div className="text-stone-400 dark:text-stone-500">会员</div>
+                                        <div className="mt-0.5 font-semibold text-stone-700 dark:text-stone-200">{cloudAccount?.membership?.plan.name || '普通用户'}</div>
+                                      </div>
+                                      <div>
+                                        <div className="text-stone-400 dark:text-stone-500">会员到期时间</div>
+                                        <div className="mt-0.5 font-semibold tabular-nums text-stone-700 dark:text-stone-200">
+                                          {cloudAccount?.membership?.expiresAt
+                                            ? new Date(cloudAccount.membership.expiresAt).toLocaleDateString('zh-CN')
+                                            : '无会员期限'}
+                                        </div>
                                       </div>
                                     </div>
                                   </div>
