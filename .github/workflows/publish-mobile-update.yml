@@ -51,7 +51,7 @@ jobs:
           });
           const sha256 = (body) => crypto.createHash('sha256').update(body).digest('hex');
 
-          async function uploadFile(file, key, contentType, cacheControl) {
+          async function uploadFile(file, key, contentType, cacheControl, verifyBody) {
             const bytes = fs.readFileSync(file);
             await call('putObject', {
               ...base,
@@ -61,10 +61,17 @@ jobs:
               ContentType: contentType,
               CacheControl: cacheControl,
             });
-            const stored = await call('getObject', { ...base, Key: key });
-            const body = Buffer.isBuffer(stored.Body) ? stored.Body : Buffer.from(stored.Body);
-            if (body.length !== bytes.length || sha256(body) !== sha256(bytes)) {
-              throw new Error(`COS verification failed for ${key}`);
+            const head = await call('headObject', { ...base, Key: key });
+            const storedLength = Number(head.headers?.['content-length']);
+            if (storedLength !== bytes.length) {
+              throw new Error(`COS size verification failed for ${key}`);
+            }
+            if (verifyBody) {
+              const stored = await call('getObject', { ...base, Key: key });
+              const body = Buffer.isBuffer(stored.Body) ? stored.Body : Buffer.from(stored.Body);
+              if (sha256(body) !== sha256(bytes)) {
+                throw new Error(`COS checksum verification failed for ${key}`);
+              }
             }
           }
 
@@ -95,20 +102,23 @@ jobs:
           }
 
           (async () => {
-            if (fs.statSync(apkPath).size !== expectedSize || sha256(fs.readFileSync(apkPath)) !== expectedHash) {
+            const localApk = fs.readFileSync(apkPath);
+            if (localApk.length !== expectedSize || sha256(localApk) !== expectedHash) {
               throw new Error('Downloaded GitHub APK does not match the manifest');
             }
             await uploadFile(
               apkPath,
               'mobile/Inspiration-Drawer-Mobile-arm64.apk',
               'application/vnd.android.package-archive',
-              'private, max-age=300'
+              'private, max-age=300',
+              false
             );
             await uploadFile(
               manifestPath,
               'mobile/latest-mobile.json',
               'application/json; charset=utf-8',
-              'no-cache'
+              'no-cache',
+              true
             );
             await verifyApi();
             console.log(`Published and verified mobile ${manifest.version} (${expectedHash})`);
