@@ -1,0 +1,119 @@
+name: Publish mobile update 0.1.9
+
+on:
+  push:
+    branches:
+      - codex/mobile-0.1.9-publish
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      COS_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
+      COS_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+      COS_BUCKET: ${{ vars.COS_BUCKET }}
+      COS_REGION: ${{ vars.COS_REGION }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download signed release assets
+        run: |
+          gh release download mobile-latest --repo "$GITHUB_REPOSITORY" --pattern 'Inspiration-Drawer-Mobile-arm64.apk' --pattern 'latest-mobile.json'
+
+      - name: Install COS client
+        run: |
+          npm init -y
+          npm install --ignore-scripts --no-save cos-nodejs-sdk-v5@3.0.0
+
+      - name: Upload and verify primary mobile update channel
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const COS = require('cos-nodejs-sdk-v5');
+
+          const apkPath = 'Inspiration-Drawer-Mobile-arm64.apk';
+          const manifestPath = 'latest-mobile.json';
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+          const expectedHash = manifest.apk.sha256.toLowerCase();
+          const expectedSize = manifest.apk.size;
+          const cos = new COS({
+            SecretId: process.env.COS_SECRET_ID,
+            SecretKey: process.env.COS_SECRET_KEY,
+            Protocol: 'https:',
+            Timeout: 10 * 60_000,
+          });
+          const base = { Bucket: process.env.COS_BUCKET, Region: process.env.COS_REGION };
+          const call = (method, params) => new Promise((resolve, reject) => {
+            cos[method](params, (error, data) => error ? reject(error) : resolve(data));
+          });
+          const sha256 = (body) => crypto.createHash('sha256').update(body).digest('hex');
+
+          async function uploadFile(file, key, contentType, cacheControl) {
+            const bytes = fs.readFileSync(file);
+            await call('putObject', {
+              ...base,
+              Key: key,
+              Body: bytes,
+              ContentLength: bytes.length,
+              ContentType: contentType,
+              CacheControl: cacheControl,
+            });
+            const stored = await call('getObject', { ...base, Key: key });
+            const body = Buffer.isBuffer(stored.Body) ? stored.Body : Buffer.from(stored.Body);
+            if (body.length !== bytes.length || sha256(body) !== sha256(bytes)) {
+              throw new Error(`COS verification failed for ${key}`);
+            }
+          }
+
+          async function verifyApi() {
+            let lastError;
+            for (let attempt = 1; attempt <= 12; attempt += 1) {
+              try {
+                const nonce = `${Date.now()}-${attempt}`;
+                const latestResponse = await fetch(`https://api.unmind.art/v1/mobile/latest?publish=${nonce}`, { cache: 'no-store' });
+                if (!latestResponse.ok) throw new Error(`manifest HTTP ${latestResponse.status}`);
+                const latest = await latestResponse.json();
+                if (latest.version !== manifest.version || latest.apk?.sha256?.toLowerCase() !== expectedHash) {
+                  throw new Error(`manifest still reports ${latest.version ?? 'unknown'}`);
+                }
+                const apkResponse = await fetch(`https://api.unmind.art/v1/mobile/apk?publish=${nonce}`, { cache: 'no-store' });
+                if (!apkResponse.ok) throw new Error(`APK HTTP ${apkResponse.status}`);
+                const apk = Buffer.from(await apkResponse.arrayBuffer());
+                if (apk.length !== expectedSize || sha256(apk) !== expectedHash) {
+                  throw new Error('API APK checksum or size mismatch');
+                }
+                return;
+              } catch (error) {
+                lastError = error;
+                if (attempt < 12) await new Promise((resolve) => setTimeout(resolve, 5000));
+              }
+            }
+            throw lastError;
+          }
+
+          (async () => {
+            if (fs.statSync(apkPath).size !== expectedSize || sha256(fs.readFileSync(apkPath)) !== expectedHash) {
+              throw new Error('Downloaded GitHub APK does not match the manifest');
+            }
+            await uploadFile(
+              apkPath,
+              'mobile/Inspiration-Drawer-Mobile-arm64.apk',
+              'application/vnd.android.package-archive',
+              'private, max-age=300'
+            );
+            await uploadFile(
+              manifestPath,
+              'mobile/latest-mobile.json',
+              'application/json; charset=utf-8',
+              'no-cache'
+            );
+            await verifyApi();
+            console.log(`Published and verified mobile ${manifest.version} (${expectedHash})`);
+          })().catch((error) => {
+            console.error(error instanceof Error ? error.message : error);
+            process.exit(1);
+          });
+          NODE
