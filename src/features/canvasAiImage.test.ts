@@ -288,12 +288,10 @@ describe('NewAPI image model mapping', () => {
 });
 
 describe('unified wallet image model families', () => {
-  it('binds prompt image numbers to attachment order for multi-reference requests', () => {
-    const prompt = buildCanvasAiIndexedReferencePrompt('使用图1的脸和图2的服装', 2);
+  it('does not inject generic image-numbering instructions into multi-reference prompts', () => {
+    const prompt = '使用图1的脸和图2的服装';
 
-    expect(prompt).toContain('第1个附件 = 图1（Image 1）');
-    expect(prompt).toContain('第2个附件 = 图2（Image 2）');
-    expect(prompt).toContain('不要交换、重排');
+    expect(buildCanvasAiIndexedReferencePrompt(prompt, 2)).toBe(prompt);
   });
 
   it('does not add numbering instructions to a single-reference request', () => {

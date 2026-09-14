@@ -16,12 +16,31 @@ import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,getIm
 
 export type CanvasNodeViewModelScope = Record<string, any>;
 
+export function canvasAiPersistedRouteHintsForNode(
+  isTextCanvasItem: boolean,
+  ai: CanvasImageItem['ai'],
+) {
+  return {
+    providerCandidates: isTextCanvasItem ? [] : ai?.providerCandidates || [],
+    providerChannelId: isTextCanvasItem ? undefined : ai?.providerChannelId,
+  };
+}
+
 function buildCanvasNodeViewModelInternal(scope: CanvasNodeViewModelScope, canvasItem: CanvasImageItem) {
   const { canvasAgent, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiExpandedOutputNodeIds, canvasAiPromptEditingId, canvasAiProvider, canvasItems, canvasItemsById, canvasRenderScale, canvasSelectedIdsSet, canvasTextAgentRunningIds, getCanvasAiNodeDesignSizeForItem, getCanvasAiResolvedModel, getCanvasAiUnifiedImageModelValue, getCanvasImageInputBufferItemsForNode, getStableCanvasImageSource } = scope;
 const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           const isTextCanvasItem = canvasItem.item.type === 'text';
                           const isCanvasTextAgentRunning = isTextCanvasItem && canvasTextAgentRunningIds.includes(canvasItem.id);
                           const isCanvasTextPlainMode = isTextCanvasItem && canvasItem.textMode === 'plain';
+                          // Text-agent model routing is server-owned. Historical
+                          // nodes may still contain media route snapshots, but
+                          // they must never be rehydrated into a new text request.
+                          const persistedRouteHints = canvasAiPersistedRouteHintsForNode(
+                            isTextCanvasItem,
+                            canvasItem.ai,
+                          );
+                          const canvasAiPersistedProviderCandidates = persistedRouteHints.providerCandidates;
+                          const canvasAiPersistedProviderChannelId = persistedRouteHints.providerChannelId;
                           const canvasDesignAgentConfig = normalizeDesignAgentConfig(canvasItem.designAgentConfig);
                           const isCanvasAiGeneratorItem = isCanvasAiGeneratorType(canvasItem.ai?.type);
                           const isCanvasFrameInterpolationItem = canvasItem.ai?.type === 'frame-interpolation';
@@ -58,11 +77,11 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           const canvasAiItemProvider = normalizeCanvasAiProvider(
                             canvasItem.ai?.provider || (canvasAiMediaType === 'video' ? 'xais-chat' : canvasAiProvider)
                           );
-                          const canvasAiItemCatalogCandidate = canvasItem.ai?.providerCandidates?.find(candidate => (
+                          const canvasAiItemCatalogCandidate = canvasAiPersistedProviderCandidates.find(candidate => (
                             candidate.canonicalModelId
                             && candidate.provider === canvasAiItemProvider
-                            && (candidate.providerChannelId || '') === (canvasItem.ai?.providerChannelId || '')
-                          )) || canvasItem.ai?.providerCandidates?.find(candidate => (
+                            && (candidate.providerChannelId || '') === (canvasAiPersistedProviderChannelId || '')
+                          )) || canvasAiPersistedProviderCandidates.find(candidate => (
                             candidate.canonicalModelId && candidate.provider === canvasAiItemProvider
                           ));
                           const canvasAiItemModel = canvasAiItemCatalogCandidate?.model
@@ -73,16 +92,16 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             : [];
                           const canvasAiCatalogModel = findAiCatalogModel(
                             canvasAiCatalog,
-                            canvasItem.ai?.providerCandidates?.find(candidate => candidate.canonicalModelId)?.canonicalModelId
+                            canvasAiPersistedProviderCandidates.find(candidate => candidate.canonicalModelId)?.canonicalModelId
                               || canvasAiItemModel,
                           );
                           const canvasAiSelectedChannel = (canvasAiMediaType === 'video'
                             ? canvasAiCloudImageModels?.videoChannels
                             : canvasAiCloudImageModels?.channels)?.find((channel: { id: string; provider: string }) => (
-                              channel.id === canvasItem.ai?.providerChannelId
+                              channel.id === canvasAiPersistedProviderChannelId
                               && canvasAiProviderForCloudKind(channel.provider) === canvasAiItemProvider
                             ));
-                          const canvasAiSelectedCandidate = canvasItem.ai?.providerCandidates?.find(candidate => (
+                          const canvasAiSelectedCandidate = canvasAiPersistedProviderCandidates.find(candidate => (
                             candidate.provider === canvasAiItemProvider
                             && (candidate.model === canvasAiItemModel
                               || candidate.canonicalModelId === canvasAiCatalogModel?.id)
@@ -97,7 +116,7 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                               canvasAiCatalogModel?.id,
                             );
                           const canvasAiItemProviderCandidates = hydrateCanvasAiModelCandidateCapabilities(
-                            canvasItem.ai?.providerCandidates || [],
+                            canvasAiPersistedProviderCandidates,
                             canvasAiMediaType === 'video'
                               ? canvasAiCloudImageModels?.videoChannels
                               : canvasAiCloudImageModels?.channels,

@@ -7,6 +7,7 @@ import { getCanvasAiPublicImageModelName,getCanvasAiVideoModelCandidates } from 
 import { findAiCatalogModel,getAiCatalogModels,getDefaultAiCatalogModelId } from '../../features/aiModelCapabilities';
 import { isCanvasAiEnhancementType,type RifeEngineProgress } from '../../features/canvasLocalMediaTools';
 import { type CanvasAiCredentialSource,type CanvasImageItem,type CanvasItemBox } from '../../features/canvasModel';
+import { findCanvasImageModelChoice } from '../../features/canvas/canvasImageRequestSettings';
 import { FLOATING_NOTE_DESTROY_BRIDGE_KEY,FLOATING_NOTE_SOURCE_BRIDGE_KEY,FLOATING_NOTE_TEXT_BRIDGE_KEY,FLOATING_NOTE_TITLE_BRIDGE_KEY,OPEN_FLOATING_NOTES_STORAGE_KEY,floatingNoteStorageKey,readFloatingNoteSnapshot,readOpenFloatingNoteLabels,writeOpenFloatingNoteLabels } from '../../features/floatingNotes';
 import { SILICONFLOW_DEFAULT_ENDPOINT,SILICONFLOW_DEFAULT_MODEL,isSiliconFlowProvider,type AiAnalysisConfig } from '../../features/visionAnalysisConfig';
 import { ASSET_PAGE_SIZE,listAssets,updateAssetsBatch } from '../../services/assetsApi';
@@ -550,11 +551,12 @@ export const runAppLifecycleEffect21 = (ctx: Pick<appLifecycleCatalogEffectConte
           const currentCanonicalId = item.ai.providerCandidates
             ?.find(candidate => candidate.canonicalModelId)?.canonicalModelId
             || item.ai.model;
+          const hasExplicitModel = Boolean(String(currentCanonicalId || '').trim());
           const catalogModel = findAiCatalogModel(videoCatalog, currentCanonicalId)
-            || findAiCatalogModel(
+            || (!hasExplicitModel ? findAiCatalogModel(
               videoCatalog,
               getDefaultAiCatalogModelId(canvasAiCloudImageModels!, 'video'),
-            );
+            ) : undefined);
           if (!catalogModel) return item;
           const nextCandidates = getCanvasAiVideoModelCandidates(
             catalogModel.id,
@@ -606,30 +608,24 @@ export const runAppLifecycleEffect21 = (ctx: Pick<appLifecycleCatalogEffectConte
         const candidates = item.ai.providerCandidates || [];
         const preferredSource = canvasAiCredentialSource;
         const sourceChoices = availableChoices.filter(choice => choice.source === preferredSource);
-        const firstChoice = sourceChoices.find(choice => (
-          getCanvasAiPublicImageModelName(choice.provider, choice.model) === 'Nano Banana Pro'
-        )) || sourceChoices[0] || availableChoices[0];
-        if (!firstChoice) return item;
+        const currentCanonicalModelId = candidates.find(candidate => candidate.canonicalModelId)?.canonicalModelId;
         const rawCurrentPublicModel = getCanvasAiPublicImageModelName(item.ai.provider, item.ai.model);
         const currentPublicModel = rawCurrentPublicModel === 'GPT Image 2 H'
           ? 'GPT Image 2'
           : rawCurrentPublicModel;
-        const matchingChoice = sourceChoices.find(choice => (
-          (choice.provider === item.ai?.provider
-            && choice.model === item.ai?.model
-            && (!item.ai?.providerChannelId || choice.providerChannelId === item.ai.providerChannelId))
-          || choice.providerCandidates?.some(candidate => (
-            candidate.source === preferredSource
-            && candidate.provider === item.ai?.provider
-            && candidate.model === item.ai?.model
-            && (!item.ai?.providerChannelId || candidate.providerChannelId === item.ai.providerChannelId)
-          ))
-        )) || (currentPublicModel
-          ? sourceChoices.find(choice => (
-            getCanvasAiPublicImageModelName(choice.provider, choice.model) === currentPublicModel
-          ))
-          : undefined) || firstChoice;
-        const nextCandidates = matchingChoice.providerCandidates || [];
+        const matchingChoice = findCanvasImageModelChoice(sourceChoices, {
+          canonicalModelId: currentCanonicalModelId,
+          provider: item.ai.provider || 'new-api',
+          model: item.ai.model,
+          providerChannelId: item.ai.providerChannelId,
+          publicModel: currentPublicModel,
+        });
+        const hasExplicitModel = Boolean(currentCanonicalModelId || String(item.ai.model || '').trim());
+        const selectedChoice = matchingChoice || (!hasExplicitModel
+          ? sourceChoices[0] || availableChoices[0]
+          : undefined);
+        if (!selectedChoice) return item;
+        const nextCandidates = selectedChoice.providerCandidates || [];
         const sameCandidates = candidates.length === nextCandidates.length
           && candidates.every((candidate, index) => {
             const next = nextCandidates[index];
@@ -644,10 +640,10 @@ export const runAppLifecycleEffect21 = (ctx: Pick<appLifecycleCatalogEffectConte
               && JSON.stringify(candidate.capabilities || null) === JSON.stringify(next.capabilities || null)
               && JSON.stringify(candidate.modelCapabilities || null) === JSON.stringify(next.modelCapabilities || null);
           });
-        const alreadySynchronized = item.ai.credentialSource === matchingChoice.source
-          && item.ai.provider === matchingChoice.provider
-          && item.ai.model === matchingChoice.model
-          && (item.ai.providerChannelId || '') === (matchingChoice.providerChannelId || '')
+        const alreadySynchronized = item.ai.credentialSource === selectedChoice.source
+          && item.ai.provider === selectedChoice.provider
+          && item.ai.model === selectedChoice.model
+          && (item.ai.providerChannelId || '') === (selectedChoice.providerChannelId || '')
           && sameCandidates;
         if (alreadySynchronized) return item;
         changed = true;
@@ -655,11 +651,11 @@ export const runAppLifecycleEffect21 = (ctx: Pick<appLifecycleCatalogEffectConte
           ...item,
           ai: {
             ...item.ai,
-            provider: matchingChoice.provider,
-            model: matchingChoice.model,
-            providerChannelId: matchingChoice.providerChannelId,
-            credentialSource: matchingChoice.source,
-            providerCandidates: matchingChoice.providerCandidates,
+            provider: selectedChoice.provider,
+            model: selectedChoice.model,
+            providerChannelId: selectedChoice.providerChannelId,
+            credentialSource: selectedChoice.source,
+            providerCandidates: selectedChoice.providerCandidates,
           },
         };
       });

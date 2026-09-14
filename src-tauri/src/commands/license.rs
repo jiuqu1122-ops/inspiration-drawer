@@ -193,16 +193,10 @@ pub struct CreditRedemptionResult {
 #[serde(rename_all = "camelCase")]
 pub struct CloudImageGenerationRequest {
     client_request_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    provider_channel_id: Option<String>,
     model: String,
     prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     negative_prompt: Option<String>,
-    #[serde(default)]
-    preserve_reference_identity: bool,
     input_images: Vec<String>,
     aspect_ratio: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -398,10 +392,6 @@ pub struct CloudVideoModelChannel {
 #[serde(rename_all = "camelCase")]
 pub struct CloudVideoGenerationRequest {
     client_request_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    provider_channel_id: Option<String>,
     model: String,
     prompt: String,
     input_images: Vec<String>,
@@ -1327,9 +1317,7 @@ pub async fn generate_cloud_videos(
 pub async fn get_cloud_video_status(
     app_handle: tauri::AppHandle,
     task_id: String,
-    provider: Option<String>,
     client_request_id: Option<String>,
-    provider_channel_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let task_id = task_id.trim();
     if task_id.is_empty()
@@ -1351,15 +1339,8 @@ pub async fn get_cloud_video_status(
         .bearer_auth(access_token)
         .header("x-client-version", env!("CARGO_PKG_VERSION"))
         .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION);
-    if let Some(provider) = provider.filter(|value| !value.trim().is_empty()) {
-        request = request.query(&[("provider", provider)]);
-    }
     if let Some(client_request_id) = client_request_id.filter(|value| !value.trim().is_empty()) {
         request = request.query(&[("clientRequestId", client_request_id)]);
-    }
-    if let Some(provider_channel_id) = provider_channel_id.filter(|value| !value.trim().is_empty())
-    {
-        request = request.query(&[("providerChannelId", provider_channel_id)]);
     }
     let response = request
         .send()
@@ -1454,7 +1435,7 @@ mod tests {
         email_sync_retry_delay, is_retryable_email_sync_error, normalize_cloud_image_references,
         parse_cloud_image_reference, parse_retry_after, validate_display_name, validate_email,
         CloudCreditUsageResult, CloudImageGenerationRequest, CloudImageModelsResponse,
-        CloudImageReference, EmailSyncRequestError,
+        CloudImageReference, CloudVideoGenerationRequest, EmailSyncRequestError,
     };
     use base64::Engine as _;
     use std::fs;
@@ -1479,23 +1460,48 @@ mod tests {
     }
 
     #[test]
-    fn keeps_reference_identity_unlocked_unless_the_client_enables_it() {
-        let base = serde_json::json!({
+    fn strips_legacy_wallet_route_hints_from_image_requests() {
+        let request: CloudImageGenerationRequest = serde_json::from_value(serde_json::json!({
             "clientRequestId": "canvas-image-request-1",
+            "provider": "new-api",
+            "providerChannelId": "stale-channel",
             "model": "gemini-3-pro-image",
             "prompt": "render a projector",
+            "preserveReferenceIdentity": true,
             "inputImages": ["https://example.test/projector.png"],
             "aspectRatio": "16:9",
             "outputFormat": "jpg",
             "count": 1
-        });
-        let unlocked: CloudImageGenerationRequest = serde_json::from_value(base.clone()).unwrap();
-        assert!(!unlocked.preserve_reference_identity);
+        }))
+        .unwrap();
+        let serialized = serde_json::to_value(request).unwrap();
+        assert!(serialized.get("provider").is_none());
+        assert!(serialized.get("providerChannelId").is_none());
+        assert!(serialized.get("preserveReferenceIdentity").is_none());
+    }
 
-        let mut locked_value = base;
-        locked_value["preserveReferenceIdentity"] = serde_json::json!(true);
-        let locked: CloudImageGenerationRequest = serde_json::from_value(locked_value).unwrap();
-        assert!(locked.preserve_reference_identity);
+    #[test]
+    fn strips_legacy_wallet_route_hints_from_video_requests() {
+        let request: CloudVideoGenerationRequest = serde_json::from_value(serde_json::json!({
+            "clientRequestId": "canvas-video-request-1",
+            "provider": "minimax",
+            "providerChannelId": "stale-seedance-channel",
+            "model": "minimax-h3",
+            "prompt": "slow orbital camera move",
+            "inputImages": [],
+            "inputVideos": [],
+            "inputAudios": [],
+            "aspectRatio": "16:9",
+            "resolution": "1080p",
+            "duration": 5,
+            "inputMode": "REF",
+            "count": 1
+        }))
+        .unwrap();
+        let serialized = serde_json::to_value(request).unwrap();
+        assert!(serialized.get("provider").is_none());
+        assert!(serialized.get("providerChannelId").is_none());
+        assert_eq!(serialized.get("model").and_then(|value| value.as_str()), Some("minimax-h3"));
     }
 
     #[test]

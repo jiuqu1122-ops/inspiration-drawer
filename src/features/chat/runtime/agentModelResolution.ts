@@ -102,11 +102,15 @@ export const resolveValidAgentModel = (input: {
     };
   }
 
+  // A concrete saved selection is user intent.  The public catalog may have
+  // changed since it was stored, but silently replacing that identity with an
+  // automatic/default model can submit work to a different canonical model.
+  // Keep the selection and let the server return the authoritative catalog
+  // error instead.
   return {
-    requestedModel: undefined,
-    resolvedModel: fallbackModel,
-    fallbackUsed: true,
-    fallbackReason: 'not_in_available_models',
+    requestedModel: savedModel,
+    resolvedModel: savedModel,
+    fallbackUsed: false,
   };
 };
 
@@ -174,13 +178,6 @@ export const isUnavailableChatModelError = (error: unknown) => {
   return /\b(?:MODEL_NOT_AVAILABLE|MODEL_NOT_FOUND|MODEL_DISABLED|UNSUPPORTED_MODEL|STALE_MODEL)\b|unknown chat model|model not found|unsupported model|disabled model|stale chat model|model (?:is |was )?disabled/i.test(text);
 };
 
-const isInternalAgentModelContext = (context: AgentModelUsageContext) => context !== 'chat';
-
-const createFallbackExhaustedError = (error: unknown) => {
-  const text = errorText(error).trim() || 'chat model fallback failed';
-  return new Error(`MODEL_FALLBACK_EXHAUSTED: ${text}`);
-};
-
 export const runInternalAgentModelRequest = async <T>(input: {
   savedModel?: string | null;
   availableModels?: readonly string[] | null;
@@ -198,61 +195,13 @@ export const runInternalAgentModelRequest = async <T>(input: {
   log?: (message: string, detail: Record<string, string>) => void;
 }): Promise<T> => {
   const resolution = resolveValidAgentModel(input);
-  const log = input.log || ((message: string, detail: Record<string, string>) => console.warn(message, detail));
-  const logFallback = (reason: string, requestId: string, fallbackTarget: string) => {
-    log('[agent-model-fallback]', {
-      context: input.usageContext,
-      savedModel: normalizeChatModelSelection(input.savedModel) || '(empty)',
-      reason,
-      fallbackTarget,
-      requestId,
-    });
-  };
-
-  if (resolution.fallbackUsed) {
-    logFallback(
-      resolution.fallbackReason || 'not_in_available_models',
-      input.requestId,
-      resolution.resolvedModel,
-    );
-    input.onFallback?.(resolution);
-  }
-
   // `default` remains an automatic routing alias, not a concrete model. It is
   // sent for compatibility with older Rust builds that otherwise substitute a
   // stale configured model when the field is omitted.
   const initialTransportModel = resolution.requestedModel || CHAT_AUTOMATIC_MODEL;
-  try {
-    return await input.request({
-      requestId: input.requestId,
-      model: initialTransportModel,
-      usageContext: input.usageContext,
-    });
-  } catch (error) {
-    if (
-      !resolution.requestedModel
-      || !isInternalAgentModelContext(input.usageContext)
-      || !isUnavailableChatModelError(error)
-    ) {
-      throw error;
-    }
-    const fallbackRequestId = input.createRequestId();
-    const fallbackResolution: AgentModelResolution = {
-      requestedModel: undefined,
-      resolvedModel: normalizeChatModelSelection(input.fallbackModel) || CHAT_AUTOMATIC_MODEL,
-      fallbackUsed: true,
-      fallbackReason: 'not_in_available_models',
-    };
-    logFallback('provider_rejected_model', fallbackRequestId, fallbackResolution.resolvedModel);
-    input.onFallback?.(fallbackResolution);
-    try {
-      return await input.request({
-        requestId: fallbackRequestId,
-        model: CHAT_AUTOMATIC_MODEL,
-        usageContext: input.usageContext,
-      });
-    } catch (fallbackError) {
-      throw createFallbackExhaustedError(fallbackError);
-    }
-  }
+  return input.request({
+    requestId: input.requestId,
+    model: initialTransportModel,
+    usageContext: input.usageContext,
+  });
 };

@@ -640,8 +640,6 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
     );
     console.info('[cloud_wallet_image_request]', {
       clientRequestId,
-      provider: normalizeCloudWalletImageProvider(options.provider),
-      providerChannelId: options.providerChannelId?.trim() || undefined,
       model,
       resolution: options.resolution?.trim() || undefined,
       aspectRatio,
@@ -649,15 +647,9 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
     const requestPromise = invoke<CloudImageGenerationResult>('generate_cloud_images', {
       request: {
         clientRequestId,
-        // The channel id is authoritative for wallet routing. New channel
-        // types such as Mikoto and Bigmodel are intentionally omitted here
-        // because the wallet API provider field is legacy protocol metadata.
-        provider: normalizeCloudWalletImageProvider(options.provider),
-        providerChannelId: options.providerChannelId?.trim() || undefined,
         model,
         prompt: options.prompt.trim(),
         negativePrompt: options.negativePrompt?.trim() || undefined,
-        preserveReferenceIdentity: options.preserveReferenceIdentity === true,
         inputImages: (options.inputImages || []).filter(Boolean).slice(
           0,
           options.imageCapabilities?.referenceImageLimit ?? (options.provider === 'new-api' ? 9 : 8),
@@ -736,9 +728,6 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
 const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
   const clientRequestId = options.clientRequestId?.trim()
     || `canvas-video-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  // The channel id is authoritative, while the provider keeps the server's
-  // capability constraint intact when a node has no persisted channel id.
-  const provider = normalizeCloudWalletVideoProvider(options.provider);
   const requestCount = Math.max(1, Math.min(options.videoCapabilities?.maxOutputs ?? 4, Math.round(options.count || 1)));
   const isSeedanceLike = isSeedanceLikeVideoModel(options.model);
   const isFirstLastFrame = options.inputMode === 'FLF'
@@ -757,13 +746,11 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
     const result = await invoke<CloudVideoGenerationResult>('generate_cloud_videos', {
       request: {
         clientRequestId,
-        provider,
-        providerChannelId: options.providerChannelId?.trim() || undefined,
         model: String(options.model || '').trim(),
         prompt: options.prompt.trim(),
         inputImages: inputImages.slice(0, isFirstLastFrame
           ? 2
-          : options.videoCapabilities?.referenceImages ?? (isSeedanceLike ? 9 : provider === 'xais-chat' ? 13 : 8)),
+          : options.videoCapabilities?.referenceImages ?? (isSeedanceLike ? 9 : 8)),
         inputVideos: !isFirstLastFrame
           ? inputVideos.slice(0, options.videoCapabilities?.referenceVideos ?? (isSeedanceLike ? 3 : 0))
           : [],
@@ -794,9 +781,7 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
         await delay(2500);
         const statusResponse = await invoke<unknown>('get_cloud_video_status', {
           taskId,
-          provider,
           clientRequestId,
-          providerChannelId: options.providerChannelId?.trim() || undefined,
         });
         // Some upstream video APIs return a task list instead of one task.
         // Never let a historical task's terminal state or media URLs decide
@@ -971,16 +956,11 @@ const buildChinesePromptWithOptions = (prompt: string, aspectRatio?: string, res
 };
 
 export const buildCanvasAiIndexedReferencePrompt = (prompt: string, referenceCount: number) => {
-  const cleanPrompt = prompt.trim();
-  const count = Math.max(0, Math.min(9, Math.floor(referenceCount)));
-  if (count < 2) return cleanPrompt;
-  const mapping = Array.from({ length: count }, (_, index) => (
-    `第${index + 1}个附件 = 图${index + 1}（Image ${index + 1}）`
-  )).join('；');
-  return [
-    cleanPrompt,
-    `参考图编号严格按附件顺序绑定：${mapping}。用户提到“图N”或“Image N”时，只能使用第N个附件对应的内容，不要交换、重排或把其他参考图当作图N。`,
-  ].filter(Boolean).join('\n\n');
+  // Generic generation entry points preserve the user's prompt verbatim.
+  // Provider-specific reference numbering belongs in the corresponding
+  // server adapter (Veo keeps its own explicit ingredient semantics).
+  void referenceCount;
+  return prompt.trim();
 };
 
 export const orderCanvasAiReferenceSources = (
@@ -3834,6 +3814,14 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
 };
 
 export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptions): Promise<string[]> => {
+  if (options.cloudWallet) {
+    return generateCloudWalletImages({
+      ...options,
+      providerChannelId: undefined,
+      providerCandidates: undefined,
+      prepareInputImagesForCandidate: undefined,
+    });
+  }
   if (!options.singleAttempt && options.providerCandidates && options.providerCandidates.length > 0) {
     const prioritizedCandidates = await refreshWalletImageCandidatePriority(options.providerCandidates);
     const candidates = selectCanvasAiImageCandidatesForResolution(
@@ -3893,15 +3881,21 @@ export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptio
   const requestOptions = {
     ...options,
     outputFormat,
-    prompt: buildCanvasAiIndexedReferencePrompt(options.prompt, options.inputImages?.length || 0),
+    prompt: options.prompt.trim(),
   };
-  if (requestOptions.cloudWallet) return generateCloudWalletImages(requestOptions);
   if (requestOptions.provider === 'xais-chat') return generateXaisChatImages(requestOptions);
   if (requestOptions.provider === 'new-api') return generateNewApiImages(requestOptions);
   return generateOpenAiCompatibleImages(requestOptions);
 };
 
 export const generateCanvasAiProviderVideos = async (options: CanvasAiVideoOptions): Promise<string[]> => {
+  if (options.cloudWallet) {
+    return generateCloudWalletVideos({
+      ...options,
+      providerChannelId: undefined,
+      providerCandidates: undefined,
+    });
+  }
   const compatibleCandidates = filterCanvasAiVideoModelCandidates(
     options.model,
     options.providerCandidates,
@@ -3941,7 +3935,6 @@ export const generateCanvasAiProviderVideos = async (options: CanvasAiVideoOptio
       providerCandidates: undefined,
     });
   }
-  if (options.cloudWallet) return generateCloudWalletVideos(options);
   if (options.provider === 'xais-chat') return generateXaisWorkerTaskVideos(options);
   if (options.provider === 'new-api') return generateNewApiVideos(options);
   throw new Error(`当前 Gateway 不支持视频生成：${options.provider}`);

@@ -2245,65 +2245,20 @@ pub async fn agent_openai_chat(
         let (request, usage_context) = normalize_wallet_agent_request(request);
         let request_id = request.request_id.clone();
         let internal_request = is_internal_agent_usage_context(&usage_context);
-        let requested_specific_model = request
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| !is_automatic_agent_model(value))
-            .unwrap_or(false);
         let mut wallet_request = request.clone();
         wallet_request.model = resolve_wallet_agent_model_for_request(
             wallet_request.model.as_deref(),
             &settings.api_model,
             internal_request,
         );
-        let mut result = agent_wallet_chat(
+        let result = agent_wallet_chat(
             app_handle.clone(),
             wallet_request,
             state.openai_cancellations.clone(),
             state.wallet_tasks.clone(),
             state.wallet_pollers.clone(),
-            None,
         )
         .await;
-        if internal_request
-            && requested_specific_model
-            && result
-                .as_ref()
-                .err()
-                .map(|error| is_unavailable_chat_model_error(error))
-                .unwrap_or(false)
-        {
-            let fallback_request_id = format!("{}_model_fallback_{}", request_id, uuid_like_id());
-            eprintln!(
-                "[agent-model-fallback] context={} saved={} reason=provider_rejected_model fallback=default requestId={}",
-                usage_context,
-                request.model.as_deref().unwrap_or("(empty)"),
-                fallback_request_id
-            );
-            let mut fallback_request = request;
-            fallback_request.request_id = fallback_request_id.clone();
-            fallback_request.model = Some("default".to_string());
-            fallback_request.model = resolve_wallet_agent_model_for_request(
-                fallback_request.model.as_deref(),
-                &settings.api_model,
-                true,
-            );
-            result = agent_wallet_chat(
-                app_handle.clone(),
-                fallback_request,
-                state.openai_cancellations.clone(),
-                state.wallet_tasks.clone(),
-                state.wallet_pollers.clone(),
-                Some(request_id.clone()),
-            )
-            .await;
-            result = match result {
-                Ok(value) => Ok(value),
-                Err(error) => Err(format!("MODEL_FALLBACK_EXHAUSTED: {}", error)),
-            };
-        }
         if let Err(error) = &result {
             emit_chat_stream_error(&app_handle, &request_id, error);
         }
@@ -2585,8 +2540,8 @@ fn normalize_wallet_agent_request(
     // Always forward the resolved, canonical context. Older clients may omit
     // it and request-id inference used to affect only model routing, leaving
     // the wallet service to treat the same request as token-billed chat. Doing
-    // this once at the wallet boundary also covers model fallback attempts and
-    // canvas LLM nodes executed from inside a workflow.
+    // this once at the wallet boundary also covers canvas LLM nodes executed
+    // from inside a workflow.
     let usage_context =
         resolve_agent_usage_context(request.usage_context.as_deref(), &request.request_id);
     request.usage_context = Some(usage_context.clone());
@@ -2609,51 +2564,15 @@ fn resolve_wallet_agent_model_for_request(
     resolve_wallet_agent_model(requested, configured)
 }
 
-fn is_unavailable_chat_model_error(error: &str) -> bool {
-    let normalized = error.trim().to_ascii_lowercase();
-    if normalized.is_empty()
-        || normalized.contains("model_fallback_exhausted")
-        || normalized.contains("http 500")
-        || normalized.contains("http 501")
-        || normalized.contains("http 502")
-        || normalized.contains("http 503")
-        || normalized.contains("http 504")
-        || normalized.contains("unauthorized")
-        || normalized.contains("forbidden")
-        || normalized.contains("authentication")
-        || normalized.contains("insufficient balance")
-        || normalized.contains("quota")
-        || normalized.contains("rate limit")
-        || normalized.contains("timeout")
-        || normalized.contains("timed out")
-    {
-        return false;
-    }
-    normalized.contains("model_not_available")
-        || normalized.contains("model_not_found")
-        || normalized.contains("model_disabled")
-        || normalized.contains("unsupported_model")
-        || normalized.contains("stale_model")
-        || normalized.contains("unknown chat model")
-        || normalized.contains("model not found")
-        || normalized.contains("unsupported model")
-        || normalized.contains("disabled model")
-        || normalized.contains("stale chat model")
-        || normalized.contains("model is disabled")
-        || normalized.contains("model was disabled")
-}
-
 async fn agent_wallet_chat(
     app_handle: tauri::AppHandle,
     request: AgentOpenAiChatRequest,
     cancellations: Arc<Mutex<HashSet<String>>>,
     wallet_tasks: Arc<Mutex<HashMap<String, String>>>,
     wallet_pollers: Arc<Mutex<HashSet<String>>>,
-    client_request_id: Option<String>,
 ) -> Result<AgentOpenAiChatResult, String> {
     let provider_request_id = request.request_id.clone();
-    let is_model_fallback = client_request_id.is_some();
-    let request_id = client_request_id.unwrap_or_else(|| provider_request_id.clone());
+    let request_id = provider_request_id.clone();
     let diagnostic_model = request
         .model
         .clone()
@@ -2669,10 +2588,8 @@ async fn agent_wallet_chat(
             tasks.extend(read_pending_wallet_tasks(&app_handle));
         }
     }
-    if !is_model_fallback {
-        if let Ok(mut values) = cancellations.lock() {
-            values.remove(&request_id);
-        }
+    if let Ok(mut values) = cancellations.lock() {
+        values.remove(&request_id);
     }
     let persisted_task_id = wallet_tasks
         .lock()
@@ -4131,7 +4048,7 @@ mod tests {
     }
 
     #[test]
-    fn only_known_internal_agent_contexts_enable_model_fallback() {
+    fn only_known_internal_agent_contexts_bypass_stale_client_model_defaults() {
         assert!(is_internal_agent_usage_context("workflow"));
         assert!(is_internal_agent_usage_context("three_scene_analysis"));
         assert!(is_internal_agent_usage_context("system_internal"));
@@ -4181,31 +4098,8 @@ mod tests {
             Some("canvas_text_agent")
         );
 
-        let fallback = normalized.clone();
-        assert_eq!(fallback.usage_context.as_deref(), Some("canvas_text_agent"));
-    }
-
-    #[test]
-    fn model_unavailable_error_detection_is_narrow() {
-        for error in [
-            "MODEL_NOT_AVAILABLE",
-            "MODEL_DISABLED",
-            "TASK FAILED: Unknown chat model",
-            "model not found",
-            "unsupported model",
-        ] {
-            assert!(is_unavailable_chat_model_error(error), "{error}");
-        }
-        for error in [
-            "HTTP 401 unauthorized",
-            "insufficient balance",
-            "quota exceeded",
-            "request timeout",
-            "Agent API HTTP 500: internal server error",
-            "MODEL_FALLBACK_EXHAUSTED: Unknown chat model",
-        ] {
-            assert!(!is_unavailable_chat_model_error(error), "{error}");
-        }
+        let forwarded = normalized.clone();
+        assert_eq!(forwarded.usage_context.as_deref(), Some("canvas_text_agent"));
     }
 
     #[test]

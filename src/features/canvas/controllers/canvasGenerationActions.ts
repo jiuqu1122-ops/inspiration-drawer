@@ -7,7 +7,7 @@ import { BufferItem } from '../../../types';
 import type { CanvasContextMenuState,CanvasReferenceDragState,CanvasReferenceReplaceTarget } from '../../../types/canvasRuntime';
 import type { CloudAccountSummary,CloudImageModelsResult } from '../../../types/license';
 import { CANVAS_AI_DEFAULT_ASPECT_RATIO,parseCanvasAspectRatioValue } from '../../../utils/canvasAiAspectRatio';
-import { CANVAS_AI_DEFAULT_COUNT,CANVAS_AI_DEFAULT_IMAGE_RESOLUTION,CANVAS_AI_DEFAULT_OUTPUT_FORMAT,CANVAS_AI_DEFAULT_VIDEO_DURATION,CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,CANVAS_AI_IMAGE_REFERENCE_SHARE_KEEPALIVE_MS,CANVAS_AI_VIDEO_REFERENCE_SHARE_KEEPALIVE_MS,canvasAiGatewayKindForProvider,getCanvasAiEndpointForRequest,getStoredCanvasAiApiKey,getStoredCanvasAiApiProvider,getStoredCanvasAiEndpoint,getStoredCanvasAiHeadersText,isCanvasAiXaisWorkerModel,normalizeCanvasAiProvider,parseCanvasAiHeaders,parseCanvasAiModelChoiceValue } from '../../../utils/canvasAiConfig';
+import { CANVAS_AI_DEFAULT_COUNT,CANVAS_AI_DEFAULT_OUTPUT_FORMAT,CANVAS_AI_DEFAULT_VIDEO_DURATION,CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,CANVAS_AI_IMAGE_REFERENCE_SHARE_KEEPALIVE_MS,CANVAS_AI_VIDEO_REFERENCE_SHARE_KEEPALIVE_MS,canvasAiGatewayKindForProvider,getCanvasAiEndpointForRequest,getStoredCanvasAiApiKey,getStoredCanvasAiApiProvider,getStoredCanvasAiEndpoint,getStoredCanvasAiHeadersText,isCanvasAiXaisWorkerModel,normalizeCanvasAiProvider,parseCanvasAiHeaders,parseCanvasAiModelChoiceValue } from '../../../utils/canvasAiConfig';
 import { AI_GENERATED_FOLDER_NAME,getCanvasGeneratedImageFolderName } from '../../../utils/canvasGeneratedFolders';
 import { buildCanvasImageFusionPrompt,getCanvasImageFusionInputIds,isCanvasImageFusionAi,normalizeCanvasImageFusionConfig,removeCanvasImageFusionInput } from '../../../utils/canvasImageFusion';
 import { canUseCanvasItemAsAiInput,canUseCanvasItemAsAiTarget,canUseCanvasItemAsFrameInterpolationVideoInput,canUseCanvasItemAsImageEnhancementInput,canUseCanvasItemAsVideoEnhancementInput,createCanvasAiOutputBufferItem,getCanvasAiOutputDisplaySource,getCanvasAiOutputSize,getCanvasAiSuccessfulOutputs,hasCanvasAiGeneratedResults,isCanvasAgentTextTarget } from '../../../utils/canvasItemSelectors';
@@ -17,7 +17,7 @@ import { getCanvasWorkflowGroup } from '../../../utils/canvasWorkflowRuntime';
 import { isCanvasAudioFileName } from '../../../utils/localMediaPaths';
 import { buildFinalImagePrompt,truncatePromptToUtf8ByteLimit } from '../../appAgent/imageQuality/imageRulePromptBuilder';
 import type { AiGatewayKind } from '../../agentModel';
-import { CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES,CANVAS_AI_VIDEO_TASK_TIMEOUT_MS,debugXaisImage2,filterCanvasAiVideoModelCandidates,generateCanvasAiProviderImages,generateCanvasAiProviderVideos,getCanvasAiImageResolutionValuesForCandidates,getCanvasAiPublicImageModelName,getCanvasAiSlotClientRequestId,getCanvasAiVideoModelCandidates,getDefaultNewApiImageProtocol,hydrateCanvasAiModelCandidateCapabilities,isMiniMaxH3VideoModel,isOpenAiLikeCanvasAiProvider,isSeedanceLikeVideoModel,mergeCanvasAiReferenceSourceItems,normalizeCanvasAiImageResolutionForCandidates,normalizeCanvasAiImageResolutionForModel,resolveCanvasAiImageModelCapabilities,resolveCanvasAiVideoModelCapabilities,shouldUseCanvasAiNativeImageBatchRequest,shouldUsePortableWalletImageReferences,supportsCanvasAiImageResolution } from '../../canvasAiImage';
+import { CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES,CANVAS_AI_VIDEO_TASK_TIMEOUT_MS,debugXaisImage2,filterCanvasAiVideoModelCandidates,generateCanvasAiProviderImages,generateCanvasAiProviderVideos,getCanvasAiPublicImageModelName,getCanvasAiSlotClientRequestId,getCanvasAiVideoModelCandidates,getDefaultNewApiImageProtocol,hydrateCanvasAiModelCandidateCapabilities,isMiniMaxH3VideoModel,isOpenAiLikeCanvasAiProvider,isSeedanceLikeVideoModel,mergeCanvasAiReferenceSourceItems,resolveCanvasAiImageModelCapabilities,resolveCanvasAiVideoModelCapabilities,shouldUseCanvasAiNativeImageBatchRequest,shouldUsePortableWalletImageReferences } from '../../canvasAiImage';
 import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,normalizeCapabilityDuration,normalizeCapabilityOption } from '../../aiModelCapabilities';
 import { buildCanvasAiOutputRemoteResultPatch,recoverCanvasAiOutputWithUsableResult } from '../../canvasAiOutputs';
 import { claimCanvasAiRun,createCanvasAiClientRequestId,releaseCanvasAiRun } from '../../canvasAiRunGuard';
@@ -26,6 +26,7 @@ import { enhancementEstimateCache,getCanvasRifeRateRequest,isCanvasAiEnhancement
 import { type CanvasAiCredentialSource,type CanvasAiGeneratedOutput,type CanvasAiModelCandidate,type CanvasAiProvider,type CanvasImageItem,type CanvasItemBox } from '../../canvasModel';
 import { reorderCanvasInputs } from '../../canvasReferenceInputs';
 import { clamp } from '../../common';
+import { findCanvasImageModelChoice,resolveCanvasImageRequestSettings } from '../canvasImageRequestSettings';
 
 type canvasGenerationActionContext = { canvasItemsRef: React.RefObject<CanvasImageItem[]>; createCanvasAudioItemFromPath: (originalPath: string, index?: number, client?: { x: number; y: number; }) => Promise<CanvasImageItem | null>; showToast: (message: string) => void; appendCanvasItems: (nextItems: CanvasImageItem[], label: string, select?: boolean) => number; connectCanvasItemsToGenerator: (sourceIds: string[], targetId: string) => boolean; setCanvasInputMenuForId: React.Dispatch<React.SetStateAction<string | null>>; setCanvasContextMenu: React.Dispatch<React.SetStateAction<CanvasContextMenuState | null>>; setCanvasInputPickTargetId: React.Dispatch<React.SetStateAction<string | null>>; updateCanvasSelection: (ids: string[]) => void; canvasReferenceReplaceTargetRef: React.RefObject<CanvasReferenceReplaceTarget | null>; targetId: string | undefined; canReplaceCanvasImageReferenceForTarget: (target?: CanvasImageItem) => boolean; replaceCanvasGeneratorReference: (replacement: CanvasReferenceReplaceTarget, nextInputId: string, options?: { pushUndo?: boolean; }) => boolean; connectCanvasItems: (sourceId: string, targetId: string) => boolean; setCanvasInteractionActive: (active: boolean, releaseDelay?: number, _options?: { preserveImageSources?: boolean; }) => void; getCanvasItemRenderedBox: (canvasItem: CanvasImageItem) => CanvasItemBox; CANVAS_CONNECTION_HANDLE_OUTSET: 0; canvasSelectedIdsRef: React.RefObject<string[]>; canvasConnectionDragRef: React.RefObject<{ fromId: string; sourceIds: string[]; pointerId: number; fromX: number; fromY: number; } | null>; setCanvasConnectionDraft: React.Dispatch<React.SetStateAction<{ fromId: string; sourceIds: string[]; fromX: number; fromY: number; toX: number; toY: number; } | null>>; autoScrollCanvasNearEdge: (event: { clientX: number; clientY: number; }) => void; getCanvasPointFromClient: (clientX: number, clientY: number) => { x: number; y: number; }; fromId: string; sourceIds: string[]; fromX: number; fromY: number; x: number; y: number; canvasConnectionDraft: { fromId: string; sourceIds: string[]; fromX: number; fromY: number; toX: number; toY: number; } | null; canvasInputActionDragRef: React.RefObject<{ targetId: string; pointerId: number; fromX: number; fromY: number; } | null>; setCanvasInputActionDraft: React.Dispatch<React.SetStateAction<{ targetId: string; fromX: number; fromY: number; toX: number; toY: number; } | null>>; removeCanvasConnection: (targetId: string, sourceId: string, label?: string) => boolean; pushCanvasUndoSnapshot: (label: string, options?: { layoutOnly?: boolean; shareImmutableItems?: boolean; }) => void; updateCanvasItemsImmediate: (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => CanvasImageItem[]; canvasReferenceLongPressRef: React.RefObject<{ targetId: string; inputId: string; overInputId: string; pointerId: number; startClientX: number; startClientY: number; clientX: number; clientY: number; previewSource: string; inputIndex: number; rotation: 0 | 90 | 180 | 270; activated: boolean; timer: number | null; previousBodyCursor: string; cleanup: () => void; } | null>; cleanup: (() => void) | undefined; setCanvasReferenceDragState: React.Dispatch<React.SetStateAction<CanvasReferenceDragState | null>>; canvasReferenceSuppressClickRef: React.RefObject<{ targetId: string; } | null>; setCanvasReferenceReplacement: (next: CanvasReferenceReplaceTarget | null) => void; canvasRectsIntersect: (a: CanvasItemBox, b: CanvasItemBox) => boolean; createAssetId: () => `${string}-${string}-${string}-${string}-${string}`; makeCanvasNodeId: (seed: string, kind?: string) => string; getCanvasAiRerunNodePosition: (source: CanvasImageItem) => { x: number; y: number; }; activeCanvasIdRef: React.RefObject<string>; canvasesRef: React.RefObject<CanvasRecord[]>; canvasAiCredentialSource: CanvasAiCredentialSource; canvasAiUnifiedImageModelOptions: RoundedSelectOption[]; canvasAiCloudImageModels: CloudImageModelsResult | null; canvasAiProvider: CanvasAiProvider; isCanvasAiLicenseManaged: boolean; effectiveCanvasAiProvider: CanvasAiProvider; canvasAiApiKey: string; canvasAiNewApiVideoKey: string; getCanvasImageInputBufferItemsForNode: (canvasItem: CanvasImageItem, sourceItems?: CanvasImageItem[]) => BufferItem[]; getCanvasTextInputsForNode: (canvasItem: CanvasImageItem, sourceItems?: CanvasImageItem[]) => string[]; notifyCanvasAiGenerationResult: (options: { status: "success" | "partial" | "error"; label: string; mediaType: "image" | "video"; generatedCount?: number; requestedCount?: number; error?: string; }) => void; createCanvasAiOutputDrafts: (target: CanvasImageItem, prompt: string, clientRequestId?: string) => CanvasAiGeneratedOutput[]; effectiveCanvasAiModel: string; getCanvasAiResolvedModel: (provider: CanvasAiProvider, model?: string | null, mediaType?: "image" | "video") => string; getCanvasImageInputsForNode: (canvasItem: CanvasImageItem, mode?: "stable" | "remote-first", delivery?: "auto" | "direct" | "remote-only", sourceItems?: CanvasImageItem[], referenceFormat?: "any" | "jpeg", publicationPreference?: "cloudflared-first" | "hosted-first", portableWalletReferences?: boolean, runtimeProvider?: CanvasAiProvider) => Promise<{ images: string[]; videos: string[]; audios: string[]; temporaryShareIds: TemporaryReferenceShare[]; usedRemoteFirst: boolean; }>; images: string[]; usedRemoteFirst: boolean; videos: string[]; audios: string[]; temporaryShareIds: TemporaryReferenceShare[]; canvasAiEndpoint: string; canvasAiHeadersText: string; canvasAiApiProvider: string; effectiveCanvasAiGatewayKind: AiGatewayKind; effectiveCanvasAiApiProvider: string; effectiveCanvasAiEndpoint: string; getCanvasAiErrorSummary: (error?: string | null) => string; cacheCanvasGeneratedImageSource: (source: string, name: string, options?: { throwOnFailure?: boolean; }) => Promise<{ url: string; path: string; sourceUrl: string; }>; path: string; url: string; createCanvasImagePreviewThumbnail: (source: string, path?: string, allowWebviewFallback?: boolean) => Promise<string>; sourceUrl: string; pushDrawerUndoSnapshot: (label: string, options?: { shareImmutableItems?: boolean; }) => void; addGeneratedVideosToDrawer: (generatedItems: BufferItem[]) => void; addGeneratedImagesToDrawer: (generatedItems: BufferItem[], options?: { canvasId?: string; onOutputCachePatch?: (outputId: string, matchSources: string[], patch: Partial<CanvasAiGeneratedOutput>) => void; canvasOutputClientRequestId?: string; }) => void; updateDrawerItemsDeferred: (updater: (previous: BufferItem[]) => BufferItem[]) => void; setCanvasAiOutputSourceRecoveryTick: React.Dispatch<React.SetStateAction<number>>; AI_GENERATED_VIDEO_FOLDER_NAME: "AI视频"; refreshCloudAccount: (silent?: boolean) => Promise<CloudAccountSummary>; stopTemporaryReferenceShares: (shares: TemporaryReferenceShare[]) => Promise<void>; getFrameInterpolationVideoInput: (target: CanvasImageItem) => { source: string; item: CanvasImageItem; output?: undefined; } | { source: string; item: CanvasImageItem; output: CanvasAiGeneratedOutput; } | null; updateCanvasAiGeneratorData: (nodeId: string, patch: Partial<NonNullable<CanvasImageItem["ai"]>>, content?: string) => CanvasImageItem | undefined; source: string; output: CanvasAiGeneratedOutput | undefined; item: CanvasImageItem; getCanvasEnhancementInput: (target: CanvasImageItem) => { source: string; item: CanvasImageItem; output?: undefined; } | { source: string; item: CanvasImageItem; output: CanvasAiGeneratedOutput; } | null; commitCanvasAiPromptDraft: (canvasId: string, content?: string, sync?: boolean) => void; canvasSessionItemsRef: React.RefObject<Map<string, CanvasImageItem[]>>; getCanvasSessionItems: (canvasId: string) => CanvasImageItem[]; canvasAiRunTokensRef: React.RefObject<Map<string, string>>; markCanvasRunNodeActive: (canvasId: string, nodeId: string) => void; updateCanvasAiGeneratorDataForCanvas: (targetCanvasId: string, nodeId: string, patch: Partial<NonNullable<CanvasImageItem["ai"]>>, content?: string) => CanvasImageItem | undefined; runCanvasAiGeneratorTarget: (target: CanvasImageItem, options: { canvasId?: string; sourceItems?: () => CanvasImageItem[]; updateAi: (patch: Partial<NonNullable<CanvasImageItem["ai"]>>, content?: string) => void; forceUpdateAi?: (patch: Partial<NonNullable<CanvasImageItem["ai"]>>, content?: string) => void; getLatestTarget?: () => CanvasImageItem | undefined; selectTarget?: () => void; showResultToast?: boolean; toastLabel?: string; clientRequestId?: string; requireLocalImageOutputs?: boolean; }) => Promise<CanvasAiGeneratedOutput[]>; isCanvasModeRef: React.RefObject<boolean>; markCanvasRunNodeSettled: (canvasId: string, nodeId: string) => void; waitForCanvasBackgroundPatches: (canvasId: string) => Promise<void>; runCanvasTextAgentNode: (targetId: string) => Promise<void>; runCanvasFrameInterpolationNode: (targetId: string) => Promise<void>; runCanvasEnhancementNode: (targetId: string) => Promise<void>; runCanvasExpandedWorkflowFromNode: (targetId: string) => Promise<boolean>; runCanvasAiGeneratorNode: (targetId: string) => Promise<void>; cloneCanvasAiGeneratorForRerun: (source: CanvasImageItem) => CanvasImageItem | null; };
 
@@ -582,7 +583,8 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       requireLocalImageOutputs?: boolean;
     }) => {
   const { AI_GENERATED_VIDEO_FOLDER_NAME, activeCanvasIdRef, addGeneratedImagesToDrawer, addGeneratedVideosToDrawer, cacheCanvasGeneratedImageSource, canvasAiApiKey, canvasAiApiProvider, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiEndpoint, canvasAiHeadersText, canvasAiNewApiVideoKey, canvasAiProvider, canvasAiUnifiedImageModelOptions, canvasItemsRef, canvasesRef, createCanvasAiOutputDrafts, createCanvasImagePreviewThumbnail, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiGatewayKind, effectiveCanvasAiModel, effectiveCanvasAiProvider, getCanvasAiErrorSummary, getCanvasAiResolvedModel, getCanvasImageInputBufferItemsForNode, getCanvasImageInputsForNode, getCanvasTextInputsForNode, isCanvasAiLicenseManaged, notifyCanvasAiGenerationResult, pushDrawerUndoSnapshot, refreshCloudAccount, setCanvasAiOutputSourceRecoveryTick, showToast, stopTemporaryReferenceShares, updateDrawerItemsDeferred } = ctx;
-    const latestTarget = options.getLatestTarget?.();
+    const latestTarget = options.getLatestTarget?.()
+      || canvasItemsRef.current.find(item => item.id === target.id);
     if (latestTarget?.id === target.id) target = latestTarget;
     const targetAi = target.ai;
     if (!isCanvasAiGeneratorType(targetAi?.type)) return [] as CanvasAiGeneratedOutput[];
@@ -650,24 +652,13 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
     const targetPublicModel = targetRawPublicModel === 'GPT Image 2 H'
       ? 'GPT Image 2'
       : targetRawPublicModel;
-    const matchingSourceChoice = sourceChoices.find(choice => (
-      Boolean(targetCanonicalModelId)
-      && (choice.model === targetCanonicalModelId
-        || choice.providerCandidates?.some(candidate => candidate.canonicalModelId === targetCanonicalModelId))
-    )) || sourceChoices.find(choice => (
-      choice.providerCandidates?.some(candidate => (
-        candidate.provider === targetProvider
-        && candidate.model === targetAi.model
-        && (!targetAi.providerChannelId || candidate.providerChannelId === targetAi.providerChannelId)
-      ))
-    )) || sourceChoices.find(choice => (
-      choice.provider === targetProvider
-      && choice.model === targetAi.model
-    )) || (targetPublicModel
-      ? sourceChoices.find(choice => (
-        getCanvasAiPublicImageModelName(choice.provider, choice.model) === targetPublicModel
-      ))
-      : undefined) || sourceChoices[0];
+    const matchingSourceChoice = findCanvasImageModelChoice(sourceChoices, {
+      canonicalModelId: targetCanonicalModelId,
+      provider: targetProvider,
+      model: targetAi.model,
+      providerChannelId: targetAi.providerChannelId,
+      publicModel: targetPublicModel,
+    });
     const activeSourceCandidate = matchingSourceChoice?.providerCandidates?.find(candidate => (
       candidate.source === imageCredentialSource
       && candidate.provider === targetProvider
@@ -733,9 +724,6 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         ? canvasAiCloudImageModels?.videoChannels?.find(channel => channel.id === selectedChannelId)?.capabilities
         : canvasAiCloudImageModels?.channels?.find(channel => channel.id === selectedChannelId)?.capabilities)
       : undefined;
-    const selectedCandidateImageResolutionValues = mediaType === 'image'
-      ? getCanvasAiImageResolutionValuesForCandidates(selectedProviderCandidates)
-      : [];
     const selectedModelCapabilities = selectedProviderCandidates.find(candidate => (
         candidate.provider === requestedProvider && candidate.model === selectedModel
       ))?.capabilities
@@ -864,8 +852,8 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
           || targetAi.model
           || selectedModel,
       );
-      const submittedModel = useCloudWallet && selectedCatalogModel
-        ? selectedCatalogModel.id
+      const submittedModel = useCloudWallet
+        ? selectedCatalogModel?.id || targetCanonicalModelId || selectedModel
         : requestModel;
       const selectedRouteCandidate = selectedProviderCandidates.find(candidate => (
         candidate.provider === provider && candidate.model === requestModel
@@ -1114,32 +1102,57 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         }
         return candidatePreparedInputs.images;
       };
-      // Take the ratio from the imperative canvas state immediately before
-      // dispatch. The render that opened this run may still contain an older
-      // `canvasItem` while a transition is being committed.
+      // Take all coupled image settings from one imperative snapshot. Reading
+      // only the ratio here while keeping an older resolution can turn a visible
+      // 1K / 16:9 selection into Image2's 2K square default.
       const latestRequestTarget = options.getLatestTarget?.()
         || canvasItemsRef.current.find(item => item.id === target.id);
-      const requestAspectRatio = latestRequestTarget?.ai?.aspectRatio
-        || targetAi.aspectRatio
+      const latestRequestAi = latestRequestTarget?.ai || targetAi;
+      const imageRequestSettings = mediaType === 'image'
+        ? resolveCanvasImageRequestSettings({
+          provider,
+          model: submittedModel,
+          resolution: latestRequestAi.resolution,
+          aspectRatio: latestRequestAi.aspectRatio,
+          capabilities: resolvedImageCapabilities,
+          providerCandidates: selectedProviderCandidates,
+          legacyModelCapabilities: selectedModelCapabilities,
+        })
+        : null;
+      const requestAspectRatio = imageRequestSettings?.aspectRatio
+        || latestRequestAi.aspectRatio
         || CANVAS_AI_DEFAULT_ASPECT_RATIO;
+      const requestResolution = mediaType === 'video'
+        ? normalizeCapabilityOption(
+          resolvedVideoCapabilities.resolutions,
+          latestRequestAi.resolution,
+          CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,
+        )
+        : imageRequestSettings?.resolution;
+      if (imageRequestSettings && (
+        imageRequestSettings.resolution !== latestRequestAi.resolution
+        || imageRequestSettings.aspectRatio !== latestRequestAi.aspectRatio
+      )) {
+        options.updateAi(imageRequestSettings);
+      }
       console.info('[canvas_image_request_snapshot]', {
         clientRequestId,
         provider,
         providerChannelId: selectedChannelId,
         model: submittedModel,
-        resolution: targetAi.resolution,
+        resolution: requestResolution,
         aspectRatio: requestAspectRatio,
       });
       let generateOptions = {
         provider,
         apiKey,
         cloudWallet: useCloudWallet,
-        providerChannelId: useCloudWallet ? selectedChannelId : undefined,
-        providerCandidates: selectedProviderCandidates.length > 1
+        providerChannelId: undefined,
+        providerCandidates: !useCloudWallet && (selectedProviderCandidates.length > 1
           || (mediaType === 'video' && Boolean(selectedCatalogModel))
-          ? selectedProviderCandidates
+          ) ? selectedProviderCandidates
           : undefined,
-        prepareInputImagesForCandidate: mediaType === 'image' && selectedProviderCandidates.length > 1
+        prepareInputImagesForCandidate: !useCloudWallet && mediaType === 'image' && selectedProviderCandidates.length > 1
           ? prepareInputImagesForCandidate
           : undefined,
         providerRuntime: {
@@ -1178,31 +1191,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         inputVideos,
         inputAudios,
         aspectRatio: requestAspectRatio,
-        resolution: mediaType === 'video'
-          ? normalizeCapabilityOption(
-            resolvedVideoCapabilities.resolutions,
-            targetAi.resolution,
-            CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,
-          )
-          : resolvedImageCapabilities.source === 'server'
-            ? normalizeCapabilityOption(
-              resolvedImageCapabilities.resolutions,
-              targetAi.resolution,
-              CANVAS_AI_DEFAULT_IMAGE_RESOLUTION,
-            )
-          : selectedCandidateImageResolutionValues.length > 0
-            ? normalizeCanvasAiImageResolutionForCandidates(
-              selectedProviderCandidates,
-              targetAi.resolution,
-            )
-            : supportsCanvasAiImageResolution(provider, requestModel, selectedModelCapabilities)
-              ? normalizeCanvasAiImageResolutionForModel(
-                provider,
-                requestModel,
-                targetAi.resolution,
-                selectedModelCapabilities,
-              )
-              : targetAi.resolution,
+        resolution: requestResolution,
         outputFormat: targetAi.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
         duration: mediaType === 'video'
           ? normalizeCapabilityDuration(

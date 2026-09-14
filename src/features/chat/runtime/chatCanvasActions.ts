@@ -416,7 +416,12 @@ export const runCanvasTextAgentTargetImpl = async (ctx: Pick<chatAgentActionCont
       { role: 'user', content: buildCanvasTextAgentUserContent(userPrompt, preparedReferences, isSeedanceVideoAnalysis) },
     ];
     const result = await runInternalAgentModelRequest({
-      savedModel: agentModelRef.current,
+      // Wallet mode resolves this business use-case through the server-owned
+      // CANVAS_TEXT binding. Direct/BYOK keeps its configured provider model.
+      savedModel: canvasAgent.settings.apiProvider.trim().toLowerCase() === 'unmind-wallet'
+        || canvasAgent.settings.apiCredentialSource === 'cloud_wallet'
+        ? undefined
+        : agentModelRef.current,
       usageContext: 'canvas_text_agent',
       requestId,
       createRequestId: () => 'canvas_text_agent_fallback_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8),

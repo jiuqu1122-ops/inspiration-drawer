@@ -67,6 +67,49 @@ describe('getCanvasAiUnifiedImageModelValueImpl', () => {
     }, 'new-api', 'image2', 'channel-image-2-5')).toBe(image25.value);
   });
 
+  it('does not display the first picker model when an explicit model is temporarily unavailable', () => {
+    const banana = catalogOption('nano-banana-pro', 'Nano Banana Pro', 'gemini-3-pro-image', 'banana-channel');
+    const value = getCanvasAiUnifiedImageModelValueImpl({
+      canvasAiCloudImageModels: null,
+      canvasAiCredentialSource: 'wallet',
+      canvasAiUnifiedImageModelOptions: [banana],
+    }, 'new-api', 'gpt-image-medium');
+
+    expect(value).not.toBe(banana.value);
+    expect(value).toContain('gpt-image-medium');
+  });
+
+  it('does not rewrite an unavailable explicit image model to Banana during option refresh', () => {
+    const banana = catalogOption('nano-banana-pro', 'Nano Banana Pro', 'gemini-3-pro-image', 'banana-channel');
+    let items = [{
+      id: 'image-node',
+      item: { id: 'image-node', type: 'text', content: '', createdAt: 1 },
+      x: 0,
+      y: 0,
+      width: 320,
+      height: 240,
+      ai: {
+        type: 'image-generator',
+        provider: 'new-api',
+        model: 'gpt-image-medium',
+        credentialSource: 'wallet',
+      },
+    }] as CanvasImageItem[];
+
+    runAppLifecycleEffect21({
+      canvasAiCloudImageModels: null,
+      canvasAiCredentialSource: 'wallet',
+      canvasAiUnifiedImageModelOptions: [banana],
+      isCanvasMode: true,
+      updateCanvasItemsImmediate: updater => {
+        items = updater(items);
+        return items;
+      },
+    });
+
+    expect(items[0].ai?.model).toBe('gpt-image-medium');
+  });
+
   it('hydrates a stale video selection with the default Catalog route', () => {
     let items = [{
       id: 'video-node',

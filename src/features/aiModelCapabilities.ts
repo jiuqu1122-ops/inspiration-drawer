@@ -226,6 +226,57 @@ export const normalizeCapabilityOption = (
     || exact;
 };
 
+const parseImageAspectRatioOption = (value?: string | null) => {
+  const match = String(value || '').trim().match(/^(\d+(?:\.\d+)?)\s*([:x\u00d7])\s*(\d+(?:\.\d+)?)$/i);
+  if (!match) return null;
+  const width = Number(match[1]);
+  const height = Number(match[3]);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  return {
+    ratio: width / height,
+    isDimension: match[2].toLowerCase() !== ':',
+  };
+};
+
+/**
+ * Normalizes image ratios without treating the first capability entry as the
+ * semantic default. Image2 advertises exact dimensions for 2K/4K, so a saved
+ * `16:9` must resolve to `2048x1152`/`3840x2160` instead of the first (square)
+ * entry. An exact dimension that no longer belongs to a semantic-ratio list is
+ * considered stale and falls back to the preferred ratio used by the UI.
+ */
+export const normalizeImageAspectRatioOption = (
+  allowed: readonly string[],
+  requested?: string | null,
+  preferred?: string | null,
+) => {
+  const exact = String(requested || '').trim();
+  const exactMatch = allowed.find(value => value.toLowerCase() === exact.toLowerCase());
+  if (exactMatch) return exactMatch;
+
+  const requestedRatio = parseImageAspectRatioOption(exact);
+  const allowedRatios = allowed.map(value => ({ value, parsed: parseImageAspectRatioOption(value) }));
+  const hasDimensionOption = allowedRatios.some(option => option.parsed?.isDimension);
+  if (requestedRatio && (!requestedRatio.isDimension || hasDimensionOption)) {
+    const ratioMatch = allowedRatios.find(option => (
+      option.parsed && Math.abs(Math.log(option.parsed.ratio / requestedRatio.ratio)) < 0.01
+    ));
+    if (ratioMatch) return ratioMatch.value;
+  }
+
+  const preferredValue = String(preferred || '').trim();
+  const preferredMatch = allowed.find(value => value.toLowerCase() === preferredValue.toLowerCase());
+  if (preferredMatch) return preferredMatch;
+  const preferredRatio = parseImageAspectRatioOption(preferredValue);
+  if (preferredRatio) {
+    const ratioMatch = allowedRatios.find(option => (
+      option.parsed && Math.abs(Math.log(option.parsed.ratio / preferredRatio.ratio)) < 0.01
+    ));
+    if (ratioMatch) return ratioMatch.value;
+  }
+  return allowed[0] || exact;
+};
+
 export const normalizeCapabilityDuration = (
   allowed: readonly number[],
   requested?: number | null,
@@ -435,10 +486,18 @@ export const reconcileStaleCanvasAiModels = (
     if (!modality || !ai || ai.credentialSource === 'local') return item;
     const catalog = modality === 'image' ? imageCatalog : videoCatalog;
     if (catalog.length === 0) return item;
-    const current = findAiCatalogModel(catalog, ai.model);
+    const requestedCanonicalModel = ai.providerCandidates
+      ?.find(candidate => candidate.canonicalModelId)?.canonicalModelId
+      || String(ai.model || '').trim();
+    const current = findAiCatalogModel(catalog, requestedCanonicalModel)
+      || findAiCatalogModel(catalog, ai.model);
     const fallback = modality === 'image' ? defaultImage : defaultVideo;
-    const nextModel = current?.id || fallback;
-    if (!nextModel || (ai.model === nextModel && current?.id === ai.model)) return item;
+    // Catalog refreshes may be temporarily incomplete. A model explicitly
+    // stored on the node is user intent and must never be replaced with the
+    // server default (often Nano Banana Pro). Only an unconfigured node may
+    // adopt the default; known aliases are still canonicalized safely.
+    const nextModel = current?.id || (!requestedCanonicalModel ? fallback : '');
+    if (!nextModel || ai.model === nextModel) return item;
     changed = true;
     return {
       ...item,

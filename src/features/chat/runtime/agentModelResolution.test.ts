@@ -38,16 +38,15 @@ describe('agent model resolution', () => {
     });
   });
 
-  it('falls an internal stale model back after an authoritative refresh', () => {
+  it('keeps an explicit stale model so the server can reject it authoritatively', () => {
     expect(resolveValidAgentModel({
       savedModel: 'old-gpt-model',
       availableModels: ['gpt-5.6-sol'],
       usageContext: 'workflow',
     })).toEqual({
-      requestedModel: undefined,
-      resolvedModel: 'default',
-      fallbackUsed: true,
-      fallbackReason: 'not_in_available_models',
+      requestedModel: 'old-gpt-model',
+      resolvedModel: 'old-gpt-model',
+      fallbackUsed: false,
     });
   });
 
@@ -62,7 +61,7 @@ describe('agent model resolution', () => {
       savedModel: 'gpt-5.6',
       availableModels: ['gpt-5.6-sol'],
       usageContext: 'workflow',
-    }).requestedModel).toBeUndefined();
+    }).requestedModel).toBe('gpt-5.6');
   });
 
   it('does not clear a concrete model while the catalog is unavailable or empty', () => {
@@ -111,11 +110,9 @@ describe('agent model resolution', () => {
     expect(isUnavailableChatModelError(new Error(error))).toBe(false);
   });
 
-  it('retries an internal model rejection once with automatic routing', async () => {
-    const request = vi.fn()
-      .mockRejectedValueOnce(new Error('Unknown chat model'))
-      .mockResolvedValueOnce('ok');
-    const result = await runInternalAgentModelRequest({
+  it('does not retry an explicit model rejection with automatic routing', async () => {
+    const request = vi.fn().mockRejectedValue(new Error('Unknown chat model'));
+    await expect(runInternalAgentModelRequest({
       savedModel: 'gpt-5.6-sol',
       availableModels: [],
       usageContext: 'workflow',
@@ -123,21 +120,16 @@ describe('agent model resolution', () => {
       createRequestId: () => 'request-2',
       request,
       log: () => {},
-    });
-    expect(result).toBe('ok');
-    expect(request).toHaveBeenNthCalledWith(1, {
+    })).rejects.toThrow('Unknown chat model');
+    expect(request).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledWith({
       requestId: 'request-1',
       model: 'gpt-5.6-sol',
       usageContext: 'workflow',
     });
-    expect(request).toHaveBeenNthCalledWith(2, {
-      requestId: 'request-2',
-      model: 'default',
-      usageContext: 'workflow',
-    });
   });
 
-  it('stops after the single fallback attempt', async () => {
+  it('propagates a model error without wrapping it as fallback exhaustion', async () => {
     const request = vi.fn().mockRejectedValue(new Error('Unknown chat model'));
     await expect(runInternalAgentModelRequest({
       savedModel: 'old-model',
@@ -147,8 +139,8 @@ describe('agent model resolution', () => {
       createRequestId: () => 'request-2',
       request,
       log: () => {},
-    })).rejects.toThrow('MODEL_FALLBACK_EXHAUSTED');
-    expect(request).toHaveBeenCalledTimes(2);
+    })).rejects.toThrow('Unknown chat model');
+    expect(request).toHaveBeenCalledOnce();
   });
 
   it('does not retry authentication, balance, timeout, or HTTP 500 errors', async () => {
@@ -172,7 +164,7 @@ describe('agent model resolution', () => {
     }
   });
 
-  it('uses automatic routing immediately for a stale historical workflow model', async () => {
+  it('submits a stale historical workflow model unchanged', async () => {
     const request = vi.fn().mockResolvedValue('ok');
     await runInternalAgentModelRequest({
       savedModel: 'old-workflow-model',
@@ -186,7 +178,7 @@ describe('agent model resolution', () => {
     expect(request).toHaveBeenCalledOnce();
     expect(request).toHaveBeenCalledWith({
       requestId: 'request-1',
-      model: 'default',
+      model: 'old-workflow-model',
       usageContext: 'workflow',
     });
   });

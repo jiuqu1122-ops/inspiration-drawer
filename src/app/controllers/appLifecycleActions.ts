@@ -739,7 +739,7 @@ export const getCanvasAiUnifiedImageModelValueImpl = (ctx: Pick<appLifecycleActi
     );
     const publicName = rawPublicName === 'GPT Image 2 H' ? 'GPT Image 2' : rawPublicName;
     const matchingOption = canvasAiUnifiedImageModelOptions.find(option => option.label === publicName);
-    return matchingOption?.value || canvasAiUnifiedImageModelOptions[0]?.value
-      || canvasAiModelChoiceValue(canvasAiCredentialSource, provider, model);
+    return matchingOption?.value
+      || canvasAiModelChoiceValue(canvasAiCredentialSource, provider, model, providerChannelId);
 
 };

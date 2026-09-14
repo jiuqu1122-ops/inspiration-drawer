@@ -10,6 +10,7 @@ import {
   getDefaultAiCatalogModelId,
   getImageAspectRatioOptionsForResolution,
   mergeAiModelCapabilities,
+  normalizeImageAspectRatioOption,
   reconcileStaleCanvasAiModels,
   resolveImageModelCapabilities,
   resolveVideoModelCapabilities,
@@ -117,6 +118,27 @@ describe('server-driven AI model capabilities', () => {
     expect(getImageAspectRatioOptionsForResolution(resolved, '1K')).toEqual(['1:1', '16:9']);
   });
 
+  it('maps semantic image ratios to exact Image2 dimensions instead of the square first option', () => {
+    expect(normalizeImageAspectRatioOption(
+      ['2048x2048', '2048x1152'],
+      '16:9',
+      '16:9',
+    )).toBe('2048x1152');
+    expect(normalizeImageAspectRatioOption(
+      ['2880x2880', '3840x2160'],
+      '2048x1152',
+      '16:9',
+    )).toBe('3840x2160');
+  });
+
+  it('uses the displayed default when an old exact dimension is stale at 1K', () => {
+    expect(normalizeImageAspectRatioOption(
+      ['1:1', '16:9'],
+      '2048x2048',
+      '16:9',
+    )).toBe('16:9');
+  });
+
   it('drives a new video model resolutions, durations, reference slots and FLF mode', () => {
     const model = getAiCatalogModels(catalogSnapshot(), 'video')[0];
     const resolved = resolveVideoModelCapabilities({ canonical: model.capabilities });
@@ -205,20 +227,28 @@ describe('server-driven AI model capabilities', () => {
     expect(getCachedAiCatalog()).toBe(snapshot);
   });
 
-  it('falls a stale image model back to the successful server default', () => {
+  it('preserves an unavailable explicit image model during catalog refresh', () => {
     const next = reconcileStaleCanvasAiModels(
       [generatorNode('image', 'image-generator', 'retired-image')],
       catalogSnapshot(),
     );
-    expect(next[0].ai?.model).toBe('test-image-x');
+    expect(next[0].ai?.model).toBe('retired-image');
   });
 
-  it('falls a stale video model back to the successful server default', () => {
+  it('preserves an unavailable explicit video model during catalog refresh', () => {
     const next = reconcileStaleCanvasAiModels(
       [generatorNode('video', 'video-generator', 'retired-video')],
       catalogSnapshot(),
     );
-    expect(next[0].ai?.model).toBe('test-video-x');
+    expect(next[0].ai?.model).toBe('retired-video');
+  });
+
+  it('uses the server default only for an unconfigured wallet node', () => {
+    const next = reconcileStaleCanvasAiModels(
+      [generatorNode('image', 'image-generator', '')],
+      catalogSnapshot(),
+    );
+    expect(next[0].ai?.model).toBe('test-image-x');
   });
 
   it('does not reset local models during a wallet catalog refresh', () => {

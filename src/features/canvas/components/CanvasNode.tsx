@@ -6,7 +6,7 @@ import { CanvasHorizontalRail } from '../../../components/CanvasHorizontalRail';
 import { CanvasImageFusionControls } from '../../../components/CanvasImageFusionControls';
 import { CanvasLocalMediaControls } from '../../../components/CanvasLocalMediaControls';
 import { CanvasSelectionVideo } from '../../../components/CanvasSelectionVideo';
-import { RoundedSelect } from '../../../components/RoundedSelect';
+import { RoundedSelect,type RoundedSelectOption } from '../../../components/RoundedSelect';
 import { CANVAS_AI_NODE_CHEVRON_CLASS,CANVAS_AI_NODE_SELECT_MENU_CLASS,CANVAS_AI_NODE_SELECT_OPTION_CLASS,CANVAS_AI_NODE_TEXT_SELECT_CLASS } from '../../../components/canvasAiNodeControlStyles';
 import { CANVAS_AI_DEFAULT_ASPECT_RATIO,CANVAS_AI_NEW_API_VIDEO_ASPECT_RATIO_OPTIONS,formatCanvasAiAspectRatioOptionLabel,getCanvasAiAspectRatioOptionsForModel,normalizeCanvasAiAspectRatioForModel,usesCanvasAiImage2DimensionOptions } from '../../../utils/canvasAiAspectRatio';
 import { CANVAS_AI_DEFAULT_COUNT,CANVAS_AI_DEFAULT_OUTPUT_FORMAT,CANVAS_AI_DEFAULT_VIDEO_DURATION,CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,parseCanvasAiModelChoiceValue } from '../../../utils/canvasAiConfig';
@@ -23,7 +23,7 @@ import { normalizeDesignAgentConfig } from '../../designAgentNode';
 import { ThreeSceneNode } from '../../three/components/ThreeSceneNode';
 import { shouldMountThreeSceneRenderer } from '../../three/model/threeSceneInteraction';
 import { buildCanvasNodeViewModel } from '../canvasNodeViewModel';
-import { findAiCatalogModel,getAiCatalogModels,getDefaultAiCatalogModelId,getImageAspectRatioOptionsForResolution,normalizeCapabilityDuration,normalizeCapabilityOption,resolveImageModelCapabilities } from '../../aiModelCapabilities';
+import { findAiCatalogModel,getAiCatalogModels,getDefaultAiCatalogModelId,getImageAspectRatioOptionsForResolution,normalizeCapabilityDuration,normalizeCapabilityOption,normalizeImageAspectRatioOption,resolveImageModelCapabilities } from '../../aiModelCapabilities';
 import { ImageRuleSwitchPanel } from './ImageRuleSwitchPanel';
 import type { BufferItem } from '../../../types';
 import type { DesignAgentConfig,CanvasImageItem } from '../../canvasModel';
@@ -54,6 +54,28 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                               ))
                               .map(model => ({ value: model.id, label: model.displayName }))
                             : CANVAS_AI_VIDEO_MODEL_OPTIONS;
+                          const canvasAiImageModelValue = getCanvasAiUnifiedImageModelValue(
+                            canvasAiItemProvider,
+                            canvasAiItemModel,
+                            canvasItem.ai?.providerChannelId,
+                          );
+                          const canvasAiImageModelLabel = canvasAiCatalogModel?.displayName
+                            || canvasAiItemProviderCandidates.find(candidate => (
+                              candidate.canonicalModelId === canvasItem.ai?.model
+                              || candidate.model === canvasAiItemModel
+                            ))?.displayName
+                            || getCanvasAiPublicImageModelName(canvasAiItemProvider, canvasAiItemModel)
+                            || canvasAiItemModel
+                            || '未支持的图像模型';
+                          const canvasAiImageModelOptions = canvasAiUnifiedImageModelOptions.some((option: RoundedSelectOption) => (
+                            option.value === canvasAiImageModelValue
+                          ))
+                            ? canvasAiUnifiedImageModelOptions
+                            : [{
+                              value: canvasAiImageModelValue,
+                              label: canvasAiImageModelLabel,
+                              hiddenInMenu: true,
+                            }, ...canvasAiUnifiedImageModelOptions];
                           const isCanvasVideoReferenceItem = (inputItem: CanvasImageItem) => {
                             const generatorOutput = getCanvasAiSuccessfulOutputs(inputItem)[0];
                             return inputItem.item.type === 'video'
@@ -1480,17 +1502,33 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                               mediaType={canvasAiMediaType}
                                               menuScale={canvasAiMenuScale}
                                               modelValue={canvasAiMediaType === 'image'
-                                                ? getCanvasAiUnifiedImageModelValue(canvasAiItemProvider, canvasAiItemModel, canvasItem.ai?.providerChannelId)
+                                                ? canvasAiImageModelValue
                                                 : canvasAiCatalogModel?.id || getCanvasAiVideoModelOptionValue(canvasAiItemModel)}
                                               modelOptions={canvasAiMediaType === 'image'
-                                                ? canvasAiUnifiedImageModelOptions
+                                                ? canvasAiImageModelOptions
                                                 : canvasAiVideoModelOptions}
                                               modelTitle={`模型：${canvasAiMediaType === 'image'
-                                                ? canvasAiCatalogModel?.displayName || getCanvasAiPublicImageModelName(canvasAiItemProvider, canvasAiItemModel) || '未支持的图像模型'
+                                                ? canvasAiImageModelLabel
                                                 : canvasAiCatalogModel?.displayName || canvasAiVideoModelOptions.find(option => option.value === getCanvasAiVideoModelOptionValue(canvasAiItemModel))?.label || canvasAiItemModel}`}
                                               onModelChange={(value) => {
                                                 const latestCanvasItem = getLatestCanvasItem();
                                                 const latestAi = latestCanvasItem.ai || canvasItem.ai;
+                                                const currentImageAspectRatio = canvasAiMediaType === 'image'
+                                                  ? canvasAiAspectRatioValues.length > 0
+                                                    ? normalizeImageAspectRatioOption(
+                                                      canvasAiAspectRatioValues,
+                                                      latestAi?.aspectRatio,
+                                                      CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                    )
+                                                    : normalizeCanvasAiAspectRatioForModel(
+                                                      canvasAiItemModel,
+                                                      latestAi?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                      canvasAiItemImageResolution,
+                                                    )
+                                                  : latestAi?.aspectRatio;
+                                                const currentImageAspectRatioIntent = canvasAiMediaType === 'image'
+                                                  ? normalizeCanvasAiAspectRatioForModel(null, currentImageAspectRatio)
+                                                  : currentImageAspectRatio;
                                                 const choice = canvasAiMediaType === 'image'
                                                   ? parseCanvasAiModelChoiceValue(value)
                                                   : null;
@@ -1565,9 +1603,9 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                   model,
                                                   imageProtocol: undefined,
                                                   aspectRatio: canvasAiMediaType === 'image' && selectedImageAspectRatios.length > 0
-                                                    ? normalizeCapabilityOption(
+                                                    ? normalizeImageAspectRatioOption(
                                                       selectedImageAspectRatios,
-                                                      latestAi?.aspectRatio,
+                                                      currentImageAspectRatioIntent,
                                                       CANVAS_AI_DEFAULT_ASPECT_RATIO,
                                                     )
                                                     : selectedVideoCatalogModel?.capabilities?.aspectRatios?.length
@@ -1584,7 +1622,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                        : normalizeNewApiVideoAspectRatio(latestAi?.aspectRatio)
                                                     : normalizeCanvasAiAspectRatioForModel(
                                                       model,
-                                                       latestAi?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                      currentImageAspectRatioIntent || CANVAS_AI_DEFAULT_ASPECT_RATIO,
                                                       resolution,
                                                     ),
                                                   ...(selectedVideoCatalogModel ? {
@@ -1611,7 +1649,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                 });
                                               }}
                                               aspectRatioValue={canvasAiAspectRatioValues.length > 0
-                                                ? normalizeCapabilityOption(
+                                                ? normalizeImageAspectRatioOption(
                                                   canvasAiAspectRatioValues,
                                                   canvasItem.ai?.aspectRatio,
                                                   CANVAS_AI_DEFAULT_ASPECT_RATIO,
@@ -1632,7 +1670,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                 ? CANVAS_AI_NEW_API_VIDEO_ASPECT_RATIO_OPTIONS
                                                 : getCanvasAiAspectRatioOptionsForModel(canvasAiItemModel, canvasAiItemImageResolution)}
                                               aspectRatioTitle={`比例：${canvasAiAspectRatioValues.length > 0
-                                                ? normalizeCapabilityOption(
+                                                ? normalizeImageAspectRatioOption(
                                                   canvasAiAspectRatioValues,
                                                   canvasItem.ai?.aspectRatio,
                                                   CANVAS_AI_DEFAULT_ASPECT_RATIO,
@@ -1653,6 +1691,21 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                               onImageResolutionChange={(value) => {
                                                 const latestCanvasItem = getLatestCanvasItem();
                                                 const latestAi = latestCanvasItem.ai || canvasItem.ai;
+                                                const currentAspectRatio = canvasAiAspectRatioValues.length > 0
+                                                  ? normalizeImageAspectRatioOption(
+                                                    canvasAiAspectRatioValues,
+                                                    latestAi?.aspectRatio,
+                                                    CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                  )
+                                                  : normalizeCanvasAiAspectRatioForModel(
+                                                    canvasAiItemModel,
+                                                    latestAi?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                    canvasAiItemImageResolution,
+                                                  );
+                                                const currentAspectRatioIntent = normalizeCanvasAiAspectRatioForModel(
+                                                  null,
+                                                  currentAspectRatio,
+                                                );
                                                 const resolution = canvasAiResolvedImageCapabilities.source === 'server'
                                                   ? normalizeCapabilityOption(
                                                     canvasAiResolvedImageCapabilities.resolutions,
@@ -1678,14 +1731,14 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                       resolution,
                                                     );
                                                     return options.length > 0
-                                                      ? normalizeCapabilityOption(
+                                                      ? normalizeImageAspectRatioOption(
                                                         options,
-                                                        latestAi?.aspectRatio,
+                                                        currentAspectRatioIntent,
                                                         CANVAS_AI_DEFAULT_ASPECT_RATIO,
                                                       )
                                                       : normalizeCanvasAiAspectRatioForModel(
                                                         canvasAiItemModel,
-                                                        latestAi?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                        currentAspectRatioIntent,
                                                         resolution,
                                                       );
                                                   })(),
