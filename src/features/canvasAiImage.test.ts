@@ -136,12 +136,12 @@ describe('wallet provider protocol compatibility', () => {
     }, '1k')).toBe(aspectRatio);
   });
 
-  it('keeps exact wallet dimensions when the selected resolution advertises them', () => {
+  it('keeps a semantic wallet ratio at 1K even when the catalog advertises exact dimensions', () => {
     expect(resolveCloudWalletImageAspectRatio('16:9', {
       source: 'server',
       aspectRatios: [],
       aspectRatiosByResolution: { '1k': ['1280x720'] },
-    }, '1k')).toBe('1280x720');
+    }, '1k')).toBe('16:9');
   });
 });
 

@@ -7,6 +7,7 @@ const image2Capabilities: ResolvedImageModelCapabilities = {
   resolutions: ['1K', '2K', '4K'],
   aspectRatios: ['1:1', '3:4', '4:3', '9:16', '16:9'],
   aspectRatiosByResolution: {
+    '1k': ['1024x1024', '1280x720', '720x1280'],
     '2k': ['2048x2048', '1536x2048', '2048x1536', '1152x2048', '2048x1152'],
     '4k': ['2880x2880', '2400x3200', '3200x2400', '2160x3840', '3840x2160'],
   },

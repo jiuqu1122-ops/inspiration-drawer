@@ -370,6 +370,10 @@ export const getImageAspectRatioOptionsForResolution = (
   resolution?: string | null,
 ) => {
   const key = String(resolution || '').trim().toLowerCase();
+  // 1K is presented as a simple aspect-ratio choice. The server still owns
+  // the exact upstream pixel conversion, so exposing its dimension table here
+  // only leaks adapter details into the node UI and can persist stale sizes.
+  if (key === '1k') return capabilities.aspectRatios;
   return capabilities.aspectRatiosByResolution[key]?.length
     ? capabilities.aspectRatiosByResolution[key]
     : capabilities.aspectRatios;

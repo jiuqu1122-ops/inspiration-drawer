@@ -104,6 +104,7 @@ describe('server-driven AI model capabilities', () => {
         resolutions: ['1K', '2K', '4K'],
         aspectRatios: ['1:1', '16:9'],
         aspectRatiosByResolution: {
+          '1K': ['1024x1024', '1280x720'],
           '2K': ['2048x2048', '2048x1152'],
           '4K': ['2880x2880', '3840x2160'],
         },
