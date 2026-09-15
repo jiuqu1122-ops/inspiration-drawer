@@ -3373,6 +3373,12 @@ function MainApp() {
 
   const appendCanvasItems = (nextItems: CanvasImageItem[], label: string, select = true) => { return appendCanvasItemsImpl({ canvasImageSourceCacheRef, canvasItemsPatchCommitRef, growCanvasToFit, isCanvasModeRef, pushCanvasUndoSnapshot, scheduleCanvasChangedNodesPatchSave, scheduleCanvasFocusItemById, updateCanvasItemsDeferred, updateCanvasSelection }, nextItems, label, select); };
 
+  // Inspiration Space closes its modal immediately after a successful add.
+  // Commit those imported nodes at normal priority so that closing the modal
+  // cannot overtake the canvas render while still reusing the normal append,
+  // selection, persistence, and focus behavior.
+  const appendCanvasItemsSynchronously = (nextItems: CanvasImageItem[], label: string, select = true) => { return appendCanvasItemsImpl({ canvasImageSourceCacheRef, canvasItemsPatchCommitRef, growCanvasToFit, isCanvasModeRef, pushCanvasUndoSnapshot, scheduleCanvasChangedNodesPatchSave, scheduleCanvasFocusItemById, updateCanvasItemsDeferred: updateCanvasItemsImmediate, updateCanvasSelection }, nextItems, label, select); };
+
   const getCanvasAiOutputCopyPosition = (
     sourceItem: CanvasImageItem,
     size: { width: number; height: number },
@@ -4606,7 +4612,8 @@ function MainApp() {
   const addCanvasTemplateValuesAtDrop = async (
     rawValues: unknown[],
     client?: { x: number; y: number },
-  ) => { return addCanvasTemplateValuesAtDropImpl({ appendCanvasItems, buildCanvasAiGeneratorNode, buildCanvasWorkflowModuleNode, canvasWorkflowTemplates, getCanvasDropPosition, getCanvasTemplateImportPayload, getSelectedCanvasAiInputIds, materializeImportedCanvasWorkflows, setCustomCanvasAiPromptPresets, setCustomCanvasWorkflows, updateCanvasNodesForPreset }, rawValues, client); };
+    options: { immediate?: boolean } = {},
+  ) => { return addCanvasTemplateValuesAtDropImpl({ appendCanvasItems: options.immediate ? appendCanvasItemsSynchronously : appendCanvasItems, buildCanvasAiGeneratorNode, buildCanvasWorkflowModuleNode, canvasWorkflowTemplates, getCanvasDropPosition, getCanvasTemplateImportPayload, getSelectedCanvasAiInputIds, materializeImportedCanvasWorkflows, setCustomCanvasAiPromptPresets, setCustomCanvasWorkflows, updateCanvasNodesForPreset }, rawValues, client); };
 
   const addCanvasDroppedTemplateJsonSources = async (
     sources: Array<{ name: string; read: () => Promise<unknown> }>,
@@ -4728,7 +4735,7 @@ function MainApp() {
           }),
         } : undefined,
       };
-      const addedPromptNode = appendCanvasItems([promptNode], `添加社区提示词「${share.title}」`);
+      const addedPromptNode = appendCanvasItemsSynchronously([promptNode], `添加社区提示词「${share.title}」`);
       if (addedPromptNode === 0) throw new Error('提示词节点未能添加到画布');
       return `已将填写好提示词的生图节点添加到画布`;
     }
@@ -4736,7 +4743,7 @@ function MainApp() {
     const parsed = getCanvasTemplateImportPayload(payload);
     let createdCount = 0;
     if (parsed.presets.length > 0 || parsed.workflows.length > 0) {
-      const result = await addCanvasTemplateValuesAtDrop([payload]);
+      const result = await addCanvasTemplateValuesAtDrop([payload], undefined, { immediate: true });
       if (!result.recognized || result.created === 0) throw new Error('资源已识别，但没有生成可用的画布节点');
       createdCount += result.created;
     }
@@ -4788,7 +4795,7 @@ function MainApp() {
           ai: { ...module.ai, workflowRuntime: instance.runtime },
         }];
       });
-      createdCount += appendCanvasItems(modules, `添加社区工作流「${share.title}」`);
+      createdCount += appendCanvasItemsSynchronously(modules, `添加社区工作流「${share.title}」`);
     }
 
     if (createdCount === 0) throw new Error('没有识别到可添加的节点预设或工作流');

@@ -17,7 +17,7 @@ import { getCanvasWorkflowGroup } from '../../../utils/canvasWorkflowRuntime';
 import { isCanvasAudioFileName } from '../../../utils/localMediaPaths';
 import { buildFinalImagePrompt,truncatePromptToUtf8ByteLimit } from '../../appAgent/imageQuality/imageRulePromptBuilder';
 import type { AiGatewayKind } from '../../agentModel';
-import { CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES,CANVAS_AI_VIDEO_TASK_TIMEOUT_MS,debugXaisImage2,filterCanvasAiVideoModelCandidates,generateCanvasAiProviderImages,generateCanvasAiProviderVideos,getCanvasAiPublicImageModelName,getCanvasAiSlotClientRequestId,getCanvasAiVideoModelCandidates,getDefaultNewApiImageProtocol,hydrateCanvasAiModelCandidateCapabilities,isMiniMaxH3VideoModel,isOpenAiLikeCanvasAiProvider,isSeedanceLikeVideoModel,mergeCanvasAiReferenceSourceItems,resolveCanvasAiImageModelCapabilities,resolveCanvasAiVideoModelCapabilities,shouldUseCanvasAiNativeImageBatchRequest,shouldUsePortableWalletImageReferences } from '../../canvasAiImage';
+import { CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES,CANVAS_AI_VIDEO_TASK_TIMEOUT_MS,debugXaisImage2,filterCanvasAiVideoModelCandidates,generateCanvasAiProviderImages,generateCanvasAiProviderVideos,getCanvasAiImageOutputConcurrency,getCanvasAiPublicImageModelName,getCanvasAiSlotClientRequestId,getCanvasAiVideoModelCandidates,getDefaultNewApiImageProtocol,hydrateCanvasAiModelCandidateCapabilities,isMiniMaxH3VideoModel,isOpenAiLikeCanvasAiProvider,isSeedanceLikeVideoModel,mergeCanvasAiReferenceSourceItems,resolveCanvasAiImageModelCapabilities,resolveCanvasAiVideoModelCapabilities,shouldRetrySameCanvasAiImageCandidate,shouldUseCanvasAiNativeImageBatchRequest,shouldUsePortableWalletImageReferences } from '../../canvasAiImage';
 import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,normalizeCapabilityDuration,normalizeCapabilityOption } from '../../aiModelCapabilities';
 import { buildCanvasAiOutputRemoteResultPatch,recoverCanvasAiOutputWithUsableResult } from '../../canvasAiOutputs';
 import { claimCanvasAiRun,createCanvasAiClientRequestId,releaseCanvasAiRun } from '../../canvasAiRunGuard';
@@ -1142,6 +1142,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         model: submittedModel,
         resolution: requestResolution,
         aspectRatio: requestAspectRatio,
+        requestedCount,
       });
       let generateOptions = {
         provider,
@@ -1534,6 +1535,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         }
       };
       const runOutputSlot = async (index: number) => {
+        let transientRetryCount = 0;
         while (true) {
           setCanvasAiOutputs(currentOutputs.map((output, outputIndex) => outputIndex === index
             ? { ...output, status: 'working' as const, error: undefined }
@@ -1561,6 +1563,24 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
             await placeGeneratedMedia(freshUrl, index, requestOptions.clientRequestId);
             return;
           } catch (error) {
+            if (
+              mediaType === 'image'
+              && useCloudWallet
+              && transientRetryCount < 2
+              && shouldRetrySameCanvasAiImageCandidate(error)
+            ) {
+              transientRetryCount += 1;
+              console.warn(
+                `Wallet image slot ${index + 1}/${requestedCount} is temporarily busy; retrying ${transientRetryCount}/2`,
+                error,
+              );
+              setCanvasAiOutputs(currentOutputs.map((output, outputIndex) => outputIndex === index
+                ? { ...output, status: 'working' as const, error: `渠道繁忙，自动重试 ${transientRetryCount}/2` }
+                : output
+              ), { status: 'working', error: undefined });
+              await new Promise<void>(resolve => window.setTimeout(resolve, 1_500 * transientRetryCount));
+              continue;
+            }
             lastPartialError = error;
             slotErrors[index] = error;
             if (await retryWithFreshRemoteInputs(error)) {
@@ -1588,9 +1608,21 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       )) {
         await runNewApiImageBatch();
       } else {
-        await Promise.all(
-          Array.from({ length: requestedCount }, (_, index) => runOutputSlot(index))
-        );
+        const outputConcurrency = mediaType === 'image'
+          ? getCanvasAiImageOutputConcurrency(provider, submittedModel, requestedCount)
+          : requestedCount;
+        let nextOutputIndex = 0;
+        const runOutputWorker = async () => {
+          while (nextOutputIndex < requestedCount) {
+            const outputIndex = nextOutputIndex;
+            nextOutputIndex += 1;
+            await runOutputSlot(outputIndex);
+          }
+        };
+        await Promise.all(Array.from(
+          { length: Math.min(requestedCount, outputConcurrency) },
+          () => runOutputWorker(),
+        ));
       }
 
       if (generatedOutputs.length === 0) {

@@ -347,6 +347,22 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                               resolveImageModel: node => getCanvasAiDefaultModel(normalizeCanvasAiProvider(
                                 node.ai?.provider || canvasAiProvider,
                               )),
+                              resolveImagePricingIdentity: node => {
+                                const persistedCandidate = node.ai?.providerCandidates?.find(candidate => (
+                                  !!candidate.canonicalModelId
+                                  && candidate.provider === normalizeCanvasAiProvider(node.ai?.provider || candidate.provider)
+                                  && (candidate.providerChannelId || '') === (node.ai?.providerChannelId || '')
+                                )) || node.ai?.providerCandidates?.find(candidate => !!candidate.canonicalModelId);
+                                const catalogModel = findAiCatalogModel(
+                                  getAiCatalogModels(canvasAiCloudImageModels, 'image'),
+                                  persistedCandidate?.canonicalModelId || node.ai?.model,
+                                );
+                                const model = catalogModel?.id || persistedCandidate?.canonicalModelId;
+                                return model ? {
+                                  model,
+                                  capabilities: persistedCandidate?.capabilities,
+                                } : undefined;
+                              },
                               pricing: canvasWalletPricing,
                             })
                             : null;

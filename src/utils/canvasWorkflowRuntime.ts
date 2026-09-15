@@ -297,14 +297,27 @@ export const getComparableCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemp
         ? {
           type: node.ai.type,
           provider: node.ai.provider,
+          providerChannelId: node.ai.providerChannelId || '',
+          credentialSource: node.ai.credentialSource || '',
+          providerCandidates: (node.ai.providerCandidates || []).map(candidate => ({
+            source: candidate.source,
+            provider: candidate.provider,
+            model: candidate.model,
+            canonicalModelId: candidate.canonicalModelId || '',
+            providerChannelId: candidate.providerChannelId || '',
+          })),
           model: node.ai.model,
           prompt: node.ai.prompt || '',
           presetId: node.ai.presetId || '',
           presetLabel: node.ai.presetLabel || '',
           presetPrompt: node.ai.presetPrompt || '',
           aspectRatio: node.ai.aspectRatio || '',
+          targetSize: node.ai.targetSize || '',
+          resolution: node.ai.resolution || '',
           outputFormat: node.ai.outputFormat || '',
           count: node.ai.count || 1,
+          duration: node.ai.duration || 0,
+          videoInputMode: node.ai.videoInputMode || '',
         }
         : null,
     }))

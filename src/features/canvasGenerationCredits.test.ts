@@ -379,4 +379,38 @@ describe('canvas generation credits', () => {
       resolveImageModel: () => 'Xais Nano Pro_2K',
     }).totalCredits).toBe(36);
   });
+
+  it('prices a folded workflow from its current public model identity', () => {
+    const pricing = {
+      agentRequestCredits: '7',
+      inspirationAnalysisCredits: '3',
+      imageDefaultCredits: '55',
+      videoDefaultCredits: '500',
+      imageModels: [
+        { model: 'nano-banana-pro', credits2k: '8', credits4k: '10' },
+        { model: 'nano-banana-pro-fast', credits2k: '28', credits4k: '30' },
+      ],
+      videoModels: [],
+    };
+    const workflow = {
+      id: 'folded-current-model-workflow',
+      label: 'Folded current model workflow',
+      hint: '',
+      nodes: [{
+        id: 'render', x: 0, y: 0, width: 100, height: 100,
+        item: { id: 'render', type: 'text', content: '' },
+        ai: {
+          type: 'image-generator',
+          model: 'gemini-3-pro-image',
+          resolution: '4k',
+          count: 1,
+        },
+      }],
+    } as CanvasWorkflowTemplate;
+
+    expect(estimateCanvasWorkflowCredits(workflow, {
+      pricing,
+      resolveImagePricingIdentity: () => ({ model: 'nano-banana-pro-fast' }),
+    }).totalCredits).toBe(30);
+  });
 });

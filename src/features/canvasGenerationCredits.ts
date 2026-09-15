@@ -335,6 +335,10 @@ export type CanvasWorkflowCreditEstimate = {
 
 type CanvasWorkflowCreditOptions = {
   resolveImageModel?: (node: CanvasWorkflowTemplate['nodes'][number]) => string | undefined;
+  resolveImagePricingIdentity?: (node: CanvasWorkflowTemplate['nodes'][number]) => {
+    model?: string;
+    capabilities?: readonly string[];
+  } | undefined;
   pricing?: CanvasAiCreditPricing | null;
 };
 
@@ -365,6 +369,7 @@ export const estimateCanvasWorkflowCredits = (
   const imageNodes = workflow.nodes.filter(node => node.ai?.type === 'image-generator');
   const imageEstimate = imageNodes.reduce((summary, node) => {
     const savedModel = node.ai?.model;
+    const pricingIdentity = options.resolveImagePricingIdentity?.(node);
     const resolvedModel = options.resolveImageModel?.(node);
     // Historical workflows can contain retired/unrecognised model labels. They
     // are executed with the current provider fallback, so pricing the stale
@@ -372,13 +377,13 @@ export const estimateCanvasWorkflowCredits = (
     const savedModelIsPriced = options.pricing
       ? hasConfiguredImageModel(savedModel, options.pricing)
       : getCanvasImageUnitCredits(savedModel, node.ai?.resolution) !== CANVAS_DEFAULT_IMAGE_UNIT_CREDITS;
-    const model = savedModel && savedModelIsPriced
-      ? savedModel
-      : resolvedModel || savedModel;
+    const model = pricingIdentity?.model
+      || (savedModel && savedModelIsPriced ? savedModel : resolvedModel || savedModel);
     const estimate = estimateCanvasImageGenerationCredits({
       model,
       resolution: node.ai?.resolution,
       count: node.ai?.count,
+      capabilities: pricingIdentity?.capabilities,
     }, options.pricing);
     return {
       outputCount: summary.outputCount + estimate.outputCount,

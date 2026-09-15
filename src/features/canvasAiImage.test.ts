@@ -20,6 +20,7 @@ import {
   executeNewApiImageProtocol,
   formatNewApiImageProtocolError,
   getCanvasAiImageModelFamily,
+  getCanvasAiImageOutputConcurrency,
   getCanvasAiPublicImageModelPriority,
   getCanvasAiPublicImageModelName,
   getCanvasAiPublicImageModelVariantName,
@@ -330,6 +331,15 @@ describe('unified wallet image model families', () => {
     expect(getCanvasAiSlotClientRequestId('request-1', 0, 2)).toBe('request-1:slot:1');
     expect(getCanvasAiSlotClientRequestId('request-1', 1, 2)).toBe('request-1:slot:2');
     expect(getCanvasAiSlotClientRequestId('request-1', 0, 1)).toBe('request-1');
+  });
+
+  it('queues the fourth GPT Image 2/2.5 output behind a three-request concurrency limit', () => {
+    expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-2', 4)).toBe(3);
+    expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-2.5', 4)).toBe(3);
+    expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-medium', 4)).toBe(3);
+    expect(getCanvasAiImageOutputConcurrency('xais-chat', 'Image2_4K', 4)).toBe(3);
+    expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-2.5', 2)).toBe(2);
+    expect(getCanvasAiImageOutputConcurrency('new-api', 'gemini-3.1-flash-image', 4)).toBe(4);
   });
 
   it('uses the runtime provider when an old node retains a different provider', () => {
@@ -696,8 +706,10 @@ describe('unified wallet image model families', () => {
 
   it('retries a temporarily busy preferred channel before falling back', () => {
     expect(shouldRetrySameCanvasAiImageCandidate(new Error('HTTP 429: rate limit exceeded'))).toBe(true);
+    expect(shouldRetrySameCanvasAiImageCandidate(new Error('provider_request_failed: Upstream request failed (429): concurrency exceeded'))).toBe(true);
     expect(shouldRetrySameCanvasAiImageCandidate(new Error('status_code=503, service unavailable'))).toBe(true);
     expect(shouldRetrySameCanvasAiImageCandidate(new Error('上游算力紧张，请稍后再试'))).toBe(true);
+    expect(shouldRetrySameCanvasAiImageCandidate(new Error('上游并发数超过限制，请稍后再试'))).toBe(true);
     expect(shouldRetrySameCanvasAiImageCandidate(new Error('HTTP 402: insufficient credits'))).toBe(false);
     expect(shouldRetrySameCanvasAiImageCandidate(new Error('request timed out after upstream accepted it'))).toBe(false);
   });
