@@ -6,6 +6,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 import {
   getImageListSource,
+  getImagePreviewGallery,
   getPreviewOriginalSource,
   getPreviewPlaceholderSource,
 } from './mediaSources';
@@ -44,5 +45,20 @@ describe('media preview sources', () => {
     };
 
     expect(getImageListSource(item, { allowOriginalFallback: true })).toBe('data:image/jpeg;base64,thumb');
+  });
+
+  it('builds a preview gallery from the visible image items and keeps the selected index', () => {
+    const items = [
+      { id: 'image-1', type: 'image', path: 'C:/images/one.png' },
+      { id: 'text-1', type: 'text', content: 'note' },
+      { id: 'image-empty', type: 'image' },
+      { id: 'image-2', type: 'image', url: 'https://images.example.com/two.png' },
+    ] as any[];
+
+    expect(getImagePreviewGallery(items, 'image-2')).toEqual({
+      galleryItems: [items[0], items[3]],
+      galleryIndex: 1,
+    });
+    expect(getImagePreviewGallery(items, 'text-1')).toBeNull();
   });
 });

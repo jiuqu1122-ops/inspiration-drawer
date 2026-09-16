@@ -168,7 +168,7 @@ export const copyCanvasItemsImpl = (ctx: Pick<canvasMediaActionContext, 'canvasC
 
 };
 
-export const pasteCanvasItemsImpl = (ctx: Pick<canvasMediaActionContext, 'CANVAS_PASTE_OFFSET' | 'appendCanvasItems' | 'canvasClipboardRef' | 'createAssetId' | 'getCanvasBoundsFromItems' | 'getCanvasPointFromClient' | 'isCanvasModeRef' | 'makeCanvasNodeId' | 'showToast'>, client?: { x: number; y: number }, label: string = '粘贴画布元素') => {
+export const pasteCanvasItemsImpl = (ctx: Pick<canvasMediaActionContext, 'CANVAS_PASTE_OFFSET' | 'canvasClipboardRef' | 'createAssetId' | 'getCanvasBoundsFromItems' | 'getCanvasPointFromClient' | 'isCanvasModeRef' | 'makeCanvasNodeId' | 'showToast'> & { appendCanvasItems: (nextItems: CanvasImageItem[], label: string, select?: boolean, options?: { focusSelection?: boolean }) => number }, client?: { x: number; y: number }, label: string = '粘贴画布元素') => {
   const { CANVAS_PASTE_OFFSET, appendCanvasItems, canvasClipboardRef, createAssetId, getCanvasBoundsFromItems, getCanvasPointFromClient, isCanvasModeRef, makeCanvasNodeId, showToast } = ctx;
     if (!isCanvasModeRef.current) return 0;
     const sourceItems = cloneDrawerValue(canvasClipboardRef.current || []);
@@ -176,8 +176,8 @@ export const pasteCanvasItemsImpl = (ctx: Pick<canvasMediaActionContext, 'CANVAS
     if (sourceItems.length === 0 || !sourceBounds) return 0;
 
     const targetPoint = client ? getCanvasPointFromClient(client.x, client.y) : null;
-    const offsetX = targetPoint ? targetPoint.x - sourceBounds.x : CANVAS_PASTE_OFFSET;
-    const offsetY = targetPoint ? targetPoint.y - sourceBounds.y : CANVAS_PASTE_OFFSET;
+    const offsetX = targetPoint ? targetPoint.x - (sourceBounds.x + sourceBounds.width / 2) : CANVAS_PASTE_OFFSET;
+    const offsetY = targetPoint ? targetPoint.y - (sourceBounds.y + sourceBounds.height / 2) : CANVAS_PASTE_OFFSET;
     const idMap = new Map<string, string>();
 
     const nextItems = sourceItems.map((sourceItem, index) => {
@@ -225,7 +225,7 @@ export const pasteCanvasItemsImpl = (ctx: Pick<canvasMediaActionContext, 'CANVAS
         : undefined,
     }));
 
-    const addedCount = appendCanvasItems(remappedItems, label);
+    const addedCount = appendCanvasItems(remappedItems, label, true, { focusSelection: false });
     if (addedCount > 0) showToast(`已粘贴 ${addedCount} 个画布元素`);
     return addedCount;
 
@@ -597,7 +597,7 @@ export const getCanvasClipboardImageFilesImpl = (ctx: Record<never, never>, clip
 
 };
 
-export const pasteSystemClipboardToCanvasImpl = async (ctx: Pick<canvasMediaActionContext, 'appendCanvasItems' | 'createCanvasImageItemFromFile' | 'createCanvasTextItemFromContent' | 'getCanvasClipboardImageFiles' | 'showToast'>, clipboardData: DataTransfer, client?: { x: number; y: number }) => {
+export const pasteSystemClipboardToCanvasImpl = async (ctx: Pick<canvasMediaActionContext, 'createCanvasImageItemFromFile' | 'createCanvasTextItemFromContent' | 'getCanvasClipboardImageFiles' | 'showToast'> & { appendCanvasItems: (nextItems: CanvasImageItem[], label: string, select?: boolean, options?: { focusSelection?: boolean }) => number }, clipboardData: DataTransfer, client?: { x: number; y: number }) => {
   const { appendCanvasItems, createCanvasImageItemFromFile, createCanvasTextItemFromContent, getCanvasClipboardImageFiles, showToast } = ctx;
     const imageFiles = getCanvasClipboardImageFiles(clipboardData);
     const text = imageFiles.length > 0 ? '' : clipboardData.getData('text/plain') || '';
@@ -609,7 +609,7 @@ export const pasteSystemClipboardToCanvasImpl = async (ctx: Pick<canvasMediaActi
     const nextItems = textItem ? [...images, textItem] : images;
     if (nextItems.length === 0) return false;
 
-    const addedCount = appendCanvasItems(nextItems, '粘贴剪贴板内容');
+    const addedCount = appendCanvasItems(nextItems, '粘贴剪贴板内容', true, { focusSelection: false });
     if (addedCount > 0) {
       const parts = [
         images.length > 0 ? `${images.length} 张图片` : '',

@@ -5,6 +5,7 @@ import { DrawerAssetGrid } from '../../../components/drawer/DrawerAssetGrid';
 import { RoundedSelect } from '../../../components/RoundedSelect';
 import { SCHEDULE_PRIORITY_OPTIONS,formatCalendarPreviewTitle,formatScheduleDateLabel,getCalendarDayMeta,getLocalDateKey,normalizeSchedulePriority,startOfLocalDay } from '../../calendarModel';
 import { isProbablyUrl } from '../../dragData';
+import { getImagePreviewGallery } from '../../mediaSources';
 import type { BufferItem, FloatingNoteSnapshot } from '../../../types';
 import type { CalendarScheduleEvent } from '../../calendarModel';
 
@@ -432,7 +433,10 @@ export function DrawerAssetContent({ scope }: { scope: DrawerAssetContentScope }
                                     pushDrawerUndoSnapshot(item.isQuickAccess ? '取消快速访问' : '固定快速访问');
                                     setDrawerItemQuickAccess(item, !item.isQuickAccess);
                                   }}
-                                  onImageClick={() => openSelectedImagePreview(item)}
+                                  onImageClick={() => {
+                                    const gallery = getImagePreviewGallery(displayItems, item.id);
+                                    openSelectedImagePreview(item, gallery || undefined);
+                                  }}
                                   onVideoClick={() => {
                                     if (item.path) openSelectedVideoPreview({ url: convertFileSrc(item.path), path: item.path });
                                   }}

@@ -1704,7 +1704,7 @@ body,
 }
 
 .drawer-theme [data-drawer-launch-intro="true"],
-body:has(.drawer-theme) [data-canvas-floating-layer="true"] {
+body:has(.drawer-theme) [data-canvas-floating-layer="true"]:not([data-canvas-account-status="true"]) {
   background-color: var(--drawer-surface-strong) !important;
   border-color: var(--drawer-border) !important;
   color: var(--drawer-text) !important;

@@ -14,11 +14,13 @@ import {
 } from '../runtime/canvasWorkflowProgress';
 import { useChatRuntime, type UseChatRuntimeOptions } from '../runtime/useChatRuntime';
 import { ChatView, type ChatViewProps } from './ChatView';
+import { useCloudAccount } from '../../cloudAccountContext';
 
 export type ChatHostProps = Omit<ChatViewProps, 'runtime'> & {
   visible: boolean;
   model: string;
   serverManagedChannelFailover?: boolean;
+  cloudWalletMode?: boolean;
   runtimeImageModel?: string;
   approvalMode?: UseChatRuntimeOptions['approvalMode'];
   executeTool: UseChatRuntimeOptions['executeTool'];
@@ -65,6 +67,7 @@ export function ChatHost({
   visible,
   model,
   serverManagedChannelFailover,
+  cloudWalletMode,
   runtimeImageModel,
   approvalMode,
   executeTool,
@@ -79,6 +82,7 @@ export function ChatHost({
   imageResolution,
   ...viewProps
 }: ChatHostProps) {
+  const { scheduleQuotaRefresh } = useCloudAccount();
   const canvasChatVisible = useCanvasChatVisibility();
   const canvasWorkflowResult = useCanvasWorkflowProgress();
   const workflowConversationRequest = useCanvasWorkflowConversationRequest();
@@ -97,6 +101,8 @@ export function ChatHost({
     onBatchStarted,
     onBatchMediaReady,
     onBatchCompleted,
+    cloudWalletMode: cloudWalletMode ?? serverManagedChannelFailover === true,
+    onWalletSettlementComplete: scheduleQuotaRefresh,
     prepareAttachment: prepareChatAttachment,
     createVisionAttachmentResolver: createChatVisionAttachmentResolver,
   });

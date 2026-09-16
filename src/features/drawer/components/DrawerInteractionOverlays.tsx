@@ -18,6 +18,7 @@ export function DrawerInteractionOverlays({ scope }: { scope: DrawerInteractionO
                   visible={!isCanvasMode && !showTextInput && !showWebImageCollector && isDrawerAgentOpen}
                   model={canvasAgent.settings.apiModel}
                   serverManagedChannelFailover={canvasAgent.settings.apiProvider === 'unmind-wallet'}
+                  cloudWalletMode={canvasAgent.settings.apiProvider === 'unmind-wallet' || canvasAgent.settings.apiCredentialSource === 'cloud_wallet'}
                   runtimeImageModel={activeChatImageModelChoice?.value}
                   approvalMode={canvasAgent.settings.approvalMode}
                   executeTool={executeChatTool}

@@ -10,6 +10,7 @@ import type { AgentApiBalanceResult,AgentApiConnectionResult,AgentCanvasToolExec
 import { truncatePromptToUtf8ByteLimit } from '../../appAgent/imageQuality/imageRulePromptBuilder';
 import { type CanvasImageItem,type CanvasItemBox } from '../../canvasModel';
 import { buildDesignAgentSystemPrompt,normalizeDesignAgentConfig } from '../../designAgentNode';
+import { scheduleCloudAccountQuotaRefresh } from '../../cloudAccountQuotaRefresh';
 import type { ChatGeneratedMedia } from '../model/chatTypes';
 import { runInternalAgentModelRequest } from './agentModelResolution';
 import { createChatBatchCanvasLayout,getChatBatchCanvasSlotSize } from './chatBatchCanvasLayout';
@@ -415,13 +416,12 @@ export const runCanvasTextAgentTargetImpl = async (ctx: Pick<chatAgentActionCont
       { role: 'system', content: systemPrompt },
       { role: 'user', content: buildCanvasTextAgentUserContent(userPrompt, preparedReferences, isSeedanceVideoAnalysis) },
     ];
+    const usesCloudWallet = canvasAgent.settings.apiProvider.trim().toLowerCase() === 'unmind-wallet'
+      || canvasAgent.settings.apiCredentialSource === 'cloud_wallet';
     const result = await runInternalAgentModelRequest({
       // Wallet mode resolves this business use-case through the server-owned
       // CANVAS_TEXT binding. Direct/BYOK keeps its configured provider model.
-      savedModel: canvasAgent.settings.apiProvider.trim().toLowerCase() === 'unmind-wallet'
-        || canvasAgent.settings.apiCredentialSource === 'cloud_wallet'
-        ? undefined
-        : agentModelRef.current,
+      savedModel: usesCloudWallet ? undefined : agentModelRef.current,
       usageContext: 'canvas_text_agent',
       requestId,
       createRequestId: () => 'canvas_text_agent_fallback_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8),
@@ -434,6 +434,7 @@ export const runCanvasTextAgentTargetImpl = async (ctx: Pick<chatAgentActionCont
         },
       }),
     });
+    if (usesCloudWallet) scheduleCloudAccountQuotaRefresh();
     const output = String(result.content || '').trim();
     if (!output) throw new Error('Agent API 没有返回可写入的文字结果');
     options.updateTextOutput(output);

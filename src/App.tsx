@@ -54,6 +54,11 @@ import { createInspirationChatToolExecutor } from './features/chat/tools/inspira
 import {
 readCachedCloudAccount
 } from './features/cloudAccountSync';
+import { CloudAccountProvider } from './features/cloudAccountContext';
+import {
+scheduleCloudAccountQuotaRefresh,
+setCloudAccountQuotaRefreshHandler
+} from './features/cloudAccountQuotaRefresh';
 import type { SceneAnalysisV1 } from './features/three/model/threeSceneAnalysisTypes';
 import type { SceneSpecV1 } from './features/three/model/threeSceneTypes';
 import { useAppUpdate } from './hooks/useAppUpdate';
@@ -306,6 +311,7 @@ import { runCanvasGenerationEffect01,runCanvasGenerationEffect02,runCanvasGenera
 import { addCanvasAiGeneratorNodeAtWorldImpl,addCanvasAiGeneratorNodeImpl,addCanvasAiVideoGeneratorNodeAtWorldImpl,addCanvasAiVideoGeneratorNodeImpl,addCanvasEnhancementNodeAtWorldImpl,addCanvasEnhancementNodeImpl,addCanvasFrameInterpolationNodeAtWorldImpl,addCanvasFrameInterpolationNodeImpl,addCanvasImageFusionNodeAtWorldImpl,addCanvasImageFusionNodeImpl,buildCanvasAiGeneratorNodeImpl,buildCanvasEnhancementNodeImpl,buildCanvasFrameInterpolationNodeImpl,buildCanvasImageFusionNodeImpl,buildCanvasWorkflowModuleNodeImpl,deleteCanvasAiPromptPresetIdsImpl,deleteSelectedCanvasPromptPresetsImpl,exportCanvasTemplateFileImpl,getCanvasImageInputsForNodeImpl,getCanvasTemplateImportPayloadImpl,importCanvasTemplateFileImpl,instantiateCanvasWorkflowTemplateItemsImpl,openCanvasPresetManagerImpl,publishLocalAiInputsImpl,saveCanvasAiCustomPromptPresetImpl,stopTemporaryReferenceSharesImpl,updateCanvasNodesForPresetImpl,uploadWalletReferenceInputsImpl,uploadXaisReferenceInputsImpl } from './features/canvas/controllers/canvasInputActions';
 import { addCanvasSearchMediaCandidateImpl,addCanvasWebImageUrlImpl,addFolderMediaToCanvasImpl,buildCanvasDrawerFolderNameImpl,cacheWebImageFromCandidatesImpl,centerCanvasItemInViewImpl,claimExternalWebImageDropImpl,clampCanvasSurfaceScrollImpl,closeCanvasFolderMediaPickerImpl,copyCanvasItemsToDrawerFolderImpl,createWorkflowAttachmentImageCanvasNodeImpl,enterCanvasModeImpl,fitCanvasViewToItemsImpl,getCanvasNestedWheelScrollerImpl,handleCanvasDropImpl,leaveCanvasToDrawerImpl,loadCanvasFolderMediaPageImpl,normalizeCanvasWheelDeltaImpl,requestAddFolderMediaToCanvasImpl,runCanvasWorkbenchWindowActionImpl,runDrawerWorkbenchWindowActionImpl,scheduleCanvasFocusItemByIdImpl,scheduleCanvasFocusNearestContentIfViewportEmptyImpl,scheduleCanvasWheelZoomImpl,startCanvasGroupResizeImpl,startCanvasItemDragImpl,startCanvasItemResizeImpl,startCanvasPanImpl,startCanvasSelectionImpl,startMainDrawerLongPressImpl,writeCanvasSurfaceScrollImpl,zoomCanvasAtImpl } from './features/canvas/controllers/canvasInteractionActions';
 import { runCanvasInteractionsEffect01,runCanvasInteractionsEffect02,runCanvasInteractionsEffect03,runCanvasInteractionsEffect04 } from './features/canvas/controllers/canvasInteractionEffects';
+import { runCanvasPasteWithViewportPreserved } from './features/canvasPasteViewport';
 import { activateCanvasBrushToolImpl,addCanvasTextItemAtWorldImpl,addCanvasTextItemImpl,applyCanvasBrushCropImpl,autoScrollCanvasNearEdgeImpl,cacheCanvasGeneratedImageSourceImpl,commitCanvasTextDraftImpl,commitCanvasTextOutputDraftImpl,copyCanvasImageToSystemClipboardImpl,copyCanvasItemsImpl,copyCanvasItemsToAvailableClipboardsImpl,copyCanvasTextOutputImpl,copyImageDataUrlToSystemClipboardImpl,copyImageSourceToSystemClipboardImpl,copySelectedImagePreviewToClipboardImpl,createCanvasAiOutputDraftsImpl,createCanvasAudioItemFromPathImpl,createCanvasContextMenuStateImpl,createCanvasGroupImpl,createCanvasImageItemFromPathImpl,createCanvasImagePreviewThumbnailImpl,createCanvasTextItemFromContentImpl,createCanvasVideoItemFromPathImpl,drawCanvasBrushEditorBaseImpl,enqueueCanvasAiOutputThumbnailJobImpl,expandCanvasBeforeViewportImpl,finishCanvasBrushStrokeImpl,getCanvasBrushShapeBoxImpl,getCanvasClipboardImageFilesImpl,getCanvasContextRoutingTargetsForAgentImpl,getCanvasImageInputBufferItemsForNodeImpl,getCanvasTextInputsForNodeImpl,handleCanvasBrushPointerDownImpl,handleCanvasBrushPointerMoveImpl,handleDoodleKeyDownImpl,imageSourceToDataUrlImpl,normalizeCanvasBrushCropRectImpl,openCanvasBrushEditorFromSourceImpl,openCanvasBrushEditorImpl,paintCanvasBrushShapeImpl,paintCanvasBrushStrokeImpl,pasteCanvasItemsImpl,pasteSystemClipboardToCanvasImpl,prepareCanvasAiInputSourceImpl,pushCanvasBrushHistoryImpl,redoCanvasBrushStrokeImpl,renameCanvasGroupImpl,runNextCanvasAiOutputThumbnailJobImpl,saveCanvasBrushEditedImageImpl,setCanvasDesignAgentConfigImpl,setCanvasTextContextRoutingImpl,settleCanvasAiOutputThumbnailJobImpl,shiftCanvasWorldImpl,undoCanvasBrushStrokeImpl,ungroupCanvasItemsImpl,updateCanvasBrushCursorFromEventImpl,updateCanvasTextItemImpl,updateCanvasTextOutputItemImpl } from './features/canvas/controllers/canvasMediaActions';
 import { runCanvasMediaEffect01 } from './features/canvas/controllers/canvasMediaEffects';
 import { addCanvasThreeSceneGeneratorNodeImpl,analyzeCanvasThreeSceneNodeImpl,appendCanvasItemsImpl,applyCanvasSelectionDomFeedbackImpl,beginCanvasZoomInteractionImpl,cancelCanvasItemDragVisualsImpl,captureThreeSceneViewImpl,clearCanvasItemInteractionStylesImpl,commitCanvasScaleSoonImpl,commitCanvasSelectionImpl,confirmPermanentlyDeleteCanvasPageImpl,confirmSoftDeleteCanvasPageImpl,copyCanvasAiOutputToCanvasImpl,createNewCanvasPageImpl,downgradeCanvasPreviewSourcesImpl,duplicateCanvasPageImpl,enableCanvasWorkflowSingleEditForItemImpl,enqueueCanvasBackgroundWriteImpl,expandCanvasSelectionIdsWithGroupsImpl,finishCanvasZoomInteractionImpl,flushCanvasInteractionFrameImpl,getCanvasAiNodeDesignSizeForItemImpl,getCanvasAiOutputCopyPositionImpl,getCanvasPointFromClientImpl,getStableCanvasImageSourceImpl,getThreeSceneAnalysisImagesImpl,hideCanvasSelectionOverlayImpl,loadCanvasItemsImpl,moveCanvasPageToTrashImpl,normalizeCanvasSelectionBoxImpl,openCanvasTrashImpl,organizeCanvasItemsImpl,paintCanvasDragChromeImpl,pushCanvasUndoSnapshotImpl,refreshCanvasConnectionHandleOcclusionImpl,refreshCanvasesImpl,removeCanvasConnectionImpl,removeCanvasItemsByIdsImpl,renameCanvasPageImpl,resetCanvasDragChromeImpl,restoreCanvasItemBoxStylesImpl,restoreCanvasUndoSnapshotImpl,restoreDeletedCanvasPageImpl,runCanvasImageSourceUpgradeQueueImpl,saveCanvasPageElementsToDrawerImpl,saveCanvasStateNowImpl,saveCurrentCanvasAsSnapshotImpl,saveCurrentCanvasBeforeSwitchImpl,scheduleCanvasChangedNodesPatchSaveImpl,scheduleCanvasScaleRenderSyncImpl,scheduleCanvasSelectionImageSourcesImpl,scheduleCanvasStateSaveImpl,scheduleCanvasVisibleImageSourceUpgradesImpl,setCanvasItemDraggingFlagImpl,setCanvasSizeImmediateImpl,setThreeSceneRunStateImpl,settleCanvasZoomBeforePointerInteractionImpl,shouldUpgradeCanvasImageSourceImpl,switchToCanvasImpl,syncCanvasSelectionFrameStylesImpl,takeCanvasUndoSnapshotImpl,trimCanvasPreviewSourceCacheImpl,updateCanvasItemsDeferredImpl,updateCanvasItemsImmediateImpl,updateThreeScenePreviewImpl,updateThreeSceneReferenceOverlayImpl,updateThreeSceneSpecImpl } from './features/canvas/controllers/canvasPersistenceActions';
@@ -1021,6 +1027,7 @@ function MainApp() {
   const isCanvasInteractingRef = useRef(false);
   const isCanvasPointerInsideRef = useRef(false);
   const lastCanvasDragClientRef = useRef<{ x: number; y: number } | null>(null);
+  const lastCanvasPointerClientRef = useRef<{ x: number; y: number } | null>(null);
   const lastCanvasDropAtRef = useRef(0);
   const lastCanvasDroppedPathsKeyRef = useRef('');
   const mainDrawerLongPressTimerRef = useRef<number | null>(null);
@@ -1768,6 +1775,16 @@ function MainApp() {
   const requestEmailCode = async () => { return requestEmailCodeImpl({ formatLicenseCommandError, registrationEmail, setEmailChallengeId, setEmailRegistrationError, setEmailVerificationCode, setIsEmailCodeSending, setRegistrationEmail, showToast }); };
 
   const refreshCloudAccount = async (silent = false) => { return refreshCloudAccountImpl({ cloudAccountRefreshFlightRef, formatLicenseCommandError, refreshLicenseStatus, setCloudAccount, setCloudAccountSyncError, setIsCloudAccountLoading, showToast }, silent); };
+  const refreshCloudAccountRef = useRef(refreshCloudAccount);
+  refreshCloudAccountRef.current = refreshCloudAccount;
+  useEffect(() => setCloudAccountQuotaRefreshHandler(
+    () => refreshCloudAccountRef.current(true),
+  ), []);
+  const cloudAccountContextValue = useMemo(() => ({
+    account: cloudAccount,
+    loading: isCloudAccountLoading,
+    scheduleQuotaRefresh: scheduleCloudAccountQuotaRefresh,
+  }), [cloudAccount, isCloudAccountLoading]);
 
   const loadCloudCreditUsage = async () => { return loadCloudCreditUsageImpl({ formatLicenseCommandError, setCreditUsageError, setCreditUsageItems, setIsCreditUsageLoading }); };
 
@@ -3371,7 +3388,15 @@ function MainApp() {
     return true;
   };
 
-  const appendCanvasItems = (nextItems: CanvasImageItem[], label: string, select = true) => { return appendCanvasItemsImpl({ canvasImageSourceCacheRef, canvasItemsPatchCommitRef, growCanvasToFit, isCanvasModeRef, pushCanvasUndoSnapshot, scheduleCanvasChangedNodesPatchSave, scheduleCanvasFocusItemById, updateCanvasItemsDeferred, updateCanvasSelection }, nextItems, label, select); };
+  const appendCanvasItems = (nextItems: CanvasImageItem[], label: string, select = true, options: { focusSelection?: boolean } = {}) => { return appendCanvasItemsImpl({ canvasImageSourceCacheRef, canvasItemsPatchCommitRef, growCanvasToFit, isCanvasModeRef, pushCanvasUndoSnapshot, scheduleCanvasChangedNodesPatchSave, scheduleCanvasFocusItemById, updateCanvasItemsDeferred, updateCanvasSelection }, nextItems, label, select, options); };
+
+  const appendCanvasItemsForPaste = (nextItems: CanvasImageItem[], label: string, select = true, options: { focusSelection?: boolean } = {}) => {
+    return runCanvasPasteWithViewportPreserved(
+      canvasSurfaceRef,
+      writeCanvasSurfaceScroll,
+      () => appendCanvasItems(nextItems, label, select, options),
+    );
+  };
 
   // Inspiration Space closes its modal immediately after a successful add.
   // Commit those imported nodes at normal priority so that closing the modal
@@ -3654,7 +3679,7 @@ function MainApp() {
     options: { showToast?: boolean } = {},
   ) => { return copyCanvasItemsImpl({ canvasClipboardRef, canvasItemsRef, preferCanvasClipboardRef, showToast }, ids, options); };
 
-  const pasteCanvasItems = (client?: { x: number; y: number }, label = '粘贴画布元素') => { return pasteCanvasItemsImpl({ CANVAS_PASTE_OFFSET, appendCanvasItems, canvasClipboardRef, createAssetId, getCanvasBoundsFromItems, getCanvasPointFromClient, isCanvasModeRef, makeCanvasNodeId, showToast }, client, label); };
+  const pasteCanvasItems = (client?: { x: number; y: number }, label = '粘贴画布元素') => { return pasteCanvasItemsImpl({ CANVAS_PASTE_OFFSET, appendCanvasItems: appendCanvasItemsForPaste, canvasClipboardRef, createAssetId, getCanvasBoundsFromItems, getCanvasPointFromClient, isCanvasModeRef, makeCanvasNodeId, showToast }, client, label); };
 
   const duplicateCanvasItems = (ids = canvasSelectedIdsRef.current, client?: { x: number; y: number }) => {
     if (copyCanvasItems(ids) === 0) return 0;
@@ -3686,7 +3711,7 @@ function MainApp() {
 
   const getCanvasClipboardImageFiles = (clipboardData: DataTransfer) => { return getCanvasClipboardImageFilesImpl({}, clipboardData); };
 
-  const pasteSystemClipboardToCanvas = async (clipboardData: DataTransfer, client?: { x: number; y: number }) => { return pasteSystemClipboardToCanvasImpl({ appendCanvasItems, createCanvasImageItemFromFile, createCanvasTextItemFromContent, getCanvasClipboardImageFiles, showToast }, clipboardData, client); };
+  const pasteSystemClipboardToCanvas = async (clipboardData: DataTransfer, client?: { x: number; y: number }) => { return pasteSystemClipboardToCanvasImpl({ appendCanvasItems: appendCanvasItemsForPaste, createCanvasImageItemFromFile, createCanvasTextItemFromContent, getCanvasClipboardImageFiles, showToast }, clipboardData, client); };
 
   const updateCanvasTextItem = (canvasId: string, content: string) => { return updateCanvasTextItemImpl({ canvasItemsPatchCommitRef, scheduleCanvasChangedNodesPatchSave, updateCanvasItemsImmediate }, canvasId, content); };
 
@@ -4917,7 +4942,7 @@ function MainApp() {
     else enterCanvasMode();
   };
 
-  useEffect(() => { return runCanvasInteractionsEffect03({ activeThreeSceneIdRef, cancelCanvasItemDragVisuals, canvasClipboardRef, canvasConnectionDraft, canvasContextMenuRef, canvasDragRef, canvasGroupResizeRef, canvasInputPickTargetIdRef, canvasItemsRef, canvasPanCleanupRef, canvasPanRef, canvasResizeRef, canvasScrollLockRef, canvasSelectedIdsRef, canvasSpaceKeyCapturedRef, canvasSurfaceRef, copyCanvasItemsToAvailableClipboards, createCanvasGroup, duplicateCanvasItems, exitThreeSceneInteraction, fitCanvasViewToItems, getCanvasClipboardImageFiles, hideCanvasSelectionOverlay, isCanvasModeRef, isCanvasSpacePressedRef, isTextEntryActive, pasteCanvasItems, pasteSystemClipboardToCanvas, pendingCanvasFusionRoleRef, preferCanvasClipboardRef, removeCanvasItemsByIds, renameCanvasGroup, setCanvasConnectionDraft, setCanvasContextMenu, setCanvasInputMenuForId, setCanvasInputPickTargetId, setCanvasInteractionActive, setCanvasSpacePressed, setIsCanvasChromeHidden, shouldRouteShortcutToDoodle, showToast, toggleCanvasMode, ungroupCanvasItems, updateCanvasSelection }); }, []);
+  useEffect(() => { return runCanvasInteractionsEffect03({ activeThreeSceneIdRef, cancelCanvasItemDragVisuals, canvasClipboardRef, canvasConnectionDraft, canvasContextMenuRef, canvasDragRef, canvasGroupResizeRef, canvasInputPickTargetIdRef, canvasItemsRef, canvasPanCleanupRef, canvasPanRef, canvasResizeRef, canvasScrollLockRef, canvasSelectedIdsRef, canvasSpaceKeyCapturedRef, canvasSurfaceRef, copyCanvasItemsToAvailableClipboards, createCanvasGroup, duplicateCanvasItems, exitThreeSceneInteraction, fitCanvasViewToItems, getCanvasClipboardImageFiles, hideCanvasSelectionOverlay, isCanvasModeRef, isCanvasSpacePressedRef, isTextEntryActive, lastCanvasPointerClientRef, pasteCanvasItems, pasteSystemClipboardToCanvas, pendingCanvasFusionRoleRef, preferCanvasClipboardRef, removeCanvasItemsByIds, renameCanvasGroup, setCanvasConnectionDraft, setCanvasContextMenu, setCanvasInputMenuForId, setCanvasInputPickTargetId, setCanvasInteractionActive, setCanvasSpacePressed, setIsCanvasChromeHidden, shouldRouteShortcutToDoodle, showToast, toggleCanvasMode, ungroupCanvasItems, updateCanvasSelection }); }, []);
 
   useEffect(() => { return runCanvasInteractionsEffect04({ isCanvasModeRef }); }, []);
 
@@ -6510,6 +6535,7 @@ useEffect(() => {
   const textInputDialogCanConfirm = textInputDialog.value.trim().length > 0;
 
   return (
+    <CloudAccountProvider value={cloudAccountContextValue}>
       <div
         data-drawer-theme="true"
         data-app-font-size={appFontSize}
@@ -6531,6 +6557,7 @@ useEffect(() => {
   scope={{ acceptUpdateLogAndClose, activateCanvasBrushTool, activateDoodleShortcutScope, activeDraftForDisplay, activeWorkflowDraftRef, addFolderMediaPickerItemToCanvas, applyCanvasBrushCrop, appVersion, CANVAS_BRUSH_COLORS, CANVAS_FOLDER_PICKER_SCROLL_EDGE, CANVAS_FOLDER_PICKER_VISIBLE_STEP, canvasAgent, canvasBrushBaseCanvasRef, canvasBrushCanvasRef, canvasBrushColor, canvasBrushCropRect, canvasBrushCursor, canvasBrushEditor, canvasBrushHistory, canvasBrushMode, canvasBrushOpacity, canvasBrushSize, canvasFolderImportPrompt, canvasFolderPickerError, canvasFolderPickerHasMore, canvasFolderPickerItems, canvasFolderPickerTotal, canvasFolderPickerVisibleCount, canvasShortcut, canvasToolbarTop, canvasWorkflowSaveDraft, checkAndInstallAppUpdate, chooseWebImageCacheDir, clearCanvasBrushCrop, clearCanvasBrushMarks, closeCanvasFolderMediaPicker, closeCanvasWorkflowSaveDialog, closeConfirmDialog, closeSelectedImagePreview, closeSelectedVideoPreview, closeTextInputDialog, closeUpdateLog, cloudAccount, confirmAddFolderMediaToCanvas, confirmDialog, confirmSaveCanvasWorkflow, copySelectedImagePreviewToClipboard, creditUsageError, creditUsageItems, doodleRootRef, finishCanvasBrushStroke, finishLaunchIntro, flashSelectedImageZoom, handleCanvasBrushPointerDown, handleCanvasBrushPointerMove, handleDoodleKeyDown, handleFloatingLayerPointerLeave, hideCanvasBrushCursor, isCanvasBrushShapeMode, isCanvasFolderPickerLoading, isCheckingAppUpdate, isCloudflaredDisclaimerAccepted, isCreditUsageLoading, keepDrawerOpenByPointer, loadCanvasFolderMediaPage, loadCloudCreditUsage, localIP, mobilePairUrl, resetWebImageCacheDir, saveCanvasBrushEditedImage, selectedImage, selectedImageGallery, selectedImagePan, selectedImagePanRef, selectedImageZoom, selectedVideo, setActiveDraftForDisplay, setActiveShortcutScope, setCanvasBrushColor, setCanvasBrushEditor, setCanvasBrushOpacity, setCanvasBrushSize, setCanvasFolderPickerVisibleCount, setCanvasWorkflowSaveDraft, setSelectedImagePan, setSelectedImageZoom, setShowAboutSoftware, setShowContact, setShowCreditUsage, setShowHelp, setShowQR, setShowStoragePath, setShowUpdateLog, setShowWorkflowDraftPanel, setTextInputDialog, showAboutSoftware, showContact, showCreditUsage, showHelp, showLaunchIntro, showQR, showSelectedImageZoom, showStoragePath, showToast, showUpdateLog, showWorkflowDraftPanel, startPreviewWindowDrag, startResizingCorner, startResizingHeight, startResizingRightCorner, startResizingWidth, startSelectedImagePanDrag, STARTUP_CONSENT_DELAY_MS, stepSelectedImageGallery, textInputDialog, textInputDialogCanConfirm, TextInputDialogIcon, textInputDialogInputRef, triggerShortcut, undoCanvasBrushStroke, updateCanvasBrushCursorFromEvent, visibleCanvasFolderPickerItems, webImageCacheDir }}
 />
     </div>
+    </CloudAccountProvider>
   );
 }
 

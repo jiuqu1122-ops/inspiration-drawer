@@ -143,6 +143,8 @@ export type UseChatRuntimeOptions = {
   onBatchStarted?: (payload: ChatBatchStartedPayload) => void | Promise<void>;
   onBatchMediaReady?: (payload: ChatBatchMediaReadyPayload) => void | Promise<void>;
   onBatchCompleted?: (payload: ChatBatchCompletedPayload) => void | Promise<void>;
+  cloudWalletMode?: boolean;
+  onWalletSettlementComplete?: () => void;
 };
 
 type PendingApprovalRun = {
@@ -1873,6 +1875,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
             index: 0,
             toolMessages: [],
           }, executionCall.id);
+          if (optionsRef.current.cloudWalletMode) {
+            optionsRef.current.onWalletSettlementComplete?.();
+          }
           return true;
         } catch (error) {
           activeRequestsRef.current.delete(conversationId);
@@ -2071,6 +2076,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         0,
         resumeRequestId,
       );
+      if (optionsRef.current.cloudWalletMode) {
+        optionsRef.current.onWalletSettlementComplete?.();
+      }
       recoverableRequestIdsRef.current.delete(conversationId);
       return true;
     } catch (error) {
@@ -2194,12 +2202,18 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         };
         patchMessage(pending.assistantMessageId, message => ({ ...message, toolCalls: [...pending.calls] }), true);
         await continueToolCalls(nextRun);
+        if (optionsRef.current.cloudWalletMode) {
+          optionsRef.current.onWalletSettlementComplete?.();
+        }
         return;
       }
       call.status = 'pending';
       call.resultJson = null;
       call.completedAt = null;
       await continueToolCalls({ ...pending, calls: [...pending.calls] }, callId);
+      if (optionsRef.current.cloudWalletMode) {
+        optionsRef.current.onWalletSettlementComplete?.();
+      }
     } catch (error) {
       pendingApprovalsRef.current.delete(conversationId);
       activeRequestsRef.current.delete(conversationId);

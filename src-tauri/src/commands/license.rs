@@ -105,6 +105,29 @@ struct CloudMembershipSummary {
     expires_at: String,
     source: Option<String>,
     plan: CloudMembershipPlan,
+    #[serde(default)]
+    quotas: Vec<CloudMembershipQuota>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudMembershipQuota {
+    #[serde(default, rename = "type")]
+    quota_type: String,
+    #[serde(default)]
+    canonical_model_id: String,
+    #[serde(default)]
+    model_name: String,
+    #[serde(default)]
+    period: String,
+    #[serde(default)]
+    limit: u64,
+    #[serde(default)]
+    used: u64,
+    #[serde(default)]
+    remaining: u64,
+    #[serde(default)]
+    reset_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -813,6 +836,61 @@ fn summarize_cloud_account(
         membership: response.account.membership.clone(),
         referral: response.account.referral.clone(),
     })
+}
+
+#[cfg(test)]
+mod quota_tests {
+    use super::CloudAccountResponse;
+
+    #[test]
+    fn old_account_response_without_membership_quotas_deserializes_to_empty_list() {
+        let response: CloudAccountResponse = serde_json::from_value(serde_json::json!({
+            "user": { "email": "designer@example.com", "displayName": "Designer" },
+            "wallet": {
+                "availableCredits": "100.000000",
+                "reservedCredits": "0.000000",
+                "lifetimeGranted": "100.000000",
+                "lifetimeConsumed": "0.000000"
+            },
+            "membership": {
+                "id": "membership-1",
+                "status": "ACTIVE",
+                "startsAt": "2026-09-01T00:00:00.000Z",
+                "expiresAt": "2026-10-01T00:00:00.000Z",
+                "source": "ADMIN",
+                "plan": { "id": "plan-1", "code": "pro", "name": "Pro" }
+            },
+            "referral": null
+        }))
+        .expect("legacy account response should deserialize");
+
+        assert!(response.membership.expect("membership").quotas.is_empty());
+    }
+
+    #[test]
+    fn missing_quota_fields_use_serde_defaults() {
+        let response: CloudAccountResponse = serde_json::from_value(serde_json::json!({
+            "user": { "email": null, "displayName": null },
+            "wallet": null,
+            "membership": {
+                "id": "membership-1",
+                "status": "ACTIVE",
+                "startsAt": "2026-09-01T00:00:00.000Z",
+                "expiresAt": "2026-10-01T00:00:00.000Z",
+                "source": null,
+                "plan": { "id": "plan-1", "code": "pro", "name": "Pro" },
+                "quotas": [{}]
+            },
+            "referral": null
+        }))
+        .expect("partial quota should deserialize");
+
+        let membership = response.membership.expect("membership");
+        let quota = &membership.quotas[0];
+        assert_eq!(quota.limit, 0);
+        assert_eq!(quota.remaining, 0);
+        assert!(quota.canonical_model_id.is_empty());
+    }
 }
 
 async fn sync_cloud_account_uncached(

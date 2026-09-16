@@ -5,7 +5,28 @@ import { getCommonCanvasGroup } from '../../canvasGroups';
 import { type CanvasImageItem,type CanvasItemBox,type CanvasResizeCorner } from '../../canvasModel';
 import { resolveCanvasPasteSource } from '../../canvasPasteRouting';
 
-type canvasInteractionsEffectContext = { isCanvasMode: boolean; canvasSurfaceRef: React.RefObject<HTMLDivElement | null>; normalizeCanvasWheelDelta: (event: { deltaY: number; deltaMode: number; }) => number; getCanvasNestedWheelScroller: (surface: HTMLDivElement, targetValue: EventTarget | null, deltaY: number) => HTMLElement | null; shouldBlockCanvasWheelZoomTarget: (targetValue: EventTarget | null) => boolean; scheduleCanvasWheelZoom: (clientX: number, clientY: number, deltaY: number) => void; canvasScrollLockRef: React.RefObject<{ left: number; top: number; } | null>; isCanvasZoomingRef: React.RefObject<boolean>; canvasViewportDeferredDuringZoomRef: React.RefObject<boolean>; canvasStateSaveDeferredDuringZoomRef: React.RefObject<boolean>; growCanvasNearViewportEdge: (surface?: HTMLDivElement | null) => void; scheduleCanvasViewportUpdate: () => void; isCanvasSpacePressedRef: React.RefObject<boolean>; canvasPanRef: React.RefObject<{ pointerId: number; button: number; startClientX: number; startClientY: number; startScrollLeft: number; startScrollTop: number; } | null>; scheduleCanvasStateSave: (options?: { syncNodes?: boolean; }) => void; canvasScrollWriteGuardRef: React.RefObject<boolean>; left: number; top: number; writeCanvasSurfaceScroll: (surface: HTMLDivElement, left: number, top: number, updateLock?: boolean) => void; isCanvasModeRef: React.RefObject<boolean>; isTextEntryActive: () => boolean; shouldRouteShortcutToDoodle: (event: Event) => boolean; updateCanvasSelection: (ids: string[]) => void; canvasItemsRef: React.RefObject<CanvasImageItem[]>; canvasSelectedIdsRef: React.RefObject<string[]>; copyCanvasItemsToAvailableClipboards: (ids: string[]) => Promise<boolean>; duplicateCanvasItems: (ids?: string[], client?: { x: number; y: number; }) => number; ungroupCanvasItems: (ids?: string[]) => boolean; renameCanvasGroup: (ids?: string[]) => Promise<boolean>; createCanvasGroup: (ids?: string[]) => Promise<boolean>; fitCanvasViewToItems: (ids?: string[]) => boolean; setIsCanvasChromeHidden: React.Dispatch<React.SetStateAction<boolean>>; canvasSpaceKeyCapturedRef: React.RefObject<boolean>; setCanvasSpacePressed: (pressed: boolean) => void; removeCanvasItemsByIds: (ids: string[], label?: string) => number; showToast: (message: string) => void; activeThreeSceneIdRef: React.RefObject<string | null>; exitThreeSceneInteraction: () => void; canvasDragRef: React.RefObject<{ ids: string[]; pointerId: number; startClientX: number; startClientY: number; startScrollLeft: number; startScrollTop: number; startItems: Record<string, CanvasItemBox>; latestDelta: { dx: number; dy: number; }; hasMoved: boolean; hasConnections: boolean; pendingSelectionIds: string[] | null; } | null>; canvasResizeRef: React.RefObject<{ id: string; corner: CanvasResizeCorner; startClientX: number; startClientY: number; startX: number; startY: number; startWidth: number; startHeight: number; aspect: number; latestBox: CanvasItemBox | null; hasResized: boolean; } | null>; canvasGroupResizeRef: React.RefObject<{ corner: CanvasResizeCorner; startClientX: number; startClientY: number; startBounds: CanvasItemBox; startItems: Record<string, CanvasItemBox>; aspect: number; latestBoxes: Record<string, CanvasItemBox> | null; hasResized: boolean; } | null>; canvasContextMenuRef: React.RefObject<CanvasContextMenuState | null>; canvasConnectionDraft: { fromId: string; sourceIds: string[]; fromX: number; fromY: number; toX: number; toY: number; } | null; canvasInputPickTargetIdRef: React.RefObject<string | null>; cancelCanvasItemDragVisuals: () => void; setCanvasContextMenu: React.Dispatch<React.SetStateAction<CanvasContextMenuState | null>>; setCanvasInputMenuForId: React.Dispatch<React.SetStateAction<string | null>>; setCanvasInputPickTargetId: React.Dispatch<React.SetStateAction<string | null>>; pendingCanvasFusionRoleRef: React.RefObject<{ targetId: string; role: CanvasImageFusionRole; } | null>; setCanvasConnectionDraft: React.Dispatch<React.SetStateAction<{ fromId: string; sourceIds: string[]; fromX: number; fromY: number; toX: number; toY: number; } | null>>; hideCanvasSelectionOverlay: () => void; toggleCanvasMode: () => void; button: number | undefined; canvasPanCleanupRef: React.RefObject<(() => void) | null>; preferCanvasClipboardRef: React.RefObject<boolean>; setCanvasInteractionActive: (active: boolean, releaseDelay?: number, _options?: { preserveImageSources?: boolean; }) => void; getCanvasClipboardImageFiles: (clipboardData: DataTransfer) => File[]; canvasClipboardRef: React.RefObject<CanvasImageItem[]>; pasteCanvasItems: (client?: { x: number; y: number; }, label?: string) => number; pasteSystemClipboardToCanvas: (clipboardData: DataTransfer, client?: { x: number; y: number; }) => Promise<boolean>; };
+type canvasInteractionsEffectContext = { isCanvasMode: boolean; canvasSurfaceRef: React.RefObject<HTMLDivElement | null>; lastCanvasPointerClientRef: React.RefObject<{ x: number; y: number } | null>; normalizeCanvasWheelDelta: (event: { deltaY: number; deltaMode: number; }) => number; getCanvasNestedWheelScroller: (surface: HTMLDivElement, targetValue: EventTarget | null, deltaY: number) => HTMLElement | null; shouldBlockCanvasWheelZoomTarget: (targetValue: EventTarget | null) => boolean; scheduleCanvasWheelZoom: (clientX: number, clientY: number, deltaY: number) => void; canvasScrollLockRef: React.RefObject<{ left: number; top: number; } | null>; isCanvasZoomingRef: React.RefObject<boolean>; canvasViewportDeferredDuringZoomRef: React.RefObject<boolean>; canvasStateSaveDeferredDuringZoomRef: React.RefObject<boolean>; growCanvasNearViewportEdge: (surface?: HTMLDivElement | null) => void; scheduleCanvasViewportUpdate: () => void; isCanvasSpacePressedRef: React.RefObject<boolean>; canvasPanRef: React.RefObject<{ pointerId: number; button: number; startClientX: number; startClientY: number; startScrollLeft: number; startScrollTop: number; } | null>; scheduleCanvasStateSave: (options?: { syncNodes?: boolean; }) => void; canvasScrollWriteGuardRef: React.RefObject<boolean>; left: number; top: number; writeCanvasSurfaceScroll: (surface: HTMLDivElement, left: number, top: number, updateLock?: boolean) => void; isCanvasModeRef: React.RefObject<boolean>; isTextEntryActive: () => boolean; shouldRouteShortcutToDoodle: (event: Event) => boolean; updateCanvasSelection: (ids: string[]) => void; canvasItemsRef: React.RefObject<CanvasImageItem[]>; canvasSelectedIdsRef: React.RefObject<string[]>; copyCanvasItemsToAvailableClipboards: (ids: string[]) => Promise<boolean>; duplicateCanvasItems: (ids?: string[], client?: { x: number; y: number; }) => number; ungroupCanvasItems: (ids?: string[]) => boolean; renameCanvasGroup: (ids?: string[]) => Promise<boolean>; createCanvasGroup: (ids?: string[]) => Promise<boolean>; fitCanvasViewToItems: (ids?: string[]) => boolean; setIsCanvasChromeHidden: React.Dispatch<React.SetStateAction<boolean>>; canvasSpaceKeyCapturedRef: React.RefObject<boolean>; setCanvasSpacePressed: (pressed: boolean) => void; removeCanvasItemsByIds: (ids: string[], label?: string) => number; showToast: (message: string) => void; activeThreeSceneIdRef: React.RefObject<string | null>; exitThreeSceneInteraction: () => void; canvasDragRef: React.RefObject<{ ids: string[]; pointerId: number; startClientX: number; startClientY: number; startScrollLeft: number; startScrollTop: number; startItems: Record<string, CanvasItemBox>; latestDelta: { dx: number; dy: number; }; hasMoved: boolean; hasConnections: boolean; pendingSelectionIds: string[] | null; } | null>; canvasResizeRef: React.RefObject<{ id: string; corner: CanvasResizeCorner; startClientX: number; startClientY: number; startX: number; startY: number; startWidth: number; startHeight: number; aspect: number; latestBox: CanvasItemBox | null; hasResized: boolean; } | null>; canvasGroupResizeRef: React.RefObject<{ corner: CanvasResizeCorner; startClientX: number; startClientY: number; startBounds: CanvasItemBox; startItems: Record<string, CanvasItemBox>; aspect: number; latestBoxes: Record<string, CanvasItemBox> | null; hasResized: boolean; } | null>; canvasContextMenuRef: React.RefObject<CanvasContextMenuState | null>; canvasConnectionDraft: { fromId: string; sourceIds: string[]; fromX: number; fromY: number; toX: number; toY: number; } | null; canvasInputPickTargetIdRef: React.RefObject<string | null>; cancelCanvasItemDragVisuals: () => void; setCanvasContextMenu: React.Dispatch<React.SetStateAction<CanvasContextMenuState | null>>; setCanvasInputMenuForId: React.Dispatch<React.SetStateAction<string | null>>; setCanvasInputPickTargetId: React.Dispatch<React.SetStateAction<string | null>>; pendingCanvasFusionRoleRef: React.RefObject<{ targetId: string; role: CanvasImageFusionRole; } | null>; setCanvasConnectionDraft: React.Dispatch<React.SetStateAction<{ fromId: string; sourceIds: string[]; fromX: number; fromY: number; toX: number; toY: number; } | null>>; hideCanvasSelectionOverlay: () => void; toggleCanvasMode: () => void; button: number | undefined; canvasPanCleanupRef: React.RefObject<(() => void) | null>; preferCanvasClipboardRef: React.RefObject<boolean>; setCanvasInteractionActive: (active: boolean, releaseDelay?: number, _options?: { preserveImageSources?: boolean; }) => void; getCanvasClipboardImageFiles: (clipboardData: DataTransfer) => File[]; canvasClipboardRef: React.RefObject<CanvasImageItem[]>; pasteCanvasItems: (client?: { x: number; y: number; }, label?: string) => number; pasteSystemClipboardToCanvas: (clipboardData: DataTransfer, client?: { x: number; y: number; }) => Promise<boolean>; };
+
+export const resolveCanvasPasteClient = (
+  surface: Pick<HTMLDivElement, 'getBoundingClientRect'> | null,
+  pointer: { x: number; y: number } | null,
+) => {
+  if (!surface) return pointer;
+  const rect = surface.getBoundingClientRect();
+  if (
+    pointer
+    && pointer.x >= rect.left
+    && pointer.x <= rect.right
+    && pointer.y >= rect.top
+    && pointer.y <= rect.bottom
+  ) {
+    return pointer;
+  }
+  return {
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+  };
+};
 
 export const runCanvasInteractionsEffect01 = (ctx: Pick<canvasInteractionsEffectContext, 'canvasSurfaceRef' | 'getCanvasNestedWheelScroller' | 'isCanvasMode' | 'normalizeCanvasWheelDelta' | 'scheduleCanvasWheelZoom' | 'shouldBlockCanvasWheelZoomTarget'>) => {
   const { canvasSurfaceRef, getCanvasNestedWheelScroller, isCanvasMode, normalizeCanvasWheelDelta, scheduleCanvasWheelZoom, shouldBlockCanvasWheelZoomTarget } = ctx;
@@ -98,8 +119,8 @@ export const runCanvasInteractionsEffect02 = (ctx: Pick<canvasInteractionsEffect
 
 };
 
-export const runCanvasInteractionsEffect03 = (ctx: Pick<canvasInteractionsEffectContext, 'activeThreeSceneIdRef' | 'cancelCanvasItemDragVisuals' | 'canvasClipboardRef' | 'canvasConnectionDraft' | 'canvasContextMenuRef' | 'canvasDragRef' | 'canvasGroupResizeRef' | 'canvasInputPickTargetIdRef' | 'canvasItemsRef' | 'canvasPanCleanupRef' | 'canvasPanRef' | 'canvasResizeRef' | 'canvasScrollLockRef' | 'canvasSelectedIdsRef' | 'canvasSpaceKeyCapturedRef' | 'canvasSurfaceRef' | 'copyCanvasItemsToAvailableClipboards' | 'createCanvasGroup' | 'duplicateCanvasItems' | 'exitThreeSceneInteraction' | 'fitCanvasViewToItems' | 'getCanvasClipboardImageFiles' | 'hideCanvasSelectionOverlay' | 'isCanvasModeRef' | 'isCanvasSpacePressedRef' | 'isTextEntryActive' | 'pasteCanvasItems' | 'pasteSystemClipboardToCanvas' | 'pendingCanvasFusionRoleRef' | 'preferCanvasClipboardRef' | 'removeCanvasItemsByIds' | 'renameCanvasGroup' | 'setCanvasConnectionDraft' | 'setCanvasContextMenu' | 'setCanvasInputMenuForId' | 'setCanvasInputPickTargetId' | 'setCanvasInteractionActive' | 'setCanvasSpacePressed' | 'setIsCanvasChromeHidden' | 'shouldRouteShortcutToDoodle' | 'showToast' | 'toggleCanvasMode' | 'ungroupCanvasItems' | 'updateCanvasSelection'>) => {
-  const { activeThreeSceneIdRef, cancelCanvasItemDragVisuals, canvasClipboardRef, canvasConnectionDraft, canvasContextMenuRef, canvasDragRef, canvasGroupResizeRef, canvasInputPickTargetIdRef, canvasItemsRef, canvasPanCleanupRef, canvasPanRef, canvasResizeRef, canvasScrollLockRef, canvasSelectedIdsRef, canvasSpaceKeyCapturedRef, canvasSurfaceRef, copyCanvasItemsToAvailableClipboards, createCanvasGroup, duplicateCanvasItems, exitThreeSceneInteraction, fitCanvasViewToItems, getCanvasClipboardImageFiles, hideCanvasSelectionOverlay, isCanvasModeRef, isCanvasSpacePressedRef, isTextEntryActive, pasteCanvasItems, pasteSystemClipboardToCanvas, pendingCanvasFusionRoleRef, preferCanvasClipboardRef, removeCanvasItemsByIds, renameCanvasGroup, setCanvasConnectionDraft, setCanvasContextMenu, setCanvasInputMenuForId, setCanvasInputPickTargetId, setCanvasInteractionActive, setCanvasSpacePressed, setIsCanvasChromeHidden, shouldRouteShortcutToDoodle, showToast, toggleCanvasMode, ungroupCanvasItems, updateCanvasSelection } = ctx;
+export const runCanvasInteractionsEffect03 = (ctx: Pick<canvasInteractionsEffectContext, 'activeThreeSceneIdRef' | 'cancelCanvasItemDragVisuals' | 'canvasClipboardRef' | 'canvasConnectionDraft' | 'canvasContextMenuRef' | 'canvasDragRef' | 'canvasGroupResizeRef' | 'canvasInputPickTargetIdRef' | 'canvasItemsRef' | 'canvasPanCleanupRef' | 'canvasPanRef' | 'canvasResizeRef' | 'canvasScrollLockRef' | 'canvasSelectedIdsRef' | 'canvasSpaceKeyCapturedRef' | 'canvasSurfaceRef' | 'copyCanvasItemsToAvailableClipboards' | 'createCanvasGroup' | 'duplicateCanvasItems' | 'exitThreeSceneInteraction' | 'fitCanvasViewToItems' | 'getCanvasClipboardImageFiles' | 'hideCanvasSelectionOverlay' | 'isCanvasModeRef' | 'isCanvasSpacePressedRef' | 'isTextEntryActive' | 'lastCanvasPointerClientRef' | 'pasteCanvasItems' | 'pasteSystemClipboardToCanvas' | 'pendingCanvasFusionRoleRef' | 'preferCanvasClipboardRef' | 'removeCanvasItemsByIds' | 'renameCanvasGroup' | 'setCanvasConnectionDraft' | 'setCanvasContextMenu' | 'setCanvasInputMenuForId' | 'setCanvasInputPickTargetId' | 'setCanvasInteractionActive' | 'setCanvasSpacePressed' | 'setIsCanvasChromeHidden' | 'shouldRouteShortcutToDoodle' | 'showToast' | 'toggleCanvasMode' | 'ungroupCanvasItems' | 'updateCanvasSelection'>) => {
+  const { activeThreeSceneIdRef, cancelCanvasItemDragVisuals, canvasClipboardRef, canvasConnectionDraft, canvasContextMenuRef, canvasDragRef, canvasGroupResizeRef, canvasInputPickTargetIdRef, canvasItemsRef, canvasPanCleanupRef, canvasPanRef, canvasResizeRef, canvasScrollLockRef, canvasSelectedIdsRef, canvasSpaceKeyCapturedRef, canvasSurfaceRef, copyCanvasItemsToAvailableClipboards, createCanvasGroup, duplicateCanvasItems, exitThreeSceneInteraction, fitCanvasViewToItems, getCanvasClipboardImageFiles, hideCanvasSelectionOverlay, isCanvasModeRef, isCanvasSpacePressedRef, isTextEntryActive, lastCanvasPointerClientRef, pasteCanvasItems, pasteSystemClipboardToCanvas, pendingCanvasFusionRoleRef, preferCanvasClipboardRef, removeCanvasItemsByIds, renameCanvasGroup, setCanvasConnectionDraft, setCanvasContextMenu, setCanvasInputMenuForId, setCanvasInputPickTargetId, setCanvasInteractionActive, setCanvasSpacePressed, setIsCanvasChromeHidden, shouldRouteShortcutToDoodle, showToast, toggleCanvasMode, ungroupCanvasItems, updateCanvasSelection } = ctx;
     const shouldStartCanvasSpacePan = (event: KeyboardEvent) => {
       if (!isCanvasModeRef.current || isTextEntryActive()) return false;
       const target = event.target as HTMLElement | null;
@@ -294,13 +315,17 @@ export const runCanvasInteractionsEffect03 = (ctx: Pick<canvasInteractionsEffect
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
+      const pasteClient = resolveCanvasPasteClient(
+        canvasSurfaceRef.current,
+        lastCanvasPointerClientRef.current,
+      );
       if (pasteSource === 'canvas') {
-        pasteCanvasItems();
+        pasteCanvasItems(pasteClient || undefined);
         return;
       }
       if (clipboardData) {
         preferCanvasClipboardRef.current = false;
-        void pasteSystemClipboardToCanvas(clipboardData).catch((err) => {
+        void pasteSystemClipboardToCanvas(clipboardData, pasteClient || undefined).catch((err) => {
           console.warn('粘贴剪贴板内容到画布失败:', err);
           showToast('粘贴失败');
         });
@@ -309,16 +334,32 @@ export const runCanvasInteractionsEffect03 = (ctx: Pick<canvasInteractionsEffect
     const handleNativeCopy = () => {
       preferCanvasClipboardRef.current = false;
     };
+    const handleCanvasPointerMove = (event: PointerEvent) => {
+      const surface = canvasSurfaceRef.current;
+      if (!surface || !isCanvasModeRef.current) {
+        lastCanvasPointerClientRef.current = null;
+        return;
+      }
+      const rect = surface.getBoundingClientRect();
+      lastCanvasPointerClientRef.current = (
+        event.clientX >= rect.left
+        && event.clientX <= rect.right
+        && event.clientY >= rect.top
+        && event.clientY <= rect.bottom
+      ) ? { x: event.clientX, y: event.clientY } : null;
+    };
 
     window.addEventListener('keydown', handleCanvasKeysDown, true);
     window.addEventListener('keyup', handleCanvasKeysUp, true);
     window.addEventListener('blur', handleCanvasKeyBlur);
+    window.addEventListener('pointermove', handleCanvasPointerMove, true);
     document.addEventListener('paste', handleCanvasPaste, true);
     document.addEventListener('copy', handleNativeCopy, true);
     return () => {
       window.removeEventListener('keydown', handleCanvasKeysDown, true);
       window.removeEventListener('keyup', handleCanvasKeysUp, true);
       window.removeEventListener('blur', handleCanvasKeyBlur);
+      window.removeEventListener('pointermove', handleCanvasPointerMove, true);
       document.removeEventListener('paste', handleCanvasPaste, true);
       document.removeEventListener('copy', handleNativeCopy, true);
     };

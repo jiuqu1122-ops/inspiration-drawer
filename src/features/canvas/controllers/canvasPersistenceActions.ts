@@ -1537,7 +1537,7 @@ export const restoreCanvasUndoSnapshotImpl = (ctx: Pick<canvasPersistenceActionC
 
 };
 
-export const appendCanvasItemsImpl = (ctx: Pick<canvasPersistenceActionContext, 'canvasImageSourceCacheRef' | 'canvasItemsPatchCommitRef' | 'growCanvasToFit' | 'isCanvasModeRef' | 'pushCanvasUndoSnapshot' | 'scheduleCanvasChangedNodesPatchSave' | 'scheduleCanvasFocusItemById' | 'updateCanvasItemsDeferred' | 'updateCanvasSelection'>, nextItems: CanvasImageItem[], label: string, select: boolean = true) => {
+export const appendCanvasItemsImpl = (ctx: Pick<canvasPersistenceActionContext, 'canvasImageSourceCacheRef' | 'canvasItemsPatchCommitRef' | 'growCanvasToFit' | 'isCanvasModeRef' | 'pushCanvasUndoSnapshot' | 'scheduleCanvasChangedNodesPatchSave' | 'scheduleCanvasFocusItemById' | 'updateCanvasItemsDeferred' | 'updateCanvasSelection'>, nextItems: CanvasImageItem[], label: string, select: boolean = true, options: { focusSelection?: boolean } = {}) => {
   const { canvasImageSourceCacheRef, canvasItemsPatchCommitRef, growCanvasToFit, isCanvasModeRef, pushCanvasUndoSnapshot, scheduleCanvasChangedNodesPatchSave, scheduleCanvasFocusItemById, updateCanvasItemsDeferred, updateCanvasSelection } = ctx;
     if (!isCanvasModeRef.current) return 0;
     const clean = nextItems.filter(Boolean);
@@ -1560,7 +1560,7 @@ export const appendCanvasItemsImpl = (ctx: Pick<canvasPersistenceActionContext, 
     scheduleCanvasChangedNodesPatchSave(clean.map(item => item.id));
     if (select) {
       updateCanvasSelection(clean.map(item => item.id));
-      scheduleCanvasFocusItemById(clean[0].id);
+      if (options.focusSelection !== false) scheduleCanvasFocusItemById(clean[0].id);
     }
     return clean.length;
 

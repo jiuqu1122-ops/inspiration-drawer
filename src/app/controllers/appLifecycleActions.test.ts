@@ -1,7 +1,9 @@
 import { describe,expect,it,vi } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
 import type { CanvasAiModelCandidate,CanvasImageItem } from '../../features/canvasModel';
+import type { CloudAccountSummary } from '../../types/license';
 import { canvasAiGroupedModelChoiceValue } from '../../utils/canvasAiConfig';
-import { getCanvasAiUnifiedImageModelValueImpl } from './appLifecycleActions';
+import { getCanvasAiUnifiedImageModelValueImpl,refreshCloudAccountImpl } from './appLifecycleActions';
 import { runAppLifecycleEffect21 } from './appLifecycleEffects';
 import { getCanvasImageInputBufferItemsForNodeImpl } from '../../features/canvas/controllers/canvasMediaActions';
 
@@ -32,6 +34,52 @@ const catalogOption = (
     }, [route]),
   };
 };
+
+describe('refreshCloudAccountImpl', () => {
+  it('publishes the settled image quota returned by the account refresh', async () => {
+    const updatedAccount: CloudAccountSummary = {
+      wallet: {
+        availableCredits: '100.000000',
+        reservedCredits: '0.000000',
+        lifetimeGranted: '100.000000',
+        lifetimeConsumed: '0.000000',
+      },
+      membership: {
+        id: 'membership-1',
+        status: 'ACTIVE',
+        startsAt: '2026-09-01T00:00:00.000Z',
+        expiresAt: '2026-10-01T00:00:00.000Z',
+        plan: { id: 'plan-1', code: 'pro', name: 'Pro' },
+        quotas: [{
+          type: 'IMAGE_COUNT',
+          canonicalModelId: 'seedream-5-pro',
+          modelName: 'Seedream 5 Pro',
+          period: 'DAILY',
+          limit: 20,
+          used: 7,
+          remaining: 13,
+          resetAt: '2026-09-16T16:00:00.000Z',
+        }],
+      },
+    };
+    vi.mocked(invoke).mockResolvedValueOnce(updatedAccount);
+    const setCloudAccount = vi.fn();
+
+    await refreshCloudAccountImpl({
+      cloudAccountRefreshFlightRef: { current: null },
+      formatLicenseCommandError: String,
+      refreshLicenseStatus: vi.fn().mockResolvedValue(undefined),
+      setCloudAccount,
+      setCloudAccountSyncError: vi.fn(),
+      setIsCloudAccountLoading: vi.fn(),
+      showToast: vi.fn(),
+    }, true);
+
+    expect(invoke).toHaveBeenCalledWith('get_cloud_account');
+    const renderedAccount = setCloudAccount.mock.lastCall?.[0] as CloudAccountSummary;
+    expect(renderedAccount.membership?.quotas?.[0]?.remaining).toBe(13);
+  });
+});
 
 describe('getCanvasAiUnifiedImageModelValueImpl', () => {
   it('keeps the selected second Catalog image model by canonical ID', () => {

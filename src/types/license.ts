@@ -50,6 +50,17 @@ export type CloudWalletSummary = {
   lifetimeConsumed: string;
 };
 
+export type CloudMembershipQuota = {
+  type: 'IMAGE_COUNT' | 'LLM_TOKENS';
+  canonicalModelId: string;
+  modelName: string;
+  period: 'DAILY' | 'MONTHLY';
+  limit: number;
+  used: number;
+  remaining: number;
+  resetAt: string;
+};
+
 export type CloudAccountSummary = {
   email?: string | null;
   displayName?: string | null;
@@ -61,6 +72,8 @@ export type CloudAccountSummary = {
     expiresAt: string;
     source?: string | null;
     plan: { id: string; code: string; name: string; description?: string | null };
+    /** Older account servers and locally cached snapshots may omit this field. */
+    quotas?: CloudMembershipQuota[];
   } | null;
   referral?: {
     inviteCode: string;

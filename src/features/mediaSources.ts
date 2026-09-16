@@ -44,3 +44,11 @@ export const getPreviewPlaceholderSource = (item?: Partial<BufferItem> | null) =
 export const getPreviewOriginalSource = (item?: Partial<BufferItem> | null) => (
   getOriginalMediaSource(item) || getThumbnailSource(item)
 );
+
+export const getImagePreviewGallery = (items: BufferItem[], selectedId: string) => {
+  const galleryItems = items.filter(item => (
+    item.type === 'image' && Boolean(getPreviewOriginalSource(item))
+  ));
+  const galleryIndex = galleryItems.findIndex(item => item.id === selectedId);
+  return galleryIndex >= 0 ? { galleryItems, galleryIndex } : null;
+};

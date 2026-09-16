@@ -297,5 +297,6 @@ export function useCanvasAgentBridge(ctx: CanvasAgentBridgeContext) {
       throw new Error(`不支持的画布工具：${name}`);
     },
     onNotice: showToast,
+    onWalletSettlementComplete: ctx.onWalletSettlementComplete,
   });
 }

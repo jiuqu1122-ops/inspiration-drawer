@@ -74,6 +74,7 @@ import { upsertWorkflowResultMessage } from './workflowResult';
 import {
   runInternalAgentModelRequest,
 } from './chat/runtime/agentModelResolution';
+import { scheduleCloudAccountQuotaRefresh } from './cloudAccountQuotaRefresh';
 
 type RuntimeOptions = {
   getContext: () => AgentCanvasContext;
@@ -84,6 +85,7 @@ type RuntimeOptions = {
   ) => Promise<AgentCanvasVisualReference[]>;
   executeTool: AgentCanvasToolExecutor;
   onNotice?: (message: string) => void;
+  onWalletSettlementComplete?: () => void;
 };
 
 type AgentSendSnapshot = {
@@ -2505,16 +2507,15 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     }
 
     const requestId = createAgentId('prompt-optimize');
+    const usesCloudWallet = settingsRef.current.apiProvider.trim().toLowerCase() === 'unmind-wallet'
+      || settingsRef.current.apiCredentialSource === 'cloud_wallet';
     const mediaInstruction = mediaType === 'video'
       ? '这是视频生成提示词。补充并组织主体、动作与时间节奏、镜头运动、景别、运镜速度、场景、光线和视觉风格；不要凭空改变用户意图。'
       : '这是图片生成提示词。补充并组织主体、构图、视角、材质、光线、色彩、背景和视觉风格；不要凭空改变用户意图。';
     const result = await runInternalAgentModelRequest({
       // Prompt optimization shares the server-owned CANVAS_TEXT binding in
       // Wallet mode. Direct/BYOK keeps its configured provider model.
-      savedModel: settingsRef.current.apiProvider.trim().toLowerCase() === 'unmind-wallet'
-        || settingsRef.current.apiCredentialSource === 'cloud_wallet'
-        ? undefined
-        : settingsRef.current.apiModel,
+      savedModel: usesCloudWallet ? undefined : settingsRef.current.apiModel,
       usageContext: 'prompt_optimization',
       requestId,
         createRequestId: () => createAgentId('prompt-optimize-model-fallback'),
@@ -2539,6 +2540,10 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         },
       }),
     });
+    if (usesCloudWallet) {
+      optionsRef.current.onWalletSettlementComplete?.();
+      scheduleCloudAccountQuotaRefresh();
+    }
     return result.content.trim();
   }, []);
 
