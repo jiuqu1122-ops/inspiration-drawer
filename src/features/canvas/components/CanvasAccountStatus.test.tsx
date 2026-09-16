@@ -6,6 +6,7 @@ import {
   formatCompactChineseTokens,
   formatMembershipQuotaUsage,
   getDisplayMembershipQuotas,
+  membershipQuotaBadgeSummary,
 } from './CanvasAccountStatus';
 
 const quota = (patch: Partial<CloudMembershipQuota> = {}): CloudMembershipQuota => ({
@@ -90,17 +91,32 @@ describe('CanvasAccountStatus', () => {
     }))).toBe('本月剩余 57.3万 / 100万 Token');
   });
 
-  it('shows at most two quotas and summarizes the rest', () => {
-    const html = renderToStaticMarkup(<CanvasAccountStatus cloudAccount={account(membership([
+  it('shows a compact free-quota badge and expands into the full quota list', () => {
+    const quotas = [
       quota(),
       quota({ canonicalModelId: 'gpt-image', modelName: 'GPT Image 2.5', period: 'MONTHLY' }),
-      quota({ type: 'LLM_TOKENS', canonicalModelId: 'gpt-5', modelName: 'GPT-5.6 Sol' }),
+      quota({ type: 'LLM_TOKENS', canonicalModelId: 'gpt-5', modelName: 'GPT-5.6 Sol', limit: 1_000, remaining: 573 }),
       quota({ type: 'LLM_TOKENS', canonicalModelId: 'gpt-6', modelName: 'GPT-6' }),
-    ]))} />);
-    expect(html).toContain('Seedream 5 Pro');
-    expect(html).toContain('GPT Image 2.5');
-    expect(html).not.toContain('GPT-5.6 Sol');
-    expect(html).toContain('+2 项权益');
+    ];
+    const collapsed = renderToStaticMarkup(
+      <CanvasAccountStatus cloudAccount={account(membership(quotas))} />,
+    );
+    const expanded = renderToStaticMarkup(
+      <CanvasAccountStatus cloudAccount={account(membership(quotas))} initiallyExpanded />,
+    );
+    expect(collapsed).toContain('免费');
+    expect(collapsed).toContain('13');
+    expect(collapsed).toContain('张');
+    expect(collapsed).toContain('57');
+    expect(collapsed).toContain('%');
+    expect(collapsed).not.toContain('详情');
+    expect(collapsed).not.toContain('Seedream 5 Pro');
+    expect(expanded).toContain('免费额度');
+    expect(expanded).toContain('Seedream 5 Pro');
+    expect(expanded).toContain('GPT Image 2.5');
+    expect(expanded).toContain('GPT-5.6 Sol');
+    expect(expanded).toContain('GPT-6');
+    expect(membershipQuotaBadgeSummary(quotas)).toEqual({ imageRemaining: 13, tokenPercent: 57 });
   });
 
   it('accepts old account responses that omit quotas', () => {
@@ -112,10 +128,10 @@ describe('CanvasAccountStatus', () => {
   });
 
   it('renders an updated quota value without changing the stable component root', () => {
-    const before = renderToStaticMarkup(<CanvasAccountStatus cloudAccount={account(membership([
+    const before = renderToStaticMarkup(<CanvasAccountStatus initiallyExpanded cloudAccount={account(membership([
       quota({ used: 6, remaining: 14 }),
     ]))} />);
-    const after = renderToStaticMarkup(<CanvasAccountStatus cloudAccount={account(membership([
+    const after = renderToStaticMarkup(<CanvasAccountStatus initiallyExpanded cloudAccount={account(membership([
       quota({ used: 7, remaining: 13 }),
     ]))} />);
     expect(before).toContain('今日剩余 14 / 20 张');

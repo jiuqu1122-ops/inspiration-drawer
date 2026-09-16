@@ -5,6 +5,7 @@ import { formatCreditAmount } from '../../cloudCreditUsage';
 export type CanvasAccountStatusProps = {
   cloudAccount: CloudAccountSummary | null;
   loading?: boolean;
+  initiallyExpanded?: boolean;
 };
 
 const quotaPeriodLabel = (period: CloudMembershipQuota['period']) => (
@@ -45,6 +46,18 @@ export const getDisplayMembershipQuotas = (account: CloudAccountSummary | null) 
   ));
 };
 
+export const membershipQuotaBadgeSummary = (quotas: CloudMembershipQuota[]) => {
+  const imageQuota = quotas.find(quota => quota.type === 'IMAGE_COUNT');
+  const tokenQuota = quotas.find(quota => quota.type === 'LLM_TOKENS');
+  const tokenPercent = tokenQuota && tokenQuota.limit > 0
+    ? Math.max(0, Math.min(100, Math.round((tokenQuota.remaining / tokenQuota.limit) * 100)))
+    : null;
+  return {
+    imageRemaining: imageQuota ? safeQuotaInteger(imageQuota.remaining) : null,
+    tokenPercent,
+  };
+};
+
 function QuotaRow({ quota, compact = false }: { quota: CloudMembershipQuota; compact?: boolean }) {
   return (
     <div className={`min-w-0 ${compact ? 'py-1.5' : 'py-2'}`}>
@@ -60,12 +73,16 @@ function QuotaRow({ quota, compact = false }: { quota: CloudMembershipQuota; com
   );
 }
 
-export function CanvasAccountStatus({ cloudAccount, loading = false }: CanvasAccountStatusProps) {
-  const [expanded, setExpanded] = useState(false);
+export function CanvasAccountStatus({
+  cloudAccount,
+  loading = false,
+  initiallyExpanded = false,
+}: CanvasAccountStatusProps) {
+  const [expanded, setExpanded] = useState(initiallyExpanded);
   const rootRef = useRef<HTMLDivElement>(null);
   const quotas = useMemo(() => getDisplayMembershipQuotas(cloudAccount), [cloudAccount]);
   const visibleQuotas = quotas.slice(0, 2);
-  const hiddenCount = Math.max(0, quotas.length - visibleQuotas.length);
+  const quotaBadge = useMemo(() => membershipQuotaBadgeSummary(quotas), [quotas]);
   const credits = cloudAccount ? formatCreditAmount(cloudAccount.wallet.availableCredits) : '—';
 
   useEffect(() => {
@@ -101,57 +118,46 @@ export function CanvasAccountStatus({ cloudAccount, loading = false }: CanvasAcc
         onClick={() => {
           if (quotas.length > 0) setExpanded(value => !value);
         }}
-        className={`${visibleQuotas.length > 0 ? 'w-[218px] px-3 py-2.5' : 'min-w-[112px] px-3 py-2'} isolate overflow-hidden rounded-[12px] bg-white/95 text-left text-stone-700 shadow-[0_5px_16px_rgba(41,37,36,0.09)] ring-1 ring-stone-900/[0.06] transition-[background-color,box-shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stone-400/50 dark:bg-stone-900/95 dark:text-stone-200 dark:shadow-[0_7px_20px_rgba(0,0,0,0.24)] dark:ring-white/[0.08] ${quotas.length > 0 ? 'cursor-pointer hover:bg-stone-50 hover:shadow-[0_7px_20px_rgba(41,37,36,0.12)] active:bg-stone-100 dark:hover:bg-stone-800 dark:active:bg-stone-800/80' : 'cursor-default'}`}
+        className={`${expanded && visibleQuotas.length > 0 ? 'w-[218px] px-3 py-2.5' : 'min-w-[112px] px-3 py-2'} isolate overflow-hidden rounded-[12px] bg-white/95 text-left text-stone-700 shadow-[0_5px_16px_rgba(41,37,36,0.09)] ring-1 ring-stone-900/[0.06] transition-[width,background-color,box-shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stone-400/50 dark:bg-stone-900/95 dark:text-stone-200 dark:shadow-[0_7px_20px_rgba(0,0,0,0.24)] dark:ring-white/[0.08] ${quotas.length > 0 ? 'cursor-pointer hover:bg-stone-50 hover:shadow-[0_7px_20px_rgba(41,37,36,0.12)] active:bg-stone-100 dark:hover:bg-stone-800 dark:active:bg-stone-800/80' : 'cursor-default'}`}
       >
-        <span className="flex items-baseline gap-2">
+        <span className="flex items-baseline gap-2 whitespace-nowrap">
           <span className="shrink-0 text-[9px] font-medium leading-3 text-stone-500 dark:text-stone-500">积分</span>
-          <span className="flex min-w-0 flex-1 items-baseline justify-between gap-2">
-            <span className="truncate text-[12px] font-semibold leading-4 tracking-[-0.01em] tabular-nums text-stone-800 dark:text-stone-100">
-              {credits}
-            </span>
-            {quotas.length > 0 && (
-              <span className="shrink-0 text-[9px] font-medium text-stone-400 dark:text-stone-600" aria-hidden="true">
-                {expanded ? '收起' : '详情'}
-              </span>
-            )}
+          <span className="text-[12px] font-semibold leading-4 tracking-[-0.01em] tabular-nums text-stone-800 dark:text-stone-100">
+            {credits}
           </span>
+          {!expanded && quotas.length > 0 && (
+            <span className="ml-0.5 flex items-baseline gap-1.5 border-l border-stone-200/80 pl-2 text-[9px] font-medium text-stone-500 dark:border-stone-700/80 dark:text-stone-400">
+              <span>免费</span>
+              {quotaBadge.imageRemaining !== null && (
+                <span className="tabular-nums text-stone-700 dark:text-stone-200">
+                  {quotaBadge.imageRemaining}<span className="ml-px text-stone-400 dark:text-stone-500">张</span>
+                </span>
+              )}
+              {quotaBadge.tokenPercent !== null && (
+                <span className="tabular-nums text-stone-700 dark:text-stone-200">
+                  {quotaBadge.tokenPercent}<span className="ml-px text-stone-400 dark:text-stone-500">%</span>
+                </span>
+              )}
+            </span>
+          )}
         </span>
 
-        {visibleQuotas.length > 0 && (
-          <span className="mt-2 block border-t border-stone-200/70 pt-1 dark:border-stone-700/70">
-            {visibleQuotas.map(quota => (
+        {expanded && visibleQuotas.length > 0 && (
+          <span className="mt-2 block border-t border-stone-200/70 pt-2 dark:border-stone-700/70">
+            <span className="mb-0.5 block text-[9px] font-medium leading-3 text-stone-400 dark:text-stone-500">
+              免费额度
+            </span>
+            {quotas.map(quota => (
               <QuotaRow
                 key={`${quota.type}:${quota.canonicalModelId}:${quota.period}`}
                 quota={quota}
                 compact
               />
             ))}
-            {hiddenCount > 0 && (
-              <span className="mt-0.5 block text-[9px] font-medium leading-4 text-stone-500 dark:text-stone-500">
-                +{hiddenCount} 项权益
-              </span>
-            )}
           </span>
         )}
         {loading && !cloudAccount && <span className="sr-only">账户信息加载中</span>}
       </button>
-
-      {expanded && quotas.length > 0 && (
-        <div
-          role="dialog"
-          aria-label="全部会员免费额度"
-          className="absolute left-0 top-[calc(100%+6px)] w-[258px] overflow-hidden rounded-[12px] bg-white/98 px-3 py-2.5 text-stone-700 shadow-[0_12px_32px_rgba(41,37,36,0.13)] ring-1 ring-stone-900/[0.07] dark:bg-stone-900/98 dark:text-stone-200 dark:shadow-[0_16px_36px_rgba(0,0,0,0.3)] dark:ring-white/[0.08]"
-        >
-          <div className="mb-0.5 text-[9px] font-medium text-stone-500 dark:text-stone-500">
-            会员免费额度
-          </div>
-          <div className="divide-y divide-stone-200/70 dark:divide-stone-700/70">
-            {quotas.map(quota => (
-              <QuotaRow key={`${quota.type}:${quota.canonicalModelId}:${quota.period}`} quota={quota} />
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
