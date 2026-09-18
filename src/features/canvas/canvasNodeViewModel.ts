@@ -12,7 +12,7 @@ import type { BufferItem } from '../../types';
 import { getCanvasWorkflowInternalSlotNodes,isReplaceableInternalImageSlot } from '../canvasWorkflowInternalSlots';
 import { normalizeCanvasWorkflowUserInput } from '../canvasWorkflowUserInput';
 import { normalizeDesignAgentConfig } from '../designAgentNode';
-import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,getImageAspectRatioOptionsForResolution,normalizeCapabilityDuration,normalizeCapabilityOption,resolveImageModelCapabilities,resolveVideoModelCapabilities } from '../aiModelCapabilities';
+import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,getImageAspectRatioOptionsForResolution,getVideoAspectRatioOptions,normalizeCapabilityOption,normalizeVideoDurationSelection,normalizeVideoResolutionSelection,resolveImageModelCapabilities,resolveVideoModelCapabilities } from '../aiModelCapabilities';
 
 export type CanvasNodeViewModelScope = Record<string, any>;
 
@@ -226,7 +226,10 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             },
                           });
                           const canvasAiVideoResolutionValues = canvasAiResolvedVideoCapabilities.resolutions;
-                          const canvasAiVideoResolutionOptions = canvasAiVideoResolutionValues.map(value => ({ value, label: value }));
+                          const canvasAiVideoResolutionOptions = canvasAiVideoResolutionValues.map(value => ({
+                            value,
+                            label: canvasAiResolvedVideoCapabilities.source === 'server' ? value.toUpperCase() : value,
+                          }));
                           const canvasAiLegacyVideoResolution = isCanvasAiMikotoVideo
                             ? normalizeMikotoVideoResolution(canvasAiItemModel, canvasItem.ai?.resolution)
                             : isCanvasAiMiniMaxVideo
@@ -237,11 +240,10 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                               ? normalizeNewApiVideoResolutionForModel(canvasAiItemModel, canvasItem.ai?.resolution)
                               : canvasItem.ai?.resolution || CANVAS_AI_DEFAULT_VIDEO_RESOLUTION;
                           const canvasAiVideoResolution = canvasAiResolvedVideoCapabilities.source === 'server'
-                            ? normalizeCapabilityOption(
-                              canvasAiVideoResolutionValues,
+                            ? normalizeVideoResolutionSelection(
+                              canvasAiResolvedVideoCapabilities,
                               canvasItem.ai?.resolution,
-                              CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,
-                            )
+                            ) || ''
                             : canvasAiLegacyVideoResolution;
                           const canvasAiVideoDurationValues = canvasAiResolvedVideoCapabilities.durations;
                           const canvasAiVideoDurationOptions = canvasAiVideoDurationValues.map(value => ({
@@ -256,11 +258,10 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             ? normalizeNewApiVideoDurationForModel(canvasAiItemModel, canvasItem.ai?.duration)
                             : canvasItem.ai?.duration || CANVAS_AI_DEFAULT_VIDEO_DURATION;
                           const canvasAiVideoDuration = canvasAiResolvedVideoCapabilities.source === 'server'
-                            ? normalizeCapabilityDuration(
-                              canvasAiVideoDurationValues,
+                            ? normalizeVideoDurationSelection(
+                              canvasAiResolvedVideoCapabilities,
                               canvasItem.ai?.duration,
-                              CANVAS_AI_DEFAULT_VIDEO_DURATION,
-                            )
+                            ) ?? canvasAiVideoDurationValues[0] ?? CANVAS_AI_DEFAULT_VIDEO_DURATION
                             : canvasAiLegacyVideoDuration;
                           const canvasAiVideoSupportsFirstLastFrame = canvasAiResolvedVideoCapabilities.firstLastFrame;
                           const canvasAiSupportsTransparentPng = canvasAiResolvedImageCapabilities.supportsTransparentBackground;
@@ -288,7 +289,14 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                               : option
                           ));
                           const canvasAiAspectRatioValues = canvasAiMediaType === 'video'
-                            ? canvasAiResolvedVideoCapabilities.aspectRatios
+                            ? canvasAiResolvedVideoCapabilities.source === 'server'
+                              ? canvasAiResolvedVideoCapabilities.aspectRatioMode === 'unspecified'
+                                ? ['auto']
+                                : getVideoAspectRatioOptions(
+                                  canvasAiResolvedVideoCapabilities,
+                                  canvasItem.ai?.aspectRatio,
+                                )
+                              : canvasAiResolvedVideoCapabilities.aspectRatios
                             : getImageAspectRatioOptionsForResolution(
                               canvasAiResolvedImageCapabilities,
                               canvasAiItemImageResolution,

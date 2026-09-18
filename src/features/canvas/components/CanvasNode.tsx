@@ -9,7 +9,7 @@ import { CanvasSelectionVideo } from '../../../components/CanvasSelectionVideo';
 import { RoundedSelect,type RoundedSelectOption } from '../../../components/RoundedSelect';
 import { CANVAS_AI_NODE_CHEVRON_CLASS,CANVAS_AI_NODE_SELECT_MENU_CLASS,CANVAS_AI_NODE_SELECT_OPTION_CLASS,CANVAS_AI_NODE_TEXT_SELECT_CLASS } from '../../../components/canvasAiNodeControlStyles';
 import { CANVAS_AI_DEFAULT_ASPECT_RATIO,CANVAS_AI_NEW_API_VIDEO_ASPECT_RATIO_OPTIONS,formatCanvasAiAspectRatioOptionLabel,getCanvasAiAspectRatioOptionsForModel,normalizeCanvasAiAspectRatioForModel,usesCanvasAiImage2DimensionOptions } from '../../../utils/canvasAiAspectRatio';
-import { CANVAS_AI_DEFAULT_COUNT,CANVAS_AI_DEFAULT_OUTPUT_FORMAT,CANVAS_AI_DEFAULT_VIDEO_DURATION,CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,parseCanvasAiModelChoiceValue } from '../../../utils/canvasAiConfig';
+import { CANVAS_AI_DEFAULT_COUNT,CANVAS_AI_DEFAULT_OUTPUT_FORMAT,CANVAS_AI_DEFAULT_VIDEO_DURATION,parseCanvasAiModelChoiceValue } from '../../../utils/canvasAiConfig';
 import { isCanvasImageFusionAi,normalizeCanvasImageFusionConfig } from '../../../utils/canvasImageFusion';
 import { createCanvasAiOutputBufferItem,getCanvasAiOutputDisplaySource,getCanvasAiOutputThumbnailSource,getCanvasAiSuccessfulOutputs,getCanvasItemNavSource,hasCanvasAiGeneratedResults,isCanvasWorkflowReferenceBridge } from '../../../utils/canvasItemSelectors';
 import { getCanvasImageRuleState } from '../../../utils/canvasWorkflowDefinitions';
@@ -23,7 +23,7 @@ import { normalizeDesignAgentConfig } from '../../designAgentNode';
 import { ThreeSceneNode } from '../../three/components/ThreeSceneNode';
 import { shouldMountThreeSceneRenderer } from '../../three/model/threeSceneInteraction';
 import { buildCanvasNodeViewModel } from '../canvasNodeViewModel';
-import { findAiCatalogModel,getAiCatalogModels,getDefaultAiCatalogModelId,getImageAspectRatioOptionsForResolution,normalizeCapabilityDuration,normalizeCapabilityOption,normalizeImageAspectRatioOption,resolveImageModelCapabilities } from '../../aiModelCapabilities';
+import { findAiCatalogModel,getAiCatalogModels,getDefaultAiCatalogModelId,getImageAspectRatioOptionsForResolution,hasServerAiCatalog,normalizeCapabilityOption,normalizeImageAspectRatioOption,normalizeVideoAspectRatioSelection,normalizeVideoDurationSelection,normalizeVideoResolutionSelection,resolveImageModelCapabilities } from '../../aiModelCapabilities';
 import { ImageRuleSwitchPanel } from './ImageRuleSwitchPanel';
 import type { BufferItem } from '../../../types';
 import type { DesignAgentConfig,CanvasImageItem } from '../../canvasModel';
@@ -45,7 +45,8 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                           const canvasAiVideoCatalogModels = canvasAiCredentialSource === 'wallet'
                             ? getAiCatalogModels(canvasAiCloudImageModels, 'video')
                             : [];
-                          const canvasAiVideoModelOptions = canvasAiVideoCatalogModels.length > 0
+                          const canvasAiVideoModelOptions = canvasAiCredentialSource === 'wallet'
+                            && hasServerAiCatalog(canvasAiCloudImageModels)
                             ? [...canvasAiVideoCatalogModels]
                               .sort((left, right) => Number(
                                 right.id === getDefaultAiCatalogModelId(canvasAiCloudImageModels, 'video'),
@@ -1560,10 +1561,9 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                   modelResolutionCandidates,
                                                 );
                                                 const resolution = selectedVideoCatalogModel?.capabilities?.resolutions?.length
-                                                  ? normalizeCapabilityOption(
-                                                    selectedVideoCatalogModel.capabilities.resolutions,
+                                                  ? normalizeVideoResolutionSelection(
+                                                    selectedVideoCatalogModel.capabilities,
                                                     latestAi?.resolution,
-                                                    CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,
                                                   )
                                                   : modelResolutionValues.length > 0
                                                   ? normalizeCanvasAiImageResolutionForCandidates(
@@ -1608,12 +1608,11 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                       currentImageAspectRatioIntent,
                                                       CANVAS_AI_DEFAULT_ASPECT_RATIO,
                                                     )
-                                                    : selectedVideoCatalogModel?.capabilities?.aspectRatios?.length
-                                                    ? normalizeCapabilityOption(
-                                                      selectedVideoCatalogModel.capabilities.aspectRatios,
-                                                       latestAi?.aspectRatio,
-                                                      CANVAS_AI_DEFAULT_ASPECT_RATIO,
-                                                    )
+                                                    : selectedVideoCatalogModel?.capabilities
+                                                    ? normalizeVideoAspectRatioSelection(
+                                                      selectedVideoCatalogModel.capabilities,
+                                                      latestAi?.aspectRatio,
+                                                    ) || 'auto'
                                                     : canvasAiMediaType === 'video'
                                                     && (provider === 'new-api'
                                                       || (provider === 'mikoto' && /^kling(?:-omni)?-video$/i.test(model)))
@@ -1627,12 +1626,13 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                     ),
                                                   ...(selectedVideoCatalogModel ? {
                                                     resolution,
-                                                    duration: normalizeCapabilityDuration(
-                                                      selectedVideoCatalogModel.capabilities?.durations || [],
+                                                    duration: normalizeVideoDurationSelection(
+                                                      selectedVideoCatalogModel.capabilities || {},
                                                       latestAi?.duration,
-                                                      CANVAS_AI_DEFAULT_VIDEO_DURATION,
                                                     ),
-                                                    videoInputMode: selectedVideoCatalogModel.capabilities?.supportsFirstLastFrame === false
+                                                    videoInputMode: selectedVideoCatalogModel.capabilities?.supportsFirstLastFrame !== true
+                                                      && !(selectedVideoCatalogModel.capabilities?.supportsFirstFrame === true
+                                                        && selectedVideoCatalogModel.capabilities?.supportsLastFrame === true)
                                                       ? 'REF'
                                                       : latestAi?.videoInputMode || 'REF',
                                                   } : canvasAiMediaType === 'video' && provider === 'new-api' ? {
@@ -1685,6 +1685,9 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                               useWideAspectRatioMenu={canvasAiAspectRatioValues.some((value: string) => /^\d+\s*[x×]\s*\d+$/i.test(value))
                                                 || usesCanvasAiImage2DimensionOptions(canvasAiItemModel, canvasAiItemImageResolution)}
                                               onAspectRatioChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { aspectRatio: value })}
+                                              videoAspectRatioMode={canvasAiResolvedVideoCapabilities.source === 'server'
+                                                ? canvasAiResolvedVideoCapabilities.aspectRatioMode
+                                                : undefined}
                                               supportsImageResolution={canvasAiSupportsImageResolution}
                                               imageResolutionValue={canvasAiItemImageResolution}
                                               imageResolutionOptions={canvasAiImageResolutionOptions}
@@ -1752,7 +1755,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                               videoResolutionOptions={canvasAiVideoResolutionOptions}
                                               onVideoResolutionChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
                                                 resolution: canvasAiResolvedVideoCapabilities.source === 'server'
-                                                  ? normalizeCapabilityOption(canvasAiResolvedVideoCapabilities.resolutions, value)
+                                                  ? normalizeVideoResolutionSelection(canvasAiResolvedVideoCapabilities, value) || value
                                                   : isCanvasAiMiniMaxVideo
                                                   ? normalizeMiniMaxH3VideoResolution(value)
                                                   : isCanvasAiSeedanceLikeVideo

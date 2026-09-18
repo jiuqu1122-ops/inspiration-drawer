@@ -7,7 +7,7 @@ import type {
   NewApiImageProtocol,
 } from './canvasModel';
 import type { AiCatalogModel,AiModelCapabilities } from '../types/license';
-import { findAiCatalogModel,getChannelModelCapabilities,getImageAspectRatioOptionsForResolution,mergeAiModelCapabilities,normalizeCapabilityOption,resolveImageModelCapabilities,resolveVideoModelCapabilities,type ResolvedImageModelCapabilities,type ResolvedVideoModelCapabilities } from './aiModelCapabilities';
+import { findAiCatalogModel,getChannelModelCapabilities,getImageAspectRatioOptionsForResolution,mergeAiModelCapabilities,normalizeCapabilityOption,normalizeVideoAspectRatioSelection,normalizeVideoDurationSelection,normalizeVideoResolutionSelection,resolveImageModelCapabilities,resolveVideoModelCapabilities,type ResolvedImageModelCapabilities,type ResolvedVideoModelCapabilities } from './aiModelCapabilities';
 
 export type { NewApiImageProtocol } from './canvasModel';
 
@@ -729,7 +729,8 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
   const clientRequestId = options.clientRequestId?.trim()
     || `canvas-video-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const requestCount = Math.max(1, Math.min(options.videoCapabilities?.maxOutputs ?? 4, Math.round(options.count || 1)));
-  const isSeedanceLike = isSeedanceLikeVideoModel(options.model);
+  const serverDriven = options.videoCapabilities?.source === 'server';
+  const isSeedanceLike = !serverDriven && isSeedanceLikeVideoModel(options.model);
   const isFirstLastFrame = options.inputMode === 'FLF'
     && (options.videoCapabilities?.firstLastFrame ?? true);
   const inputImages = (options.inputImages || []).filter(Boolean);
@@ -740,9 +741,23 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
     options.inputMode,
     inputImages.length,
     options.videoCapabilities,
+    inputVideos.length,
+    inputAudios.length,
   );
   if (referenceError) throw new Error(referenceError);
   try {
+    const duration = serverDriven
+      ? normalizeVideoDurationSelection(options.videoCapabilities!, options.duration)
+      : options.duration;
+    const resolution = serverDriven
+      ? normalizeVideoResolutionSelection(options.videoCapabilities!, options.resolution)
+      : options.resolution?.trim() || undefined;
+    if (serverDriven && options.videoCapabilities!.resolutions.length > 0 && !resolution) {
+      throw new Error('该模型未配置默认分辨率，请先选择分辨率');
+    }
+    const aspectRatio = serverDriven
+      ? normalizeVideoAspectRatioSelection(options.videoCapabilities!, options.aspectRatio)
+      : String(options.aspectRatio || '16:9');
     const result = await invoke<CloudVideoGenerationResult>('generate_cloud_videos', {
       request: {
         clientRequestId,
@@ -757,28 +772,36 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
         inputAudios: !isFirstLastFrame
           ? inputAudios.slice(0, options.videoCapabilities?.referenceAudios ?? (isSeedanceLike ? 3 : 0))
           : [],
-        aspectRatio: String(options.aspectRatio || '16:9'),
-        resolution: options.resolution?.trim() || undefined,
-        duration: options.duration,
+        ...(aspectRatio ? { aspectRatio } : {}),
+        ...(resolution ? { resolution } : {}),
+        ...(duration !== undefined ? { duration } : {}),
         inputMode: isFirstLastFrame ? 'FLF' : 'REF',
         count: requestCount,
       },
     });
     const output: string[] = [];
     const taskIds: string[] = [];
+    const initialTaskStatuses = new Map<string, unknown>();
     for (const item of result.results || []) {
       const taskId = getTaskIdFromResponse(item);
       const currentTask = taskId ? selectCloudWalletVideoTaskPayload(item, taskId) : item;
       if (isNewApiVideoResultReady(currentTask)) output.push(...collectVideoStrings(currentTask));
-      if (taskId) taskIds.push(taskId);
+      if (taskId) {
+        taskIds.push(taskId);
+        initialTaskStatuses.set(taskId, currentTask);
+      }
     }
     if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
-    if (taskIds.length === 0) throw new Error('云端视频渠道没有返回任务 ID 或视频地址');
+    if (taskIds.length === 0) {
+      if (output.length > 0) return Array.from(new Set(output)).slice(0, requestCount);
+      throw new Error('云端视频渠道没有返回任务 ID 或视频地址');
+    }
     const deadline = Date.now() + 25 * 60 * 1000;
+    const taskFailures: string[] = [];
     for (const taskId of Array.from(new Set(taskIds))) {
-      let lastStatus: unknown = null;
+      let lastStatus: unknown = initialTaskStatuses.get(taskId) ?? null;
       while (Date.now() < deadline) {
-        await delay(2500);
+        await delay(getCloudVideoPollAfterMs(lastStatus));
         const statusResponse = await invoke<unknown>('get_cloud_video_status', {
           taskId,
           clientRequestId,
@@ -789,16 +812,19 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
         lastStatus = selectCloudWalletVideoTaskPayload(statusResponse, taskId);
         const statusState = getNewApiVideoTaskState(lastStatus);
         if (isNewApiVideoFailureState(statusState)) {
-          throw new Error(getNewApiVideoFailureMessage(lastStatus) || `云端视频任务失败：${taskId}`);
+          taskFailures.push(getNewApiVideoFailureMessage(lastStatus) || `云端视频任务失败：${taskId}`);
+          break;
         }
         if (!isNewApiVideoResultReady(lastStatus)) continue;
         output.push(...collectVideoStrings(lastStatus));
         if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
       }
       const failure = getNewApiVideoFailureMessage(lastStatus);
-      if (failure) throw new Error(failure);
+      if (failure && !taskFailures.includes(failure)) taskFailures.push(failure);
     }
-    if (output.length === 0) throw new Error('云端视频任务超时或没有返回视频地址');
+    if (output.length === 0) {
+      throw new Error(taskFailures.join('；') || '云端视频任务超时或没有返回视频地址');
+    }
     return Array.from(new Set(output)).slice(0, requestCount);
   } catch (error) {
     throw new Error(getErrorMessage(error));
@@ -1463,10 +1489,37 @@ export const validateCanvasAiVideoReferences = (
   inputMode: CanvasAiVideoInputMode | string | null | undefined,
   imageCount: number,
   resolvedCapabilities?: ResolvedVideoModelCapabilities | null,
+  videoCount = 0,
+  audioCount = 0,
 ) => {
-  const supportsFirstLastFrame = resolvedCapabilities?.firstLastFrame ?? !isSora2VideoModel(model);
+  const supportsFirstLastFrame = resolvedCapabilities?.supportsFirstLastFrame
+    ?? resolvedCapabilities?.firstLastFrame
+    ?? !isSora2VideoModel(model);
+  if (resolvedCapabilities?.source === 'server' && inputMode === 'FLF' && !resolvedCapabilities.firstLastFrame) {
+    return '该模型不支持首尾帧模式，请切换到“参考图”模式';
+  }
   if (inputMode === 'FLF' && supportsFirstLastFrame && imageCount !== 2) {
     return '首尾帧模式需要同时连接首帧和尾帧两张图片；如果只使用一张图片，请切换到“参考图”模式';
+  }
+  if (resolvedCapabilities?.source === 'server' && inputMode !== 'FLF') {
+    if (imageCount < resolvedCapabilities.minReferenceImages) {
+      return `该模型至少需要 ${resolvedCapabilities.minReferenceImages} 张参考图`;
+    }
+    if (imageCount > resolvedCapabilities.referenceImages) {
+      return `该模型最多支持 ${resolvedCapabilities.referenceImages} 张参考图`;
+    }
+    if (videoCount < resolvedCapabilities.minReferenceVideos) {
+      return `该模型至少需要 ${resolvedCapabilities.minReferenceVideos} 个参考视频`;
+    }
+    if (videoCount > resolvedCapabilities.referenceVideos) {
+      return `该模型最多支持 ${resolvedCapabilities.referenceVideos} 个参考视频`;
+    }
+    if (audioCount < resolvedCapabilities.minReferenceAudios) {
+      return `该模型至少需要 ${resolvedCapabilities.minReferenceAudios} 个参考音频`;
+    }
+    if (audioCount > resolvedCapabilities.referenceAudios) {
+      return `该模型最多支持 ${resolvedCapabilities.referenceAudios} 个参考音频`;
+    }
   }
   return '';
 };
@@ -3643,8 +3696,44 @@ export const getNewApiVideoTaskState = (value: unknown): string => {
     || '';
 };
 
+const findVideoLifecycleValue = (
+  value: unknown,
+  keys: ReadonlySet<string>,
+  seen = new Set<object>(),
+  depth = 0,
+): unknown => {
+  if (!value || typeof value !== 'object' || depth > 8 || seen.has(value)) return undefined;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findVideoLifecycleValue(item, keys, seen, depth + 1);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    const normalizedKey = key.trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (keys.has(normalizedKey)) return nested;
+    const found = findVideoLifecycleValue(nested, keys, seen, depth + 1);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+};
+
+export const getCloudVideoPollAfterMs = (value: unknown, fallback = 2_500) => {
+  const candidate = findVideoLifecycleValue(value, new Set(['poll_after_ms', 'pollafterms']));
+  const parsed = Number(candidate);
+  return Number.isFinite(parsed) ? Math.max(1_000, Math.min(30_000, Math.round(parsed))) : fallback;
+};
+
 export const isNewApiVideoResultReady = (value: unknown) => {
   const state = getNewApiVideoTaskState(value);
+  const videoAvailable = findVideoLifecycleValue(value, new Set(['video_available', 'videoavailable']));
+  if (videoAvailable === false) return false;
+  const assetState = normalizeNewApiVideoTaskState(
+    findVideoLifecycleValue(value, new Set(['asset_state', 'assetstate'])),
+  );
+  if (assetState === 'saving' || assetState === 'failed' || assetState === 'expired') return false;
   return !state || isNewApiVideoSuccessState(state);
 };
 
@@ -3769,7 +3858,14 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
     && (options.videoCapabilities ? options.videoCapabilities.referenceAudios > 0 : isSeedance20VideoModel(model))
     ? (options.inputAudios || []).filter(Boolean).slice(0, options.videoCapabilities?.referenceAudios ?? 3)
     : [];
-  const referenceError = validateCanvasAiVideoReferences(model, options.inputMode, inputImages.length, options.videoCapabilities);
+  const referenceError = validateCanvasAiVideoReferences(
+    model,
+    options.inputMode,
+    inputImages.length,
+    options.videoCapabilities,
+    inputVideos.length,
+    inputAudios.length,
+  );
   if (referenceError) throw new Error(referenceError);
   const requestCount = Math.max(1, Math.min(options.videoCapabilities?.maxOutputs ?? 4, Math.round(options.count || 1)));
   const output: string[] = [];

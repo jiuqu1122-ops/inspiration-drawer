@@ -299,12 +299,24 @@ pub struct CloudAiModelCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolutions: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_resolution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     aspect_ratios: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    aspect_ratio_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_aspect_ratio: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     aspect_ratios_by_resolution:
         Option<std::collections::HashMap<String, Vec<String>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     durations: Option<Vec<f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    duration_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    duration_range: Option<CloudVideoDurationRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_duration_seconds: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_reference_images: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -314,11 +326,21 @@ pub struct CloudAiModelCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     min_reference_images: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    min_reference_videos: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    min_reference_audios: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     supports_reference_images: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     supports_reference_video: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_reference_audio: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     supports_audio_reference: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_first_frame: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_last_frame: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     supports_first_last_frame: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -329,6 +351,15 @@ pub struct CloudAiModelCapabilities {
     supports_transparent_background: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_outputs: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudVideoDurationRange {
+    min: u32,
+    max: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    step: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -422,7 +453,8 @@ pub struct CloudVideoGenerationRequest {
     input_videos: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     input_audios: Vec<String>,
-    aspect_ratio: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    aspect_ratio: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolution: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1358,24 +1390,12 @@ pub async fn generate_cloud_videos(
     if model.is_empty() || model.len() > 200 || prompt.is_empty() || prompt.len() > 50_000 {
         return Err("invalid_request: 视频模型或提示词无效".to_string());
     }
-    let is_first_last_frame = request
-        .input_mode
-        .as_deref()
-        .map(|value| value.eq_ignore_ascii_case("FLF"))
-        .unwrap_or(false);
-    if !(1..=4).contains(&request.count)
+    if !(1..=16).contains(&request.count)
         || request.input_images.len() > 32
         || request.input_videos.len() > 8
         || request.input_audios.len() > 8
     {
         return Err("invalid_request: 视频数量或参考素材数量无效".to_string());
-    }
-    if is_first_last_frame && request.input_images.len() != 2 {
-        return Err("invalid_request: FLF requires exactly two reference images".to_string());
-    }
-    if is_first_last_frame {
-        request.input_videos.clear();
-        request.input_audios.clear();
     }
     request.input_images =
         normalize_cloud_image_references(std::mem::take(&mut request.input_images))?;
@@ -1580,6 +1600,22 @@ mod tests {
         assert!(serialized.get("provider").is_none());
         assert!(serialized.get("providerChannelId").is_none());
         assert_eq!(serialized.get("model").and_then(|value| value.as_str()), Some("minimax-h3"));
+    }
+
+    #[test]
+    fn keeps_unspecified_wallet_video_ratio_omitted() {
+        let request: CloudVideoGenerationRequest = serde_json::from_value(serde_json::json!({
+            "clientRequestId": "canvas-video-request-auto-ratio",
+            "model": "future-video",
+            "prompt": "automatic framing",
+            "inputImages": [],
+            "count": 1
+        }))
+        .unwrap();
+        let serialized = serde_json::to_value(request).unwrap();
+        assert!(serialized.get("aspectRatio").is_none());
+        assert!(serialized.get("provider").is_none());
+        assert!(serialized.get("providerChannelId").is_none());
     }
 
     #[test]

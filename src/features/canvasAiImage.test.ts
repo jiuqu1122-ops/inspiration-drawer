@@ -40,6 +40,7 @@ import {
   filterCanvasAiVideoModelCandidates,
   isSeedance20VideoModel,
   getCloudWalletImageLookupImages,
+  getCloudVideoPollAfterMs,
   getDefaultNewApiImageProtocol,
   getNewApiImageModelDisplayName,
   getNewApiImageModelFamily,
@@ -1154,6 +1155,46 @@ describe('NewAPI video routing', () => {
     expect(isNewApiVideoResultReady({ status: 'succeeded', video_url: 'https://example.com/new.mp4' })).toBe(true);
     expect(isNewApiVideoResultReady({ video_url: 'https://example.com/legacy.mp4' })).toBe(true);
     expect(isNewApiVideoResultReady({ status: 'failed', video_url: 'https://example.com/old.mp4' })).toBe(false);
+    expect(isNewApiVideoResultReady({ status: 'completed', video_available: false })).toBe(false);
+    expect(isNewApiVideoResultReady({ status: 'completed', video_available: true, asset_state: 'saving' })).toBe(false);
+    expect(isNewApiVideoResultReady({ status: 'processing', asset_state: 'failed' })).toBe(false);
+    expect(isNewApiVideoResultReady({ status: 'failed', asset_state: 'expired' })).toBe(false);
+  });
+
+  it('uses bounded server poll_after_ms hints', () => {
+    expect(getCloudVideoPollAfterMs({ poll_after_ms: 8_000 })).toBe(8_000);
+    expect(getCloudVideoPollAfterMs({ pollAfterMs: 200 })).toBe(1_000);
+    expect(getCloudVideoPollAfterMs({ data: { poll_after_ms: 90_000 } })).toBe(30_000);
+    expect(getCloudVideoPollAfterMs({ status: 'pending_confirmation' })).toBe(2_500);
+  });
+
+  it('enforces server reference minima and maxima before generation', () => {
+    const capabilities = {
+      source: 'server' as const,
+      resolutions: ['768p'], durations: [5], aspectRatios: [],
+      referenceImages: 9, referenceVideos: 0, referenceAudios: 3,
+      minReferenceImages: 1, minReferenceVideos: 0, minReferenceAudios: 0,
+      supportsFirstFrame: false, supportsLastFrame: false, supportsFirstLastFrame: false,
+      firstLastFrame: false, inputModes: ['REF'], outputFormats: [], maxOutputs: 4,
+      supportsReferenceImages: true, supportsReferenceVideo: false, supportsAudioReference: true,
+    };
+    expect(validateCanvasAiVideoReferences('brand-new-model', 'REF', 0, capabilities)).toContain('至少需要 1 张');
+    expect(validateCanvasAiVideoReferences('brand-new-model', 'REF', 1, capabilities)).toBe('');
+    expect(validateCanvasAiVideoReferences('brand-new-model', 'REF', 1, capabilities, 1)).toContain('最多支持 0 个参考视频');
+  });
+
+  it('rejects a stale FLF selection instead of silently converting it to reference mode', () => {
+    const capabilities = {
+      source: 'server' as const,
+      resolutions: ['720p'], durations: [5], aspectRatios: [],
+      referenceImages: 9, referenceVideos: 0, referenceAudios: 0,
+      minReferenceImages: 0, minReferenceVideos: 0, minReferenceAudios: 0,
+      supportsFirstFrame: false, supportsLastFrame: false, supportsFirstLastFrame: false,
+      firstLastFrame: false, inputModes: ['REF'], outputFormats: [], maxOutputs: 1,
+      supportsReferenceImages: true, supportsReferenceVideo: false, supportsAudioReference: false,
+    };
+    expect(validateCanvasAiVideoReferences('future-video', 'FLF', 2, capabilities))
+      .toContain('不支持首尾帧');
   });
 
   it('adapts the reference UI slots to each video model', () => {

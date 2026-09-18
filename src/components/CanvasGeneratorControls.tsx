@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { RoundedSelect, type RoundedSelectOption } from './RoundedSelect';
 import {
   CANVAS_AI_NODE_CHEVRON_CLASS,
@@ -25,6 +26,7 @@ type CanvasGeneratorControlsProps = {
   aspectRatioTitle: string;
   useWideAspectRatioMenu: boolean;
   onAspectRatioChange: (value: string) => void;
+  videoAspectRatioMode?: 'list' | 'any' | 'unspecified';
   supportsImageResolution: boolean;
   imageResolutionValue: string;
   imageResolutionOptions: RoundedSelectOption[];
@@ -61,6 +63,7 @@ export function CanvasGeneratorControls({
   aspectRatioTitle,
   useWideAspectRatioMenu,
   onAspectRatioChange,
+  videoAspectRatioMode,
   supportsImageResolution,
   imageResolutionValue,
   imageResolutionOptions,
@@ -84,6 +87,20 @@ export function CanvasGeneratorControls({
   countOptions = CANVAS_AI_COUNT_OPTIONS,
   onCountChange,
 }: CanvasGeneratorControlsProps) {
+  const [customAspectRatio, setCustomAspectRatio] = useState(aspectRatioValue);
+  useEffect(() => {
+    if (videoAspectRatioMode === 'any') setCustomAspectRatio(aspectRatioValue);
+  }, [aspectRatioValue, videoAspectRatioMode]);
+
+  const commitCustomAspectRatio = (value: string) => {
+    const normalized = value.trim();
+    if (/^[1-9]\d{0,4}:[1-9]\d{0,4}$/.test(normalized)) {
+      onAspectRatioChange(normalized);
+      return;
+    }
+    setCustomAspectRatio(aspectRatioValue);
+  };
+
   return (
     <>
       <RoundedSelect
@@ -120,6 +137,26 @@ export function CanvasGeneratorControls({
         menuScale={menuScale}
         optionVisual="aspect-ratio"
       />
+      {mediaType === 'video' && videoAspectRatioMode === 'any' && (
+        <input
+          data-no-drag="true"
+          data-canvas-edit-control="true"
+          value={customAspectRatio}
+          onChange={(event) => {
+            const value = event.target.value;
+            setCustomAspectRatio(value);
+            if (/^[1-9]\d{0,4}:[1-9]\d{0,4}$/.test(value.trim())) onAspectRatioChange(value.trim());
+          }}
+          onBlur={(event) => commitCustomAspectRatio(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') commitCustomAspectRatio(event.currentTarget.value);
+          }}
+          placeholder="W:H"
+          aria-label="自定义视频比例"
+          title="自定义比例，例如 2:1 或 5:4"
+          className="h-[28px] w-[58px] rounded-full border border-stone-950/10 bg-transparent px-2 text-center text-[11px] outline-none focus:border-violet-500/50 dark:border-white/10"
+        />
+      )}
       {supportsImageResolution && (
         <RoundedSelect
           data-no-drag="true"

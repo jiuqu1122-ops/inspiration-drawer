@@ -9,19 +9,41 @@ import type { AiGatewayKind } from '../agentModel';
 import { getCanvasAiEndpointForModels,isCanvasAiRemoteModelProvider } from '../../utils/canvasAiConfig';
 import { NEW_API_SEEDANCE_2_MODEL,XAIS_CHAT_VIDEO_MODEL_DEFAULT,getCanvasAiVideoModelCandidates } from '../canvasAiImage';
 import { type CanvasAiCredentialSource,type CanvasAiProvider,type CanvasImageItem } from '../canvasModel';
-import { cacheSuccessfulAiCatalog,getCachedAiCatalog,reconcileStaleCanvasAiModels } from '../aiModelCapabilities';
+import { cacheSuccessfulAiCatalog,getAiCatalogModels,getCachedAiCatalog,getDefaultAiCatalogModelId,hasServerAiCatalog,reconcileStaleCanvasAiModels } from '../aiModelCapabilities';
 
 type settingsEffectContext = { isCanvasMode: boolean; updateCanvasItemsImmediate: (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => CanvasImageItem[]; canvasAiCredentialSource: CanvasAiCredentialSource; canvasAiCloudImageModels: CloudImageModelsResult | null; isDrawerAgentOpen: boolean; canvasAiModelRefreshSignatureRef: React.RefObject<string>; canvasAiUsesCloudImageModels: boolean; effectiveCanvasAiProvider: CanvasAiProvider; isCanvasAiLicenseManaged: boolean; canvasAiApiKey: string; canvasAiNewApiVideoKey: string; effectiveCanvasAiEndpoint: string; canvasAiEndpoint: string; effectiveCanvasAiGatewayKind: AiGatewayKind; effectiveCanvasAiApiProvider: string; effectiveCanvasAiModel: string; canvasAiHeadersText: string; refreshCanvasAiOpenAiModels: (silent?: boolean) => Promise<void>; setCanvasAiCloudImageModels: React.Dispatch<React.SetStateAction<CloudImageModelsResult | null>>; startupAutoCloseTimerRef: React.RefObject<any>; idleAutoCloseTimerRef: React.RefObject<any>; setShortcut: React.Dispatch<React.SetStateAction<string>>; setSnipShortcut: React.Dispatch<React.SetStateAction<string>>; setTextShortcut: React.Dispatch<React.SetStateAction<string>>; setSearchShortcut: React.Dispatch<React.SetStateAction<string>>; setTriggerShortcut: React.Dispatch<React.SetStateAction<string>>; setNoteShortcut: React.Dispatch<React.SetStateAction<string>>; setCanvasShortcut: React.Dispatch<React.SetStateAction<string>>; setIsAutoStart: React.Dispatch<React.SetStateAction<boolean>>; setLocalIP: React.Dispatch<React.SetStateAction<string>>; setMobilePairUrl: React.Dispatch<React.SetStateAction<string>>; refreshLicenseStatus: (silent?: boolean) => Promise<void>; cloudStartupSyncStartedRef: React.RefObject<boolean>; refreshCloudAccount: (silent?: boolean) => Promise<CloudAccountSummary>; showWebImageCollector: boolean; webImageCollectorPanelRef: React.RefObject<HTMLDivElement | null>; closeWebImageCollector: () => void; handleLocalVisionModelProgress: (progress: { stage?: string; message: string; progress?: number; }) => void; checkLocalVisionModelStatus: (options?: { silent?: boolean; }) => Promise<boolean>; showSettings: boolean; setShowSettings: React.Dispatch<React.SetStateAction<boolean>>; folderContextMenu: FolderContextMenuState | null; setFolderContextMenu: React.Dispatch<React.SetStateAction<FolderContextMenuState | null>>; stateRef: React.RefObject<{ isOpen: boolean; isPinned: boolean; showTextInput: boolean; isSearchActive: boolean; isAntiTouchMode: boolean; }>; isAntiTouchMode: boolean; enforceAntiTouchClosed: (showFeedback?: boolean) => void; toggleTriggerMode: () => void; setIsDark: React.Dispatch<React.SetStateAction<boolean>>; showToast: (message: string) => void; isDrawerAiClassificationMode: boolean; setActiveDrawerAiClassificationLabel: React.Dispatch<React.SetStateAction<string>>; activeDrawerAiClassificationLabel: string; drawerAiClassificationGroups: AiClassificationGroup[]; };
 
 export const runSettingsEffect01 = (ctx: Pick<settingsEffectContext, 'canvasAiCloudImageModels' | 'canvasAiCredentialSource' | 'isCanvasMode' | 'updateCanvasItemsImmediate'>) => {
   const { canvasAiCloudImageModels, canvasAiCredentialSource, isCanvasMode, updateCanvasItemsImmediate } = ctx;
     if (!isCanvasMode) return;
+    const usesServerCatalog = canvasAiCredentialSource === 'wallet'
+      && hasServerAiCatalog(canvasAiCloudImageModels);
+    const serverVideoCatalog = usesServerCatalog
+      ? getAiCatalogModels(canvasAiCloudImageModels, 'video')
+      : [];
+    const serverDefaultVideoModel = usesServerCatalog
+      ? getDefaultAiCatalogModelId(canvasAiCloudImageModels!, 'video')
+      : '';
     updateCanvasItemsImmediate(previous => {
       let changed = false;
       const next = previous.map(item => {
         if (item.ai?.type !== 'video-generator'
           || item.ai.provider !== 'xais-chat'
           || item.ai.model !== XAIS_CHAT_VIDEO_MODEL_DEFAULT) return item;
+        if (usesServerCatalog) {
+          if (!serverDefaultVideoModel || serverVideoCatalog.length === 0) return item;
+          changed = true;
+          return {
+            ...item,
+            ai: {
+              ...item.ai,
+              model: serverDefaultVideoModel,
+              credentialSource: canvasAiCredentialSource,
+              providerChannelId: undefined,
+              providerCandidates: undefined,
+            },
+          };
+        }
         const candidates = getCanvasAiVideoModelCandidates(
           NEW_API_SEEDANCE_2_MODEL,
           canvasAiCredentialSource,

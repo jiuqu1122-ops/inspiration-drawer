@@ -9,8 +9,12 @@ import {
   getCachedAiCatalog,
   getDefaultAiCatalogModelId,
   getImageAspectRatioOptionsForResolution,
+  getVideoAspectRatioOptions,
+  getVideoDurationOptions,
   mergeAiModelCapabilities,
   normalizeImageAspectRatioOption,
+  normalizeVideoAspectRatioSelection,
+  normalizeVideoDurationSelection,
   reconcileStaleCanvasAiModels,
   resolveImageModelCapabilities,
   resolveVideoModelCapabilities,
@@ -221,6 +225,18 @@ describe('server-driven AI model capabilities', () => {
     }).source).toBe('legacy');
   });
 
+  it('treats an explicit empty catalog as authoritative instead of reviving hardcoded models', () => {
+    const snapshot: CloudImageModelsResult = {
+      provider: 'NEW_API',
+      models: ['legacy-route-model'],
+      catalog: [],
+      capabilities: { 'legacy-route-model': { durations: [5] } },
+      channels: [],
+      videoChannels: [],
+    };
+    expect(getAiCatalogModels(snapshot, 'video')).toEqual([]);
+  });
+
   it('keeps the last successful in-memory catalog when a later request fails', () => {
     const snapshot = catalogSnapshot();
     cacheSuccessfulAiCatalog(snapshot);
@@ -234,6 +250,61 @@ describe('server-driven AI model capabilities', () => {
       catalogSnapshot(),
     );
     expect(next[0].ai?.model).toBe('retired-image');
+  });
+
+  it('parses server duration modes, defaults, aspect modes, and reference minima', () => {
+    const resolved = resolveVideoModelCapabilities({ canonical: {
+      resolutions: ['768p', '2k'],
+      defaultResolution: '768p',
+      durationMode: 'range',
+      durationRange: { min: 5, max: 15, step: 2 },
+      defaultDurationSeconds: 5,
+      aspectRatioMode: 'any',
+      defaultAspectRatio: '16:9',
+      minReferenceImages: 1,
+      maxReferenceImages: 9,
+      minReferenceVideos: 0,
+      maxReferenceVideos: 0,
+      minReferenceAudios: 1,
+      maxReferenceAudios: 3,
+      supportsReferenceImages: true,
+      supportsReferenceVideo: false,
+      supportsReferenceAudio: true,
+      supportsFirstFrame: false,
+      supportsLastFrame: false,
+      supportsFirstLastFrame: false,
+    } });
+    expect(resolved.source).toBe('server');
+    expect(resolved.defaultResolution).toBe('768p');
+    expect(resolved.durations).toEqual([5, 7, 9, 11, 13, 15]);
+    expect(resolved.defaultDurationSeconds).toBe(5);
+    expect(resolved.aspectRatioMode).toBe('any');
+    expect(resolved.minReferenceImages).toBe(1);
+    expect(resolved.minReferenceAudios).toBe(1);
+    expect(resolved.referenceVideos).toBe(0);
+    expect(resolved.firstLastFrame).toBe(false);
+  });
+
+  it('builds range, list, and fixed duration choices without model-name inference', () => {
+    expect(getVideoDurationOptions({ durationMode: 'range', durationRange: { min: 4, max: 7, step: 1 } }))
+      .toEqual([4, 5, 6, 7]);
+    expect(getVideoDurationOptions({ durationMode: 'list', durations: [10, 15] })).toEqual([10, 15]);
+    expect(getVideoDurationOptions({ durationMode: 'fixed', durations: [30] })).toEqual([30]);
+    expect(normalizeVideoDurationSelection({
+      durationMode: 'range', durationRange: { min: 5, max: 15 }, defaultDurationSeconds: 5,
+    }, 10)).toBe(10);
+    expect(normalizeVideoDurationSelection({
+      durationMode: 'fixed', durations: [30], defaultDurationSeconds: 30,
+    }, 10)).toBe(30);
+  });
+
+  it('supports arbitrary valid ratios and omits an unspecified ratio', () => {
+    expect(getVideoAspectRatioOptions({ aspectRatioMode: 'any' }, '2:1')).toContain('2:1');
+    expect(normalizeVideoAspectRatioSelection({ aspectRatioMode: 'any' }, '5:4')).toBe('5:4');
+    expect(normalizeVideoAspectRatioSelection({ aspectRatioMode: 'unspecified' }, '16:9')).toBeUndefined();
+    expect(normalizeVideoAspectRatioSelection({
+      aspectRatioMode: 'list', aspectRatios: ['16:9', '9:16'], defaultAspectRatio: '9:16',
+    }, '2:1')).toBe('9:16');
   });
 
   it('preserves an unavailable explicit video model during catalog refresh', () => {

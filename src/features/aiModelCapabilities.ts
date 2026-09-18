@@ -24,12 +24,23 @@ export type ResolvedImageModelCapabilities = {
 export type ResolvedVideoModelCapabilities = {
   source: 'server' | 'legacy';
   resolutions: string[];
+  defaultResolution?: string;
   durations: number[];
+  durationMode?: 'list' | 'range' | 'fixed';
+  durationRange?: { min: number; max: number; step: number };
+  defaultDurationSeconds?: number;
   aspectRatios: string[];
+  aspectRatioMode?: 'list' | 'any' | 'unspecified';
+  defaultAspectRatio?: string;
   referenceImages: number;
   referenceVideos: number;
   referenceAudios: number;
   minReferenceImages: number;
+  minReferenceVideos: number;
+  minReferenceAudios: number;
+  supportsFirstFrame: boolean;
+  supportsLastFrame: boolean;
+  supportsFirstLastFrame: boolean;
   firstLastFrame: boolean;
   inputModes: string[];
   outputFormats: string[];
@@ -100,21 +111,42 @@ export const normalizeAiModelCapabilities = (
   if (!value || typeof value !== 'object') return undefined;
   const normalized: AiModelCapabilities = {};
   if (value.resolutions !== undefined) normalized.resolutions = normalizeStrings(value.resolutions);
+  if (value.defaultResolution !== undefined) normalized.defaultResolution = String(value.defaultResolution).trim();
   if (value.aspectRatios !== undefined) normalized.aspectRatios = normalizeStrings(value.aspectRatios);
+  if (['list', 'any', 'unspecified'].includes(String(value.aspectRatioMode))) {
+    normalized.aspectRatioMode = value.aspectRatioMode;
+  }
+  if (value.defaultAspectRatio !== undefined) normalized.defaultAspectRatio = String(value.defaultAspectRatio).trim();
   if (value.aspectRatiosByResolution !== undefined) {
     normalized.aspectRatiosByResolution = normalizeStringArrayMap(value.aspectRatiosByResolution);
   }
   if (value.durations !== undefined) normalized.durations = normalizeDurations(value.durations);
+  if (['list', 'range', 'fixed'].includes(String(value.durationMode))) {
+    normalized.durationMode = value.durationMode;
+  }
+  if (value.durationRange && typeof value.durationRange === 'object') {
+    const min = Math.floor(Number(value.durationRange.min));
+    const max = Math.floor(Number(value.durationRange.max));
+    const step = Math.floor(Number(value.durationRange.step ?? 1));
+    if (min > 0 && max >= min && step >= 1) normalized.durationRange = { min, max, step };
+  }
+  if (value.defaultDurationSeconds !== undefined) {
+    const duration = Math.floor(Number(value.defaultDurationSeconds));
+    if (duration > 0) normalized.defaultDurationSeconds = duration;
+  }
   if (value.supportedInputModes !== undefined) normalized.supportedInputModes = normalizeStrings(value.supportedInputModes);
   if (value.supportedOutputFormats !== undefined) normalized.supportedOutputFormats = normalizeStrings(value.supportedOutputFormats);
   const limitKeys: Array<keyof Pick<AiModelCapabilities,
-    'maxReferenceImages' | 'maxReferenceVideos' | 'maxReferenceAudios' | 'minReferenceImages' | 'maxOutputs'
-  >> = ['maxReferenceImages', 'maxReferenceVideos', 'maxReferenceAudios', 'minReferenceImages', 'maxOutputs'];
+    'maxReferenceImages' | 'maxReferenceVideos' | 'maxReferenceAudios'
+    | 'minReferenceImages' | 'minReferenceVideos' | 'minReferenceAudios' | 'maxOutputs'
+  >> = ['maxReferenceImages', 'maxReferenceVideos', 'maxReferenceAudios', 'minReferenceImages', 'minReferenceVideos', 'minReferenceAudios', 'maxOutputs'];
   const limitMaximums: Record<(typeof limitKeys)[number], number> = {
     maxReferenceImages: 32,
     maxReferenceVideos: 8,
     maxReferenceAudios: 8,
     minReferenceImages: 32,
+    minReferenceVideos: 8,
+    minReferenceAudios: 8,
     maxOutputs: 16,
   };
   limitKeys.forEach(key => {
@@ -123,12 +155,15 @@ export const normalizeAiModelCapabilities = (
     }
   });
   const booleanKeys: Array<keyof Pick<AiModelCapabilities,
-    'supportsReferenceImages' | 'supportsReferenceVideo' | 'supportsAudioReference'
-    | 'supportsFirstLastFrame' | 'supportsTransparentBackground'
+    'supportsReferenceImages' | 'supportsReferenceVideo' | 'supportsReferenceAudio' | 'supportsAudioReference'
+    | 'supportsFirstFrame' | 'supportsLastFrame' | 'supportsFirstLastFrame' | 'supportsTransparentBackground'
   >> = [
     'supportsReferenceImages',
     'supportsReferenceVideo',
+    'supportsReferenceAudio',
     'supportsAudioReference',
+    'supportsFirstFrame',
+    'supportsLastFrame',
     'supportsFirstLastFrame',
     'supportsTransparentBackground',
   ];
@@ -192,7 +227,7 @@ export const getAiCatalogModels = (
     .filter((model): model is AiCatalogModel => (
       Boolean(model && model.modality === modality && model.enabled !== false && model.visible !== false)
     ));
-  if (explicit.length > 0) return explicit;
+  if (Array.isArray(snapshot.catalog)) return explicit;
 
   // Transitional servers can attach a capability map to the existing model
   // lists before they expose a complete catalog response.
@@ -225,6 +260,10 @@ export const normalizeCapabilityOption = (
     || allowed[0]
     || exact;
 };
+
+export const hasServerAiCatalog = (snapshot: CloudImageModelsResult | null | undefined) => (
+  Array.isArray(snapshot?.catalog)
+);
 
 const parseImageAspectRatioOption = (value?: string | null) => {
   const match = String(value || '').trim().match(/^(\d+(?:\.\d+)?)\s*([:x\u00d7])\s*(\d+(?:\.\d+)?)$/i);
@@ -365,6 +404,81 @@ export const resolveImageModelCapabilities = (options: {
   };
 };
 
+type VideoDurationCapabilities = Pick<AiModelCapabilities,
+  'durations' | 'durationMode' | 'durationRange' | 'defaultDurationSeconds'
+>;
+
+export const getVideoDurationOptions = (capabilities: VideoDurationCapabilities) => {
+  const mode = capabilities.durationMode ?? (capabilities.durations?.length ? 'list' : undefined);
+  if (mode === 'range' && capabilities.durationRange) {
+    const min = Math.max(1, Math.floor(capabilities.durationRange.min));
+    const max = Math.max(min, Math.floor(capabilities.durationRange.max));
+    const step = Math.max(1, Math.floor(capabilities.durationRange.step ?? 1));
+    return Array.from({ length: Math.floor((max - min) / step) + 1 }, (_, index) => min + index * step);
+  }
+  return normalizeDurations(capabilities.durations);
+};
+
+export const normalizeVideoDurationSelection = (
+  capabilities: VideoDurationCapabilities,
+  requested?: number | null,
+) => {
+  const options = getVideoDurationOptions(capabilities);
+  const requestedDuration = Number(requested);
+  if (options.includes(requestedDuration)) return requestedDuration;
+  const defaultDuration = Number(capabilities.defaultDurationSeconds);
+  if (options.includes(defaultDuration)) return defaultDuration;
+  return options[0];
+};
+
+export const normalizeVideoResolutionSelection = (
+  capabilities: Pick<AiModelCapabilities, 'resolutions' | 'defaultResolution'>,
+  requested?: string | null,
+) => {
+  const resolutions = normalizeStrings(capabilities.resolutions);
+  const selected = String(requested || '').trim();
+  const exact = resolutions.find(value => value.toLowerCase() === selected.toLowerCase());
+  if (exact) return exact;
+  const defaultResolution = String(capabilities.defaultResolution || '').trim();
+  const preferred = resolutions.find(value => value.toLowerCase() === defaultResolution.toLowerCase());
+  if (preferred) return preferred;
+  return resolutions.length === 1 ? resolutions[0] : undefined;
+};
+
+export const isValidVideoAspectRatio = (value?: string | null) => (
+  /^[1-9]\d{0,4}:[1-9]\d{0,4}$/.test(String(value || '').trim())
+);
+
+export const getVideoAspectRatioOptions = (
+  capabilities: Pick<AiModelCapabilities, 'aspectRatios' | 'aspectRatioMode' | 'defaultAspectRatio'>,
+  current?: string | null,
+) => {
+  const mode = capabilities.aspectRatioMode ?? (capabilities.aspectRatios?.length ? 'list' : undefined);
+  if (mode === 'unspecified') return [];
+  if (mode === 'any') {
+    return normalizeStrings([
+      '1:1', '3:4', '4:3', '9:16', '16:9', '21:9',
+      ...(isValidVideoAspectRatio(current) ? [String(current)] : []),
+    ]);
+  }
+  return normalizeStrings(capabilities.aspectRatios);
+};
+
+export const normalizeVideoAspectRatioSelection = (
+  capabilities: Pick<AiModelCapabilities, 'aspectRatios' | 'aspectRatioMode' | 'defaultAspectRatio'>,
+  requested?: string | null,
+) => {
+  const mode = capabilities.aspectRatioMode ?? (capabilities.aspectRatios?.length ? 'list' : undefined);
+  if (mode === 'unspecified') return undefined;
+  const value = String(requested || '').trim();
+  if (mode === 'any' && isValidVideoAspectRatio(value)) return value;
+  const options = getVideoAspectRatioOptions(capabilities, value);
+  const exact = options.find(option => option.toLowerCase() === value.toLowerCase());
+  if (exact) return exact;
+  const preferred = String(capabilities.defaultAspectRatio || '').trim();
+  return options.find(option => option.toLowerCase() === preferred.toLowerCase()) || options[0];
+};
+
 export const getImageAspectRatioOptionsForResolution = (
   capabilities: Pick<ResolvedImageModelCapabilities, 'aspectRatios' | 'aspectRatiosByResolution'>,
   resolution?: string | null,
@@ -393,8 +507,25 @@ export const resolveVideoModelCapabilities = (options: {
   const referenceAudios = normalizeLimit(firstDefined(canonical?.maxReferenceAudios, route?.maxReferenceAudios, legacy?.maxReferenceAudios, 0));
   const supportsReferenceImages = firstDefined(canonical?.supportsReferenceImages, route?.supportsReferenceImages, legacy?.supportsReferenceImages, referenceImages > 0);
   const supportsReferenceVideo = firstDefined(canonical?.supportsReferenceVideo, route?.supportsReferenceVideo, legacy?.supportsReferenceVideo, referenceVideos > 0);
-  const supportsAudioReference = firstDefined(canonical?.supportsAudioReference, route?.supportsAudioReference, legacy?.supportsAudioReference, referenceAudios > 0);
-  const firstLastFrame = firstDefined(
+  const supportsAudioReference = firstDefined(
+    canonical?.supportsReferenceAudio ?? canonical?.supportsAudioReference,
+    route?.supportsReferenceAudio ?? route?.supportsAudioReference,
+    legacy?.supportsReferenceAudio ?? legacy?.supportsAudioReference,
+    referenceAudios > 0,
+  );
+  const supportsFirstFrame = firstDefined(
+    canonical?.supportsFirstFrame,
+    route?.supportsFirstFrame,
+    legacy?.supportsFirstFrame,
+    false,
+  );
+  const supportsLastFrame = firstDefined(
+    canonical?.supportsLastFrame,
+    route?.supportsLastFrame,
+    legacy?.supportsLastFrame,
+    false,
+  );
+  const supportsFirstLastFrame = firstDefined(
     canonical?.supportsFirstLastFrame ?? (canonical?.supportedInputModes !== undefined
       ? supportsFirstLastFrameMode(canonical.supportedInputModes)
       : undefined),
@@ -406,21 +537,50 @@ export const resolveVideoModelCapabilities = (options: {
       : undefined),
     false,
   );
+  const firstLastFrame = supportsFirstLastFrame || (supportsFirstFrame && supportsLastFrame);
   const inputModes = normalizeStrings(firstDefined(
     canonical?.supportedInputModes,
     route?.supportedInputModes,
     legacy?.supportedInputModes,
     firstLastFrame ? ['reference', 'first_last_frame'] : ['reference'],
   )).filter(mode => firstLastFrame || !supportsFirstLastFrameMode([mode]));
+  const durationMode = firstDefined(canonical?.durationMode, route?.durationMode, legacy?.durationMode, undefined);
+  const durationRange = firstDefined(canonical?.durationRange, route?.durationRange, legacy?.durationRange, undefined);
+  const durationCapabilities = {
+    durations: normalizeDurations(firstDefined(canonical?.durations, route?.durations, legacy?.durations, [])),
+    ...(durationMode ? { durationMode } : {}),
+    ...(durationRange ? { durationRange } : {}),
+    ...(firstDefined(canonical?.defaultDurationSeconds, route?.defaultDurationSeconds, legacy?.defaultDurationSeconds, undefined) !== undefined
+      ? { defaultDurationSeconds: firstDefined(canonical?.defaultDurationSeconds, route?.defaultDurationSeconds, legacy?.defaultDurationSeconds, undefined) }
+      : {}),
+  };
+  const aspectRatioMode = firstDefined(canonical?.aspectRatioMode, route?.aspectRatioMode, legacy?.aspectRatioMode, undefined);
   return {
     source,
     resolutions: normalizeStrings(firstDefined(canonical?.resolutions, route?.resolutions, legacy?.resolutions, [])),
-    durations: normalizeDurations(firstDefined(canonical?.durations, route?.durations, legacy?.durations, [])),
+    ...(firstDefined(canonical?.defaultResolution, route?.defaultResolution, legacy?.defaultResolution, undefined)
+      ? { defaultResolution: firstDefined(canonical?.defaultResolution, route?.defaultResolution, legacy?.defaultResolution, undefined)! }
+      : {}),
+    durations: getVideoDurationOptions(durationCapabilities),
+    ...(durationMode ? { durationMode } : {}),
+    ...(durationRange ? { durationRange: { ...durationRange, step: durationRange.step ?? 1 } } : {}),
+    ...(durationCapabilities.defaultDurationSeconds !== undefined
+      ? { defaultDurationSeconds: durationCapabilities.defaultDurationSeconds }
+      : {}),
     aspectRatios: normalizeStrings(firstDefined(canonical?.aspectRatios, route?.aspectRatios, legacy?.aspectRatios, [])),
+    ...(aspectRatioMode ? { aspectRatioMode } : {}),
+    ...(firstDefined(canonical?.defaultAspectRatio, route?.defaultAspectRatio, legacy?.defaultAspectRatio, undefined)
+      ? { defaultAspectRatio: firstDefined(canonical?.defaultAspectRatio, route?.defaultAspectRatio, legacy?.defaultAspectRatio, undefined)! }
+      : {}),
     referenceImages: supportsReferenceImages ? referenceImages : 0,
     referenceVideos: supportsReferenceVideo ? referenceVideos : 0,
     referenceAudios: supportsAudioReference ? referenceAudios : 0,
     minReferenceImages: normalizeLimit(firstDefined(canonical?.minReferenceImages, route?.minReferenceImages, legacy?.minReferenceImages, 0)),
+    minReferenceVideos: normalizeLimit(firstDefined(canonical?.minReferenceVideos, route?.minReferenceVideos, legacy?.minReferenceVideos, 0)),
+    minReferenceAudios: normalizeLimit(firstDefined(canonical?.minReferenceAudios, route?.minReferenceAudios, legacy?.minReferenceAudios, 0)),
+    supportsFirstFrame,
+    supportsLastFrame,
+    supportsFirstLastFrame,
     firstLastFrame,
     inputModes,
     outputFormats: normalizeStrings(firstDefined(canonical?.supportedOutputFormats, route?.supportedOutputFormats, legacy?.supportedOutputFormats, [])),

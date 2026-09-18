@@ -327,7 +327,7 @@ getCanvasAiPublicImageModelId,
 getCanvasAiPublicImageModelVariantName,
 isCanvasAiPublicImageModel
 } from './features/canvasAiImage';
-import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,getDefaultAiCatalogModelId,getImageAspectRatioOptionsForResolution,mergeAiModelCapabilities,normalizeCapabilityOption,resolveImageModelCapabilities } from './features/aiModelCapabilities';
+import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,getDefaultAiCatalogModelId,getImageAspectRatioOptionsForResolution,hasServerAiCatalog,mergeAiModelCapabilities,normalizeCapabilityOption,resolveImageModelCapabilities } from './features/aiModelCapabilities';
 import {
 CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT
 } from './features/canvasAiOutputs';
@@ -1992,7 +1992,9 @@ function MainApp() {
 
   const canvasAiUnifiedVideoModelOptions = useMemo<RoundedSelectOption[]>(() => {
     const catalog = getAiCatalogModels(canvasAiCloudImageModels, 'video');
-    if (canvasAiCredentialSource !== 'wallet' || catalog.length === 0) return CANVAS_AI_VIDEO_MODEL_OPTIONS;
+    if (canvasAiCredentialSource !== 'wallet' || !hasServerAiCatalog(canvasAiCloudImageModels)) {
+      return CANVAS_AI_VIDEO_MODEL_OPTIONS;
+    }
     const defaultModelId = getDefaultAiCatalogModelId(canvasAiCloudImageModels!, 'video');
     return [...catalog]
       .sort((left, right) => Number(right.id === defaultModelId) - Number(left.id === defaultModelId))

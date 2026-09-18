@@ -106,16 +106,27 @@ export type AiModelModality = 'chat' | 'image' | 'video';
  */
 export type AiModelCapabilities = {
   resolutions?: string[];
+  defaultResolution?: string;
   aspectRatios?: string[];
+  aspectRatioMode?: 'list' | 'any' | 'unspecified';
+  defaultAspectRatio?: string;
   aspectRatiosByResolution?: Record<string, string[]>;
   durations?: number[];
+  durationMode?: 'list' | 'range' | 'fixed';
+  durationRange?: { min: number; max: number; step?: number };
+  defaultDurationSeconds?: number;
   maxReferenceImages?: number;
   maxReferenceVideos?: number;
   maxReferenceAudios?: number;
   minReferenceImages?: number;
+  minReferenceVideos?: number;
+  minReferenceAudios?: number;
   supportsReferenceImages?: boolean;
   supportsReferenceVideo?: boolean;
+  supportsReferenceAudio?: boolean;
   supportsAudioReference?: boolean;
+  supportsFirstFrame?: boolean;
+  supportsLastFrame?: boolean;
   supportsFirstLastFrame?: boolean;
   supportedInputModes?: string[];
   supportedOutputFormats?: string[];
