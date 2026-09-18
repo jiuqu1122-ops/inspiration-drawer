@@ -40,6 +40,10 @@ import {
 import { routeChatToolCall } from '../tools/chatToolRouter';
 import { compactChatToolResult, compactChatToolResultForProvider, serializeChatToolResult } from '../tools/chatToolResult';
 import { selectBatchImageAttachments } from '../tools/batchImageOperation';
+import {
+  normalizeImageVariants,
+  resolveImageVariantToolRoute,
+} from '../tools/imageVariantNormalization';
 import { applyChatImageGenerationSettings } from './chatImageGenerationSettings';
 import { summarizeCompletedBatchCall } from './chatBatchCompletion';
 import {
@@ -890,6 +894,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       const notifiedMediaIds = new Set<string>();
       let batchAttachments: ChatAttachment[] = [];
       let batchOutputCount = 1;
+      let batchTotal = 0;
       let batchStarted = false;
       let progressQueue = Promise.resolve();
       const notifyGeneratedMedia = async () => {
@@ -940,6 +945,53 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           }
           return;
         }
+        if (call.toolName === 'generate_image_variants' && batchStarted) {
+          let parsed: Record<string, unknown> = {};
+          try {
+            parsed = JSON.parse(call.resultJson || '{}') as Record<string, unknown>;
+          } catch (_) {
+            return;
+          }
+          const results = (Array.isArray(parsed.results) ? parsed.results : [])
+            .filter((value): value is Record<string, unknown> => Boolean(value && typeof value === 'object'))
+            .sort((left, right) => Number(left.variantIndex) - Number(right.variantIndex));
+          for (const result of results) {
+            const sourceIndex = Number(result.variantIndex);
+            if (!Number.isInteger(sourceIndex) || sourceIndex < 0 || sourceIndex >= batchTotal) continue;
+            const generatedMedia = getGeneratedMediaFromToolCall({
+              ...call,
+              resultJson: serializeChatToolResult({ media: result.media }),
+            }).filter(media => media.type === 'image').slice(0, 1);
+            for (const media of generatedMedia) {
+              const enrichedMedia = {
+                ...media,
+                name: media.name || String(result.name || '').trim() || `方案 ${sourceIndex + 1}`,
+                prompt: media.prompt || String(result.prompt || '').trim() || undefined,
+              };
+              const notificationId = `variant:${sourceIndex}:${media.id}`;
+              if (notifiedMediaIds.has(notificationId)) continue;
+              notifiedMediaIds.add(notificationId);
+              try {
+                if (optionsRef.current.onBatchMediaReady) {
+                  await optionsRef.current.onBatchMediaReady({
+                    batchId: call.id,
+                    media: enrichedMedia,
+                    attachmentId: `variant-${sourceIndex}`,
+                    sourceIndex,
+                    outputIndex: 0,
+                    slotIndex: sourceIndex,
+                    total: batchTotal,
+                  });
+                } else {
+                  await optionsRef.current.onGeneratedMediaReady?.(enrichedMedia);
+                }
+              } catch (error) {
+                console.warn('Chat 独立方案结果加入画布失败:', error);
+              }
+            }
+          }
+          return;
+        }
         const generatedMedia = getGeneratedMediaFromToolCall(call).filter(media => media.type === 'image');
         for (const media of generatedMedia) {
           if (notifiedMediaIds.has(media.id)) continue;
@@ -952,7 +1004,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         }
       };
       const notifyBatchCompleted = async (cancelled: boolean) => {
-        if (call.toolName !== 'batch_image_operation' || !batchStarted) return;
+        if (!['batch_image_operation', 'generate_image_variants'].includes(call.toolName) || !batchStarted) return;
         let results: Array<Record<string, unknown>> = [];
         try {
           const parsed = JSON.parse(call.resultJson || '{}') as Record<string, unknown>;
@@ -966,6 +1018,10 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         )));
         const failedSourceIndexes = results.flatMap(result => {
           if (result.status !== 'error' && result.status !== 'cancelled') return [];
+          if (call.toolName === 'generate_image_variants') {
+            const variantIndex = Number(result.variantIndex);
+            return Number.isInteger(variantIndex) && variantIndex >= 0 ? [variantIndex] : [];
+          }
           const sourceIndex = attachmentIndexById.get(String(result.attachmentId || '').trim());
           return sourceIndex === undefined ? [] : [sourceIndex];
         });
@@ -975,7 +1031,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         try {
           await optionsRef.current.onBatchCompleted?.({
             batchId: call.id,
-            total: batchAttachments.length * batchOutputCount,
+            total: batchTotal,
             completedSlots,
             failedSourceIndexes,
             cancelled,
@@ -1003,6 +1059,27 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           if (!args.mediaId) args.mediaId = generated.id;
           if (!args.assetId && generated.assetId) args.assetId = generated.assetId;
         }
+        if (call.toolName === 'generate_image_variants') {
+          const imageSelection = selectChatImageAttachments(conversationMessages, run.userText);
+          const requireMultiple = shouldUseIndependentImageVariants(imageSelection.toolIntentText);
+          const fallback = requireMultiple
+            ? buildIndependentImageVariantFallback({
+                userText: run.userText,
+                toolIntentText: imageSelection.toolIntentText,
+                assistantTexts: conversationMessages
+                  .filter(message => message.role === 'assistant' && message.content.trim())
+                  .sort((left, right) => right.createdAt - left.createdAt)
+                  .map(message => message.content),
+              })
+            : undefined;
+          const route = resolveImageVariantToolRoute({
+            args,
+            fallbackVariants: fallback?.variants,
+            requireMultiple,
+          });
+          call.toolName = route.toolName;
+          args = route.args;
+        }
         if (call.toolName === 'generate_image' || call.toolName === 'generate_image_variants' || call.toolName === 'edit_image' || call.toolName === 'batch_image_operation') {
           args = applyChatImageGenerationSettings(args, optionsRef.current);
         }
@@ -1013,6 +1090,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
             Array.isArray(args.attachmentIds) ? args.attachmentIds.map(String) : undefined,
           );
           batchOutputCount = Math.min(4, Math.max(1, Math.round(Number(args.outputCountPerImage) || 1)));
+          batchTotal = batchAttachments.length * batchOutputCount;
           batchStarted = true;
           try {
             await optionsRef.current.onBatchStarted?.({
@@ -1020,12 +1098,33 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
               name: createBatchGroupName(String(args.instruction || run.userText)),
               instruction: String(args.instruction || run.userText).trim(),
               attachmentIds: batchAttachments.map(attachment => attachment.id),
-              total: batchAttachments.length * batchOutputCount,
+              total: batchTotal,
               outputCountPerImage: batchOutputCount,
               aspectRatio: String(args.aspectRatio || '').trim() || undefined,
             });
           } catch (error) {
             console.warn('Chat 批量画布占位编组创建失败:', error);
+          }
+        }
+        if (call.toolName === 'generate_image_variants') {
+          const variants = normalizeImageVariants(args.variants);
+          if (variants.length >= 2) {
+            batchOutputCount = 1;
+            batchTotal = variants.length;
+            batchStarted = true;
+            try {
+              await optionsRef.current.onBatchStarted?.({
+                batchId: call.id,
+                name: createBatchGroupName(variants.map(variant => variant.name).join('、')),
+                instruction: String(args.sharedRequirements || run.userText).trim(),
+                attachmentIds: variants.map((_, variantIndex) => `variant-${variantIndex}`),
+                total: batchTotal,
+                outputCountPerImage: 1,
+                aspectRatio: String(args.aspectRatio || '').trim() || undefined,
+              });
+            } catch (error) {
+              console.warn('Chat 独立方案画布占位编组创建失败:', error);
+            }
           }
         }
         const approved = approvedCallId === call.id;
@@ -1615,7 +1714,30 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       updateConversationBusy(conversationId, false);
       return;
     }
-    const calls: ChatToolCall[] = toolCalls.map(call => ({
+    const preparedToolCalls = toolCalls.map(call => {
+      if (call.name !== 'generate_image_variants') return call;
+      try {
+        const args = parseArguments(call.arguments || '{}');
+        const fallbackVariants = independentImageVariantsRequested
+          && missingVisualToolFallback
+          && 'variants' in missingVisualToolFallback
+          ? missingVisualToolFallback.variants
+          : undefined;
+        const route = resolveImageVariantToolRoute({
+          args,
+          fallbackVariants,
+          requireMultiple: independentImageVariantsRequested,
+        });
+        return {
+          ...call,
+          name: route.toolName,
+          arguments: JSON.stringify(route.args),
+        };
+      } catch (_) {
+        return call;
+      }
+    });
+    const calls: ChatToolCall[] = preparedToolCalls.map(call => ({
       id: call.id || createChatId('chat-tool'),
       messageId: assistantMessageId,
       toolName: call.name,
@@ -1634,7 +1756,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     const proposedBatchCall = calls.find(call => call.toolName === 'batch_image_operation');
     if (proposedBatchCall) {
       const batchPlan = extractChatBatchImagePlan(
-        { ...result, toolCalls },
+        { ...result, toolCalls: preparedToolCalls },
         createFallbackBatchImagePlan(currentImageAttachmentCount, toolIntentText),
       );
       let proposedArguments: Record<string, unknown> = {};
@@ -1706,7 +1828,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     const assistantToolMessage = {
       role: 'assistant',
       content: result.content || null,
-      tool_calls: toolCalls.map(call => ({
+      tool_calls: preparedToolCalls.map(call => ({
         id: call.id,
         type: 'function',
         function: { name: call.name, arguments: call.arguments },

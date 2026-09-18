@@ -3,6 +3,7 @@ import type { LegacyAgentAction } from '../../appAgent/commands/commandTypes';
 import type { ChatToolExecutionContext, ChatToolExecutor } from '../model/chatTypes';
 import { compactChatToolResult } from './chatToolResult';
 import { shouldComposeImageVariants, shouldUseIndependentImageVariants } from './chatToolDefinitions';
+import { normalizeImageVariants } from './imageVariantNormalization';
 
 const SUPPORTED_TOOLS = new Set([
   'web_search', 'create_file', 'get_canvas_selection', 'search_assets', 'generate_image', 'generate_image_variants', 'edit_image', 'generate_video',
@@ -53,8 +54,9 @@ export const routeChatToolCall = async (input: {
     if (shouldComposeImageVariants(input.context.userText)) {
       throw new Error('用户明确要求把多个方案放在同一张图中；请改用 generate_image，使用一个包含同图布局的 prompt，并设置 count=1。');
     }
-    const variants = Array.isArray(input.args.variants) ? input.args.variants : [];
-    if (variants.length < 2) throw new Error('独立方案生图至少需要两个 variants');
+    const variants = normalizeImageVariants(input.args.variants);
+    if (variants.length < 2) throw new Error('独立方案生图至少需要两个包含名称和提示词的 variants');
+    input.args.variants = variants;
   }
   if (input.name === 'batch_image_operation') {
     if (!String(input.args.instruction || '').trim()) throw new Error('批量图片任务 instruction 不能为空');
