@@ -293,6 +293,67 @@ describe('canvas generation credits', () => {
     }).totalCredits).toBe(50);
   });
 
+  it('uses the effective server resolution and distinguishes a missing selection', () => {
+    const pricing = {
+      agentRequestCredits: '7',
+      inspirationAnalysisCredits: '3',
+      imageDefaultCredits: '55',
+      videoDefaultCredits: '999999',
+      imageModels: [],
+      videoModels: [{
+        model: 'minimax-h3',
+        billingType: 'video_resolution_duration' as const,
+        credits: '0',
+        creditsByResolution: { '768p': '15', '2k': '20' },
+      }],
+    };
+    const defaultResolution = '768p';
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'minimax-h3',
+      duration: 5,
+      count: 1,
+      resolution: defaultResolution,
+      serverDriven: true,
+    }, pricing)).toMatchObject({
+      available: true,
+      resolution: '768p',
+      totalCredits: 75,
+    });
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'minimax-h3',
+      duration: 5,
+      count: 1,
+      resolution: '2K',
+      serverDriven: true,
+    }, pricing)).toMatchObject({
+      available: true,
+      resolution: '2k',
+      totalCredits: 100,
+    });
+
+    const missing = estimateCanvasVideoGenerationCredits({
+      model: 'minimax-h3',
+      duration: 5,
+      count: 1,
+      serverDriven: true,
+    }, pricing);
+    expect(missing).toMatchObject({
+      available: false,
+      reason: 'resolution_required',
+      resolution: '',
+      totalCredits: 0,
+    });
+    expect(describeCanvasVideoCreditEstimate(missing)).toBe('请选择清晰度');
+
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'legacy-video', duration: 5, count: 1,
+    }, {
+      ...pricing,
+      videoModels: [],
+      videoDefaultCredits: '2',
+    })).toMatchObject({ available: true, resolution: '720p', totalCredits: 10 });
+  });
+
   it('uses MiniMax H3 native resolution pricing in the client estimate', () => {
     const pricing = {
       agentRequestCredits: '7',

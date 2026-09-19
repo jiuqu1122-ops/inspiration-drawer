@@ -435,10 +435,10 @@ export const normalizeVideoDurationSelection = (
   if (options.includes(requestedDuration)) return requestedDuration;
   const defaultDuration = Number(capabilities.defaultDurationSeconds);
   if (options.includes(defaultDuration)) return defaultDuration;
-  return options[0];
+  return options.length === 1 ? options[0] : undefined;
 };
 
-export const normalizeVideoResolutionSelection = (
+export const resolveEffectiveVideoResolution = (
   capabilities: Pick<AiModelCapabilities, 'resolutions' | 'defaultResolution'>,
   requested?: string | null,
 ) => {
@@ -451,6 +451,9 @@ export const normalizeVideoResolutionSelection = (
   if (preferred) return preferred;
   return resolutions.length === 1 ? resolutions[0] : undefined;
 };
+
+/** @deprecated Prefer resolveEffectiveVideoResolution for new call sites. */
+export const normalizeVideoResolutionSelection = resolveEffectiveVideoResolution;
 
 export const isValidVideoAspectRatio = (value?: string | null) => (
   /^[1-9]\d{0,4}:[1-9]\d{0,4}$/.test(String(value || '').trim())
@@ -483,7 +486,9 @@ export const normalizeVideoAspectRatioSelection = (
   const exact = options.find(option => option.toLowerCase() === value.toLowerCase());
   if (exact) return exact;
   const preferred = String(capabilities.defaultAspectRatio || '').trim();
-  return options.find(option => option.toLowerCase() === preferred.toLowerCase()) || options[0];
+  const defaultAspectRatio = options.find(option => option.toLowerCase() === preferred.toLowerCase());
+  if (defaultAspectRatio) return defaultAspectRatio;
+  return mode === 'list' && options.length === 1 ? options[0] : undefined;
 };
 
 export const getImageAspectRatioOptionsForResolution = (

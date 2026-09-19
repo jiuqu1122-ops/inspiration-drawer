@@ -52,6 +52,14 @@ type CanvasGeneratorControlsProps = {
   onCountChange: (value: string) => void;
 };
 
+export const withVideoSelectionPlaceholder = (
+  options: RoundedSelectOption[],
+  value: string,
+  label: string,
+) => value || options.some(option => option.value === '')
+  ? options
+  : [{ value: '', label, hiddenInMenu: true }, ...options];
+
 export function CanvasGeneratorControls({
   mediaType,
   menuScale,
@@ -94,6 +102,21 @@ export function CanvasGeneratorControls({
     if (videoAspectRatioMode === 'any') setCustomAspectRatio(aspectRatioValue);
   }, [aspectRatioValue, videoAspectRatioMode]);
 
+  const videoResolutionControlOptions = withVideoSelectionPlaceholder(
+    videoResolutionOptions,
+    videoResolutionValue,
+    '清晰度',
+  );
+  const videoDurationValue = videoDuration > 0 ? String(videoDuration) : '';
+  const videoDurationControlOptions = withVideoSelectionPlaceholder(
+    videoDurationOptions,
+    videoDurationValue,
+    '时长',
+  );
+  const aspectRatioControlOptions = mediaType === 'video'
+    ? withVideoSelectionPlaceholder(aspectRatioOptions, aspectRatioValue, '比例')
+    : aspectRatioOptions;
+
   const commitCustomAspectRatio = (value: string) => {
     const normalized = value.trim();
     if (/^[1-9]\d{0,4}:[1-9]\d{0,4}$/.test(normalized)) {
@@ -135,7 +158,7 @@ export function CanvasGeneratorControls({
         data-no-drag="true"
         deferChange
         value={aspectRatioValue}
-        options={aspectRatioOptions}
+        options={aspectRatioControlOptions}
         onChange={onAspectRatioChange}
         labelClassName="text-center leading-none"
         chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
@@ -209,11 +232,11 @@ export function CanvasGeneratorControls({
             data-no-drag="true"
             deferChange
             value={videoResolutionValue}
-            options={videoResolutionOptions}
+            options={videoResolutionControlOptions}
             onChange={onVideoResolutionChange}
             labelClassName="text-center leading-none"
             chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-            title={`分辨率：${videoResolutionValue}`}
+            title={videoResolutionValue ? `分辨率：${videoResolutionValue}` : '请选择清晰度'}
             className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[70px]`}
             menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
             optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
@@ -242,12 +265,12 @@ export function CanvasGeneratorControls({
           {videoDurationOptions.length > 0 && <RoundedSelect
             data-no-drag="true"
             deferChange
-            value={String(videoDuration)}
-            options={videoDurationOptions}
+            value={videoDurationValue}
+            options={videoDurationControlOptions}
             onChange={onVideoDurationChange}
             labelClassName="text-center leading-none"
             chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-            title={`时长：${videoDuration} 秒`}
+            title={videoDurationValue ? `时长：${videoDuration} 秒` : '请选择时长'}
             className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[64px]`}
             menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
             optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}

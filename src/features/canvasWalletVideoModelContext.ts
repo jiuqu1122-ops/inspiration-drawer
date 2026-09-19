@@ -3,7 +3,10 @@ import {
   findAiCatalogModel,
   getAiCatalogModels,
   hasServerAiCatalog,
+  normalizeVideoAspectRatioSelection,
+  normalizeVideoDurationSelection,
   reconcileStaleCanvasAiModels,
+  resolveEffectiveVideoResolution,
   resolveVideoModelCapabilities,
   type ResolvedVideoModelCapabilities,
 } from './aiModelCapabilities';
@@ -211,11 +214,22 @@ export const reconcileCanvasWalletVideoModels = (
     const context = resolveCanvasWalletVideoModelContext(item.ai, snapshot, 'wallet');
     if (context.capabilityStatus !== 'resolved' || !context.canonicalModelId) return item;
     const selectedCandidate = context.selectedCandidate;
+    const resolution = resolveEffectiveVideoResolution(context.capabilities, item.ai.resolution);
+    const duration = normalizeVideoDurationSelection(context.capabilities, item.ai.duration);
+    const aspectRatio = normalizeVideoAspectRatioSelection(context.capabilities, item.ai.aspectRatio);
+    const count = Number.isFinite(Number(item.ai.count))
+      && Number(item.ai.count) > context.capabilities.maxOutputs
+      ? context.capabilities.maxOutputs
+      : item.ai.count;
     const alreadySynchronized = item.ai.model === context.canonicalModelId
       && item.ai.credentialSource === 'wallet'
       && item.ai.provider === (selectedCandidate?.provider || item.ai.provider)
       && (item.ai.providerChannelId || '') === (selectedCandidate?.providerChannelId || '')
-      && candidatesEqual(item.ai.providerCandidates, context.providerCandidates);
+      && candidatesEqual(item.ai.providerCandidates, context.providerCandidates)
+      && item.ai.resolution === resolution
+      && item.ai.duration === duration
+      && item.ai.aspectRatio === aspectRatio
+      && item.ai.count === count;
     if (alreadySynchronized) return item;
     changed = true;
     return {
@@ -227,6 +241,10 @@ export const reconcileCanvasWalletVideoModels = (
         provider: selectedCandidate?.provider || item.ai.provider,
         providerChannelId: selectedCandidate?.providerChannelId,
         providerCandidates: context.providerCandidates,
+        resolution,
+        duration,
+        aspectRatio,
+        count,
       },
     };
   });

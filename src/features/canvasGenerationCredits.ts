@@ -282,7 +282,7 @@ const findCanvasVideoPrice = (
 
 export type CanvasVideoCreditEstimate = {
   available: boolean;
-  reason?: 'pricing_unavailable';
+  reason?: 'pricing_unavailable' | 'resolution_required';
   billingType?: CanvasVideoBillingType;
   outputCount: number;
   durationSeconds: number;
@@ -310,9 +310,10 @@ const unavailableVideoEstimate = (
   durationSeconds: number,
   resolution: string,
   billingType?: CanvasVideoBillingType,
+  reason: NonNullable<CanvasVideoCreditEstimate['reason']> = 'pricing_unavailable',
 ): CanvasVideoCreditEstimate => ({
   available: false,
-  reason: 'pricing_unavailable',
+  reason,
   ...(billingType ? { billingType } : {}),
   outputCount,
   durationSeconds,
@@ -329,12 +330,24 @@ const calculateCanvasVideoCreditEstimate = (
 ): CanvasVideoCreditEstimate => {
   const outputCount = getImageOutputCount(ai?.count);
   const durationSeconds = Math.max(1, Math.ceil(Number(ai?.duration) || 15));
-  const resolution = String(ai?.resolution || '720p').trim().toLowerCase() || '720p';
+  const requestedResolution = String(ai?.resolution || '').trim().toLowerCase();
+  const resolution = ai?.serverDriven
+    ? requestedResolution
+    : requestedResolution || '720p';
   const configuredModel = findCanvasVideoPrice(ai?.model, pricing, Boolean(ai?.serverDriven));
   if (ai?.serverDriven && !configuredModel) {
     return unavailableVideoEstimate(outputCount, durationSeconds, resolution);
   }
   const billingType = resolveVideoBillingType(configuredModel);
+  if (ai?.serverDriven && billingType === 'video_resolution_duration' && !resolution) {
+    return unavailableVideoEstimate(
+      outputCount,
+      durationSeconds,
+      resolution,
+      billingType,
+      'resolution_required',
+    );
+  }
   let unitCredits: number | null = null;
   let creditsPerSecond: number | undefined;
   let creditsPerVideo: number | undefined;
@@ -440,6 +453,7 @@ const displayCredits = (value: number) => new Intl.NumberFormat('zh-CN', {
 }).format(value);
 
 export const describeCanvasVideoCreditEstimate = (estimate: CanvasVideoCreditEstimate) => {
+  if (estimate.reason === 'resolution_required') return '请选择清晰度';
   if (!estimate.available || !estimate.billingType) return '价格未配置';
   const total = displayCredits(estimate.totalCredits);
   const count = estimate.outputCount;

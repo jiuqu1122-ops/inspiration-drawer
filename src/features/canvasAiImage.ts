@@ -7,7 +7,7 @@ import type {
   NewApiImageProtocol,
 } from './canvasModel';
 import type { AiCatalogModel,AiModelCapabilities } from '../types/license';
-import { findAiCatalogModel,getChannelModelCapabilities,getImageAspectRatioOptionsForResolution,mergeAiModelCapabilities,normalizeCapabilityOption,normalizeVideoAspectRatioSelection,normalizeVideoDurationSelection,normalizeVideoResolutionSelection,resolveImageModelCapabilities,resolveVideoModelCapabilities,type ResolvedImageModelCapabilities,type ResolvedVideoModelCapabilities } from './aiModelCapabilities';
+import { findAiCatalogModel,getChannelModelCapabilities,getImageAspectRatioOptionsForResolution,mergeAiModelCapabilities,normalizeCapabilityOption,normalizeVideoAspectRatioSelection,normalizeVideoDurationSelection,resolveEffectiveVideoResolution,resolveImageModelCapabilities,resolveVideoModelCapabilities,type ResolvedImageModelCapabilities,type ResolvedVideoModelCapabilities } from './aiModelCapabilities';
 
 export type { NewApiImageProtocol } from './canvasModel';
 
@@ -750,7 +750,7 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
       ? normalizeVideoDurationSelection(options.videoCapabilities!, options.duration)
       : options.duration;
     const resolution = serverDriven
-      ? normalizeVideoResolutionSelection(options.videoCapabilities!, options.resolution)
+      ? resolveEffectiveVideoResolution(options.videoCapabilities!, options.resolution)
       : options.resolution?.trim() || undefined;
     if (serverDriven && options.videoCapabilities!.resolutions.length > 0 && !resolution) {
       throw new Error('该模型未配置默认分辨率，请先选择分辨率');

@@ -16,6 +16,7 @@ import {
   normalizeVideoAspectRatioSelection,
   normalizeVideoDurationSelection,
   reconcileStaleCanvasAiModels,
+  resolveEffectiveVideoResolution,
   resolveImageModelCapabilities,
   resolveVideoModelCapabilities,
 } from './aiModelCapabilities';
@@ -464,6 +465,18 @@ describe('server-driven AI model capabilities', () => {
     expect(normalizeVideoDurationSelection({
       durationMode: 'fixed', durations: [30], defaultDurationSeconds: 30,
     }, 10)).toBe(30);
+    expect(normalizeVideoDurationSelection({
+      durationMode: 'list', durations: [5, 10],
+    })).toBeUndefined();
+  });
+
+  it('resolves an effective video resolution without inventing 720p', () => {
+    const capabilities = { resolutions: ['768p', '2k'], defaultResolution: '768p' };
+    expect(resolveEffectiveVideoResolution(capabilities)).toBe('768p');
+    expect(resolveEffectiveVideoResolution(capabilities, '1080p')).toBe('768p');
+    expect(resolveEffectiveVideoResolution(capabilities, '2K')).toBe('2k');
+    expect(resolveEffectiveVideoResolution({ resolutions: ['768p', '2k'] })).toBeUndefined();
+    expect(resolveEffectiveVideoResolution({ resolutions: ['768p'] })).toBe('768p');
   });
 
   it('supports arbitrary valid ratios and omits an unspecified ratio', () => {
@@ -473,6 +486,52 @@ describe('server-driven AI model capabilities', () => {
     expect(normalizeVideoAspectRatioSelection({
       aspectRatioMode: 'list', aspectRatios: ['16:9', '9:16'], defaultAspectRatio: '9:16',
     }, '2:1')).toBe('9:16');
+    expect(normalizeVideoAspectRatioSelection({
+      aspectRatioMode: 'list', aspectRatios: ['16:9', '9:16'],
+    })).toBeUndefined();
+  });
+
+  it('persists explicit catalog defaults and clamps outputs during reconciliation', () => {
+    const snapshot = catalogSnapshot();
+    const videoModel = snapshot.catalog?.find(model => model.id === 'test-video-x');
+    if (!videoModel) throw new Error('video fixture is missing');
+    videoModel.capabilities = {
+      ...videoModel.capabilities,
+      resolutions: ['768p', '2k'],
+      defaultResolution: '768p',
+      durations: [5, 10],
+      defaultDurationSeconds: 5,
+      aspectRatioMode: 'list',
+      aspectRatios: ['16:9', '9:16'],
+      defaultAspectRatio: '16:9',
+      maxOutputs: 2,
+    };
+    const node = generatorNode('video-defaults', 'video-generator', 'route-video-v9');
+    node.ai = {
+      ...node.ai!,
+      resolution: '1080p',
+      duration: 15,
+      aspectRatio: '4:3',
+      count: 4,
+    };
+
+    const [reconciled] = reconcileCanvasAiModelsWithCatalog([node], snapshot);
+    expect(reconciled.ai).toMatchObject({
+      model: 'test-video-x',
+      resolution: '768p',
+      duration: 5,
+      aspectRatio: '16:9',
+      count: 2,
+    });
+
+    const validNode = {
+      ...node,
+      ai: { ...node.ai!, resolution: '2k', duration: 10, aspectRatio: '9:16', count: 1 },
+    };
+    const [preserved] = reconcileCanvasAiModelsWithCatalog([validNode], snapshot);
+    expect(preserved.ai).toMatchObject({
+      resolution: '2k', duration: 10, aspectRatio: '9:16', count: 1,
+    });
   });
 
   it('preserves an unavailable explicit video model during catalog refresh', () => {
