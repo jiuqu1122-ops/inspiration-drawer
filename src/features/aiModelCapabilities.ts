@@ -41,6 +41,7 @@ export type ResolvedVideoModelCapabilities = {
   supportsFirstFrame: boolean;
   supportsLastFrame: boolean;
   supportsFirstLastFrame: boolean;
+  supportsTextPrompt: boolean;
   firstLastFrame: boolean;
   inputModes: string[];
   outputFormats: string[];
@@ -105,6 +106,10 @@ const supportsFirstLastFrameMode = (value?: readonly string[] | null) => (
   ))
 );
 
+const supportsTextPromptMode = (value?: readonly string[] | null) => (
+  value?.some(mode => String(mode || '').trim().toLowerCase() === 'text')
+);
+
 export const normalizeAiModelCapabilities = (
   value?: AiModelCapabilities | null,
 ): AiModelCapabilities | undefined => {
@@ -156,7 +161,8 @@ export const normalizeAiModelCapabilities = (
   });
   const booleanKeys: Array<keyof Pick<AiModelCapabilities,
     'supportsReferenceImages' | 'supportsReferenceVideo' | 'supportsReferenceAudio' | 'supportsAudioReference'
-    | 'supportsFirstFrame' | 'supportsLastFrame' | 'supportsFirstLastFrame' | 'supportsTransparentBackground'
+    | 'supportsFirstFrame' | 'supportsLastFrame' | 'supportsFirstLastFrame'
+    | 'supportsTextPrompt' | 'supportsTransparentBackground'
   >> = [
     'supportsReferenceImages',
     'supportsReferenceVideo',
@@ -165,6 +171,7 @@ export const normalizeAiModelCapabilities = (
     'supportsFirstFrame',
     'supportsLastFrame',
     'supportsFirstLastFrame',
+    'supportsTextPrompt',
     'supportsTransparentBackground',
   ];
   booleanKeys.forEach(key => {
@@ -537,7 +544,19 @@ export const resolveVideoModelCapabilities = (options: {
       : undefined),
     false,
   );
-  const firstLastFrame = supportsFirstLastFrame || (supportsFirstFrame && supportsLastFrame);
+  // These are independent provider contracts: accepting a first frame and a
+  // last frame separately does not imply accepting a combined FLF request.
+  const firstLastFrame = supportsFirstLastFrame;
+  const supportsTextPrompt = firstDefined(
+    canonical?.supportsTextPrompt ?? (canonical?.supportedInputModes !== undefined
+      ? supportsTextPromptMode(canonical.supportedInputModes)
+      : undefined),
+    route?.supportsTextPrompt ?? (route?.supportedInputModes !== undefined
+      ? supportsTextPromptMode(route.supportedInputModes)
+      : undefined),
+    legacy?.supportsTextPrompt,
+    true,
+  );
   const inputModes = normalizeStrings(firstDefined(
     canonical?.supportedInputModes,
     route?.supportedInputModes,
@@ -581,6 +600,7 @@ export const resolveVideoModelCapabilities = (options: {
     supportsFirstFrame,
     supportsLastFrame,
     supportsFirstLastFrame,
+    supportsTextPrompt,
     firstLastFrame,
     inputModes,
     outputFormats: normalizeStrings(firstDefined(canonical?.supportedOutputFormats, route?.supportedOutputFormats, legacy?.supportedOutputFormats, [])),

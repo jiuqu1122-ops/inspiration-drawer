@@ -3,8 +3,9 @@ import { listen } from '@tauri-apps/api/event';
 import React,{ startTransition } from 'react';
 import { type RoundedSelectOption } from '../../components/RoundedSelect';
 import { isPermanentInspirationAnalysisFailure,requeueInspirationAnalysisItemAfterRestart } from '../../features/appAgent/inspirationMemory';
-import { getCanvasAiPublicImageModelName,getCanvasAiVideoModelCandidates } from '../../features/canvasAiImage';
-import { findAiCatalogModel,getAiCatalogModels,getDefaultAiCatalogModelId } from '../../features/aiModelCapabilities';
+import { getCanvasAiPublicImageModelName } from '../../features/canvasAiImage';
+import { getAiCatalogModels } from '../../features/aiModelCapabilities';
+import { resolveCanvasWalletVideoModelContext } from '../../features/canvasWalletVideoModelContext';
 import { isCanvasAiEnhancementType,type RifeEngineProgress } from '../../features/canvasLocalMediaTools';
 import { type CanvasAiCredentialSource,type CanvasImageItem,type CanvasItemBox } from '../../features/canvasModel';
 import { findCanvasImageModelChoice } from '../../features/canvas/canvasImageRequestSettings';
@@ -548,42 +549,21 @@ export const runAppLifecycleEffect21 = (ctx: Pick<appLifecycleCatalogEffectConte
       let changed = false;
       const next = previous.map(item => {
         if (item.ai?.type === 'video-generator' && videoCatalog.length > 0) {
-          const currentCanonicalId = item.ai.providerCandidates
-            ?.find(candidate => candidate.canonicalModelId)?.canonicalModelId
-            || item.ai.model;
-          const hasExplicitModel = Boolean(String(currentCanonicalId || '').trim());
-          const catalogModel = findAiCatalogModel(videoCatalog, currentCanonicalId)
-            || (!hasExplicitModel ? findAiCatalogModel(
-              videoCatalog,
-              getDefaultAiCatalogModelId(canvasAiCloudImageModels!, 'video'),
-            ) : undefined);
-          if (!catalogModel) return item;
-          const nextCandidates = getCanvasAiVideoModelCandidates(
-            catalogModel.id,
-            'wallet',
-            item.ai.provider,
-            canvasAiCloudImageModels?.videoChannels,
-            videoCatalog,
+          const videoContext = resolveCanvasWalletVideoModelContext(
+            item.ai,
+            canvasAiCloudImageModels,
+            canvasAiCredentialSource,
           );
-          const firstCandidate = nextCandidates[0];
-          if (!firstCandidate) return item;
-          const sameCandidates = (item.ai.providerCandidates || []).length === nextCandidates.length
-            && (item.ai.providerCandidates || []).every((candidate, index) => {
-              const nextCandidate = nextCandidates[index];
-              return nextCandidate
-                && candidate.source === nextCandidate.source
-                && candidate.provider === nextCandidate.provider
-                && candidate.model === nextCandidate.model
-                && (candidate.canonicalModelId || '') === (nextCandidate.canonicalModelId || '')
-                && (candidate.displayName || '') === (nextCandidate.displayName || '')
-                && (candidate.providerChannelId || '') === (nextCandidate.providerChannelId || '')
-                && (candidate.providerChannelName || '') === (nextCandidate.providerChannelName || '')
-                && JSON.stringify(candidate.capabilities || null) === JSON.stringify(nextCandidate.capabilities || null)
-                && JSON.stringify(candidate.modelCapabilities || null) === JSON.stringify(nextCandidate.modelCapabilities || null);
-            });
+          const firstCandidate = videoContext.selectedCandidate;
+          if (videoContext.capabilityStatus !== 'resolved'
+            || !videoContext.canonicalModelId
+            || !firstCandidate) return item;
+          const nextCandidates = videoContext.providerCandidates;
+          const sameCandidates = JSON.stringify(item.ai.providerCandidates || [])
+            === JSON.stringify(nextCandidates);
           const alreadySynchronized = item.ai.credentialSource === 'wallet'
             && item.ai.provider === firstCandidate.provider
-            && item.ai.model === catalogModel.id
+            && item.ai.model === videoContext.canonicalModelId
             && (item.ai.providerChannelId || '') === (firstCandidate.providerChannelId || '')
             && sameCandidates;
           if (alreadySynchronized) return item;
@@ -593,7 +573,7 @@ export const runAppLifecycleEffect21 = (ctx: Pick<appLifecycleCatalogEffectConte
             ai: {
               ...item.ai,
               provider: firstCandidate.provider,
-              model: catalogModel.id,
+              model: videoContext.canonicalModelId,
               providerChannelId: firstCandidate.providerChannelId,
               credentialSource: 'wallet' as const,
               providerCandidates: nextCandidates,

@@ -5,6 +5,12 @@ export const CANVAS_LLM_NODE_CREDITS = 10;
 export const CANVAS_DEFAULT_IMAGE_UNIT_CREDITS = 100;
 export const CANVAS_DEFAULT_VIDEO_CREDITS_PER_SECOND = 500;
 
+export type CanvasVideoBillingType =
+  | 'video_flat'
+  | 'video_second'
+  | 'video_duration'
+  | 'video_resolution_duration';
+
 export type CanvasTextAgentCreditRole =
   | 'requirement_analyzer'
   | 'inspiration_analyzer'
@@ -28,6 +34,7 @@ export type CanvasAiCreditPricing = {
   }>;
   videoModels: Array<{
     model: string;
+    billingType?: CanvasVideoBillingType;
     credits: string;
     creditsPerSecond?: string;
     creditsPerVideo?: string;
@@ -232,14 +239,180 @@ export const getCanvasVideoCreditsPerSecond = (
   const exactModel = String(model || '').trim();
   const configuredModel = pricing?.videoModels.find(item => item.model === exactModel)
     || pricing?.videoModels.find(item => videoModelToken(item.model) === token);
-  const configuredCredits = Number(
-    configuredModel?.creditsPerSecond
-      ?? configuredModel?.credits
-      ?? pricing?.videoDefaultCredits,
-  );
+  const billingType = resolveVideoBillingType(configuredModel);
+  const configuredCredits = Number(configuredModel
+    ? billingType === 'video_second' || billingType === 'video_duration'
+      ? configuredModel.creditsPerSecond ?? configuredModel.credits
+      : 0
+    : pricing?.videoDefaultCredits);
   return Number.isSafeInteger(configuredCredits) && configuredCredits >= 0
     ? configuredCredits
     : CANVAS_DEFAULT_VIDEO_CREDITS_PER_SECOND;
+};
+
+type CanvasVideoPrice = CanvasAiCreditPricing['videoModels'][number];
+
+export const resolveVideoBillingType = (
+  price?: CanvasVideoPrice | null,
+): CanvasVideoBillingType => {
+  if (price?.billingType) return price.billingType;
+  if (price?.creditsPerVideo !== undefined) return 'video_flat';
+  if (price?.creditsByResolution !== undefined) return 'video_resolution_duration';
+  if (price?.creditsByDuration !== undefined) return 'video_duration';
+  return 'video_second';
+};
+
+const nonNegativeCredit = (value: unknown) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+};
+
+const findCanvasVideoPrice = (
+  model: string | null | undefined,
+  pricing: CanvasAiCreditPricing | null | undefined,
+  exactOnly: boolean,
+) => {
+  const exactModel = String(model || '').trim();
+  const exact = pricing?.videoModels.find(item => item.model === exactModel);
+  if (exact || exactOnly) return exact;
+  const token = videoModelToken(model);
+  return pricing?.videoModels.find(item => videoModelToken(item.model) === token);
+};
+
+export type CanvasVideoCreditEstimate = {
+  available: boolean;
+  reason?: 'pricing_unavailable';
+  billingType?: CanvasVideoBillingType;
+  outputCount: number;
+  durationSeconds: number;
+  resolution: string;
+  unitCredits?: number;
+  creditsPerSecond?: number;
+  creditsPerVideo?: number;
+  durationTierSeconds?: number;
+  baseCredits: number;
+  surchargeCredits: number;
+  totalCredits: number;
+};
+
+type CanvasVideoCreditInput = {
+  model?: string | null;
+  count?: number | null;
+  duration?: number | null;
+  resolution?: string | null;
+  /** AI Center catalog models must have an exact canonical pricing projection. */
+  serverDriven?: boolean;
+};
+
+const unavailableVideoEstimate = (
+  outputCount: number,
+  durationSeconds: number,
+  resolution: string,
+  billingType?: CanvasVideoBillingType,
+): CanvasVideoCreditEstimate => ({
+  available: false,
+  reason: 'pricing_unavailable',
+  ...(billingType ? { billingType } : {}),
+  outputCount,
+  durationSeconds,
+  resolution,
+  baseCredits: 0,
+  surchargeCredits: 0,
+  totalCredits: 0,
+});
+
+const calculateCanvasVideoCreditEstimate = (
+  ai: CanvasVideoCreditInput | null | undefined,
+  pricing: CanvasAiCreditPricing | null | undefined,
+  references: { imageCount?: number | null; videoCount?: number | null },
+): CanvasVideoCreditEstimate => {
+  const outputCount = getImageOutputCount(ai?.count);
+  const durationSeconds = Math.max(1, Math.ceil(Number(ai?.duration) || 15));
+  const resolution = String(ai?.resolution || '720p').trim().toLowerCase() || '720p';
+  const configuredModel = findCanvasVideoPrice(ai?.model, pricing, Boolean(ai?.serverDriven));
+  if (ai?.serverDriven && !configuredModel) {
+    return unavailableVideoEstimate(outputCount, durationSeconds, resolution);
+  }
+  const billingType = resolveVideoBillingType(configuredModel);
+  let unitCredits: number | null = null;
+  let creditsPerSecond: number | undefined;
+  let creditsPerVideo: number | undefined;
+  let durationTierSeconds: number | undefined;
+  let baseCredits = 0;
+
+  if (billingType === 'video_flat') {
+    unitCredits = nonNegativeCredit(configuredModel?.creditsPerVideo);
+    if (unitCredits !== null) {
+      creditsPerVideo = unitCredits;
+      baseCredits = unitCredits * outputCount;
+    }
+  } else if (billingType === 'video_second') {
+    unitCredits = nonNegativeCredit(configuredModel?.creditsPerSecond
+      ?? configuredModel?.credits
+      ?? pricing?.videoDefaultCredits
+      ?? CANVAS_DEFAULT_VIDEO_CREDITS_PER_SECOND);
+    if (unitCredits !== null) {
+      creditsPerSecond = unitCredits;
+      baseCredits = unitCredits * durationSeconds * outputCount;
+    }
+  } else if (billingType === 'video_duration') {
+    const durationPrice = nonNegativeCredit(configuredModel?.creditsByDuration?.[String(durationSeconds)]);
+    if (durationPrice !== null) {
+      unitCredits = durationPrice;
+      creditsPerVideo = durationPrice;
+      durationTierSeconds = durationSeconds;
+      baseCredits = durationPrice * outputCount;
+    } else {
+      const fallback = nonNegativeCredit(configuredModel?.creditsPerSecond);
+      if (fallback !== null) {
+        unitCredits = fallback;
+        creditsPerSecond = fallback;
+        baseCredits = fallback * durationSeconds * outputCount;
+      }
+    }
+  } else {
+    unitCredits = nonNegativeCredit(configuredModel?.creditsByResolution?.[resolution]);
+    if (unitCredits !== null) {
+      creditsPerSecond = unitCredits;
+      baseCredits = unitCredits * durationSeconds * outputCount;
+    }
+  }
+  if (unitCredits === null || !Number.isFinite(baseCredits)) {
+    return unavailableVideoEstimate(outputCount, durationSeconds, resolution, billingType);
+  }
+
+  const imageCount = Math.max(0, Math.floor(Number(references.imageCount) || 0));
+  const videoCount = Math.max(0, Math.floor(Number(references.videoCount) || 0));
+  const includedReferenceImages = Math.max(0, Math.floor(Number(configuredModel?.includedReferenceImages) || 0));
+  const extraReferenceImageCount = Math.max(0, imageCount - includedReferenceImages);
+  const extraReferenceImageCredits = nonNegativeCredit(configuredModel?.creditsPerExtraReferenceImage ?? 0);
+  const referenceVideoBase = nonNegativeCredit(configuredModel?.creditsPerReferenceVideoSecond ?? 0);
+  const referenceVideoResolution = nonNegativeCredit(configuredModel?.referenceVideoCreditsByResolution?.[resolution] ?? 0);
+  if (extraReferenceImageCredits === null || referenceVideoBase === null || referenceVideoResolution === null) {
+    return unavailableVideoEstimate(outputCount, durationSeconds, resolution, billingType);
+  }
+  const surchargeCredits = (
+    extraReferenceImageCount * extraReferenceImageCredits
+    + videoCount * durationSeconds * (referenceVideoBase + referenceVideoResolution)
+  ) * outputCount;
+  const totalCredits = baseCredits + surchargeCredits;
+  if (!Number.isFinite(totalCredits) || totalCredits < 0) {
+    return unavailableVideoEstimate(outputCount, durationSeconds, resolution, billingType);
+  }
+  return {
+    available: true,
+    billingType,
+    outputCount,
+    durationSeconds,
+    resolution,
+    unitCredits,
+    ...(creditsPerSecond !== undefined ? { creditsPerSecond } : {}),
+    ...(creditsPerVideo !== undefined ? { creditsPerVideo } : {}),
+    ...(durationTierSeconds !== undefined ? { durationTierSeconds } : {}),
+    baseCredits,
+    surchargeCredits,
+    totalCredits,
+  };
 };
 
 export const getCanvasVideoRequestCredits = (
@@ -250,75 +423,41 @@ export const getCanvasVideoRequestCredits = (
   pricing?: CanvasAiCreditPricing | null,
   references: { imageCount?: number | null; videoCount?: number | null } = {},
 ) => {
-  const token = videoModelToken(model);
-  const exactModel = String(model || '').trim();
-  const configuredModel = pricing?.videoModels.find(item => item.model === exactModel)
-    || pricing?.videoModels.find(item => videoModelToken(item.model) === token);
-  const safeDuration = Math.max(1, Math.ceil(Number(duration) || 15));
-  const safeCount = Math.max(1, Math.ceil(Number(count) || 1));
-  const durationKey = String(safeDuration);
-  const resolutionKey = String(resolution || '720p').trim().toLowerCase() || '720p';
-  const countKey = String(safeCount);
-  const countOverride = configuredModel?.creditsByCount?.[countKey];
-
-  const perSecond = getCanvasVideoCreditsPerSecond(model, pricing);
-  const durationOverride = configuredModel?.creditsByDuration?.[durationKey];
-  const durationCredits = durationOverride !== undefined
-    ? Number(durationOverride)
-    : safeDuration * perSecond;
-  const perVideo = Number(configuredModel?.creditsPerVideo ?? 0);
-  const resolutionSurchargePerSecond = Number(configuredModel?.creditsByResolution?.[resolutionKey] ?? 0);
-  const parsedCountOverride = countOverride === undefined ? undefined : Number(countOverride);
-  const outputCredits = parsedCountOverride !== undefined
-    && Number.isSafeInteger(parsedCountOverride)
-    && parsedCountOverride >= 0
-    ? parsedCountOverride
-    : (durationCredits + perVideo + resolutionSurchargePerSecond * safeDuration) * safeCount;
-  const imageCount = Math.max(0, Math.floor(Number(references.imageCount) || 0));
-  const videoCount = Math.max(0, Math.floor(Number(references.videoCount) || 0));
-  const includedReferenceImages = Math.max(0, Math.floor(Number(configuredModel?.includedReferenceImages) || 0));
-  const extraReferenceImageCount = Math.max(0, imageCount - includedReferenceImages);
-  const extraReferenceImageCredits = Number(configuredModel?.creditsPerExtraReferenceImage ?? 0);
-  const referenceVideoCreditsPerSecond = Number(configuredModel?.creditsPerReferenceVideoSecond ?? 0)
-    + Number(configuredModel?.referenceVideoCreditsByResolution?.[resolutionKey] ?? 0);
-  if (![
-    durationCredits,
-    perVideo,
-    resolutionSurchargePerSecond,
-    outputCredits,
-    extraReferenceImageCredits,
-    referenceVideoCreditsPerSecond,
-  ].every(value => Number.isSafeInteger(value) && value >= 0)) {
-    return safeCount * safeDuration * perSecond;
-  }
-  const materialCredits = (
-    extraReferenceImageCount * extraReferenceImageCredits
-    + videoCount * safeDuration * referenceVideoCreditsPerSecond
-  ) * safeCount;
-  return outputCredits + materialCredits;
+  return calculateCanvasVideoCreditEstimate({ model, duration, count, resolution }, pricing, references).totalCredits;
 };
 
 export const estimateCanvasVideoGenerationCredits = (
-  ai?: Pick<NonNullable<CanvasImageItem['ai']>, 'model' | 'count' | 'duration' | 'resolution'> | null,
+  ai?: CanvasVideoCreditInput | null,
   pricing?: CanvasAiCreditPricing | null,
   references: { imageCount?: number | null; videoCount?: number | null } = {},
 ) => {
-  const outputCount = getImageOutputCount(ai?.count);
-  const durationSeconds = Math.max(1, Math.ceil(Number(ai?.duration) || 15));
-  const creditsPerSecond = getCanvasVideoCreditsPerSecond(ai?.model, pricing);
-  return {
-    outputCount,
-    durationSeconds,
-    creditsPerSecond,
-    totalCredits: getCanvasVideoRequestCredits(
-      ai?.model,
-      durationSeconds,
-      outputCount,
-      ai?.resolution,
-      pricing,
-      references,
-    ),
-  };
+  return calculateCanvasVideoCreditEstimate(ai, pricing, references);
+};
+
+const displayCredits = (value: number) => new Intl.NumberFormat('zh-CN', {
+  maximumFractionDigits: 6,
+}).format(value);
+
+export const describeCanvasVideoCreditEstimate = (estimate: CanvasVideoCreditEstimate) => {
+  if (!estimate.available || !estimate.billingType) return '价格未配置';
+  const total = displayCredits(estimate.totalCredits);
+  const count = estimate.outputCount;
+  let calculation: string;
+  if (estimate.billingType === 'video_flat') {
+    calculation = `${displayCredits(estimate.creditsPerVideo ?? estimate.unitCredits ?? 0)} 积分/条 × ${count} 条`;
+  } else if (estimate.billingType === 'video_second') {
+    calculation = `${displayCredits(estimate.creditsPerSecond ?? estimate.unitCredits ?? 0)} 积分/秒 × ${estimate.durationSeconds} 秒 × ${count} 条`;
+  } else if (estimate.billingType === 'video_duration' && estimate.durationTierSeconds !== undefined) {
+    calculation = `${estimate.durationTierSeconds} 秒档 · ${displayCredits(estimate.creditsPerVideo ?? estimate.unitCredits ?? 0)} 积分/条 × ${count} 条`;
+  } else if (estimate.billingType === 'video_duration') {
+    calculation = `${displayCredits(estimate.creditsPerSecond ?? estimate.unitCredits ?? 0)} 积分/秒 × ${estimate.durationSeconds} 秒 × ${count} 条（备用每秒价）`;
+  } else {
+    calculation = `${estimate.resolution.toUpperCase()} · ${displayCredits(estimate.creditsPerSecond ?? estimate.unitCredits ?? 0)} 积分/秒 × ${estimate.durationSeconds} 秒 × ${count} 条`;
+  }
+  const surcharge = estimate.surchargeCredits > 0
+    ? `；参考素材附加 ${displayCredits(estimate.surchargeCredits)} 积分`
+    : '';
+  return `预计需要 ${total} 积分：${calculation}${surcharge}`;
 };
 
 export type CanvasWorkflowCreditEstimate = {
@@ -331,6 +470,7 @@ export type CanvasWorkflowCreditEstimate = {
   videoCredits: number;
   llmCredits: number;
   totalCredits: number;
+  pricingAvailable?: false;
 };
 
 type CanvasWorkflowCreditOptions = {
@@ -338,6 +478,10 @@ type CanvasWorkflowCreditOptions = {
   resolveImagePricingIdentity?: (node: CanvasWorkflowTemplate['nodes'][number]) => {
     model?: string;
     capabilities?: readonly string[];
+  } | undefined;
+  resolveVideoPricingIdentity?: (node: CanvasWorkflowTemplate['nodes'][number]) => {
+    model?: string;
+    serverDriven?: boolean;
   } | undefined;
   pricing?: CanvasAiCreditPricing | null;
 };
@@ -392,17 +536,20 @@ export const estimateCanvasWorkflowCredits = (
   }, { outputCount: 0, credits: 0 });
   const videoNodes = workflow.nodes.filter(node => node.ai?.type === 'video-generator');
   const videoEstimate = videoNodes.reduce((summary, node) => {
+    const pricingIdentity = options.resolveVideoPricingIdentity?.(node);
     const estimate = estimateCanvasVideoGenerationCredits({
-      model: node.ai?.model,
+      model: pricingIdentity?.model || node.ai?.model,
       count: node.ai?.count,
       duration: node.ai?.duration,
       resolution: node.ai?.resolution,
+      serverDriven: pricingIdentity?.serverDriven,
     }, options.pricing);
     return {
       outputCount: summary.outputCount + estimate.outputCount,
       credits: summary.credits + estimate.totalCredits,
+      available: summary.available && estimate.available,
     };
-  }, { outputCount: 0, credits: 0 });
+  }, { outputCount: 0, credits: 0, available: true });
   const llmNodeCount = workflow.nodes.filter(isWorkflowLlmNode).length;
   const llmUnitCredits = getCanvasTextAgentRequestCredits(options.pricing);
   const llmCredits = llmNodeCount * llmUnitCredits;
@@ -417,5 +564,6 @@ export const estimateCanvasWorkflowCredits = (
     videoCredits: videoEstimate.credits,
     llmCredits,
     totalCredits: imageEstimate.credits + videoEstimate.credits + llmCredits,
+    ...(!videoEstimate.available ? { pricingAvailable: false as const } : {}),
   };
 };

@@ -4019,7 +4019,11 @@ function MainApp() {
   const getCanvasImageInputBufferItemsForNode = (
     canvasItem: CanvasImageItem,
     sourceItems: CanvasImageItem[] = canvasItemsRef.current
-  ) => { return getCanvasImageInputBufferItemsForNodeImpl({ getCanvasInputItemsForNode }, canvasItem, sourceItems); };
+  ) => { return getCanvasImageInputBufferItemsForNodeImpl({
+    canvasAiCloudImageModels,
+    canvasAiCredentialSource,
+    getCanvasInputItemsForNode,
+  }, canvasItem, sourceItems); };
 
   const stopTemporaryReferenceShares = async (shares: TemporaryReferenceShare[]) => { return stopTemporaryReferenceSharesImpl({}, shares); };
 
@@ -4533,11 +4537,11 @@ function MainApp() {
 
   const chooseLocalVideosForCanvasGenerator = async (targetId: string) => { return chooseLocalVideosForCanvasGeneratorImpl({ appendCanvasItems, canvasItemsRef, connectCanvasItemsToGenerator, createCanvasVideoItemFromPath, showToast }, targetId); };
 
-  const chooseLocalAudiosForCanvasGenerator = async (targetId: string) => { return chooseLocalAudiosForCanvasGeneratorImpl({ appendCanvasItems, canvasItemsRef, connectCanvasItemsToGenerator, createCanvasAudioItemFromPath, showToast }, targetId); };
+  const chooseLocalAudiosForCanvasGenerator = async (targetId: string) => { return chooseLocalAudiosForCanvasGeneratorImpl({ appendCanvasItems, canvasAiCloudImageModels, canvasAiCredentialSource, canvasItemsRef, connectCanvasItemsToGenerator, createCanvasAudioItemFromPath, showToast }, targetId); };
 
-  const startPickCanvasImageForGenerator = (targetId: string) => { return startPickCanvasImageForGeneratorImpl({ canvasItemsRef, setCanvasContextMenu, setCanvasInputMenuForId, setCanvasInputPickTargetId, showToast, updateCanvasSelection }, targetId); };
+  const startPickCanvasImageForGenerator = (targetId: string) => { return startPickCanvasImageForGeneratorImpl({ canvasAiCloudImageModels, canvasAiCredentialSource, canvasItemsRef, setCanvasContextMenu, setCanvasInputMenuForId, setCanvasInputPickTargetId, showToast, updateCanvasSelection }, targetId); };
 
-  const pickCanvasImageForGenerator = (sourceId: string, targetId: string) => { return pickCanvasImageForGeneratorImpl({ canReplaceCanvasImageReferenceForTarget, canvasItemsRef, canvasReferenceReplaceTargetRef, connectCanvasItems, replaceCanvasGeneratorReference, setCanvasInputPickTargetId, showToast }, sourceId, targetId); };
+  const pickCanvasImageForGenerator = (sourceId: string, targetId: string) => { return pickCanvasImageForGeneratorImpl({ canReplaceCanvasImageReferenceForTarget, canvasAiCloudImageModels, canvasAiCredentialSource, canvasItemsRef, canvasReferenceReplaceTargetRef, connectCanvasItems, replaceCanvasGeneratorReference, setCanvasInputPickTargetId, showToast }, sourceId, targetId); };
 
   const startCanvasConnectionDrag = (event: React.PointerEvent, sourceId: string) => { return startCanvasConnectionDragImpl({ CANVAS_CONNECTION_HANDLE_OUTSET, autoScrollCanvasNearEdge, canvasConnectionDragRef, canvasItemsRef, canvasSelectedIdsRef, connectCanvasItems, connectCanvasItemsToGenerator, getCanvasItemRenderedBox, getCanvasPointFromClient, setCanvasConnectionDraft, setCanvasContextMenu, setCanvasInteractionActive }, event, sourceId); };
 

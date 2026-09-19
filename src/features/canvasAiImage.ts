@@ -1478,10 +1478,36 @@ export const getCanvasAiVideoReferenceSlotLabels = (
   if (isSeedanceLikeVideoModel(model)) {
     return Array.from({ length: slots.imageSlots }, (_, index) => `参考图${index + 1}`);
   }
-  if (getCanvasAiVideoProviderForModel(model) === 'new-api' && !isSora2VideoModel(model)) {
+  if (isVeo31VideoModel(model)) {
     return ['主体', '场景/背景', '风格/纹理'].slice(0, slots.imageSlots);
   }
   return Array.from({ length: slots.imageSlots }, (_, index) => `参考图${index + 1}`);
+};
+
+export const getCanvasAiVideoReferenceSlotDisplayLabel = (
+  inputIndex: number,
+  slots: { mode: CanvasAiVideoInputMode; imageSlots: number; videoSlots: number; audioSlots: number },
+  imageLabels: readonly string[],
+  resolvedCapabilities?: ResolvedVideoModelCapabilities | null,
+) => {
+  if (slots.mode === 'FLF') return inputIndex === 0 ? '首帧' : '尾帧';
+  const videoIndex = inputIndex - slots.imageSlots;
+  const audioIndex = videoIndex - slots.videoSlots;
+  const isVideo = videoIndex >= 0 && videoIndex < slots.videoSlots;
+  const isAudio = audioIndex >= 0 && audioIndex < slots.audioSlots;
+  const baseLabel = isAudio
+    ? `参考音频${audioIndex + 1}`
+    : isVideo
+      ? `参考视频${videoIndex + 1}`
+      : imageLabels[inputIndex] || `参考图${inputIndex + 1}`;
+  const isRequired = resolvedCapabilities?.source === 'server' && (
+    isAudio
+      ? audioIndex < resolvedCapabilities.minReferenceAudios
+      : isVideo
+        ? videoIndex < resolvedCapabilities.minReferenceVideos
+        : inputIndex < resolvedCapabilities.minReferenceImages
+  );
+  return isRequired ? `${baseLabel} · 必需` : baseLabel;
 };
 
 export const validateCanvasAiVideoReferences = (

@@ -1175,6 +1175,7 @@ describe('NewAPI video routing', () => {
       referenceImages: 9, referenceVideos: 0, referenceAudios: 3,
       minReferenceImages: 1, minReferenceVideos: 0, minReferenceAudios: 0,
       supportsFirstFrame: false, supportsLastFrame: false, supportsFirstLastFrame: false,
+      supportsTextPrompt: true,
       firstLastFrame: false, inputModes: ['REF'], outputFormats: [], maxOutputs: 4,
       supportsReferenceImages: true, supportsReferenceVideo: false, supportsAudioReference: true,
     };
@@ -1190,6 +1191,7 @@ describe('NewAPI video routing', () => {
       referenceImages: 9, referenceVideos: 0, referenceAudios: 0,
       minReferenceImages: 0, minReferenceVideos: 0, minReferenceAudios: 0,
       supportsFirstFrame: false, supportsLastFrame: false, supportsFirstLastFrame: false,
+      supportsTextPrompt: true,
       firstLastFrame: false, inputModes: ['REF'], outputFormats: [], maxOutputs: 1,
       supportsReferenceImages: true, supportsReferenceVideo: false, supportsAudioReference: false,
     };

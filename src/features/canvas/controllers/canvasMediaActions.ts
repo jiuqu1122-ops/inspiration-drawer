@@ -3,6 +3,7 @@ import React from 'react';
 import { flushSync } from 'react-dom';
 import { createImageThumbnailInWebview,getVideoThumbnail } from '../../../services/mediaThumbnail';
 import { BufferItem } from '../../../types';
+import type { CloudImageModelsResult } from '../../../types/license';
 import type { CanvasAiOutputThumbnailJob,ImageThumbnailFileResult } from '../../../types/canvasMedia';
 import type { CanvasBrushCropRect,CanvasBrushEditorMode,CanvasBrushEditorOpenOptions,CanvasBrushEditorState,CanvasBrushPoint,CanvasBrushShapeMode,CanvasContextMenuState } from '../../../types/canvasRuntime';
 import type { TextInputDialogOptions } from '../../../types/dialogs';
@@ -22,6 +23,8 @@ import { getCanvasAiMediaType } from '../../canvasAiRuntime';
 import { cloneCanvasAiForPaste } from '../../canvasClipboard';
 import { createDefaultCanvasGroupName,getCanvasGroupId,getCommonCanvasGroup,remapCanvasGroupsForPaste } from '../../canvasGroups';
 import { CANVAS_EDGE_AUTOSCROLL_MARGIN,CANVAS_EDGE_AUTOSCROLL_SPEED,CANVAS_GROW_CHUNK,type CanvasAiGeneratedOutput,type CanvasImageItem,type CanvasItemBox,type CanvasResizeCorner,type DesignAgentConfig } from '../../canvasModel';
+import type { CanvasAiCredentialSource } from '../../canvasModel';
+import { resolveCanvasWalletVideoModelContext } from '../../canvasWalletVideoModelContext';
 import { clamp } from '../../common';
 import { normalizeDesignAgentConfig } from '../../designAgentNode';
 import { writeImageSourceToClipboard,writeLocalImageFileToClipboard } from '../../imageClipboard';
@@ -1846,8 +1849,15 @@ export const getCanvasTextInputsForNodeImpl = (ctx: Pick<canvasMediaActionContex
 
 };
 
-export const getCanvasImageInputBufferItemsForNodeImpl = (ctx: Pick<canvasMediaActionContext, 'getCanvasInputItemsForNode'>, canvasItem: CanvasImageItem, sourceItems: CanvasImageItem[]) => {
-  const { getCanvasInputItemsForNode } = ctx;
+export const getCanvasImageInputBufferItemsForNodeImpl = (
+  ctx: Pick<canvasMediaActionContext, 'getCanvasInputItemsForNode'> & {
+    canvasAiCloudImageModels?: CloudImageModelsResult | null;
+    canvasAiCredentialSource?: CanvasAiCredentialSource;
+  },
+  canvasItem: CanvasImageItem,
+  sourceItems: CanvasImageItem[],
+) => {
+  const { canvasAiCloudImageModels, canvasAiCredentialSource = 'local', getCanvasInputItemsForNode } = ctx;
     const mediaInputs: BufferItem[] = [];
     const isVideoGenerator = canvasItem.ai?.type === 'video-generator';
     const isImageFusion = isCanvasImageFusionAi(canvasItem.ai);
@@ -1863,13 +1873,22 @@ export const getCanvasImageInputBufferItemsForNodeImpl = (ctx: Pick<canvasMediaA
         canonical: structuredCapabilities,
       })
       : null;
-    const resolvedVideoCapabilities = structuredCapabilities && isVideoGenerator
-      ? resolveCanvasAiVideoModelCapabilities({
+    const walletVideoContext = isVideoGenerator
+      ? resolveCanvasWalletVideoModelContext(
+        canvasItem.ai,
+        canvasAiCloudImageModels,
+        canvasAiCredentialSource,
+      )
+      : null;
+    const resolvedVideoCapabilities = walletVideoContext?.serverDriven
+      ? walletVideoContext.capabilities
+      : structuredCapabilities && isVideoGenerator
+        ? resolveCanvasAiVideoModelCapabilities({
         provider: selectedCandidate?.provider || canvasItem.ai?.provider,
         model: selectedCandidate?.model || canvasItem.ai?.model,
         canonical: structuredCapabilities,
-      })
-      : null;
+        })
+        : null;
     const canvasVideoReferenceSlots = isVideoGenerator
       ? getCanvasAiVideoReferenceSlots(
         canvasItem.ai?.model,

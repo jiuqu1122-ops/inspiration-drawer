@@ -344,6 +344,8 @@ pub struct CloudAiModelCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     supports_first_last_frame: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_text_prompt: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     supported_input_modes: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     supported_output_formats: Option<Vec<String>>,
@@ -390,6 +392,8 @@ pub struct CloudImageModelPricing {
 #[serde(rename_all = "camelCase")]
 pub struct CloudVideoModelPricing {
     model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    billing_type: Option<String>,
     credits: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     credits_per_second: Option<String>,
@@ -1779,7 +1783,12 @@ mod tests {
                     "credits2k": "18",
                     "credits4k": "20"
                 }],
-                "videoModels": [],
+                "videoModels": [{
+                    "model": "flat-video",
+                    "billingType": "video_flat",
+                    "credits": "0",
+                    "creditsPerVideo": "15"
+                }],
                 "updatedAt": "2026-07-27T00:00:00.000Z"
             }
         }))
@@ -1796,6 +1805,10 @@ mod tests {
         assert_eq!(
             value["pricing"]["inspirationAnalysisCredits"],
             serde_json::json!("3")
+        );
+        assert_eq!(
+            value["pricing"]["videoModels"][0]["billingType"],
+            serde_json::json!("video_flat")
         );
     }
 
@@ -1828,6 +1841,7 @@ mod tests {
                         "4K": ["2880x2880", "3840x2160"]
                     },
                     "maxReferenceImages": 7,
+                    "supportsTextPrompt": false,
                     "supportedOutputFormats": ["jpg", "png"]
                 }
             }]
@@ -1842,6 +1856,10 @@ mod tests {
         assert_eq!(
             value["catalog"][0]["capabilities"]["aspectRatiosByResolution"]["4K"],
             serde_json::json!(["2880x2880", "3840x2160"])
+        );
+        assert_eq!(
+            value["catalog"][0]["capabilities"]["supportsTextPrompt"],
+            serde_json::json!(false)
         );
         assert!(value["catalog"][0].get("provider").is_none());
         assert_eq!(

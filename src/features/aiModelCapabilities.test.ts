@@ -22,10 +22,16 @@ import {
 import {
   filterCanvasAiVideoModelCandidates,
   getCanvasAiVideoModelCandidates,
+  getCanvasAiVideoReferenceSlotDisplayLabel,
+  getCanvasAiVideoReferenceSlotLabels,
   getCanvasAiVideoReferenceSlots,
   resolveCanvasAiImageModelCapabilities,
   resolveCanvasAiVideoModelCapabilities,
 } from './canvasAiImage';
+import {
+  reconcileCanvasAiModelsWithCatalog,
+  resolveCanvasWalletVideoModelContext,
+} from './canvasWalletVideoModelContext';
 
 const catalogSnapshot = (): CloudImageModelsResult => ({
   provider: 'NEW_API',
@@ -190,14 +196,171 @@ describe('server-driven AI model capabilities', () => {
 
   it('lets server input modes disable the legacy first/last-frame mode', () => {
     const resolved = resolveVideoModelCapabilities({
-      canonical: { supportedInputModes: ['reference'] },
+      canonical: {
+        supportsFirstFrame: true,
+        supportsLastFrame: true,
+        supportsFirstLastFrame: false,
+        supportsTextPrompt: false,
+        supportedInputModes: ['TEXT', 'reference'],
+      },
       legacy: {
         supportsFirstLastFrame: true,
         supportedInputModes: ['reference', 'first_last_frame'],
       },
     });
     expect(resolved.firstLastFrame).toBe(false);
-    expect(resolved.inputModes).toEqual(['reference']);
+    expect(resolved.supportsTextPrompt).toBe(false);
+    expect(resolved.inputModes).toEqual(['TEXT', 'reference']);
+  });
+
+  it('uses one canonical wallet context for the real 9-image / 3-video / 3-audio model', () => {
+    const snapshot: CloudImageModelsResult = {
+      provider: 'NEW_API',
+      models: [],
+      catalog: [{
+        id: 'sd2-fast-realperson',
+        displayName: 'sd2.0-fast-900-卡真人',
+        modality: 'video',
+        aliases: ['sd2.0-fast-900-卡真人'],
+        capabilities: {
+          resolutions: ['720p'],
+          durationMode: 'range',
+          durationRange: { min: 4, max: 15, step: 1 },
+          defaultDurationSeconds: 5,
+          aspectRatioMode: 'list',
+          aspectRatios: ['1:1', '9:16', '16:9'],
+          minReferenceImages: 0,
+          maxReferenceImages: 9,
+          minReferenceVideos: 0,
+          maxReferenceVideos: 3,
+          minReferenceAudios: 0,
+          maxReferenceAudios: 3,
+          supportsReferenceImages: true,
+          supportsReferenceVideo: true,
+          supportsReferenceAudio: true,
+          supportsFirstFrame: true,
+          supportsLastFrame: true,
+          supportsFirstLastFrame: false,
+          supportsTextPrompt: true,
+          supportedInputModes: ['TEXT', 'IMAGE', 'REF'],
+          maxOutputs: 4,
+        },
+      }],
+      channels: [],
+      videoChannels: [{
+        id: 'new-api-video',
+        name: 'New API video',
+        provider: 'NEW_API',
+        models: ['sd2.0-fast-900-卡真人'],
+      }],
+    };
+    const context = resolveCanvasWalletVideoModelContext({
+      type: 'video-generator',
+      provider: 'new-api',
+      providerChannelId: 'new-api-video',
+      credentialSource: 'wallet',
+      model: 'sd2.0-fast-900-卡真人',
+      providerCandidates: [{
+        source: 'wallet',
+        provider: 'new-api',
+        providerChannelId: 'new-api-video',
+        model: 'sd2.0-fast-900-卡真人',
+      }],
+    }, snapshot, 'wallet');
+
+    expect(context.capabilityStatus).toBe('resolved');
+    expect(context.canonicalModelId).toBe('sd2-fast-realperson');
+    expect(context.pricingModelId).toBe('sd2-fast-realperson');
+    expect(context.capabilities).toMatchObject({
+      source: 'server',
+      resolutions: ['720p'],
+      durations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      aspectRatios: ['1:1', '9:16', '16:9'],
+      referenceImages: 9,
+      referenceVideos: 3,
+      referenceAudios: 3,
+      firstLastFrame: false,
+      maxOutputs: 4,
+    });
+    const canonicalCandidateContext = resolveCanvasWalletVideoModelContext({
+      type: 'video-generator',
+      provider: 'new-api',
+      credentialSource: 'wallet',
+      model: 'obsolete-upstream-name',
+      providerCandidates: [{
+        source: 'wallet',
+        provider: 'new-api',
+        model: 'obsolete-upstream-name',
+        canonicalModelId: 'sd2-fast-realperson',
+      }],
+    }, snapshot, 'wallet');
+    expect(canonicalCandidateContext.canonicalModelId).toBe('sd2-fast-realperson');
+    const slots = getCanvasAiVideoReferenceSlots(
+      context.canonicalModelId,
+      'REF',
+      context.selectedCandidate?.provider,
+      context.capabilities,
+    );
+    const imageLabels = getCanvasAiVideoReferenceSlotLabels(
+      context.canonicalModelId,
+      'REF',
+      context.selectedCandidate?.provider,
+      context.capabilities,
+    );
+    const labels = Array.from({ length: 15 }, (_, index) => (
+      getCanvasAiVideoReferenceSlotDisplayLabel(index, slots, imageLabels, context.capabilities)
+    ));
+    expect(labels.slice(0, 9)).toEqual(Array.from({ length: 9 }, (_, index) => `参考图${index + 1}`));
+    expect(labels.slice(9, 12)).toEqual(['参考视频1', '参考视频2', '参考视频3']);
+    expect(labels.slice(12)).toEqual(['参考音频1', '参考音频2', '参考音频3']);
+    expect(labels).not.toContain('主体');
+
+    const migrated = reconcileCanvasAiModelsWithCatalog([
+      {
+        ...generatorNode('legacy-video', 'video-generator', 'sd2.0-fast-900-卡真人'),
+        ai: {
+          type: 'video-generator',
+          provider: 'new-api',
+          credentialSource: 'wallet',
+          model: 'sd2.0-fast-900-卡真人',
+          providerCandidates: [{
+            source: 'wallet',
+            provider: 'new-api',
+            model: 'sd2.0-fast-900-卡真人',
+          }],
+        },
+        inputs: ['keep-connected-reference'],
+      },
+    ], snapshot);
+    expect(migrated[0].ai?.model).toBe('sd2-fast-realperson');
+    expect(migrated[0].ai?.providerCandidates?.[0]).toMatchObject({
+      canonicalModelId: 'sd2-fast-realperson',
+      modelCapabilities: { maxReferenceImages: 9, maxReferenceVideos: 3, maxReferenceAudios: 3 },
+    });
+    expect(migrated[0].inputs).toEqual(['keep-connected-reference']);
+  });
+
+  it('marks an unresolved wallet catalog model unavailable instead of reviving Veo legacy slots', () => {
+    const snapshot: CloudImageModelsResult = {
+      provider: 'NEW_API', models: [], catalog: [], channels: [], videoChannels: [],
+    };
+    const context = resolveCanvasWalletVideoModelContext({
+      type: 'video-generator', provider: 'new-api', credentialSource: 'wallet', model: 'veo-3.1',
+    }, snapshot, 'wallet');
+    expect(context.serverDriven).toBe(true);
+    expect(context.capabilityStatus).toBe('unresolved');
+    expect(context.capabilities.source).toBe('server');
+    expect(getCanvasAiVideoReferenceSlotLabels(
+      'veo-3.1', 'REF', 'new-api', context.capabilities,
+    )).toEqual([]);
+
+    const localContext = resolveCanvasWalletVideoModelContext({
+      type: 'video-generator', provider: 'new-api', credentialSource: 'local', model: 'veo-3.1',
+    }, snapshot, 'wallet');
+    expect(localContext.capabilityStatus).toBe('legacy');
+    expect(getCanvasAiVideoReferenceSlotLabels(
+      'veo-3.1', 'REF', 'new-api', localContext.capabilities,
+    )).toEqual(['主体', '场景/背景', '风格/纹理']);
   });
 
   it('preserves Banana, Image2, Seedance and MiniMax legacy behaviour without server data', () => {
@@ -283,6 +446,11 @@ describe('server-driven AI model capabilities', () => {
     expect(resolved.minReferenceAudios).toBe(1);
     expect(resolved.referenceVideos).toBe(0);
     expect(resolved.firstLastFrame).toBe(false);
+    const slots = getCanvasAiVideoReferenceSlots('server-model', 'REF', 'new-api', resolved);
+    const labels = getCanvasAiVideoReferenceSlotLabels('server-model', 'REF', 'new-api', resolved);
+    expect(getCanvasAiVideoReferenceSlotDisplayLabel(0, slots, labels, resolved)).toBe('参考图1 · 必需');
+    expect(getCanvasAiVideoReferenceSlotDisplayLabel(1, slots, labels, resolved)).toBe('参考图2');
+    expect(getCanvasAiVideoReferenceSlotDisplayLabel(9, slots, labels, resolved)).toBe('参考音频1 · 必需');
   });
 
   it('builds range, list, and fixed duration choices without model-name inference', () => {

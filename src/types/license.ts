@@ -128,6 +128,7 @@ export type AiModelCapabilities = {
   supportsFirstFrame?: boolean;
   supportsLastFrame?: boolean;
   supportsFirstLastFrame?: boolean;
+  supportsTextPrompt?: boolean;
   supportedInputModes?: string[];
   supportedOutputFormats?: string[];
   supportsTransparentBackground?: boolean;

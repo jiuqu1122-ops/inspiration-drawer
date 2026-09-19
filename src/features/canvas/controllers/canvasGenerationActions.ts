@@ -24,6 +24,7 @@ import { claimCanvasAiRun,createCanvasAiClientRequestId,releaseCanvasAiRun } fro
 import { getCanvasAiMediaType,getCanvasAiNodeTitle,isCanvasAiGeneratorType } from '../../canvasAiRuntime';
 import { enhancementEstimateCache,getCanvasRifeRateRequest,isCanvasAiEnhancementType,isRifeFixed2xMode,type QuickVideoEnhancementResult,type RealEsrganEnhancementResult,type RifeFrameInterpolationResult,type VideoCfrNormalizationResult } from '../../canvasLocalMediaTools';
 import { type CanvasAiCredentialSource,type CanvasAiGeneratedOutput,type CanvasAiModelCandidate,type CanvasAiProvider,type CanvasImageItem,type CanvasItemBox } from '../../canvasModel';
+import { resolveCanvasWalletVideoModelContext } from '../../canvasWalletVideoModelContext';
 import { reorderCanvasInputs } from '../../canvasReferenceInputs';
 import { clamp } from '../../common';
 import { findCanvasImageModelChoice,resolveCanvasImageRequestSettings } from '../canvasImageRequestSettings';
@@ -36,6 +37,9 @@ type TemporaryReferenceShare = {
 };
 
 type StructuredModelCapabilities = NonNullable<CanvasAiModelCandidate['modelCapabilities']>;
+type WalletVideoCapabilityContext = Pick<canvasGenerationActionContext,
+  'canvasAiCloudImageModels' | 'canvasAiCredentialSource'
+>;
 
 const getActiveStructuredCapabilities = (target?: CanvasImageItem | null) => {
   const candidates = target?.ai?.providerCandidates || [];
@@ -61,16 +65,30 @@ const supportsStructuredReference = (
   return explicitLimits.length > 0 ? Math.max(...explicitLimits) > 0 : legacyFallback;
 };
 
-export const chooseLocalAudiosForCanvasGeneratorImpl = async (ctx: Pick<canvasGenerationActionContext, 'appendCanvasItems' | 'canvasItemsRef' | 'connectCanvasItemsToGenerator' | 'createCanvasAudioItemFromPath' | 'showToast'>, targetId: string) => {
+const getServerDrivenVideoCapabilities = (
+  ctx: WalletVideoCapabilityContext,
+  target?: CanvasImageItem | null,
+) => {
+  if (target?.ai?.type !== 'video-generator') return null;
+  const context = resolveCanvasWalletVideoModelContext(
+    target.ai,
+    ctx.canvasAiCloudImageModels,
+    ctx.canvasAiCredentialSource,
+  );
+  return context.serverDriven ? context.capabilities : null;
+};
+
+export const chooseLocalAudiosForCanvasGeneratorImpl = async (ctx: Pick<canvasGenerationActionContext, 'appendCanvasItems' | 'canvasAiCloudImageModels' | 'canvasAiCredentialSource' | 'canvasItemsRef' | 'connectCanvasItemsToGenerator' | 'createCanvasAudioItemFromPath' | 'showToast'>, targetId: string) => {
   const { appendCanvasItems, canvasItemsRef, connectCanvasItemsToGenerator, createCanvasAudioItemFromPath, showToast } = ctx;
     const target = canvasItemsRef.current.find(item => item.id === targetId);
+    const serverCapabilities = getServerDrivenVideoCapabilities(ctx, target);
     const structuredCapabilities = getActiveStructuredCapabilities(target);
     const explicitAudioLimits = structuredCapabilities.flatMap(capabilities => (
       capabilities?.maxReferenceAudios !== undefined
         ? [Number(capabilities.maxReferenceAudios)]
         : []
     ));
-    const supportsAudioReference = supportsStructuredReference(
+    const supportsAudioReference = serverCapabilities?.supportsAudioReference ?? supportsStructuredReference(
       structuredCapabilities as StructuredModelCapabilities[],
       'supportsAudioReference',
       'maxReferenceAudios',
@@ -85,9 +103,11 @@ export const chooseLocalAudiosForCanvasGeneratorImpl = async (ctx: Pick<canvasGe
       });
       const paths = (Array.isArray(selected) ? selected : selected ? [selected] : [])
         .filter((value): value is string => typeof value === 'string' && !!value)
-        .slice(0, explicitAudioLimits.length > 0
-          ? Math.max(...explicitAudioLimits)
-          : 3);
+        .slice(0, serverCapabilities
+          ? serverCapabilities.referenceAudios
+          : explicitAudioLimits.length > 0
+            ? Math.max(...explicitAudioLimits)
+            : 3);
       if (paths.length === 0) return;
       const created = await Promise.all(paths.map((path, index) => createCanvasAudioItemFromPath(path, index)));
       const audios = created.filter((item): item is CanvasImageItem => !!item).map((item, index) => ({
@@ -108,12 +128,13 @@ export const chooseLocalAudiosForCanvasGeneratorImpl = async (ctx: Pick<canvasGe
 
 };
 
-export const startPickCanvasImageForGeneratorImpl = (ctx: Pick<canvasGenerationActionContext, 'canvasItemsRef' | 'setCanvasContextMenu' | 'setCanvasInputMenuForId' | 'setCanvasInputPickTargetId' | 'showToast' | 'updateCanvasSelection'>, targetId: string) => {
+export const startPickCanvasImageForGeneratorImpl = (ctx: Pick<canvasGenerationActionContext, 'canvasAiCloudImageModels' | 'canvasAiCredentialSource' | 'canvasItemsRef' | 'setCanvasContextMenu' | 'setCanvasInputMenuForId' | 'setCanvasInputPickTargetId' | 'showToast' | 'updateCanvasSelection'>, targetId: string) => {
   const { canvasItemsRef, setCanvasContextMenu, setCanvasInputMenuForId, setCanvasInputPickTargetId, showToast, updateCanvasSelection } = ctx;
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !canUseCanvasItemAsAiTarget(target)) return;
+    const serverCapabilities = getServerDrivenVideoCapabilities(ctx, target);
     const structuredVideoCapabilities = getActiveStructuredCapabilities(target);
-    const allowImageReference = supportsStructuredReference(
+    const allowImageReference = serverCapabilities?.supportsReferenceImages ?? supportsStructuredReference(
       structuredVideoCapabilities,
       'supportsReferenceImages',
       'maxReferenceImages',
@@ -121,20 +142,20 @@ export const startPickCanvasImageForGeneratorImpl = (ctx: Pick<canvasGenerationA
     );
     const allowVideoReference = target.ai?.type === 'video-generator'
       && target.ai?.videoInputMode !== 'FLF'
-      && supportsStructuredReference(
+      && (serverCapabilities?.supportsReferenceVideo ?? supportsStructuredReference(
         structuredVideoCapabilities,
         'supportsReferenceVideo',
         'maxReferenceVideos',
         true,
-      );
+      ));
     const allowAudioReference = target.ai?.type === 'video-generator'
       && target.ai.videoInputMode !== 'FLF'
-      && supportsStructuredReference(
+      && (serverCapabilities?.supportsAudioReference ?? supportsStructuredReference(
         structuredVideoCapabilities,
         'supportsAudioReference',
         'maxReferenceAudios',
         isSeedanceLikeVideoModel(target.ai.model),
-      );
+      ));
     const isFrameInterpolationTarget = target.ai?.type === 'frame-interpolation';
     const isVideoEnhancementTarget = target.ai?.type === 'video-enhancement';
     const isImageEnhancementTarget = target.ai?.type === 'image-enhancement';
@@ -158,12 +179,13 @@ export const startPickCanvasImageForGeneratorImpl = (ctx: Pick<canvasGenerationA
 
 };
 
-export const pickCanvasImageForGeneratorImpl = (ctx: Pick<canvasGenerationActionContext, 'canReplaceCanvasImageReferenceForTarget' | 'canvasItemsRef' | 'canvasReferenceReplaceTargetRef' | 'connectCanvasItems' | 'replaceCanvasGeneratorReference' | 'setCanvasInputPickTargetId' | 'showToast'>, sourceId: string, targetId: string) => {
+export const pickCanvasImageForGeneratorImpl = (ctx: Pick<canvasGenerationActionContext, 'canReplaceCanvasImageReferenceForTarget' | 'canvasAiCloudImageModels' | 'canvasAiCredentialSource' | 'canvasItemsRef' | 'canvasReferenceReplaceTargetRef' | 'connectCanvasItems' | 'replaceCanvasGeneratorReference' | 'setCanvasInputPickTargetId' | 'showToast'>, sourceId: string, targetId: string) => {
   const { canReplaceCanvasImageReferenceForTarget, canvasItemsRef, canvasReferenceReplaceTargetRef, connectCanvasItems, replaceCanvasGeneratorReference, setCanvasInputPickTargetId, showToast } = ctx;
     const source = canvasItemsRef.current.find(item => item.id === sourceId);
     const target = canvasItemsRef.current.find(item => item.id === targetId);
+    const serverCapabilities = getServerDrivenVideoCapabilities(ctx, target);
     const structuredVideoCapabilities = getActiveStructuredCapabilities(target);
-    const allowImageReference = supportsStructuredReference(
+    const allowImageReference = serverCapabilities?.supportsReferenceImages ?? supportsStructuredReference(
       structuredVideoCapabilities,
       'supportsReferenceImages',
       'maxReferenceImages',
@@ -171,20 +193,20 @@ export const pickCanvasImageForGeneratorImpl = (ctx: Pick<canvasGenerationAction
     );
     const allowVideoReference = target?.ai?.type === 'video-generator'
       && target.ai.videoInputMode !== 'FLF'
-      && supportsStructuredReference(
+      && (serverCapabilities?.supportsReferenceVideo ?? supportsStructuredReference(
         structuredVideoCapabilities,
         'supportsReferenceVideo',
         'maxReferenceVideos',
         true,
-      );
+      ));
     const allowAudioReference = target?.ai?.type === 'video-generator'
       && target.ai.videoInputMode !== 'FLF'
-      && supportsStructuredReference(
+      && (serverCapabilities?.supportsAudioReference ?? supportsStructuredReference(
         structuredVideoCapabilities,
         'supportsAudioReference',
         'maxReferenceAudios',
         isSeedanceLikeVideoModel(target.ai.model),
-      );
+      ));
     const isFrameInterpolationTarget = target?.ai?.type === 'frame-interpolation';
     const isVideoEnhancementTarget = target?.ai?.type === 'video-enhancement';
     const isImageEnhancementTarget = target?.ai?.type === 'image-enhancement';
@@ -635,6 +657,13 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       ? canvasAiCredentialSource
       : undefined;
     const targetProvider = normalizeCanvasAiProvider(targetAi.provider || '');
+    const walletVideoModelContext = mediaType === 'video'
+      ? resolveCanvasWalletVideoModelContext(
+        targetAi,
+        canvasAiCloudImageModels,
+        canvasAiCredentialSource,
+      )
+      : null;
     const sourceChoices = mediaType === 'image'
       ? canvasAiUnifiedImageModelOptions
         .map(option => parseCanvasAiModelChoiceValue(option.value))
@@ -642,7 +671,8 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
           Boolean(choice && choice.source === imageCredentialSource)
         ))
       : [];
-    const targetCanonicalModelId = targetAi.providerCandidates?.find(candidate => (
+    const targetCanonicalModelId = walletVideoModelContext?.canonicalModelId
+      || targetAi.providerCandidates?.find(candidate => (
       candidate.canonicalModelId
       && candidate.provider === targetProvider
       && (!targetAi.providerChannelId || candidate.providerChannelId === targetAi.providerChannelId)
@@ -670,7 +700,9 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       && (!targetAi.providerChannelId || candidate.providerChannelId === targetAi.providerChannelId)
     )) || matchingSourceChoice?.providerCandidates?.find(candidate => candidate.source === imageCredentialSource);
     const storedVideoCandidates = mediaType === 'video'
-      ? filterCanvasAiVideoModelCandidates(targetAi.model, targetAi.providerCandidates)
+      ? walletVideoModelContext?.serverDriven
+        ? walletVideoModelContext.providerCandidates
+        : filterCanvasAiVideoModelCandidates(targetAi.model, targetAi.providerCandidates)
       : [];
     const resolvedVideoCandidates = mediaType === 'video' && isMiniMaxH3VideoModel(targetAi.model)
       ? (() => {
@@ -751,6 +783,16 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
     };
     const manualPrompt = (target.item.content || (targetAi.presetPrompt ? '' : targetAi.prompt || '')).trim();
     const resultLabel = options.toastLabel || 'AI 节点';
+    if (walletVideoModelContext?.serverDriven
+      && walletVideoModelContext.capabilityStatus === 'unresolved') {
+      const errorSummary = '模型能力尚未加载，请刷新模型';
+      (options.forceUpdateAi || options.updateAi)({ status: 'error', error: errorSummary });
+      if (options.showResultToast !== false) {
+        showToast(`${resultLabel}生成失败：${errorSummary}`);
+        notifyCanvasAiGenerationResult({ status: 'error', label: resultLabel, mediaType, error: errorSummary });
+      }
+      return [] as CanvasAiGeneratedOutput[];
+    }
     const isImageFusion = mediaType === 'image' && isCanvasImageFusionAi(targetAi);
     const imageFusionConfig = isImageFusion
       ? normalizeCanvasImageFusionConfig(targetAi.imageFusion, target.inputs || [])
@@ -842,7 +884,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         : hasServerCatalogRoute
           ? selectedModel
           : getCanvasAiResolvedModel(provider, selectedModel, mediaType);
-      const selectedCatalogModel = findAiCatalogModel(
+      const selectedCatalogModel = walletVideoModelContext?.catalogModel || findAiCatalogModel(
         getAiCatalogModels(useCloudWallet ? canvasAiCloudImageModels : null, mediaType),
         targetCanonicalModelId
           || selectedProviderCandidates.find(candidate => (
@@ -877,12 +919,14 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         canonical: selectedCatalogModel?.capabilities,
         route: selectedRouteCapabilities,
       });
-      const resolvedVideoCapabilities = resolveCanvasAiVideoModelCapabilities({
-        provider,
-        model: submittedModel,
-        canonical: selectedCatalogModel?.capabilities,
-        route: selectedRouteCapabilities,
-      });
+      const resolvedVideoCapabilities = walletVideoModelContext?.serverDriven
+        ? walletVideoModelContext.capabilities
+        : resolveCanvasAiVideoModelCapabilities({
+          provider,
+          model: submittedModel,
+          canonical: selectedCatalogModel?.capabilities,
+          route: selectedRouteCapabilities,
+        });
       const usePortableWalletReferences = shouldUsePortableWalletImageReferences(
         useCloudWallet,
         mediaType,
@@ -977,6 +1021,10 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         throw new Error(`当前模型至少需要 ${minimumReferenceImages} 张参考图`);
       }
       if (mediaType === 'video' && resolvedVideoCapabilities.source === 'server') {
+        if (!resolvedVideoCapabilities.supportsTextPrompt
+          && inputImages.length + inputVideos.length + inputAudios.length === 0) {
+          throw new Error('当前模型要求至少连接一个媒体输入，不能仅提交文字');
+        }
         if (inputImages.length > resolvedVideoCapabilities.referenceImages) {
           throw new Error(`当前模型最多支持 ${resolvedVideoCapabilities.referenceImages} 张参考图`);
         }

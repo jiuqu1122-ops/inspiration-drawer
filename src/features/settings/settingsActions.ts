@@ -11,7 +11,8 @@ import type { AgentApiBalanceResult,AgentApiConnectionResult,AgentCanvasToolExec
 import { NEW_API_SEEDANCE_2_FAST_MODEL,NEW_API_SEEDANCE_2_MODEL,NEW_API_VIDEO_MODEL_DEFAULT,NEW_API_VIDEO_MODEL_OPTIONS,XAIS_CHAT_VIDEO_MODEL_DEFAULT,getCanvasAiVideoModelOptionValue,isOpenAiLikeCanvasAiProvider,normalizeXaisImage2Model } from '../canvasAiImage';
 import { type CanvasAiCreditPricing } from '../canvasGenerationCredits';
 import { type CanvasAiProvider,type CanvasImageItem } from '../canvasModel';
-import { cacheSuccessfulAiCatalog,getAiCatalogModels,getCachedAiCatalog,reconcileStaleCanvasAiModels } from '../aiModelCapabilities';
+import { cacheSuccessfulAiCatalog,getAiCatalogModels,getCachedAiCatalog } from '../aiModelCapabilities';
+import { reconcileCanvasAiModelsWithCatalog } from '../canvasWalletVideoModelContext';
 import { clamp } from '../common';
 import { type TriggerMode } from '../triggerModel';
 import { type AiAnalysisConfig } from '../visionAnalysisConfig';
@@ -199,7 +200,7 @@ export const refreshCanvasAiOpenAiModelsImpl = async (ctx: Pick<settingsCatalogA
         setCanvasAiCloudImageModels(snapshot);
         if (getAiCatalogModels(snapshot, 'image').length > 0
           || getAiCatalogModels(snapshot, 'video').length > 0) {
-          updateCanvasItemsImmediate(previous => reconcileStaleCanvasAiModels(previous, snapshot));
+          updateCanvasItemsImmediate(previous => reconcileCanvasAiModelsWithCatalog(previous, snapshot));
         }
       } else if (detectedProvider === 'xais-chat') {
         setCanvasAiXaisModels(normalized);

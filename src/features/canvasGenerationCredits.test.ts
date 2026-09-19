@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { CanvasWorkflowTemplate } from './canvasTemplates';
+import { findAiCatalogModel } from './aiModelCapabilities';
 import {
+  describeCanvasVideoCreditEstimate,
   estimateCanvasImageGenerationCredits,
   estimateCanvasTextAgentCredits,
   estimateCanvasVideoGenerationCredits,
   estimateCanvasWorkflowCredits,
   getCanvasImageUnitCredits,
   getCanvasVideoRequestCredits,
+  resolveVideoBillingType,
   shouldShowCanvasGenerationCredits,
 } from './canvasGenerationCredits';
 
@@ -137,7 +140,9 @@ describe('canvas generation credits', () => {
       ...pricing,
       videoDefaultCredits: '320',
       videoModels: [{ model: 'seedance2', credits: '48' }],
-    })).toEqual({
+    })).toMatchObject({
+      available: true,
+      billingType: 'video_second',
       outputCount: 2,
       durationSeconds: 8,
       creditsPerSecond: 48,
@@ -220,7 +225,7 @@ describe('canvas generation credits', () => {
     }, pricing)).toEqual({ outputCount: 1, unitCredits: 15, totalCredits: 15 });
   });
 
-  it('uses dimensional video pricing overrides from the wallet', () => {
+  it('uses mutually exclusive video billing strategies from the wallet', () => {
     const pricing = {
       agentRequestCredits: '7',
       inspirationAnalysisCredits: '3',
@@ -229,19 +234,41 @@ describe('canvas generation credits', () => {
       imageModels: [],
       videoModels: [{
         model: 'kling-video',
-        credits: '2',
-        creditsPerSecond: '3',
-        creditsPerVideo: '5',
-        creditsByDuration: { '10': '40' },
-        creditsByResolution: { '1080p': '8' },
-        creditsByCount: { '3': '200' },
+        billingType: 'video_flat' as const,
+        credits: '0',
+        creditsPerSecond: '999',
+        creditsPerVideo: '15',
       }],
     };
-    expect(getCanvasVideoRequestCredits('kling-video', 10, 2, '1080p', pricing)).toBe(250);
-    expect(getCanvasVideoRequestCredits('kling-video', 10, 3, '720p', pricing)).toBe(200);
+    expect(getCanvasVideoRequestCredits('kling-video', 4, 1, '1080p', pricing)).toBe(15);
+    expect(getCanvasVideoRequestCredits('kling-video', 15, 2, '720p', pricing)).toBe(30);
     expect(estimateCanvasVideoGenerationCredits({
-      model: 'kling-video', count: 2, duration: 10, resolution: '1080p',
-    }, pricing).totalCredits).toBe(250);
+      model: 'kling-video', count: 2, duration: 10, resolution: '1080p', serverDriven: true,
+    }, pricing).totalCredits).toBe(30);
+  });
+
+  it('prices second, duration-tier, and resolution-duration video models separately', () => {
+    const base = {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3', imageDefaultCredits: '55', videoDefaultCredits: '999999', imageModels: [],
+    };
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'second-video', duration: 4, count: 1, serverDriven: true,
+    }, {
+      ...base,
+      videoModels: [{ model: 'second-video', billingType: 'video_second', credits: '15', creditsPerSecond: '15' }],
+    }).totalCredits).toBe(60);
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'duration-video', duration: 10, count: 1, serverDriven: true,
+    }, {
+      ...base,
+      videoModels: [{ model: 'duration-video', billingType: 'video_duration', credits: '0', creditsByDuration: { '10': '80', '15': '110' } }],
+    }).totalCredits).toBe(80);
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'resolution-video', duration: 10, count: 1, resolution: '768P', serverDriven: true,
+    }, {
+      ...base,
+      videoModels: [{ model: 'resolution-video', billingType: 'video_resolution_duration', credits: '0', creditsByResolution: { '768p': '5' } }],
+    }).totalCredits).toBe(50);
   });
 
   it('uses MiniMax H3 native resolution pricing in the client estimate', () => {
@@ -262,7 +289,7 @@ describe('canvas generation credits', () => {
       duration: 5,
       count: 1,
       resolution: '2K',
-    }, pricing).totalCredits).toBe(125);
+    }, pricing).totalCredits).toBe(50);
   });
 
   it('includes MiniMax H3 reference material pricing in the client estimate', () => {
@@ -275,7 +302,7 @@ describe('canvas generation credits', () => {
       videoModels: [{
         model: 'MiniMax-H3',
         credits: '15',
-        creditsByResolution: { '2k': '10' },
+        creditsByResolution: { '768p': '15', '2k': '10' },
         includedReferenceImages: 5,
         creditsPerExtraReferenceImage: '9',
         creditsPerReferenceVideoSecond: '15',
@@ -296,7 +323,69 @@ describe('canvas generation credits', () => {
       duration: 4,
       count: 2,
       resolution: '2K',
-    }, pricing, { imageCount: 6, videoCount: 1 }).totalCredits).toBe(418);
+    }, pricing, { imageCount: 6, videoCount: 1 }).totalCredits).toBe(298);
+  });
+
+  it('fails closed in the UI estimate when canonical pricing is missing', () => {
+    const pricing = {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3', imageDefaultCredits: '55', videoDefaultCredits: '999999',
+      imageModels: [], videoModels: [],
+    };
+    const canonical = estimateCanvasVideoGenerationCredits({
+      model: 'canonical-video', duration: 4, count: 1, serverDriven: true,
+    }, pricing);
+    expect(canonical).toMatchObject({
+      available: false,
+      reason: 'pricing_unavailable',
+      totalCredits: 0,
+    });
+    expect(describeCanvasVideoCreditEstimate(canonical)).toBe('价格未配置');
+    expect(JSON.stringify(canonical)).not.toContain('999999');
+
+    const legacy = estimateCanvasVideoGenerationCredits({
+      model: 'legacy-video', duration: 4, count: 1,
+    }, pricing);
+    expect(legacy).toMatchObject({ available: true, totalCredits: 3_999_996 });
+  });
+
+  it('uses canonical pricing after an upstream alias is resolved through the catalog', () => {
+    const catalog = [{
+      id: 'canonical-video',
+      displayName: 'Canonical Video',
+      modality: 'video' as const,
+      aliases: ['provider/video-v1'],
+    }];
+    const canonicalModel = findAiCatalogModel(catalog, 'provider/video-v1');
+    const estimate = estimateCanvasVideoGenerationCredits({
+      model: canonicalModel?.id,
+      duration: 4,
+      count: 1,
+      serverDriven: true,
+    }, {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3', imageDefaultCredits: '55', videoDefaultCredits: '999999', imageModels: [],
+      videoModels: [{ model: 'canonical-video', billingType: 'video_second', credits: '15', creditsPerSecond: '15' }],
+    });
+    expect(estimate).toMatchObject({ available: true, totalCredits: 60 });
+  });
+
+  it('describes flat and second prices with the correct units', () => {
+    const flat = estimateCanvasVideoGenerationCredits({
+      model: 'flat-video', duration: 4, count: 1, serverDriven: true,
+    }, {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3', imageDefaultCredits: '55', videoDefaultCredits: '999999', imageModels: [],
+      videoModels: [{ model: 'flat-video', billingType: 'video_flat', credits: '0', creditsPerVideo: '15' }],
+    });
+    expect(describeCanvasVideoCreditEstimate(flat)).toBe('预计需要 15 积分：15 积分/条 × 1 条');
+    expect(describeCanvasVideoCreditEstimate(flat)).not.toContain('积分/秒');
+
+    const second = estimateCanvasVideoGenerationCredits({
+      model: 'second-video', duration: 4, count: 1, serverDriven: true,
+    }, {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3', imageDefaultCredits: '55', videoDefaultCredits: '999999', imageModels: [],
+      videoModels: [{ model: 'second-video', billingType: 'video_second', credits: '15', creditsPerSecond: '15' }],
+    });
+    expect(describeCanvasVideoCreditEstimate(second)).toBe('预计需要 60 积分：15 积分/秒 × 4 秒 × 1 条');
+    expect(resolveVideoBillingType({ model: 'old-flat', credits: '15', creditsPerVideo: '15' })).toBe('video_flat');
   });
 
   it('sums image and LLM nodes while ignoring reference and plain-text nodes', () => {

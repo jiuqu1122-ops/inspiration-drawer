@@ -38,6 +38,7 @@ type CanvasGeneratorControlsProps = {
   videoResolutionValue: string;
   videoResolutionOptions: RoundedSelectOption[];
   onVideoResolutionChange: (value: string) => void;
+  videoCapabilitiesAvailable?: boolean;
   videoSupportsFirstLastFrame: boolean;
   videoInputMode: 'REF' | 'FLF';
   onVideoInputModeChange: (value: string) => void;
@@ -75,6 +76,7 @@ export function CanvasGeneratorControls({
   videoResolutionValue,
   videoResolutionOptions,
   onVideoResolutionChange,
+  videoCapabilitiesAvailable = true,
   videoSupportsFirstLastFrame,
   videoInputMode,
   onVideoInputModeChange,
@@ -120,6 +122,15 @@ export function CanvasGeneratorControls({
         menuMinWidth={260}
         menuScale={menuScale}
       />
+      {mediaType === 'video' && !videoCapabilitiesAvailable ? (
+        <span
+          className="truncate text-[10px] font-semibold text-amber-700 dark:text-amber-100"
+          title="模型能力尚未加载，请刷新模型"
+        >
+          能力未加载
+        </span>
+      ) : (
+      <>
       <RoundedSelect
         data-no-drag="true"
         deferChange
@@ -194,7 +205,7 @@ export function CanvasGeneratorControls({
         />
       ) : (
         <>
-          <RoundedSelect
+          {videoResolutionOptions.length > 0 && <RoundedSelect
             data-no-drag="true"
             deferChange
             value={videoResolutionValue}
@@ -209,7 +220,7 @@ export function CanvasGeneratorControls({
             selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
             menuMinWidth={86}
             menuScale={menuScale}
-          />
+          />}
           {videoSupportsFirstLastFrame && (
             <RoundedSelect
               data-no-drag="true"
@@ -228,7 +239,7 @@ export function CanvasGeneratorControls({
               menuScale={menuScale}
             />
           )}
-          <RoundedSelect
+          {videoDurationOptions.length > 0 && <RoundedSelect
             data-no-drag="true"
             deferChange
             value={String(videoDuration)}
@@ -243,7 +254,7 @@ export function CanvasGeneratorControls({
             selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
             menuMinWidth={82}
             menuScale={menuScale}
-          />
+          />}
           <RoundedSelect
             data-no-drag="true"
             data-canvas-edit-control="true"
@@ -279,6 +290,8 @@ export function CanvasGeneratorControls({
         menuMinWidth={86}
         menuScale={menuScale}
       />
+      </>
+      )}
     </>
   );
 }

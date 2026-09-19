@@ -2,17 +2,18 @@ import { CANVAS_AI_DEFAULT_ASPECT_RATIO } from '../../utils/canvasAiAspectRatio'
 import { CANVAS_AI_DEFAULT_OUTPUT_FORMAT,CANVAS_AI_DEFAULT_VIDEO_DURATION,CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,CANVAS_AI_OUTPUT_FORMAT_OPTIONS,CANVAS_AI_VIDEO_DURATIONS,CANVAS_AI_VIDEO_RESOLUTIONS,canvasAiProviderForCloudKind,getCanvasAiDefaultModel,normalizeCanvasAiProvider,parseCanvasAiModelChoiceValue } from '../../utils/canvasAiConfig';
 import { createCanvasAiOutputBufferItem,getCanvasAiOutputDisplaySource,getCanvasAiSuccessfulOutputs,getCanvasItemDisplaySource,getCanvasOriginalImageSource,getCanvasWorkflowTemplateFromNode,isCanvasAgentTextTarget,isCanvasWorkflowReferenceBridge } from '../../utils/canvasItemSelectors';
 import { getCanvasAiOutputPreviewSlots,getCanvasWorkflowGroup } from '../../utils/canvasWorkflowRuntime';
-import { getCanvasAiImageResolutionValues,getCanvasAiImageResolutionValuesForCandidates,getCanvasAiVideoReferenceSlotLabels,getCanvasAiVideoReferenceSlots,getMikotoVideoDurationValues,getMikotoVideoResolutionValues,getMiniMaxH3VideoResolutionValues,getNewApiVideoDurationValues,getNewApiVideoResolutionValues,hydrateCanvasAiModelCandidateCapabilities,isMiniMaxH3VideoModel,isSeedance20VideoModel,isSeedanceLikeVideoModel,normalizeCanvasAiImageResolutionForCandidates,normalizeCanvasAiImageResolutionForModel,normalizeCanvasAiOutputFormat,normalizeMikotoVideoDuration,normalizeMikotoVideoResolution,normalizeMiniMaxH3VideoResolution,normalizeNewApiVideoDurationForModel,normalizeNewApiVideoResolutionForModel,selectCanvasAiImageCandidatesForResolution,supportsCanvasAiTransparentPng } from '../canvasAiImage';
+import { getCanvasAiImageResolutionValues,getCanvasAiImageResolutionValuesForCandidates,getCanvasAiVideoReferenceSlotLabels,getCanvasAiVideoReferenceSlots,getMikotoVideoDurationValues,getMikotoVideoResolutionValues,getMiniMaxH3VideoResolutionValues,getNewApiVideoDurationValues,getNewApiVideoResolutionValues,hydrateCanvasAiModelCandidateCapabilities,isMiniMaxH3VideoModel,isSeedance20VideoModel,isSeedanceLikeVideoModel,isVeo31VideoModel,normalizeCanvasAiImageResolutionForCandidates,normalizeCanvasAiImageResolutionForModel,normalizeCanvasAiOutputFormat,normalizeMikotoVideoDuration,normalizeMikotoVideoResolution,normalizeMiniMaxH3VideoResolution,normalizeNewApiVideoDurationForModel,normalizeNewApiVideoResolutionForModel,selectCanvasAiImageCandidatesForResolution,supportsCanvasAiTransparentPng } from '../canvasAiImage';
 import { CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH,getCanvasAiOutputTileLayout,getCanvasAiPromptAutoHeight } from '../canvasAiNodeLayout';
 import { getCanvasAiVisibleOutputs } from '../canvasAiOutputs';
 import { getCanvasAiMediaType,isCanvasAiGeneratedType,isCanvasAiGeneratorType } from '../canvasAiRuntime';
-import { estimateCanvasImageGenerationCredits,estimateCanvasTextAgentCredits,estimateCanvasVideoGenerationCredits,estimateCanvasWorkflowCredits,shouldShowCanvasGenerationCredits } from '../canvasGenerationCredits';
+import { describeCanvasVideoCreditEstimate,estimateCanvasImageGenerationCredits,estimateCanvasTextAgentCredits,estimateCanvasVideoGenerationCredits,estimateCanvasWorkflowCredits,shouldShowCanvasGenerationCredits } from '../canvasGenerationCredits';
 import type { CanvasImageItem } from '../canvasModel';
 import type { BufferItem } from '../../types';
 import { getCanvasWorkflowInternalSlotNodes,isReplaceableInternalImageSlot } from '../canvasWorkflowInternalSlots';
 import { normalizeCanvasWorkflowUserInput } from '../canvasWorkflowUserInput';
 import { normalizeDesignAgentConfig } from '../designAgentNode';
-import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,getImageAspectRatioOptionsForResolution,getVideoAspectRatioOptions,normalizeCapabilityOption,normalizeVideoDurationSelection,normalizeVideoResolutionSelection,resolveImageModelCapabilities,resolveVideoModelCapabilities } from '../aiModelCapabilities';
+import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,getImageAspectRatioOptionsForResolution,getVideoAspectRatioOptions,hasServerAiCatalog,normalizeCapabilityOption,normalizeVideoDurationSelection,normalizeVideoResolutionSelection,resolveImageModelCapabilities,resolveVideoModelCapabilities } from '../aiModelCapabilities';
+import { resolveCanvasWalletVideoModelContext } from '../canvasWalletVideoModelContext';
 
 export type CanvasNodeViewModelScope = Record<string, any>;
 
@@ -74,34 +75,49 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             }).filter((reference): reference is { id: string; name: string | undefined; source: string } => !!reference)
                             : [];
                           const canvasAiMediaType = getCanvasAiMediaType(canvasItem.ai);
+                          const canvasWalletVideoModelContext = canvasAiMediaType === 'video'
+                            ? resolveCanvasWalletVideoModelContext(
+                              canvasItem.ai,
+                              canvasAiCloudImageModels,
+                              canvasAiCredentialSource,
+                            )
+                            : null;
                           const canvasAiItemProvider = normalizeCanvasAiProvider(
-                            canvasItem.ai?.provider || (canvasAiMediaType === 'video' ? 'xais-chat' : canvasAiProvider)
+                            canvasWalletVideoModelContext?.selectedCandidate?.provider
+                              || canvasItem.ai?.provider
+                              || (canvasAiMediaType === 'video' ? 'xais-chat' : canvasAiProvider)
                           );
-                          const canvasAiItemCatalogCandidate = canvasAiPersistedProviderCandidates.find(candidate => (
+                          const canvasAiItemCatalogCandidate = canvasWalletVideoModelContext?.selectedCandidate
+                            || canvasAiPersistedProviderCandidates.find(candidate => (
                             candidate.canonicalModelId
                             && candidate.provider === canvasAiItemProvider
                             && (candidate.providerChannelId || '') === (canvasAiPersistedProviderChannelId || '')
                           )) || canvasAiPersistedProviderCandidates.find(candidate => (
                             candidate.canonicalModelId && candidate.provider === canvasAiItemProvider
                           ));
-                          const canvasAiItemModel = canvasAiItemCatalogCandidate?.model
-                            || getCanvasAiResolvedModel(canvasAiItemProvider, canvasItem.ai?.model, canvasAiMediaType);
+                          const canvasAiItemModel = canvasWalletVideoModelContext?.serverDriven
+                            ? canvasWalletVideoModelContext.canonicalModelId || String(canvasItem.ai?.model || '').trim()
+                            : canvasAiItemCatalogCandidate?.model
+                              || getCanvasAiResolvedModel(canvasAiItemProvider, canvasItem.ai?.model, canvasAiMediaType);
                           const canvasAiCatalog = canvasAiCredentialSource === 'wallet'
                             && canvasItem.ai?.credentialSource !== 'local'
                             ? getAiCatalogModels(canvasAiCloudImageModels, canvasAiMediaType)
                             : [];
-                          const canvasAiCatalogModel = findAiCatalogModel(
-                            canvasAiCatalog,
-                            canvasAiPersistedProviderCandidates.find(candidate => candidate.canonicalModelId)?.canonicalModelId
-                              || canvasAiItemModel,
-                          );
+                          const canvasAiCatalogModel = canvasWalletVideoModelContext?.catalogModel
+                            || findAiCatalogModel(
+                              canvasAiCatalog,
+                              canvasAiPersistedProviderCandidates.find(candidate => candidate.canonicalModelId)?.canonicalModelId
+                                || canvasAiItemModel,
+                            );
                           const canvasAiSelectedChannel = (canvasAiMediaType === 'video'
                             ? canvasAiCloudImageModels?.videoChannels
                             : canvasAiCloudImageModels?.channels)?.find((channel: { id: string; provider: string }) => (
-                              channel.id === canvasAiPersistedProviderChannelId
+                              channel.id === (canvasWalletVideoModelContext?.selectedCandidate?.providerChannelId
+                                || canvasAiPersistedProviderChannelId)
                               && canvasAiProviderForCloudKind(channel.provider) === canvasAiItemProvider
                             ));
-                          const canvasAiSelectedCandidate = canvasAiPersistedProviderCandidates.find(candidate => (
+                          const canvasAiSelectedCandidate = canvasWalletVideoModelContext?.selectedCandidate
+                            || canvasAiPersistedProviderCandidates.find(candidate => (
                             candidate.provider === canvasAiItemProvider
                             && (candidate.model === canvasAiItemModel
                               || candidate.canonicalModelId === canvasAiCatalogModel?.id)
@@ -115,12 +131,11 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                               canvasAiSelectedCandidate?.model,
                               canvasAiCatalogModel?.id,
                             );
-                          const canvasAiItemProviderCandidates = hydrateCanvasAiModelCandidateCapabilities(
-                            canvasAiPersistedProviderCandidates,
-                            canvasAiMediaType === 'video'
-                              ? canvasAiCloudImageModels?.videoChannels
-                              : canvasAiCloudImageModels?.channels,
-                          );
+                          const canvasAiItemProviderCandidates = canvasWalletVideoModelContext?.providerCandidates
+                            || hydrateCanvasAiModelCandidateCapabilities(
+                              canvasAiPersistedProviderCandidates,
+                              canvasAiCloudImageModels?.channels,
+                            );
                           const canvasAiLegacyCandidateImageResolutionValues = getCanvasAiImageResolutionValuesForCandidates(
                             canvasAiItemProviderCandidates,
                           );
@@ -205,7 +220,8 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             canvasItem.ai?.videoInputMode,
                             canvasAiItemProvider,
                           );
-                          const canvasAiResolvedVideoCapabilities = resolveVideoModelCapabilities({
+                          const canvasAiResolvedVideoCapabilities = canvasWalletVideoModelContext?.capabilities
+                            || resolveVideoModelCapabilities({
                             canonical: canvasAiCatalogModel?.capabilities,
                             route: canvasAiRouteModelCapabilities,
                             legacy: {
@@ -224,7 +240,7 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                                 : ['reference'],
                               maxOutputs: 4,
                             },
-                          });
+                            });
                           const canvasAiVideoResolutionValues = canvasAiResolvedVideoCapabilities.resolutions;
                           const canvasAiVideoResolutionOptions = canvasAiVideoResolutionValues.map(value => ({
                             value,
@@ -261,7 +277,7 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             ? normalizeVideoDurationSelection(
                               canvasAiResolvedVideoCapabilities,
                               canvasItem.ai?.duration,
-                            ) ?? canvasAiVideoDurationValues[0] ?? CANVAS_AI_DEFAULT_VIDEO_DURATION
+                            ) ?? canvasAiVideoDurationValues[0] ?? 0
                             : canvasAiLegacyVideoDuration;
                           const canvasAiVideoSupportsFirstLastFrame = canvasAiResolvedVideoCapabilities.firstLastFrame;
                           const canvasAiSupportsTransparentPng = canvasAiResolvedImageCapabilities.supportsTransparentBackground;
@@ -321,6 +337,10 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           ));
                           const canvasExpandedInternalSlot = canvasExpandedInternalSlotNode?.internalSlot;
                           const canvasWalletPricing = canvasAiCloudImageModels?.pricing;
+                          const canvasUsesServerCatalog = canvasAiMediaType === 'video'
+                            ? canvasWalletVideoModelContext?.serverDriven === true
+                            : canvasAiCredentialSource === 'wallet'
+                              && hasServerAiCatalog(canvasAiCloudImageModels);
                           // Keep the estimate visible while pricing is being
                           // refreshed. The credit helpers provide conservative
                           // client defaults until the wallet pricing arrives.
@@ -371,6 +391,17 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                                   capabilities: persistedCandidate?.capabilities,
                                 } : undefined;
                               },
+                              resolveVideoPricingIdentity: node => {
+                                const videoContext = resolveCanvasWalletVideoModelContext(
+                                  node.ai,
+                                  canvasAiCloudImageModels,
+                                  canvasAiCredentialSource,
+                                );
+                                return {
+                                  model: videoContext.pricingModelId || node.ai?.model,
+                                  serverDriven: videoContext.serverDriven,
+                                };
+                              },
                               pricing: canvasWalletPricing,
                             })
                             : null;
@@ -391,10 +422,13 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           };
                           const canvasVideoCreditEstimate = showCanvasRunCreditEstimate && canvasItem.ai?.type === 'video-generator'
                             ? estimateCanvasVideoGenerationCredits({
-                              model: canvasAiCatalogModel?.id || canvasAiItemModel,
+                              model: canvasWalletVideoModelContext?.pricingModelId
+                                || canvasAiCatalogModel?.id
+                                || canvasAiItemModel,
                               count: canvasItem.ai.count,
                               duration: canvasAiVideoDuration,
                               resolution: canvasAiVideoResolution,
+                              serverDriven: canvasUsesServerCatalog,
                             }, canvasWalletPricing, canvasVideoPricingReferenceCounts)
                             : null;
                           const isCanvasAgentWalletFunding = canvasAgent.settings.apiProvider.trim().toLowerCase() === 'unmind-wallet'
@@ -416,20 +450,26 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             ].filter(Boolean).join(' + ')
                             : '';
                           const canvasRunCreditLabel = canvasWorkflowCreditEstimate
-                            ? `${canvasWorkflowCreditNodeLabel || '工作流'} · ${canvasWorkflowCreditEstimate.totalCredits}积分`
+                            ? canvasWorkflowCreditEstimate.pricingAvailable === false
+                              ? '价格未配置'
+                              : `${canvasWorkflowCreditNodeLabel || '工作流'} · ${canvasWorkflowCreditEstimate.totalCredits}积分`
                             : canvasImageCreditEstimate
                               ? `${canvasImageCreditEstimate.totalCredits}积分`
                               : canvasVideoCreditEstimate
-                                ? `${canvasVideoCreditEstimate.totalCredits}积分`
+                                ? canvasVideoCreditEstimate.available
+                                  ? `${canvasVideoCreditEstimate.totalCredits}积分`
+                                  : '价格未配置'
                                 : canvasTextCreditEstimate
                                   ? `${canvasTextCreditEstimate.totalCredits}积分`
                               : '';
                           const canvasRunCreditTitle = canvasWorkflowCreditEstimate
-                            ? `预计需要 ${canvasWorkflowCreditEstimate.totalCredits} 积分：图片 ${canvasWorkflowCreditEstimate.imageOutputCount} 张（${canvasWorkflowCreditEstimate.imageCredits} 积分）；视频 ${canvasWorkflowCreditEstimate.videoOutputCount} 条（${canvasWorkflowCreditEstimate.videoCredits} 积分）；LLM ${canvasWorkflowCreditEstimate.llmNodeCount} 次（${canvasWorkflowCreditEstimate.llmCredits} 积分）`
+                            ? canvasWorkflowCreditEstimate.pricingAvailable === false
+                              ? '工作流包含尚未配置价格的云端视频模型'
+                              : `预计需要 ${canvasWorkflowCreditEstimate.totalCredits} 积分：图片 ${canvasWorkflowCreditEstimate.imageOutputCount} 张（${canvasWorkflowCreditEstimate.imageCredits} 积分）；视频 ${canvasWorkflowCreditEstimate.videoOutputCount} 条（${canvasWorkflowCreditEstimate.videoCredits} 积分）；LLM ${canvasWorkflowCreditEstimate.llmNodeCount} 次（${canvasWorkflowCreditEstimate.llmCredits} 积分）`
                             : canvasImageCreditEstimate
                               ? `预计需要 ${canvasImageCreditEstimate.totalCredits} 积分：生成 ${canvasImageCreditEstimate.outputCount} 张，每张 ${canvasImageCreditEstimate.unitCredits} 积分`
                               : canvasVideoCreditEstimate
-                                ? `预计需要 ${canvasVideoCreditEstimate.totalCredits} 积分：${canvasVideoCreditEstimate.creditsPerSecond} 积分/秒 × ${canvasVideoCreditEstimate.durationSeconds} 秒 × ${canvasVideoCreditEstimate.outputCount} 条；已计入 ${canvasVideoPricingReferenceCounts.imageCount} 张参考图和 ${canvasVideoPricingReferenceCounts.videoCount} 段参考视频`
+                                ? describeCanvasVideoCreditEstimate(canvasVideoCreditEstimate)
                                 : canvasTextCreditEstimate
                                   ? `预计需要 ${canvasTextCreditEstimate.totalCredits} 积分：运行 ${canvasDesignAgentConfig.agentRole === 'inspiration_analyzer' ? '灵感分析' : 'Agent'} 1 次`
                                 : undefined;
@@ -516,10 +556,11 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           const canvasAllowsSeedanceOmniReferences = canvasAiResolvedVideoCapabilities.source === 'server'
                             ? canvasVideoReferenceSlots.mode === 'REF'
                             : !isCanvasAiSeedanceVideo || canvasVideoReferenceSlots.mode === 'REF';
-                          const isCanvasVeoIngredientMode = isCanvasAiNewApiVideo
-                            && canvasAiItemModel !== 'sora-2'
+                          const isCanvasVeoIngredientMode = canvasAiResolvedVideoCapabilities.source === 'legacy'
+                            && isCanvasAiNewApiVideo
+                            && isVeo31VideoModel(canvasAiItemModel)
                             && canvasVideoInputMode === 'REF';
-  return { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlainMode, canvasDesignAgentConfig, isCanvasAiGeneratorItem, isCanvasFrameInterpolationItem, isCanvasImageEnhancementItem, isQuickVideoEnhancementItem, isCanvasEnhancementItem, isCanvasSingleVideoInputItem, isCanvasWorkflowItem, isCanvasReferenceBridgeItem, isCanvasAiNodeItem, isCanvasThreeSceneItem, canvasThreeSceneReferences, canvasAiMediaType, canvasAiItemProvider, canvasAiItemModel, canvasAiItemCapabilities, canvasAiItemProviderCandidates, canvasAiCandidateImageResolutionValues, canvasAiImageResolutionValues, canvasAiSupportsImageResolution, canvasAiImageResolutionOptions, canvasAiItemImageResolution, isCanvasAiNewApiVideo, isCanvasAiSeedanceVideo, isCanvasAiSeedanceLikeVideo, isCanvasAiMiniMaxVideo, isCanvasAiMikotoVideo, isCanvasAiMikotoKlingVideo, canvasAiVideoResolutionValues, canvasAiVideoResolutionOptions, canvasAiVideoResolution, canvasAiVideoDurationValues, canvasAiVideoDurationOptions, canvasAiVideoDuration, canvasAiVideoSupportsFirstLastFrame, canvasAiSupportsTransparentPng, canvasAiOutputFormat, canvasAiOutputFormatOptions, canvasAiAspectRatioValues, canvasAiCountOptions, canvasAiCatalogModel, canvasAiResolvedImageCapabilities, canvasAiResolvedVideoCapabilities, isCanvasWorkflowAllOutputMode, canvasWorkflow, canvasWorkflowInternalSlots, canvasExpandedWorkflowGroup, canvasExpandedWorkflow, canvasExpandedInternalSlotNode, canvasExpandedInternalSlot, canvasWalletPricing, showCanvasRunCreditEstimate, canvasImagePricingChoice, canvasImagePricingCandidates, canvasImagePricingModel, canvasImagePricingCapabilities, canvasWorkflowCreditEstimate, canvasImageCreditEstimate, canvasVideoPricingReferences, canvasVideoPricingReferenceCounts, canvasVideoCreditEstimate, isCanvasAgentWalletFunding, canvasTextCreditEstimate, canvasWorkflowCreditNodeLabel, canvasRunCreditLabel, canvasRunCreditTitle, canvasWorkflowUserInput, canvasWorkflowAllowsImages, canvasWorkflowAllowsFiles, showCanvasAiAttachmentControl, canvasAiOutputs, canvasAiImagePreviewGallery, isCanvasAiOutputsExpanded, canvasAiVisibleOutputs, canvasAiHiddenOutputCount, canvasAiRealOutputs, showCanvasAiOutputPreview, isCanvasAiPromptExpanded, canvasImageSource, hasCanvasImageBackingSource, hasCanvasImageDisplaySource, isGeneratedMediaItem, isGeneratedVideoItem, isGeneratedMediaPending, isGeneratedMediaError, rawCanvasInputPreviewItems, canvasBridgeInputItems, canvasAiOutputAspectRatio, canvasAiNodeDesignSize, canvasAiMainColumnLayoutWidth, isImageRulePanelExpanded, canvasAiOutputTileLayout, canvasAiNodeScale, canvasAiMenuScale, canvasRenderedItemWidth, canvasAiPromptHeight, canvasVideoReferenceSlots, canvasVideoInputMode, canvasVideoReferenceSlotLabels, canvasAllowsSeedanceOmniReferences, isCanvasVeoIngredientMode };
+  return { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlainMode, canvasDesignAgentConfig, isCanvasAiGeneratorItem, isCanvasFrameInterpolationItem, isCanvasImageEnhancementItem, isQuickVideoEnhancementItem, isCanvasEnhancementItem, isCanvasSingleVideoInputItem, isCanvasWorkflowItem, isCanvasReferenceBridgeItem, isCanvasAiNodeItem, isCanvasThreeSceneItem, canvasThreeSceneReferences, canvasAiMediaType, canvasAiItemProvider, canvasAiItemModel, canvasAiItemCapabilities, canvasAiItemProviderCandidates, canvasAiCandidateImageResolutionValues, canvasAiImageResolutionValues, canvasAiSupportsImageResolution, canvasAiImageResolutionOptions, canvasAiItemImageResolution, isCanvasAiNewApiVideo, isCanvasAiSeedanceVideo, isCanvasAiSeedanceLikeVideo, isCanvasAiMiniMaxVideo, isCanvasAiMikotoVideo, isCanvasAiMikotoKlingVideo, canvasAiVideoResolutionValues, canvasAiVideoResolutionOptions, canvasAiVideoResolution, canvasAiVideoDurationValues, canvasAiVideoDurationOptions, canvasAiVideoDuration, canvasAiVideoSupportsFirstLastFrame, canvasAiSupportsTransparentPng, canvasAiOutputFormat, canvasAiOutputFormatOptions, canvasAiAspectRatioValues, canvasAiCountOptions, canvasAiCatalogModel, canvasAiResolvedImageCapabilities, canvasAiResolvedVideoCapabilities, canvasWalletVideoModelContext, isCanvasWorkflowAllOutputMode, canvasWorkflow, canvasWorkflowInternalSlots, canvasExpandedWorkflowGroup, canvasExpandedWorkflow, canvasExpandedInternalSlotNode, canvasExpandedInternalSlot, canvasWalletPricing, showCanvasRunCreditEstimate, canvasImagePricingChoice, canvasImagePricingCandidates, canvasImagePricingModel, canvasImagePricingCapabilities, canvasWorkflowCreditEstimate, canvasImageCreditEstimate, canvasVideoPricingReferences, canvasVideoPricingReferenceCounts, canvasVideoCreditEstimate, isCanvasAgentWalletFunding, canvasTextCreditEstimate, canvasWorkflowCreditNodeLabel, canvasRunCreditLabel, canvasRunCreditTitle, canvasWorkflowUserInput, canvasWorkflowAllowsImages, canvasWorkflowAllowsFiles, showCanvasAiAttachmentControl, canvasAiOutputs, canvasAiImagePreviewGallery, isCanvasAiOutputsExpanded, canvasAiVisibleOutputs, canvasAiHiddenOutputCount, canvasAiRealOutputs, showCanvasAiOutputPreview, isCanvasAiPromptExpanded, canvasImageSource, hasCanvasImageBackingSource, hasCanvasImageDisplaySource, isGeneratedMediaItem, isGeneratedVideoItem, isGeneratedMediaPending, isGeneratedMediaError, rawCanvasInputPreviewItems, canvasBridgeInputItems, canvasAiOutputAspectRatio, canvasAiNodeDesignSize, canvasAiMainColumnLayoutWidth, isImageRulePanelExpanded, canvasAiOutputTileLayout, canvasAiNodeScale, canvasAiMenuScale, canvasRenderedItemWidth, canvasAiPromptHeight, canvasVideoReferenceSlots, canvasVideoInputMode, canvasVideoReferenceSlotLabels, canvasAllowsSeedanceOmniReferences, isCanvasVeoIngredientMode };
 }
 
 export const buildCanvasNodeViewModel = (

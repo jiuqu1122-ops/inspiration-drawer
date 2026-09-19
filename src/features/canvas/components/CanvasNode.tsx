@@ -14,7 +14,7 @@ import { isCanvasImageFusionAi,normalizeCanvasImageFusionConfig } from '../../..
 import { createCanvasAiOutputBufferItem,getCanvasAiOutputDisplaySource,getCanvasAiOutputThumbnailSource,getCanvasAiSuccessfulOutputs,getCanvasItemNavSource,hasCanvasAiGeneratedResults,isCanvasWorkflowReferenceBridge } from '../../../utils/canvasItemSelectors';
 import { getCanvasImageRuleState } from '../../../utils/canvasWorkflowDefinitions';
 import { isCanvasAudioFileName } from '../../../utils/localMediaPaths';
-import { CANVAS_AI_VIDEO_MODEL_OPTIONS,getCanvasAiImageResolutionValuesForCandidates,getCanvasAiPublicImageModelName,getCanvasAiVideoModelCandidates,getCanvasAiVideoModelOptionValue,getCanvasAiVideoProviderForModel,isSeedance20VideoModel,normalizeCanvasAiImageResolutionForCandidates,normalizeCanvasAiImageResolutionForModel,normalizeMikotoVideoResolution,normalizeMiniMaxH3VideoResolution,normalizeNewApiVideoAspectRatio,normalizeNewApiVideoDurationForModel,normalizeNewApiVideoResolutionForModel,normalizeSeedanceVideoAspectRatio,supportsCanvasAiImageResolution } from '../../canvasAiImage';
+import { CANVAS_AI_VIDEO_MODEL_OPTIONS,getCanvasAiImageResolutionValuesForCandidates,getCanvasAiPublicImageModelName,getCanvasAiVideoModelCandidates,getCanvasAiVideoModelOptionValue,getCanvasAiVideoProviderForModel,getCanvasAiVideoReferenceSlotDisplayLabel,isSeedance20VideoModel,normalizeCanvasAiImageResolutionForCandidates,normalizeCanvasAiImageResolutionForModel,normalizeMikotoVideoResolution,normalizeMiniMaxH3VideoResolution,normalizeNewApiVideoAspectRatio,normalizeNewApiVideoDurationForModel,normalizeNewApiVideoResolutionForModel,normalizeSeedanceVideoAspectRatio,supportsCanvasAiImageResolution } from '../../canvasAiImage';
 import { CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT } from '../../canvasAiOutputs';
 import { getCanvasAiMediaType,getCanvasAiNodeTitle,isCanvasAiGeneratorType } from '../../canvasAiRuntime';
 import { formatCanvasWorkingElapsed,formatEnhancementEstimateVideoMeta,formatRifeEstimateRange,formatRifeEstimateVideoMeta,getRifeEngineProgressPercent,isFrameProcessingProgress,isRifeFixed2xMode,shouldShowRifeEngineProgress } from '../../canvasLocalMediaTools';
@@ -23,7 +23,7 @@ import { normalizeDesignAgentConfig } from '../../designAgentNode';
 import { ThreeSceneNode } from '../../three/components/ThreeSceneNode';
 import { shouldMountThreeSceneRenderer } from '../../three/model/threeSceneInteraction';
 import { buildCanvasNodeViewModel } from '../canvasNodeViewModel';
-import { findAiCatalogModel,getAiCatalogModels,getDefaultAiCatalogModelId,getImageAspectRatioOptionsForResolution,hasServerAiCatalog,normalizeCapabilityOption,normalizeImageAspectRatioOption,normalizeVideoAspectRatioSelection,normalizeVideoDurationSelection,normalizeVideoResolutionSelection,resolveImageModelCapabilities } from '../../aiModelCapabilities';
+import { findAiCatalogModel,getAiCatalogModels,getDefaultAiCatalogModelId,getImageAspectRatioOptionsForResolution,hasServerAiCatalog,normalizeCapabilityOption,normalizeImageAspectRatioOption,normalizeVideoAspectRatioSelection,normalizeVideoDurationSelection,normalizeVideoResolutionSelection,resolveImageModelCapabilities,resolveVideoModelCapabilities } from '../../aiModelCapabilities';
 import { ImageRuleSwitchPanel } from './ImageRuleSwitchPanel';
 import type { BufferItem } from '../../../types';
 import type { DesignAgentConfig,CanvasImageItem } from '../../canvasModel';
@@ -41,7 +41,7 @@ export function CanvasNode({ scope, canvasItem, canvasItemsRef: latestCanvasItem
     const itemsRef = latestCanvasItemsRef || (canvasItemsRef as { current?: CanvasImageItem[] } | undefined);
     return itemsRef?.current?.find(item => item.id === canvasItem.id) || canvasItem;
   };
-const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlainMode, canvasDesignAgentConfig, isCanvasFrameInterpolationItem, isCanvasImageEnhancementItem, isCanvasVideoEnhancementItem, isQuickVideoEnhancementItem, isCanvasEnhancementItem, isCanvasSingleVideoInputItem, isCanvasWorkflowItem, isCanvasReferenceBridgeItem, isCanvasAiNodeItem, isCanvasThreeSceneItem, canvasThreeSceneReferences, canvasAiMediaType, canvasAiItemProvider, canvasAiItemModel, canvasAiItemCapabilities, canvasAiItemProviderCandidates, canvasAiCandidateImageResolutionValues, canvasAiSupportsImageResolution, canvasAiImageResolutionOptions, canvasAiItemImageResolution, isCanvasAiNewApiVideo, isCanvasAiSeedanceVideo, isCanvasAiSeedanceLikeVideo, isCanvasAiMiniMaxVideo, isCanvasAiMikotoVideo, isCanvasAiMikotoKlingVideo, canvasAiVideoResolutionOptions, canvasAiVideoResolution, canvasAiVideoDurationOptions, canvasAiVideoDuration, canvasAiVideoSupportsFirstLastFrame, canvasAiOutputFormat, canvasAiOutputFormatOptions, canvasAiAspectRatioValues, canvasAiCountOptions, canvasAiCatalogModel, canvasAiResolvedImageCapabilities, canvasAiResolvedVideoCapabilities, isCanvasWorkflowAllOutputMode, canvasWorkflow, canvasWorkflowInternalSlots, canvasExpandedWorkflowGroup, canvasExpandedInternalSlot, canvasRunCreditLabel, canvasRunCreditTitle, canvasWorkflowUserInput, canvasWorkflowAllowsImages, canvasWorkflowAllowsFiles, showCanvasAiAttachmentControl, canvasAiOutputs, canvasAiImagePreviewGallery, isCanvasAiOutputsExpanded, canvasAiVisibleOutputs, canvasAiHiddenOutputCount, showCanvasAiOutputPreview, canvasImageSource, hasCanvasImageBackingSource, isGeneratedMediaItem, isGeneratedVideoItem, isGeneratedMediaPending, isGeneratedMediaError, rawCanvasInputPreviewItems, canvasBridgeInputItems, canvasAiNodeDesignSize, isImageRulePanelExpanded, canvasAiOutputTileLayout, canvasAiNodeScale, canvasAiMenuScale, canvasRenderedItemWidth, canvasAiPromptHeight, canvasVideoReferenceSlots, canvasVideoInputMode, canvasVideoReferenceSlotLabels, canvasAllowsSeedanceOmniReferences, isCanvasVeoIngredientMode } = buildCanvasNodeViewModel(scope, canvasItem);
+const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlainMode, canvasDesignAgentConfig, isCanvasFrameInterpolationItem, isCanvasImageEnhancementItem, isCanvasVideoEnhancementItem, isQuickVideoEnhancementItem, isCanvasEnhancementItem, isCanvasSingleVideoInputItem, isCanvasWorkflowItem, isCanvasReferenceBridgeItem, isCanvasAiNodeItem, isCanvasThreeSceneItem, canvasThreeSceneReferences, canvasAiMediaType, canvasAiItemProvider, canvasAiItemModel, canvasAiItemCapabilities, canvasAiItemProviderCandidates, canvasAiCandidateImageResolutionValues, canvasAiSupportsImageResolution, canvasAiImageResolutionOptions, canvasAiItemImageResolution, isCanvasAiNewApiVideo, isCanvasAiSeedanceVideo, isCanvasAiSeedanceLikeVideo, isCanvasAiMiniMaxVideo, isCanvasAiMikotoVideo, isCanvasAiMikotoKlingVideo, canvasAiVideoResolutionOptions, canvasAiVideoResolution, canvasAiVideoDurationOptions, canvasAiVideoDuration, canvasAiVideoSupportsFirstLastFrame, canvasAiOutputFormat, canvasAiOutputFormatOptions, canvasAiAspectRatioValues, canvasAiCountOptions, canvasAiCatalogModel, canvasAiResolvedImageCapabilities, canvasAiResolvedVideoCapabilities, canvasWalletVideoModelContext, isCanvasWorkflowAllOutputMode, canvasWorkflow, canvasWorkflowInternalSlots, canvasExpandedWorkflowGroup, canvasExpandedInternalSlot, canvasRunCreditLabel, canvasRunCreditTitle, canvasWorkflowUserInput, canvasWorkflowAllowsImages, canvasWorkflowAllowsFiles, showCanvasAiAttachmentControl, canvasAiOutputs, canvasAiImagePreviewGallery, isCanvasAiOutputsExpanded, canvasAiVisibleOutputs, canvasAiHiddenOutputCount, showCanvasAiOutputPreview, canvasImageSource, hasCanvasImageBackingSource, isGeneratedMediaItem, isGeneratedVideoItem, isGeneratedMediaPending, isGeneratedMediaError, rawCanvasInputPreviewItems, canvasBridgeInputItems, canvasAiNodeDesignSize, isImageRulePanelExpanded, canvasAiOutputTileLayout, canvasAiNodeScale, canvasAiMenuScale, canvasRenderedItemWidth, canvasAiPromptHeight, canvasVideoReferenceSlots, canvasVideoInputMode, canvasVideoReferenceSlotLabels, canvasAllowsSeedanceOmniReferences, isCanvasVeoIngredientMode } = buildCanvasNodeViewModel(scope, canvasItem);
                           const canvasAiVideoCatalogModels = canvasAiCredentialSource === 'wallet'
                             ? getAiCatalogModels(canvasAiCloudImageModels, 'video')
                             : [];
@@ -77,6 +77,39 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                               label: canvasAiImageModelLabel,
                               hiddenInMenu: true,
                             }, ...canvasAiUnifiedImageModelOptions];
+                          const usesServerVideoCapabilities = canvasAiMediaType === 'video'
+                            && canvasAiResolvedVideoCapabilities.source === 'server';
+                          const canvasAiAspectRatioControlValue = usesServerVideoCapabilities
+                            ? normalizeVideoAspectRatioSelection(
+                              canvasAiResolvedVideoCapabilities,
+                              canvasItem.ai?.aspectRatio,
+                            ) || 'auto'
+                            : canvasAiAspectRatioValues.length > 0
+                              ? normalizeImageAspectRatioOption(
+                                canvasAiAspectRatioValues,
+                                canvasItem.ai?.aspectRatio,
+                                CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                              )
+                              : (isCanvasAiNewApiVideo && !isCanvasAiSeedanceVideo) || isCanvasAiMikotoKlingVideo
+                                ? normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
+                                : normalizeCanvasAiAspectRatioForModel(
+                                  canvasAiItemModel,
+                                  canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                  canvasAiItemImageResolution,
+                                );
+                          const canvasAiAspectRatioControlOptions = usesServerVideoCapabilities
+                            ? canvasAiAspectRatioValues.map((value: string) => ({
+                              value,
+                              label: value === 'auto' ? '自动' : formatCanvasAiAspectRatioOptionLabel(value),
+                            }))
+                            : canvasAiAspectRatioValues.length > 0
+                              ? canvasAiAspectRatioValues.map((value: string) => ({
+                                value,
+                                label: formatCanvasAiAspectRatioOptionLabel(value),
+                              }))
+                              : (isCanvasAiNewApiVideo && !isCanvasAiSeedanceVideo) || isCanvasAiMikotoKlingVideo
+                                ? CANVAS_AI_NEW_API_VIDEO_ASPECT_RATIO_OPTIONS
+                                : getCanvasAiAspectRatioOptionsForModel(canvasAiItemModel, canvasAiItemImageResolution);
                           const isCanvasVideoReferenceItem = (inputItem: CanvasImageItem) => {
                             const generatorOutput = getCanvasAiSuccessfulOutputs(inputItem)[0];
                             return inputItem.item.type === 'video'
@@ -390,19 +423,20 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                 const inputPreviewSource = inputItem
                                                   ? getCanvasReferencePreviewSource(inputItem)
                                                   : '';
-                                                const slotLabel = isCanvasSingleVideoInputItem ? '视频输入' : isAudioReferenceSlot
-                                                  ? '参考音频'
-                                                  : isVideoReferenceSlot
-                                                  ? '参考视频1'
-                                                  : canvasVideoInputMode === 'FLF'
-                                                  ? (inputIndex === 0 ? '首帧' : '尾帧')
-                                                  : canvasVideoReferenceSlotLabels[inputIndex] || `参考图${inputIndex + 1}`;
+                                                const slotLabel = isCanvasSingleVideoInputItem
+                                                  ? '视频输入'
+                                                  : getCanvasAiVideoReferenceSlotDisplayLabel(
+                                                    inputIndex,
+                                                    canvasVideoReferenceSlots,
+                                                    canvasVideoReferenceSlotLabels,
+                                                    canvasAiResolvedVideoCapabilities,
+                                                  );
                                                 return (
                                                   <span
                                                     key={inputItem?.id || `video-reference-${inputIndex}`}
                                                     className={`group/reference-thumbnail relative flex h-[49px] ${isCanvasVeoIngredientMode ? 'w-[68px]' : canvasVideoInputMode === 'FLF' || isVideoReferenceSlot || isAudioReferenceSlot ? 'w-14' : 'w-12'} shrink-0 items-center justify-center overflow-hidden rounded-[11px] text-stone-400 transition-colors hover:z-10 dark:text-white/60`}
-                                                    aria-label={inputItem ? '双击移除输入' : `添加${slotLabel}`}
-                                                    title={inputItem ? '双击移除输入' : `添加${slotLabel}`}
+                                                    aria-label={inputItem ? `${slotLabel}，双击移除输入` : `添加${slotLabel}`}
+                                                    title={inputItem ? `${slotLabel} · 双击移除输入` : `添加${slotLabel}`}
                                                     onPointerDown={(event) => event.stopPropagation()}
                                                     onMouseDown={(event) => event.stopPropagation()}
                                                     onDoubleClick={(event) => {
@@ -485,7 +519,10 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                 );
                                               })}
                                               {canvasVideoReferenceOverflowCount > 0 && (
-                                                <span className="flex h-[49px] w-12 shrink-0 items-center justify-center rounded-[11px] text-[11px] font-black text-stone-500 shadow-[0_10px_24px_rgba(15,23,42,0.14)] dark:text-white/68 dark:shadow-[0_12px_28px_rgba(0,0,0,0.28)]">
+                                                <span
+                                                  className="flex h-[49px] w-12 shrink-0 items-center justify-center rounded-[11px] bg-red-500/10 text-[11px] font-black text-red-600 ring-1 ring-red-500/20 dark:text-red-200"
+                                                  title={`${canvasVideoReferenceOverflowCount} 个连接不适用于当前模型，生成时不会发送`}
+                                                >
                                                   +{canvasVideoReferenceOverflowCount}
                                                 </span>
                                               )}
@@ -698,7 +735,10 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                 );
                                               })}
                                               {canvasVideoReferenceOverflowCount > 0 && (
-                                                <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[14px] text-[11px] font-black text-stone-500 shadow-[0_10px_24px_rgba(15,23,42,0.14)] dark:text-white/68 dark:shadow-[0_12px_28px_rgba(0,0,0,0.28)]">
+                                                <span
+                                                  className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[14px] bg-red-500/10 text-[11px] font-black text-red-600 ring-1 ring-red-500/20 dark:text-red-200"
+                                                  title={`${canvasVideoReferenceOverflowCount} 个连接不适用于当前模型，生成时不会发送`}
+                                                >
                                                   +{canvasVideoReferenceOverflowCount}
                                                 </span>
                                               )}
@@ -1457,6 +1497,19 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                           )}
                                         </div>
                                       )}
+                                      {canvasAiMediaType === 'video'
+                                        && canvasWalletVideoModelContext?.capabilityStatus === 'unresolved' && (
+                                        <div className="rounded-[12px] bg-amber-500/10 px-2.5 py-2 text-[10px] font-semibold leading-4 text-amber-700 dark:bg-amber-400/10 dark:text-amber-100">
+                                          模型能力尚未加载，请刷新模型
+                                        </div>
+                                      )}
+                                      {canvasAiMediaType === 'video'
+                                        && canvasWalletVideoModelContext?.capabilityStatus === 'resolved'
+                                        && !canvasAiResolvedVideoCapabilities.supportsTextPrompt && (
+                                        <div className="rounded-[12px] bg-sky-500/8 px-2.5 py-1.5 text-[10px] leading-4 text-sky-700 dark:bg-sky-400/10 dark:text-sky-100">
+                                          此模型要求媒体输入，文字仅作为辅助指令
+                                        </div>
+                                      )}
                                       {canvasItem.ai?.error && (
                                         <div
                                           className="max-h-16 overflow-y-auto rounded-[12px] bg-red-500/10 px-2.5 py-2 text-[10px] leading-4 text-red-600 dark:bg-red-500/14 dark:text-red-100"
@@ -1545,8 +1598,19 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                 const selectedVideoCatalogModel = canvasAiMediaType === 'video'
                                                   ? findAiCatalogModel(canvasAiVideoCatalogModels, value)
                                                   : undefined;
+                                                const selectedVideoCandidate = videoCandidates.find(candidate => (
+                                                  candidate.provider === canvasAiItemProvider
+                                                  && (candidate.providerChannelId || '') === (latestAi?.providerChannelId || '')
+                                                )) || videoCandidates.find(candidate => candidate.provider === canvasAiItemProvider)
+                                                  || videoCandidates[0];
+                                                const selectedVideoCapabilities = selectedVideoCatalogModel
+                                                  ? resolveVideoModelCapabilities({
+                                                    canonical: selectedVideoCatalogModel.capabilities,
+                                                    route: selectedVideoCandidate?.modelCapabilities,
+                                                  })
+                                                  : undefined;
                                                 const provider = choice?.provider
-                                                  || videoCandidates[0]?.provider
+                                                  || selectedVideoCandidate?.provider
                                                   || (canvasAiMediaType === 'video'
                                                     ? getCanvasAiVideoProviderForModel(value)
                                                     : canvasAiItemProvider);
@@ -1560,9 +1624,9 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                 const modelResolutionValues = getCanvasAiImageResolutionValuesForCandidates(
                                                   modelResolutionCandidates,
                                                 );
-                                                const resolution = selectedVideoCatalogModel?.capabilities?.resolutions?.length
+                                                const resolution = selectedVideoCapabilities?.resolutions.length
                                                   ? normalizeVideoResolutionSelection(
-                                                    selectedVideoCatalogModel.capabilities,
+                                                    selectedVideoCapabilities,
                                                     latestAi?.resolution,
                                                   )
                                                   : modelResolutionValues.length > 0
@@ -1597,7 +1661,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                   } : canvasAiMediaType === 'video' ? {
                                                     provider,
                                                     credentialSource: canvasAiCredentialSource,
-                                                    providerChannelId: videoCandidates[0]?.providerChannelId,
+                                                    providerChannelId: selectedVideoCandidate?.providerChannelId,
                                                     providerCandidates: videoCandidates.length > 0 ? videoCandidates : undefined,
                                                   } : {}),
                                                   model,
@@ -1608,9 +1672,9 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                       currentImageAspectRatioIntent,
                                                       CANVAS_AI_DEFAULT_ASPECT_RATIO,
                                                     )
-                                                    : selectedVideoCatalogModel?.capabilities
+                                                    : selectedVideoCapabilities
                                                     ? normalizeVideoAspectRatioSelection(
-                                                      selectedVideoCatalogModel.capabilities,
+                                                      selectedVideoCapabilities,
                                                       latestAi?.aspectRatio,
                                                     ) || 'auto'
                                                     : canvasAiMediaType === 'video'
@@ -1627,63 +1691,35 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                   ...(selectedVideoCatalogModel ? {
                                                     resolution,
                                                     duration: normalizeVideoDurationSelection(
-                                                      selectedVideoCatalogModel.capabilities || {},
+                                                      selectedVideoCapabilities || {},
                                                       latestAi?.duration,
                                                     ),
-                                                    videoInputMode: selectedVideoCatalogModel.capabilities?.supportsFirstLastFrame !== true
-                                                      && !(selectedVideoCatalogModel.capabilities?.supportsFirstFrame === true
-                                                        && selectedVideoCatalogModel.capabilities?.supportsLastFrame === true)
+                                                    videoInputMode: selectedVideoCapabilities?.firstLastFrame !== true
                                                       ? 'REF'
                                                       : latestAi?.videoInputMode || 'REF',
+                                                    count: Math.min(
+                                                      Math.max(1, Number(latestAi?.count) || CANVAS_AI_DEFAULT_COUNT),
+                                                      selectedVideoCapabilities?.maxOutputs || 1,
+                                                    ),
                                                   } : canvasAiMediaType === 'video' && provider === 'new-api' ? {
                                                     resolution,
                                                     duration: normalizeNewApiVideoDurationForModel(model, latestAi?.duration),
                                                     videoInputMode: model === 'sora-2' ? 'REF' : latestAi?.videoInputMode || 'REF',
                                                   } : {}),
                                                   ...(canvasAiMediaType === 'video' && (provider === 'mikoto' || provider === 'minimax') ? { resolution } : {}),
-                                                  ...(selectedVideoCatalogModel?.capabilities?.resolutions?.length
+                                                  ...(selectedVideoCapabilities?.resolutions.length
                                                     || modelResolutionValues.length > 0
                                                     || supportsCanvasAiImageResolution(provider, model, modelCapabilities)
                                                     ? { resolution }
                                                     : {}),
                                                 });
                                               }}
-                                              aspectRatioValue={canvasAiAspectRatioValues.length > 0
-                                                ? normalizeImageAspectRatioOption(
-                                                  canvasAiAspectRatioValues,
-                                                  canvasItem.ai?.aspectRatio,
-                                                  CANVAS_AI_DEFAULT_ASPECT_RATIO,
-                                                )
-                                                : (isCanvasAiNewApiVideo && !isCanvasAiSeedanceVideo) || isCanvasAiMikotoKlingVideo
-                                                ? normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
-                                                : normalizeCanvasAiAspectRatioForModel(
-                                                  canvasAiItemModel,
-                                                  canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
-                                                  canvasAiItemImageResolution,
-                                                )}
-                                              aspectRatioOptions={canvasAiAspectRatioValues.length > 0
-                                                ? canvasAiAspectRatioValues.map((value: string) => ({
-                                                  value,
-                                                  label: formatCanvasAiAspectRatioOptionLabel(value),
-                                                }))
-                                                : (isCanvasAiNewApiVideo && !isCanvasAiSeedanceVideo) || isCanvasAiMikotoKlingVideo
-                                                ? CANVAS_AI_NEW_API_VIDEO_ASPECT_RATIO_OPTIONS
-                                                : getCanvasAiAspectRatioOptionsForModel(canvasAiItemModel, canvasAiItemImageResolution)}
-                                              aspectRatioTitle={`比例：${canvasAiAspectRatioValues.length > 0
-                                                ? normalizeImageAspectRatioOption(
-                                                  canvasAiAspectRatioValues,
-                                                  canvasItem.ai?.aspectRatio,
-                                                  CANVAS_AI_DEFAULT_ASPECT_RATIO,
-                                                )
-                                                : (isCanvasAiNewApiVideo && !isCanvasAiSeedanceVideo) || isCanvasAiMikotoKlingVideo
-                                                ? normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
-                                                : normalizeCanvasAiAspectRatioForModel(
-                                                  canvasAiItemModel,
-                                                  canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
-                                                  canvasAiItemImageResolution,
-                                                )}`}
+                                              aspectRatioValue={canvasAiAspectRatioControlValue}
+                                              aspectRatioOptions={canvasAiAspectRatioControlOptions}
+                                              aspectRatioTitle={`比例：${canvasAiAspectRatioControlValue === 'auto' ? '自动' : canvasAiAspectRatioControlValue}`}
                                               useWideAspectRatioMenu={canvasAiAspectRatioValues.some((value: string) => /^\d+\s*[x×]\s*\d+$/i.test(value))
-                                                || usesCanvasAiImage2DimensionOptions(canvasAiItemModel, canvasAiItemImageResolution)}
+                                                || (!usesServerVideoCapabilities
+                                                  && usesCanvasAiImage2DimensionOptions(canvasAiItemModel, canvasAiItemImageResolution))}
                                               onAspectRatioChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { aspectRatio: value })}
                                               videoAspectRatioMode={canvasAiResolvedVideoCapabilities.source === 'server'
                                                 ? canvasAiResolvedVideoCapabilities.aspectRatioMode
@@ -1766,6 +1802,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                       ? normalizeMikotoVideoResolution(canvasAiItemModel, value)
                                                     : value,
                                               })}
+                                              videoCapabilitiesAvailable={canvasWalletVideoModelContext?.capabilityStatus !== 'unresolved'}
                                               videoSupportsFirstLastFrame={canvasAiVideoSupportsFirstLastFrame}
                                               videoInputMode={canvasVideoInputMode}
                                               onVideoInputModeChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { videoInputMode: value === 'FLF' ? 'FLF' : 'REF' })}
@@ -1789,7 +1826,9 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                         </>
                                       )}
                                       <CanvasAiRunButton
-                                        disabled={canvasItem.ai?.status === 'working' || isLocalMediaBenchmarking}
+                                        disabled={canvasItem.ai?.status === 'working'
+                                          || isLocalMediaBenchmarking
+                                          || canvasWalletVideoModelContext?.capabilityStatus === 'unresolved'}
                                         isWorking={canvasItem.ai?.status === 'working'}
                                         isFrameInterpolation={isCanvasFrameInterpolationItem}
                                         isEnhancement={isCanvasEnhancementItem}
