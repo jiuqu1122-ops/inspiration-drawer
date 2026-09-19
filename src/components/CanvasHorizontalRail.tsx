@@ -55,6 +55,10 @@ export const getHorizontalRailMetrics = ({
   };
 };
 
+export const shouldRenderCanvasVideoReferenceRail = (slotCount: number) => (
+  Number.isFinite(slotCount) && slotCount > 0
+);
+
 const EMPTY_METRICS: HorizontalRailMetrics = {
   scrollable: false,
   thumbWidth: 0,
@@ -66,9 +70,11 @@ const EMPTY_METRICS: HorizontalRailMetrics = {
 export function CanvasHorizontalRail({
   children,
   className = '',
+  fitContent = false,
 }: {
   children: ReactNode;
   className?: string;
+  fitContent?: boolean;
 }) {
   const viewportRef = useRef<HTMLSpanElement | null>(null);
   const trackRef = useRef<HTMLSpanElement | null>(null);
@@ -179,14 +185,24 @@ export function CanvasHorizontalRail({
   };
 
   return (
-    <span className={`relative flex h-[58px] w-full min-w-0 pb-[7px] ${className}`}>
+    <span
+      data-canvas-horizontal-rail={fitContent ? 'fit-content' : 'full'}
+      className={`relative flex h-[58px] pb-[7px] ${
+        fitContent ? 'w-fit max-w-full min-w-0' : 'w-full min-w-0'
+      } ${className}`}
+    >
       <span
         ref={viewportRef}
-        className="flex h-[51px] w-full min-w-0 items-center gap-1.5 overflow-x-auto overflow-y-hidden overscroll-x-contain rounded-[11px] bg-stone-950/[0.025] px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:bg-white/[0.025]"
+        data-canvas-horizontal-rail-viewport={fitContent ? 'fit-content' : 'full'}
+        className={`flex h-[51px] items-center overflow-x-auto overflow-y-hidden overscroll-x-contain rounded-[11px] bg-stone-950/[0.025] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:bg-white/[0.025] ${
+          fitContent ? 'w-fit max-w-full min-w-0' : 'w-full min-w-0'
+        }`}
         onScroll={syncMetrics}
         onWheel={handleWheel}
       >
-        {children}
+        <span className="flex w-max items-center gap-1.5 px-1">
+          {children}
+        </span>
       </span>
       {metrics.scrollable && (
         <>

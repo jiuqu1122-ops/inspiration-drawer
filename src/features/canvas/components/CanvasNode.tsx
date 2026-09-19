@@ -2,7 +2,7 @@ import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import { Brush,ChevronLeft,Clock,Copy,Download,File as FileIcon,Film,Image as ImageIcon,Link,Music,Play,Plus,RefreshCw,RotateCw,Sparkles,Type,Upload,X } from 'lucide-react';
 import { CanvasAiRunButton } from '../../../components/CanvasAiRunButton';
 import { CanvasGeneratorControls } from '../../../components/CanvasGeneratorControls';
-import { CanvasHorizontalRail } from '../../../components/CanvasHorizontalRail';
+import { CanvasHorizontalRail,shouldRenderCanvasVideoReferenceRail } from '../../../components/CanvasHorizontalRail';
 import { CanvasImageFusionControls } from '../../../components/CanvasImageFusionControls';
 import { CanvasLocalMediaControls } from '../../../components/CanvasLocalMediaControls';
 import { CanvasSelectionVideo } from '../../../components/CanvasSelectionVideo';
@@ -353,7 +353,9 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                     <div className={`${canvasItem.ai?.type === 'image-generator' ? 'flex-row' : 'flex-col'} flex min-h-0 flex-1 gap-3 px-4 pb-3 pt-4`}>
                                       <div className="flex min-w-0 flex-1 flex-col gap-3">
                                       <div className="flex items-start justify-between gap-3">
-                                        {showCanvasAiAttachmentControl && (
+                                        {showCanvasAiAttachmentControl
+                                        && (canvasAiMediaType !== 'video'
+                                          || shouldRenderCanvasVideoReferenceRail(canvasVideoReferenceSlotCount)) && (
                                         isCanvasImageFusionItem && canvasImageFusionConfig ? (
                                           <CanvasImageFusionControls
                                             basePreviewSource={canvasImageFusionBasePreview ? getCanvasReferencePreviewSource(canvasImageFusionBasePreview) : undefined}
@@ -402,11 +404,11 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                             setCanvasReferenceReplacement(null);
                                             setCanvasInputMenuForId((prev: string | null) => prev === canvasItem.id ? null : canvasItem.id);
                                           }}
-                                          className={`group/reference relative flex h-[58px] min-w-0 ${canvasAiMediaType === 'video' ? 'w-0 flex-1 overflow-hidden' : 'max-w-[330px] shrink-0 overflow-visible'} items-center justify-start rounded-[12px] text-stone-400 transition-colors hover:text-stone-600 dark:text-white/38 dark:hover:text-white/64`}
+                                          className={`group/reference relative flex h-[58px] min-w-0 ${canvasAiMediaType === 'video' ? 'w-fit max-w-full shrink overflow-hidden' : 'max-w-[330px] shrink-0 overflow-visible'} items-center justify-start rounded-[12px] text-stone-400 transition-colors hover:text-stone-600 dark:text-white/38 dark:hover:text-white/64`}
                                           title={isCanvasWorkflowItem ? '添加或管理工作流素材' : '添加或管理参考图'}
                                         >
                                           {canvasAiMediaType === 'video' ? (
-                                            <CanvasHorizontalRail>
+                                            <CanvasHorizontalRail fitContent>
                                               {Array.from({ length: canvasVideoReferenceSlotCount }).map((_, inputIndex) => {
                                                 const isVideoReferenceSlot = canvasVideoInputMode === 'REF'
                                                   && inputIndex >= canvasVideoReferenceImageSlotCount
@@ -1501,13 +1503,6 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                         && canvasWalletVideoModelContext?.capabilityStatus === 'unresolved' && (
                                         <div className="rounded-[12px] bg-amber-500/10 px-2.5 py-2 text-[10px] font-semibold leading-4 text-amber-700 dark:bg-amber-400/10 dark:text-amber-100">
                                           模型能力尚未加载，请刷新模型
-                                        </div>
-                                      )}
-                                      {canvasAiMediaType === 'video'
-                                        && canvasWalletVideoModelContext?.capabilityStatus === 'resolved'
-                                        && !canvasAiResolvedVideoCapabilities.supportsTextPrompt && (
-                                        <div className="rounded-[12px] bg-sky-500/8 px-2.5 py-1.5 text-[10px] leading-4 text-sky-700 dark:bg-sky-400/10 dark:text-sky-100">
-                                          此模型要求媒体输入，文字仅作为辅助指令
                                         </div>
                                       )}
                                       {canvasItem.ai?.error && (
