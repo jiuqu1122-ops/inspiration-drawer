@@ -181,15 +181,37 @@ describe('canvas generation credits', () => {
 
   it('uses role-specific wallet pricing for standalone text Agent nodes', () => {
     const pricing = {
-      agentRequestCredits: '7',
+      agentRequestCredits: '10',
+      inspirationAnalysisCredits: '3',
+      canvasTextAgentCredits: '1.000000',
+      imageDefaultCredits: '55',
+      videoDefaultCredits: '500',
+      imageModels: [],
+      videoModels: [],
+    };
+    for (const role of [
+      'requirement_analyzer',
+      'design_strategist',
+      'design_reviewer',
+      'presentation_writer',
+      'seedance_video_analyzer',
+      'general',
+    ]) {
+      expect(estimateCanvasTextAgentCredits(pricing, role)).toEqual({ unitCredits: 1, totalCredits: 1 });
+    }
+    expect(estimateCanvasTextAgentCredits(pricing, 'inspiration_analyzer')).toEqual({ unitCredits: 3, totalCredits: 3 });
+  });
+
+  it('falls back to legacy Agent pricing when an old server omits Canvas Text pricing', () => {
+    const pricing = {
+      agentRequestCredits: '10',
       inspirationAnalysisCredits: '3',
       imageDefaultCredits: '55',
       videoDefaultCredits: '500',
       imageModels: [],
       videoModels: [],
     };
-    expect(estimateCanvasTextAgentCredits(pricing, 'general')).toEqual({ unitCredits: 7, totalCredits: 7 });
-    expect(estimateCanvasTextAgentCredits(pricing, 'inspiration_analyzer')).toEqual({ unitCredits: 3, totalCredits: 3 });
+    expect(estimateCanvasTextAgentCredits(pricing, 'general')).toEqual({ unitCredits: 10, totalCredits: 10 });
   });
 
   it('uses 2K pricing for the dual Banana Pro and Banana 2 capability', () => {

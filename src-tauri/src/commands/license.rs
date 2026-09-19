@@ -369,6 +369,8 @@ pub struct CloudVideoDurationRange {
 pub struct CloudAiPricing {
     agent_request_credits: String,
     inspiration_analysis_credits: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    canvas_text_agent_credits: Option<String>,
     image_default_credits: String,
     video_default_credits: String,
     #[serde(default)]
@@ -1771,6 +1773,7 @@ mod tests {
             "pricing": {
                 "agentRequestCredits": "7",
                 "inspirationAnalysisCredits": "3",
+                "canvasTextAgentCredits": "1.000000",
                 "imageDefaultCredits": "55",
                 "videoDefaultCredits": "500",
                 "imageModels": [{
@@ -1807,9 +1810,31 @@ mod tests {
             serde_json::json!("3")
         );
         assert_eq!(
+            value["pricing"]["canvasTextAgentCredits"],
+            serde_json::json!("1.000000")
+        );
+        assert_eq!(
             value["pricing"]["videoModels"][0]["billingType"],
             serde_json::json!("video_flat")
         );
+    }
+
+    #[test]
+    fn accepts_cloud_pricing_from_older_servers_without_canvas_text_price() {
+        let pricing: super::CloudAiPricing = serde_json::from_value(serde_json::json!({
+            "agentRequestCredits": "10",
+            "inspirationAnalysisCredits": "3",
+            "imageDefaultCredits": "55",
+            "videoDefaultCredits": "500",
+            "imageModels": [],
+            "videoModels": [],
+            "updatedAt": null
+        }))
+        .unwrap();
+
+        let value = serde_json::to_value(pricing).unwrap();
+        assert_eq!(value["agentRequestCredits"], serde_json::json!("10"));
+        assert!(value.get("canvasTextAgentCredits").is_none());
     }
 
     #[test]

@@ -24,6 +24,7 @@ export type CanvasTextAgentCreditRole =
 export type CanvasAiCreditPricing = {
   agentRequestCredits: string;
   inspirationAnalysisCredits: string;
+  canvasTextAgentCredits?: string;
   imageDefaultCredits: string;
   videoDefaultCredits: string;
   imageModels: Array<{
@@ -60,9 +61,9 @@ export const getCanvasTextAgentRequestCredits = (
   const configuredCredits = Number(
     role === 'inspiration_analyzer'
       ? pricing?.inspirationAnalysisCredits
-      : pricing?.agentRequestCredits,
+      : pricing?.canvasTextAgentCredits ?? pricing?.agentRequestCredits,
   );
-  return Number.isSafeInteger(configuredCredits) && configuredCredits >= 0
+  return Number.isFinite(configuredCredits) && configuredCredits >= 0
     ? configuredCredits
     : CANVAS_LLM_NODE_CREDITS;
 };
