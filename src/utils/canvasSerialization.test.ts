@@ -140,6 +140,21 @@ describe('canvas serialization', () => {
     expect(restored.items[0]?.ai?.status).toBe('working');
   });
 
+  it('preserves Chat-generated media provenance through JSON persistence and restore', () => {
+    const node = {
+      ...createCanvasNode(undefined),
+      chatGeneratedMedia: {
+        mediaId: 'chat-media-1',
+        assetId: 'drawer-asset-1',
+        mediaType: 'image' as const,
+        prompt: '一张产品图',
+        generatedAt: 123,
+      },
+    };
+    const restored = sanitizeCanvasPersistedState(JSON.parse(JSON.stringify({ items: [node] })));
+    expect(restored.items[0]?.chatGeneratedMedia).toEqual(node.chatGeneratedMedia);
+  });
+
   it('deep-clones drawer values', () => {
     const source = { folders: [{ id: 'folder-1' }] };
     const cloned = cloneDrawerValue(source);

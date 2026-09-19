@@ -1516,6 +1516,11 @@ export function CanvasOverlayPanels({ scope }: { scope: CanvasOverlayPanelsScope
                                       }`}>
                                         {isError ? '失败' : isPending ? (generatedElapsedText ? `生成中 ${generatedElapsedText}` : '生成中') : '完成'}
                                       </span>
+                                      {generatedItem.source === 'chat' && (
+                                        <span className="shrink-0 rounded-full bg-violet-100/80 px-1.5 py-0.5 text-[8px] font-bold text-violet-600 dark:bg-violet-400/12 dark:text-violet-200">
+                                          Chat
+                                        </span>
+                                      )}
                                       <span className="truncate text-[10px] font-black text-stone-700 dark:text-stone-200">
                                         {generatedItem.item.name || (generatedItem.item.type === 'video' ? 'AI 视频' : 'AI 生图')}
                                       </span>

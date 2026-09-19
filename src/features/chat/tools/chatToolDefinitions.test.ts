@@ -13,6 +13,10 @@ describe('Chat tool exposure', () => {
       'edit_image',
       'batch_image_operation',
       'generate_video',
+      'interpolate_video',
+      'enhance_image',
+      'enhance_video',
+      'fuse_images',
       'add_to_canvas',
       'create_canvas_generator',
       'list_workflows',
@@ -43,6 +47,15 @@ describe('Chat tool exposure', () => {
     '把刚生成的图放进画布',
   ])('exposes tools for explicit software or media intent: %s', text => {
     expect(shouldExposeChatTools(text)).toBe(true);
+  });
+
+  it.each([
+    ['给这个视频补帧', 'interpolate_video'],
+    ['这个视频清晰一点', 'enhance_video'],
+    ['把这张图增强', 'enhance_image'],
+    ['把这两张图溶一下', 'fuse_images'],
+  ])('exposes %s media tooling through the ordinary Chat tool set', (text, expectedTool) => {
+    expect(getChatToolDefinitions(text).map(tool => tool.function.name)).toContain(expectedTool);
   });
 
   it.each(['帮我生成一张风景照', '生成一张海报', '出图', '输出两张图'])('marks direct image requests for the runtime fallback: %s', text => {

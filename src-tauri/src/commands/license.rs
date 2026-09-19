@@ -392,9 +392,19 @@ pub struct CloudAiPricing {
 pub struct CloudImageModelPricing {
     model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    billing_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_per_request: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_per_image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_by_resolution: Option<std::collections::HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     credits1k: Option<String>,
-    credits2k: String,
-    credits4k: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits2k: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits4k: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1805,6 +1815,11 @@ mod tests {
                     "model": "gemini-3-pro-image",
                     "credits2k": "18",
                     "credits4k": "20"
+                }, {
+                    "model": "example",
+                    "billingType": "image_flat",
+                    "creditsPerRequest": "7.5",
+                    "creditsByResolution": {}
                 }],
                 "videoModels": [{
                     "model": "flat-video",
@@ -1823,6 +1838,22 @@ mod tests {
         );
         assert_eq!(
             value["pricing"]["imageModels"][1]["credits1k"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            value["pricing"]["imageModels"][2]["billingType"],
+            serde_json::json!("image_flat")
+        );
+        assert_eq!(
+            value["pricing"]["imageModels"][2]["creditsPerRequest"],
+            serde_json::json!("7.5")
+        );
+        assert_eq!(
+            value["pricing"]["imageModels"][2]["creditsByResolution"],
+            serde_json::json!({})
+        );
+        assert_eq!(
+            value["pricing"]["imageModels"][2]["credits4k"],
             serde_json::Value::Null
         );
         assert_eq!(

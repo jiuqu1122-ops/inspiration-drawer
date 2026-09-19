@@ -6,7 +6,7 @@ import { getCanvasAiImageResolutionValues,getCanvasAiImageResolutionValuesForCan
 import { CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH,getCanvasAiOutputTileLayout,getCanvasAiPromptAutoHeight } from '../canvasAiNodeLayout';
 import { getCanvasAiVisibleOutputs } from '../canvasAiOutputs';
 import { getCanvasAiMediaType,isCanvasAiGeneratedType,isCanvasAiGeneratorType } from '../canvasAiRuntime';
-import { describeCanvasVideoCreditEstimate,estimateCanvasImageGenerationCredits,estimateCanvasTextAgentCredits,estimateCanvasVideoGenerationCredits,estimateCanvasWorkflowCredits,shouldShowCanvasGenerationCredits } from '../canvasGenerationCredits';
+import { describeCanvasImageCreditEstimate,describeCanvasVideoCreditEstimate,estimateCanvasImageGenerationCredits,estimateCanvasTextAgentCredits,estimateCanvasVideoGenerationCredits,estimateCanvasWorkflowCredits,shouldShowCanvasGenerationCredits } from '../canvasGenerationCredits';
 import type { CanvasImageItem } from '../canvasModel';
 import type { BufferItem } from '../../types';
 import { getCanvasWorkflowInternalSlotNodes,isReplaceableInternalImageSlot } from '../canvasWorkflowInternalSlots';
@@ -28,7 +28,7 @@ export function canvasAiPersistedRouteHintsForNode(
 }
 
 function buildCanvasNodeViewModelInternal(scope: CanvasNodeViewModelScope, canvasItem: CanvasImageItem) {
-  const { canvasAgent, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiExpandedOutputNodeIds, canvasAiPromptEditingId, canvasAiProvider, canvasItems, canvasItemsById, canvasRenderScale, canvasSelectedIdsSet, canvasTextAgentRunningIds, getCanvasAiNodeDesignSizeForItem, getCanvasAiResolvedModel, getCanvasAiUnifiedImageModelValue, getCanvasImageInputBufferItemsForNode, getStableCanvasImageSource } = scope;
+  const { canvasAgent, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiExpandedOutputNodeIds, canvasAiPromptEditingId, canvasAiProvider, canvasItems, canvasItemsById, canvasRenderScale, canvasSelectedIdsSet, canvasTextAgentRunningIds, cloudAccount, getCanvasAiNodeDesignSizeForItem, getCanvasAiResolvedModel, getCanvasAiUnifiedImageModelValue, getCanvasImageInputBufferItemsForNode, getStableCanvasImageSource } = scope;
 const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           const isTextCanvasItem = canvasItem.item.type === 'text';
                           const isCanvasTextAgentRunning = isTextCanvasItem && canvasTextAgentRunningIds.includes(canvasItem.id);
@@ -172,11 +172,20 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             label: value.toUpperCase(),
                           }));
                           const canvasAiItemImageResolution = canvasAiResolvedImageCapabilities.source === 'server'
-                            ? normalizeCapabilityOption(
-                              canvasAiImageResolutionValues,
-                              canvasItem.ai?.resolution,
-                              '2K',
-                            )
+                            ? (() => {
+                              const requested = String(canvasItem.ai?.resolution || '').trim();
+                              const requestedMatch = canvasAiImageResolutionValues.find(value => (
+                                value.toLowerCase() === requested.toLowerCase()
+                              ));
+                              if (requestedMatch) return requestedMatch;
+                              const preferred = String(canvasAiResolvedImageCapabilities.defaultResolution || '').trim();
+                              const preferredMatch = canvasAiImageResolutionValues.find(value => (
+                                value.toLowerCase() === preferred.toLowerCase()
+                              ));
+                              return preferredMatch
+                                || (canvasAiImageResolutionValues.length === 1 ? canvasAiImageResolutionValues[0] : '')
+                                || '';
+                            })()
                             : canvasAiCandidateImageResolutionValues.length > 0
                             ? normalizeCanvasAiImageResolutionForCandidates(
                               canvasAiItemProviderCandidates,
@@ -379,6 +388,14 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             || canvasAiItemModel;
                           const canvasImagePricingCapabilities = canvasImagePricingCandidates[0]?.capabilities
                             || canvasAiItemCapabilities;
+                          const canvasHasActiveMembership = cloudAccount?.membership?.status === 'ACTIVE'
+                            && Date.parse(cloudAccount.membership.startsAt) <= Date.now()
+                            && Date.parse(cloudAccount.membership.expiresAt) > Date.now();
+                          const withCanvasMembershipSettlementHint = (message: string) => (
+                            canvasHasActiveMembership
+                              ? `${message}；这是预计基础积分，会员折扣或免费额度以实际结算为准`
+                              : message
+                          );
                           const canvasWorkflowCreditEstimate = showCanvasRunCreditEstimate && isCanvasWorkflowItem
                             ? estimateCanvasWorkflowCredits(canvasWorkflow, {
                               resolveImageModel: node => getCanvasAiDefaultModel(normalizeCanvasAiProvider(
@@ -395,9 +412,14 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                                   persistedCandidate?.canonicalModelId || node.ai?.model,
                                 );
                                 const model = catalogModel?.id || persistedCandidate?.canonicalModelId;
+                                const capabilities = catalogModel?.capabilities || persistedCandidate?.modelCapabilities;
                                 return model ? {
                                   model,
                                   capabilities: persistedCandidate?.capabilities,
+                                  supportedResolutions: capabilities?.resolutions,
+                                  defaultResolution: capabilities?.defaultResolution,
+                                  maxOutputs: capabilities?.maxOutputs,
+                                  serverDriven: true,
                                 } : undefined;
                               },
                               resolveVideoPricingIdentity: node => {
@@ -409,8 +431,11 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                                 return {
                                   model: videoContext.pricingModelId || node.ai?.model,
                                   serverDriven: videoContext.serverDriven,
+                                  maxOutputs: videoContext.capabilities.maxOutputs,
                                 };
                               },
+                              serverDriven: canvasAiCredentialSource === 'wallet'
+                                && hasServerAiCatalog(canvasAiCloudImageModels),
                               pricing: canvasWalletPricing,
                             })
                             : null;
@@ -420,6 +445,10 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                               resolution: canvasAiItemImageResolution,
                               count: canvasItem.ai.count,
                               capabilities: canvasImagePricingCapabilities,
+                              supportedResolutions: canvasAiResolvedImageCapabilities.resolutions,
+                              defaultResolution: canvasAiResolvedImageCapabilities.defaultResolution,
+                              maxOutputs: canvasAiResolvedImageCapabilities.maxOutputs,
+                              serverDriven: canvasUsesServerCatalog,
                             }, canvasWalletPricing)
                             : null;
                           const canvasVideoPricingReferences = canvasItem.ai?.type === 'video-generator'
@@ -438,12 +467,17 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                               duration: canvasAiVideoDuration,
                               resolution: canvasAiVideoResolution,
                               serverDriven: canvasUsesServerCatalog,
+                              maxOutputs: canvasAiResolvedVideoCapabilities.maxOutputs,
                             }, canvasWalletPricing, canvasVideoPricingReferenceCounts)
                             : null;
                           const isCanvasAgentWalletFunding = canvasAgent.settings.apiProvider.trim().toLowerCase() === 'unmind-wallet'
                             || canvasAgent.settings.apiCredentialSource === 'cloud_wallet';
                           const canvasTextCreditEstimate = isCanvasAgentWalletFunding && isCanvasAgentTextTarget(canvasItem)
-                            ? estimateCanvasTextAgentCredits(canvasWalletPricing, canvasDesignAgentConfig.agentRole)
+                            ? estimateCanvasTextAgentCredits(
+                              canvasWalletPricing,
+                              canvasDesignAgentConfig.agentRole,
+                              { serverDriven: true },
+                            )
                             : null;
                           const canvasWorkflowCreditNodeLabel = canvasWorkflowCreditEstimate
                             ? [
@@ -459,34 +493,54 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             ].filter(Boolean).join(' + ')
                             : '';
                           const canvasRunCreditLabel = canvasWorkflowCreditEstimate
-                            ? canvasWorkflowCreditEstimate.pricingAvailable === false
-                              ? '价格未配置'
+                            ? canvasWorkflowCreditEstimate.pricingState === 'loading'
+                              ? '价格加载中…'
+                              : canvasWorkflowCreditEstimate.pricingState === 'unavailable'
+                                ? '价格未配置'
                               : `${canvasWorkflowCreditNodeLabel || '工作流'} · ${canvasWorkflowCreditEstimate.totalCredits}积分`
                             : canvasImageCreditEstimate
-                              ? `${canvasImageCreditEstimate.totalCredits}积分`
-                              : canvasVideoCreditEstimate
-                                ? canvasVideoResolutionRequired
+                              ? canvasImageCreditEstimate.reason === 'pricing_loading'
+                                ? '价格加载中…'
+                                : canvasImageCreditEstimate.reason === 'resolution_required'
                                   ? '请选择清晰度'
+                                  : canvasImageCreditEstimate.available
+                                    ? `${canvasImageCreditEstimate.totalCredits}积分`
+                                    : '价格未配置'
+                              : canvasVideoCreditEstimate
+                                ? canvasVideoCreditEstimate.reason === 'pricing_loading'
+                                  ? '价格加载中…'
                                   : canvasVideoCreditEstimate.available
                                   ? `${canvasVideoCreditEstimate.totalCredits}积分`
                                   : canvasVideoCreditEstimate.reason === 'resolution_required'
                                     ? '请选择清晰度'
                                     : '价格未配置'
                                 : canvasTextCreditEstimate
-                                  ? `${canvasTextCreditEstimate.totalCredits}积分`
+                                  ? canvasTextCreditEstimate.reason === 'pricing_loading'
+                                    ? '价格加载中…'
+                                    : canvasTextCreditEstimate.available
+                                      ? `${canvasTextCreditEstimate.totalCredits}积分`
+                                      : '价格未配置'
                               : '';
                           const canvasRunCreditTitle = canvasWorkflowCreditEstimate
-                            ? canvasWorkflowCreditEstimate.pricingAvailable === false
-                              ? '工作流包含尚未配置价格的云端视频模型'
-                              : `预计需要 ${canvasWorkflowCreditEstimate.totalCredits} 积分：图片 ${canvasWorkflowCreditEstimate.imageOutputCount} 张（${canvasWorkflowCreditEstimate.imageCredits} 积分）；视频 ${canvasWorkflowCreditEstimate.videoOutputCount} 条（${canvasWorkflowCreditEstimate.videoCredits} 积分）；LLM ${canvasWorkflowCreditEstimate.llmNodeCount} 次（${canvasWorkflowCreditEstimate.llmCredits} 积分）`
+                            ? canvasWorkflowCreditEstimate.pricingState === 'loading'
+                              ? '价格加载中…'
+                              : canvasWorkflowCreditEstimate.pricingState === 'unavailable'
+                                ? '工作流包含尚未配置价格的云端模型'
+                                : withCanvasMembershipSettlementHint(`预计需要 ${canvasWorkflowCreditEstimate.totalCredits} 积分：图片 ${canvasWorkflowCreditEstimate.imageOutputCount} 张（${canvasWorkflowCreditEstimate.imageCredits} 积分）；视频 ${canvasWorkflowCreditEstimate.videoOutputCount} 条（${canvasWorkflowCreditEstimate.videoCredits} 积分）；LLM ${canvasWorkflowCreditEstimate.llmNodeCount} 次（${canvasWorkflowCreditEstimate.llmCredits} 积分）`)
                             : canvasImageCreditEstimate
-                              ? `预计需要 ${canvasImageCreditEstimate.totalCredits} 积分：生成 ${canvasImageCreditEstimate.outputCount} 张，每张 ${canvasImageCreditEstimate.unitCredits} 积分`
+                              ? canvasImageCreditEstimate.available
+                                ? withCanvasMembershipSettlementHint(describeCanvasImageCreditEstimate(canvasImageCreditEstimate))
+                                : describeCanvasImageCreditEstimate(canvasImageCreditEstimate)
                               : canvasVideoCreditEstimate
-                                ? canvasVideoResolutionRequired
-                                  ? '请选择清晰度'
+                                ? canvasVideoCreditEstimate.available
+                                  ? withCanvasMembershipSettlementHint(describeCanvasVideoCreditEstimate(canvasVideoCreditEstimate))
                                   : describeCanvasVideoCreditEstimate(canvasVideoCreditEstimate)
                                 : canvasTextCreditEstimate
-                                  ? `预计需要 ${canvasTextCreditEstimate.totalCredits} 积分：运行 ${canvasDesignAgentConfig.agentRole === 'inspiration_analyzer' ? '灵感分析' : 'Agent'} 1 次`
+                                  ? canvasTextCreditEstimate.available
+                                    ? withCanvasMembershipSettlementHint(`预计需要 ${canvasTextCreditEstimate.totalCredits} 积分：${canvasTextCreditEstimate.unitCredits} 积分/次`)
+                                    : canvasTextCreditEstimate.reason === 'pricing_loading'
+                                      ? '价格加载中…'
+                                      : '价格未配置'
                                 : undefined;
                           const canvasWorkflowUserInput = isCanvasWorkflowItem
                             ? normalizeCanvasWorkflowUserInput(canvasWorkflow?.userInput)

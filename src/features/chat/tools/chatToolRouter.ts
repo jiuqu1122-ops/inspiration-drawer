@@ -7,6 +7,7 @@ import { normalizeImageVariants } from './imageVariantNormalization';
 
 const SUPPORTED_TOOLS = new Set([
   'web_search', 'create_file', 'get_canvas_selection', 'search_assets', 'generate_image', 'generate_image_variants', 'edit_image', 'generate_video',
+  'interpolate_video', 'enhance_image', 'enhance_video', 'fuse_images',
   'batch_image_operation', 'add_to_canvas', 'create_canvas_generator', 'list_workflows', 'run_workflow',
 ]);
 
@@ -15,6 +16,10 @@ const AUTO_EXECUTE_MEDIA_TOOLS = new Set([
   'generate_image_variants',
   'edit_image',
   'generate_video',
+  'interpolate_video',
+  'enhance_image',
+  'enhance_video',
+  'fuse_images',
   'batch_image_operation',
 ]);
 
@@ -23,6 +28,18 @@ const permissionActionForChatTool = (name: string, args: Record<string, unknown>
     return { tool: name === 'search_assets' ? 'drawer_search_inspirations' : 'app_get_context', arguments: args };
   }
   if (name === 'run_workflow') return { tool: 'canvas_run_workflow', arguments: args };
+  const mediaToolType = name === 'interpolate_video'
+    ? 'frame-interpolation'
+    : name === 'enhance_image'
+      ? 'image-enhancement'
+      : name === 'enhance_video'
+        ? 'video-enhancement'
+        : name === 'fuse_images'
+          ? 'image-fusion'
+          : '';
+  if (mediaToolType) {
+    return { tool: 'canvas_create_media_tool', arguments: { ...args, toolType: mediaToolType, autoRun: true } };
+  }
   if (name === 'generate_image' || name === 'generate_image_variants' || name === 'edit_image' || name === 'generate_video' || name === 'batch_image_operation') {
     return { tool: 'canvas_create_generator', arguments: { ...args, autoRun: true } };
   }

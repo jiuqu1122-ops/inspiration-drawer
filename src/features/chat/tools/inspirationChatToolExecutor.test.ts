@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createInspirationChatToolExecutor } from './inspirationChatToolExecutor';
+import { createInspirationChatToolExecutor, resolveChatMediaCanvasInputIds } from './inspirationChatToolExecutor';
 
 const context = {
   userText: '执行测试',
@@ -67,6 +67,62 @@ describe('inspiration Chat tool executor', () => {
     });
     await executor('generate_image', { prompt: '未来主义建筑' }, context);
     expect(generateMedia).toHaveBeenCalledWith('generate_image', { prompt: '未来主义建筑' });
+  });
+
+  it('keeps video generation on the existing media-generation bridge', async () => {
+    const generateMedia = vi.fn(async () => ({ media: [{ id: 'video-1' }] }));
+    const executor = createInspirationChatToolExecutor({
+      executeExistingTool: vi.fn(),
+      generateMedia,
+      listWorkflowDescriptors: () => [],
+      searchWeb: vi.fn(),
+      createFile: vi.fn(),
+    });
+    await executor('generate_video', { prompt: '产品展示视频' }, context);
+    expect(generateMedia).toHaveBeenCalledWith('generate_video', { prompt: '产品展示视频' });
+  });
+
+  it.each([
+    ['interpolate_video', 'frame-interpolation'],
+    ['enhance_image', 'image-enhancement'],
+    ['enhance_video', 'video-enhancement'],
+    ['fuse_images', 'image-fusion'],
+  ])('maps %s to the shared canvas media executor', async (toolName, toolType) => {
+    const executeExistingTool = vi.fn(async () => ({ ok: true }));
+    const executor = createInspirationChatToolExecutor({
+      executeExistingTool,
+      generateMedia: vi.fn(),
+      listWorkflowDescriptors: () => [],
+      searchWeb: vi.fn(),
+      createFile: vi.fn(),
+      getCanvasItems: () => [],
+      getSelectedCanvasIds: () => [],
+    });
+    await executor(toolName, {}, context);
+    expect(executeExistingTool).toHaveBeenCalledWith(
+      'canvas_create_media_tool',
+      { toolType, inputIds: [], autoRun: true },
+      { userRequest: '执行测试' },
+    );
+  });
+
+  it('resolves a Chat media id by provenance before falling back to the selected valid media', () => {
+    const makeVideo = (id: string): import('../../canvasModel').CanvasImageItem => ({
+      id,
+      item: { id: `${id}-item`, type: 'video', content: id, createdAt: 1 },
+      x: 0, y: 0, width: 320, height: 240,
+    });
+    const generated = {
+      ...makeVideo('chat-video-node'),
+      chatGeneratedMedia: { mediaId: 'chat-video-1', assetId: 'asset-video-1', mediaType: 'video' as const, generatedAt: 2 },
+    };
+    const selected = makeVideo('selected-video-node');
+    expect(resolveChatMediaCanvasInputIds({
+      canvasItems: [selected, generated],
+      selectedIds: [selected.id],
+      toolType: 'frame-interpolation',
+      mediaId: 'chat-video-1',
+    })).toEqual([generated.id]);
   });
 
   it('runs batch image jobs through the existing media generator one image at a time', async () => {

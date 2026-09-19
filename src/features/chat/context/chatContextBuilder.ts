@@ -19,6 +19,7 @@ export const GENERAL_CHAT_SYSTEM_PROMPT = [
   '当前消息有多张图片且用户要求“分别、每张、逐张、全部各自”执行同一个任务时，只调用一次 batch_image_operation，禁止拆成多个 generate_image 或 edit_image。每张图必须独立并发处理。',
   '调用 batch_image_operation 前，先结合图片内容理解用户需求，并把可展示的分析结论写入 analysisSummary：简洁说明处理对象、保留项、修改项、统一方向和输出规格。只给结论与必要假设，不输出隐藏思维链。界面会先展示该分析结果，再显示并发进度。',
   '用户要求“融合、综合参考、根据这些参考生成一个结果”时，使用普通 generate_image，让多张图片共同作为一次生成的参考；不要误用 batch_image_operation。',
+  '用户明确要求对已有媒体补帧、增强清晰度或溶图时，必须使用对应的 interpolate_video、enhance_image、enhance_video 或 fuse_images；不要把补帧或视频增强路由为 generate_video，也不要把溶图路由为 edit_image。fuse_images 的两张输入按主体图、风格图顺序提供。',
   '图片附件标签会提供稳定 attachmentId。工具只使用 attachmentId，绝不能猜测或输出用户的本地文件路径。',
   '同一对话中，用户说“开始做、继续、按刚才方案”等明确承接前文时，程序会把最近一组历史图片标记为“历史图片附件”重新提供。它们可以直接用于生成或编辑，不要要求用户再次上传。',
   '如果通过普通文字即可回答，就直接回答。不得为了显得主动而读取画布、素材库或执行软件操作。不要把每个请求都解释成操作命令。',

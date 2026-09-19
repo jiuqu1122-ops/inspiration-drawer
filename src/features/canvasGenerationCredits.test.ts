@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CanvasWorkflowTemplate } from './canvasTemplates';
 import { findAiCatalogModel } from './aiModelCapabilities';
 import {
+  describeCanvasImageCreditEstimate,
   describeCanvasVideoCreditEstimate,
   estimateCanvasImageGenerationCredits,
   estimateCanvasTextAgentCredits,
@@ -63,7 +64,7 @@ describe('canvas generation credits', () => {
       model: 'Nano Banana Pro',
       resolution: '4k',
       count: 3,
-    })).toEqual({ outputCount: 3, unitCredits: 20, totalCredits: 60 });
+    })).toMatchObject({ available: true, outputCount: 3, unitCredits: 20, totalCredits: 60 });
   });
 
   it('uses independent fast-channel pricing for the same Banana model IDs', () => {
@@ -131,7 +132,7 @@ describe('canvas generation credits', () => {
       model: 'GPT Image 2',
       resolution: '4k',
       count: 2,
-    }, pricing)).toEqual({ outputCount: 2, unitCredits: 9, totalCredits: 18 });
+    }, pricing)).toMatchObject({ available: true, outputCount: 2, unitCredits: 9, totalCredits: 18 });
     expect(estimateCanvasVideoGenerationCredits({
       model: 'seedance2',
       count: 2,
@@ -197,9 +198,9 @@ describe('canvas generation credits', () => {
       'seedance_video_analyzer',
       'general',
     ]) {
-      expect(estimateCanvasTextAgentCredits(pricing, role)).toEqual({ unitCredits: 1, totalCredits: 1 });
+      expect(estimateCanvasTextAgentCredits(pricing, role)).toMatchObject({ available: true, unitCredits: 1, totalCredits: 1 });
     }
-    expect(estimateCanvasTextAgentCredits(pricing, 'inspiration_analyzer')).toEqual({ unitCredits: 3, totalCredits: 3 });
+    expect(estimateCanvasTextAgentCredits(pricing, 'inspiration_analyzer')).toMatchObject({ available: true, unitCredits: 3, totalCredits: 3 });
   });
 
   it('falls back to legacy Agent pricing when an old server omits Canvas Text pricing', () => {
@@ -211,7 +212,7 @@ describe('canvas generation credits', () => {
       imageModels: [],
       videoModels: [],
     };
-    expect(estimateCanvasTextAgentCredits(pricing, 'general')).toEqual({ unitCredits: 10, totalCredits: 10 });
+    expect(estimateCanvasTextAgentCredits(pricing, 'general')).toMatchObject({ available: true, unitCredits: 10, totalCredits: 10 });
   });
 
   it('uses 2K pricing for the dual Banana Pro and Banana 2 capability', () => {
@@ -238,13 +239,117 @@ describe('canvas generation credits', () => {
       resolution: '1k',
       count: 2,
       capabilities: ['IMAGE_NANO_BANANA_DUAL_2K'],
-    }, pricing)).toEqual({ outputCount: 2, unitCredits: 18, totalCredits: 36 });
+    }, pricing)).toMatchObject({ available: true, outputCount: 2, unitCredits: 18, totalCredits: 36 });
     expect(estimateCanvasImageGenerationCredits({
       model: 'gemini-3.1-flash-image-preview',
       resolution: '2k',
       count: 1,
       capabilities: ['IMAGE_NANO_BANANA_DUAL_2K'],
-    }, pricing)).toEqual({ outputCount: 1, unitCredits: 15, totalCredits: 15 });
+    }, pricing)).toMatchObject({ available: true, outputCount: 1, unitCredits: 15, totalCredits: 15 });
+  });
+
+  it('keeps the three image billing strategies mutually exclusive', () => {
+    const base = {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3', canvasTextAgentCredits: '1',
+      imageDefaultCredits: '999999', videoDefaultCredits: '500', videoModels: [],
+    };
+    const flat = estimateCanvasImageGenerationCredits({
+      model: 'flat-image', count: 4, serverDriven: true, maxOutputs: 8,
+    }, {
+      ...base,
+      imageModels: [{ model: 'flat-image', billingType: 'image_flat' as const, creditsPerRequest: '20' }],
+    });
+    expect(flat).toMatchObject({
+      available: true, billingType: 'image_flat', outputCount: 4, creditsPerRequest: 20, totalCredits: 20,
+    });
+    expect(describeCanvasImageCreditEstimate(flat)).toBe('预计需要 20 积分：20 积分/次');
+
+    const count = estimateCanvasImageGenerationCredits({
+      model: 'count-image', count: 4, serverDriven: true, maxOutputs: 8,
+    }, {
+      ...base,
+      imageModels: [{ model: 'count-image', billingType: 'image_count' as const, creditsPerImage: '20' }],
+    });
+    expect(count).toMatchObject({
+      available: true, billingType: 'image_count', outputCount: 4, creditsPerImage: 20, totalCredits: 80,
+    });
+    expect(describeCanvasImageCreditEstimate(count)).toBe('预计需要 80 积分：20 积分/张 × 4 张');
+
+    const resolution = estimateCanvasImageGenerationCredits({
+      model: 'resolution-image', resolution: '4K', count: 3, serverDriven: true, maxOutputs: 8,
+      supportedResolutions: ['2k', '4k'],
+    }, {
+      ...base,
+      imageModels: [{
+        model: 'resolution-image', billingType: 'image_resolution' as const,
+        creditsByResolution: { '2k': '15', '4k': '20' },
+      }],
+    });
+    expect(resolution).toMatchObject({
+      available: true, billingType: 'image_resolution', outputCount: 3, unitCredits: 20, totalCredits: 60,
+    });
+    expect(describeCanvasImageCreditEstimate(resolution)).toBe('预计需要 60 积分：4K · 20 积分/张 × 3 张');
+  });
+
+  it('supports decimal image credits and capability-driven output limits', () => {
+    const estimate = estimateCanvasImageGenerationCredits({
+      model: 'decimal-image', resolution: '2k', count: 2, serverDriven: true,
+      supportedResolutions: ['2k'], maxOutputs: 8,
+    }, {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3', canvasTextAgentCredits: '1',
+      imageDefaultCredits: '999999', videoDefaultCredits: '500', videoModels: [],
+      imageModels: [{
+        model: 'decimal-image', billingType: 'image_resolution', creditsByResolution: { '2k': '7.5' },
+      }],
+    });
+    expect(estimate).toMatchObject({ available: true, outputCount: 2, unitCredits: 7.5, totalCredits: 15 });
+
+    const eightOutputs = estimateCanvasImageGenerationCredits({
+      model: 'eight-image', count: 8, serverDriven: true, maxOutputs: 8,
+    }, {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3', canvasTextAgentCredits: '1',
+      imageDefaultCredits: '999999', videoDefaultCredits: '500', videoModels: [],
+      imageModels: [{ model: 'eight-image', billingType: 'image_count', creditsPerImage: '10' }],
+    });
+    expect(eightOutputs).toMatchObject({ available: true, outputCount: 8, totalCredits: 80 });
+    expect(estimateCanvasImageGenerationCredits({
+      model: 'Nano Banana 2', resolution: '2k', count: 8,
+    })).toMatchObject({ available: true, outputCount: 4, totalCredits: 60 });
+  });
+
+  it('fails closed for missing canonical image prices and ambiguous resolutions', () => {
+    const pricing = {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3', canvasTextAgentCredits: '1',
+      imageDefaultCredits: '999999', videoDefaultCredits: '500', videoModels: [],
+      imageModels: [{
+        model: 'canonical-image', billingType: 'image_resolution' as const,
+        creditsByResolution: { '2k': '12', '4k': '18' },
+      }],
+    };
+    expect(estimateCanvasImageGenerationCredits({
+      model: 'provider/image-alias', resolution: '2k', serverDriven: true,
+      supportedResolutions: ['2k', '4k'],
+    }, pricing)).toMatchObject({ available: false, reason: 'pricing_unavailable', totalCredits: 0 });
+    expect(estimateCanvasImageGenerationCredits({
+      model: 'canonical-image', serverDriven: true, supportedResolutions: ['2k', '4k'],
+    }, pricing)).toMatchObject({ available: false, reason: 'resolution_required', resolution: '', totalCredits: 0 });
+    expect(estimateCanvasImageGenerationCredits({
+      model: 'canonical-image', serverDriven: true, supportedResolutions: ['2k', '4k'], defaultResolution: '4K',
+    }, pricing)).toMatchObject({ available: true, resolution: '4k', totalCredits: 18 });
+    expect(estimateCanvasImageGenerationCredits({
+      model: 'canonical-image', serverDriven: true, supportedResolutions: ['2k'],
+    }, pricing)).toMatchObject({ available: true, resolution: '2k', totalCredits: 12 });
+  });
+
+  it('reports loading instead of legacy defaults while wallet pricing is unavailable', () => {
+    expect(estimateCanvasImageGenerationCredits({
+      model: 'canonical-image', resolution: '2k', serverDriven: true,
+    })).toMatchObject({ available: false, reason: 'pricing_loading', totalCredits: 0 });
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'canonical-video', duration: 4, serverDriven: true,
+    })).toMatchObject({ available: false, reason: 'pricing_loading', totalCredits: 0 });
+    expect(estimateCanvasTextAgentCredits(undefined, 'general', { serverDriven: true }))
+      .toEqual({ available: false, reason: 'pricing_loading', totalCredits: 0 });
   });
 
   it('uses mutually exclusive video billing strategies from the wallet', () => {
@@ -471,6 +576,25 @@ describe('canvas generation credits', () => {
     expect(resolveVideoBillingType({ model: 'old-flat', credits: '15', creditsPerVideo: '15' })).toBe('video_flat');
   });
 
+  it('uses the server video maxOutputs instead of the legacy limit of four', () => {
+    const estimate = estimateCanvasVideoGenerationCredits({
+      model: 'eight-video', duration: 4, count: 8, serverDriven: true, maxOutputs: 8,
+    }, {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3', canvasTextAgentCredits: '1',
+      imageDefaultCredits: '55', videoDefaultCredits: '999999', imageModels: [],
+      videoModels: [{
+        model: 'eight-video', billingType: 'video_flat', credits: '0', creditsPerVideo: '20',
+      }],
+    });
+    expect(estimate).toMatchObject({ available: true, outputCount: 8, totalCredits: 160 });
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'legacy-video', duration: 1, count: 8,
+    }, {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3',
+      imageDefaultCredits: '55', videoDefaultCredits: '20', imageModels: [], videoModels: [],
+    })).toMatchObject({ available: true, outputCount: 4, totalCredits: 80 });
+  });
+
   it('sums image and LLM nodes while ignoring reference and plain-text nodes', () => {
     const workflow = {
       id: 'priced-workflow',
@@ -515,6 +639,7 @@ describe('canvas generation credits', () => {
       videoCredits: 0,
       llmCredits: 10,
       totalCredits: 58,
+      pricingState: 'ready',
     });
   });
 
@@ -584,5 +709,54 @@ describe('canvas generation credits', () => {
       pricing,
       resolveImagePricingIdentity: () => ({ model: 'nano-banana-pro-fast' }),
     }).totalCredits).toBe(30);
+  });
+
+  it('prices workflow LLM requests from CANVAS_TEXT and exposes loading state', () => {
+    const workflow = {
+      id: 'two-llm-workflow', label: 'Two LLM calls', hint: '',
+      nodes: ['a', 'b'].map(id => ({
+        id, x: 0, y: 0, width: 100, height: 100,
+        item: { id, type: 'text' as const, content: '' },
+        textMode: 'agent' as const,
+      })),
+    } as CanvasWorkflowTemplate;
+    const pricing = {
+      agentRequestCredits: '10', inspirationAnalysisCredits: '3', canvasTextAgentCredits: '1',
+      imageDefaultCredits: '55', videoDefaultCredits: '500', imageModels: [], videoModels: [],
+    };
+    expect(estimateCanvasWorkflowCredits(workflow, { pricing, serverDriven: true })).toMatchObject({
+      llmNodeCount: 2, llmCredits: 2, totalCredits: 2, pricingState: 'ready',
+    });
+    expect(estimateCanvasWorkflowCredits(workflow, { serverDriven: true })).toMatchObject({
+      llmNodeCount: 2, llmCredits: 0, totalCredits: 0,
+      pricingState: 'loading', pricingAvailable: false,
+    });
+  });
+
+  it('uses canonical workflow image identity and its maxOutputs capability', () => {
+    const workflow = {
+      id: 'eight-image-workflow', label: 'Eight images', hint: '',
+      nodes: [{
+        id: 'render', x: 0, y: 0, width: 100, height: 100,
+        item: { id: 'render', type: 'text', content: '' },
+        ai: { type: 'image-generator', model: 'provider/image-alias', count: 8 },
+      }],
+    } as CanvasWorkflowTemplate;
+    const pricing = {
+      agentRequestCredits: '10', inspirationAnalysisCredits: '3', canvasTextAgentCredits: '1',
+      imageDefaultCredits: '999999', videoDefaultCredits: '500', videoModels: [],
+      imageModels: [{
+        model: 'canonical-image', billingType: 'image_count' as const, creditsPerImage: '10',
+      }],
+    };
+    expect(estimateCanvasWorkflowCredits(workflow, {
+      pricing,
+      serverDriven: true,
+      resolveImagePricingIdentity: () => ({
+        model: 'canonical-image', serverDriven: true, maxOutputs: 8,
+      }),
+    })).toMatchObject({
+      imageOutputCount: 8, imageCredits: 80, totalCredits: 80, pricingState: 'ready',
+    });
   });
 });

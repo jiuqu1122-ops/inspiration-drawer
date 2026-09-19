@@ -65,6 +65,14 @@ export type CanvasImageItem = {
   canvasGroup?: CanvasGroup;
   /** Stable slot used while a Chat batch progressively fills a canvas group. */
   chatBatchSlot?: CanvasChatBatchSlot;
+  /** Origin metadata for a media node inserted from a completed normal Chat generation. */
+  chatGeneratedMedia?: {
+    mediaId: string;
+    assetId?: string;
+    mediaType: 'image' | 'video';
+    prompt?: string;
+    generatedAt: number;
+  };
   workflowGroup?: unknown;
   /**
    * Runtime-only ordered assets for an expanded internal slot node. The

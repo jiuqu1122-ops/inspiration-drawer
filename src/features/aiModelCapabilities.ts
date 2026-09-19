@@ -11,6 +11,7 @@ type CapabilitySource = AiModelCapabilities | null | undefined;
 export type ResolvedImageModelCapabilities = {
   source: 'server' | 'legacy';
   resolutions: string[];
+  defaultResolution?: string;
   aspectRatios: string[];
   aspectRatiosByResolution: Record<string, string[]>;
   referenceImageLimit: number;
@@ -380,6 +381,9 @@ export const resolveImageModelCapabilities = (options: {
   return {
     source,
     resolutions,
+    ...(firstDefined(canonical?.defaultResolution, route?.defaultResolution, legacy?.defaultResolution, undefined)
+      ? { defaultResolution: firstDefined(canonical?.defaultResolution, route?.defaultResolution, legacy?.defaultResolution, undefined)! }
+      : {}),
     aspectRatios,
     aspectRatiosByResolution,
     referenceImageLimit: supportsReferenceImages ? referenceImageLimit : 0,

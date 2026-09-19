@@ -992,7 +992,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           }
           return;
         }
-        const generatedMedia = getGeneratedMediaFromToolCall(call).filter(media => media.type === 'image');
+        const generatedMedia = getGeneratedMediaFromToolCall(call);
         for (const media of generatedMedia) {
           if (notifiedMediaIds.has(media.id)) continue;
           notifiedMediaIds.add(media.id);
@@ -1080,7 +1080,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           call.toolName = route.toolName;
           args = route.args;
         }
-        if (call.toolName === 'generate_image' || call.toolName === 'generate_image_variants' || call.toolName === 'edit_image' || call.toolName === 'batch_image_operation') {
+        if (call.toolName === 'generate_image' || call.toolName === 'generate_image_variants' || call.toolName === 'edit_image' || call.toolName === 'generate_video' || call.toolName === 'batch_image_operation') {
           args = applyChatImageGenerationSettings(args, optionsRef.current);
         }
         call.argumentsJson = JSON.stringify(args);

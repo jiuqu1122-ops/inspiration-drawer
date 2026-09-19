@@ -526,9 +526,9 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'canvas_create_media_tool',
-      description: '创建本地媒体处理节点。',
+      description: '创建画布媒体处理节点，包括补帧、图片增强、视频增强和溶图。',
       parameters: objectSchema({
-        toolType: { type: 'string', enum: ['frame-interpolation', 'image-enhancement', 'video-enhancement'] },
+        toolType: { type: 'string', enum: ['frame-interpolation', 'image-enhancement', 'video-enhancement', 'image-fusion'] },
         inputIds: { type: 'array', items: { type: 'string' } },
         autoRun: { type: 'boolean' },
       }, ['toolType']),

@@ -246,9 +246,9 @@ import type { WorkflowRecipeDraft } from './features/appAgent/workflows/workflow
 import { prepareAgentVisualReferences } from './features/canvasAgentVisualReferences';
 import {
 getCanvasAiMediaType,
-isCanvasAiGeneratedType,
 isCanvasAiGeneratorType
 } from './features/canvasAiRuntime';
+import { buildCanvasGeneratedItemsForList } from './features/canvasGeneratedList';
 import {
 getCanvasGroupOutlines
 } from './features/canvasGroups';
@@ -5781,7 +5781,7 @@ useEffect(() => {
     items,
   ]);
 
-  const canvasAgent = useCanvasAgentBridge({ activeFolderIdStateRef, activeTabRef, activeWorkflowDraftId, activeWorkflowDraftRef, addDrawerMediaItemToCanvas, addWebImageUrl, analyzeDrawerInspirationWithLlm, appendCanvasItems, appWindow, assetStorageMode, AUTO_INSPIRATION_ANALYSIS_ENABLED, buildAgentCalendarEvents, buildCanvasAgentSelectedItems, buildCanvasAiGeneratorNode, buildCanvasEnhancementNode, buildCanvasFrameInterpolationNode, buildCanvasWorkflowModuleNode, buildCanvasWorkflowSaveDraftFromSelection, CALENDAR_NEW_NOTE_TARGET, calendarEvents, calendarMonth, calendarSelectedDate, calendarTagFilter, calendarTargetNoteLabel, canvasAiPromptPresets, canvasAiProvider, canvasItemsRef, canvasScaleRef, canvasSelectedIdsRef, canvasSurfaceRef, canvasTextAreaRefs, canvasWorkflowTemplates, connectCanvasItems, createAssetId, createCanvasTextItemFromContent, createDrawerMediaCanvasNode, createFloatingNote, createTextOrUrlItem, createWorkflowAttachmentImageCanvasNode, deleteCalendarScheduleItem, drawerAgentSelectedItems, drawerOrganizationPlansRef, duplicateCanvasItems, ensureCalendarScheduleNote, enterCanvasMode, fitCanvasViewToItems, foldersRef, generateCanvasAiGeneratorNode, generateCanvasWorkflowModuleNode, getCanvasDropPosition, getCanvasItemsBounds, getSelectedCanvasAiInputIds, getSelectedEnhancementInputIds, getSelectedFrameInterpolationInputIds, handleDeleteFolder, handleOpenTextInput, handleTogglePin, insertDrawerFolderAtTop, inspirationAnalysisJobsRef, isCanvasModeRef, isPinnedRef, itemsRef, jumpCalendarToday, leaveCanvasToDrawer, makeCanvasNodeId, openSelectedImagePreview, openSelectedVideoPreview, organizeCanvasItems, patchCalendarScheduleItem, persistFoldersSnapshot, prepareCanvasAgentVisualReferences, pushCanvasUndoSnapshot, pushDrawerUndoSnapshot, removeCanvasConnection, removeCanvasItemsByIds, removeDrawerItemsFromDrawer, retrieveDrawerInspirationCandidates, runCanvasTextAgentNode: (targetId: string) => runCanvasTextAgentNode(targetId), runSelectedCanvasWorkflowModules, scheduleCanvasFocusItemById, searchQuery, selectedIds, setActiveDraftForDisplay, setActiveFolderId, setActiveTab, setActiveWorkflowDraftId, setAssetStatsRevision, setCalendarMonth, setCalendarSelectedDate, setCalendarTargetNoteLabel, setCustomCanvasAiPromptPresets, setCustomCanvasWorkflows, setDrawerState, setFolders, setIsDrawerAgentOpen, setIsOpen, setIsPinned, setIsSearchActive, setIsSelectMode, setItems, setQuickAccessItems, setSearchQuery, setSelectedIds, setShowSettings, setShowTextInput, setShowWebImageCollector, setShowWorkflowDraftPanel, showToast, startDrawerInspirationAnalysisBatch, stateRef, syncCalendarScheduleSnapshot, undoLastCanvasChange, undoLastDrawerChange, updateCanvasAiGeneratorData, updateCanvasItemsImmediate, updateCanvasNodesForPreset, updateCanvasSelection, updateCanvasTextItem, zoomCanvasAt });
+  const canvasAgent = useCanvasAgentBridge({ activeFolderIdStateRef, activeTabRef, activeWorkflowDraftId, activeWorkflowDraftRef, addDrawerMediaItemToCanvas, addWebImageUrl, analyzeDrawerInspirationWithLlm, appendCanvasItems, appWindow, assetStorageMode, AUTO_INSPIRATION_ANALYSIS_ENABLED, buildAgentCalendarEvents, buildCanvasAgentSelectedItems, buildCanvasAiGeneratorNode, buildCanvasEnhancementNode, buildCanvasFrameInterpolationNode, buildCanvasImageFusionNode, buildCanvasWorkflowModuleNode, buildCanvasWorkflowSaveDraftFromSelection, CALENDAR_NEW_NOTE_TARGET, calendarEvents, calendarMonth, calendarSelectedDate, calendarTagFilter, calendarTargetNoteLabel, canvasAiPromptPresets, canvasAiProvider, canvasItemsRef, canvasScaleRef, canvasSelectedIdsRef, canvasSurfaceRef, canvasTextAreaRefs, canvasWorkflowTemplates, connectCanvasItems, createAssetId, createCanvasTextItemFromContent, createDrawerMediaCanvasNode, createFloatingNote, createTextOrUrlItem, createWorkflowAttachmentImageCanvasNode, deleteCalendarScheduleItem, drawerAgentSelectedItems, drawerOrganizationPlansRef, duplicateCanvasItems, ensureCalendarScheduleNote, enterCanvasMode, fitCanvasViewToItems, foldersRef, generateCanvasAiGeneratorNode, generateCanvasWorkflowModuleNode, getCanvasDropPosition, getCanvasItemsBounds, getSelectedCanvasAiInputIds, getSelectedCanvasImageFusionInputIds, getSelectedEnhancementInputIds, getSelectedFrameInterpolationInputIds, handleDeleteFolder, handleOpenTextInput, handleTogglePin, insertDrawerFolderAtTop, inspirationAnalysisJobsRef, isCanvasModeRef, isPinnedRef, itemsRef, jumpCalendarToday, leaveCanvasToDrawer, makeCanvasNodeId, openSelectedImagePreview, openSelectedVideoPreview, organizeCanvasItems, patchCalendarScheduleItem, persistFoldersSnapshot, prepareCanvasAgentVisualReferences, pushCanvasUndoSnapshot, pushDrawerUndoSnapshot, removeCanvasConnection, removeCanvasItemsByIds, removeDrawerItemsFromDrawer, retrieveDrawerInspirationCandidates, runCanvasTextAgentNode: (targetId: string) => runCanvasTextAgentNode(targetId), runSelectedCanvasWorkflowModules, scheduleCanvasFocusItemById, searchQuery, selectedIds, setActiveDraftForDisplay, setActiveFolderId, setActiveTab, setActiveWorkflowDraftId, setAssetStatsRevision, setCalendarMonth, setCalendarSelectedDate, setCalendarTargetNoteLabel, setCustomCanvasAiPromptPresets, setCustomCanvasWorkflows, setDrawerState, setFolders, setIsDrawerAgentOpen, setIsOpen, setIsPinned, setIsSearchActive, setIsSelectMode, setItems, setQuickAccessItems, setSearchQuery, setSelectedIds, setShowSettings, setShowTextInput, setShowWebImageCollector, setShowWorkflowDraftPanel, showToast, startDrawerInspirationAnalysisBatch, stateRef, syncCalendarScheduleSnapshot, undoLastCanvasChange, undoLastDrawerChange, updateCanvasAiGeneratorData, updateCanvasItemsImmediate, updateCanvasNodesForPreset, updateCanvasSelection, updateCanvasTextItem, zoomCanvasAt });
   workflowResultPublisherRef.current = (result) => {
     setCanvasWorkflowProgress(result);
     canvasAgent.appendWorkflowResult(result);
@@ -5908,12 +5908,14 @@ useEffect(() => {
     listWorkflowDescriptors: () => canvasWorkflowTemplates,
     searchWeb: (query, limit) => invoke('chat_web_search', { query, limit }),
     createFile: request => invoke('chat_create_file', { request }),
+    getCanvasItems: () => canvasItemsRef.current,
+    getSelectedCanvasIds: () => canvasSelectedIdsRef.current,
   });
 
   const addChatMediaToCanvas = async (
     media: ChatGeneratedMedia,
     options: { autoFocus?: boolean } = {},
-  ) => { return addChatMediaToCanvasImpl({ canvasAgent, canvasItemsRef, enterCanvasMode, isCanvasModeRef, scheduleCanvasFocusItemById, showToast }, media, options); };
+  ) => { return addChatMediaToCanvasImpl({ canvasAgent, canvasItemsRef, enterCanvasMode, isCanvasModeRef, scheduleCanvasFocusItemById, showToast, updateCanvasItemsImmediate }, media, options); };
 
   const createChatBatchCanvasGroup = async (payload: ChatBatchStartedPayload) => { return createChatBatchCanvasGroupImpl({ appendCanvasItems, canvasItemsRef, canvasRectsIntersect, createAssetId, enterCanvasMode, fitCanvasViewToItems, getCanvasDropPosition, isCanvasModeRef, updateCanvasSelection }, payload); };
 
@@ -6120,32 +6122,10 @@ useEffect(() => {
     : undefined;
   const deferredCanvasItems = React.useDeferredValue(canvasItems);
   const canvasItemsForNav = deferredCanvasItems;
-  const canvasGeneratedItemsForList = useMemo<CanvasGeneratedListEntry[]>(() => ([
-      ...deferredCanvasItems
-        .filter(item => isCanvasAiGeneratedType(item.ai?.type))
-        .map(item => ({ id: item.id, canvasItem: item, item: item.item, ai: item.ai })),
-      ...deferredCanvasItems.flatMap((canvasItem): CanvasGeneratedListEntry[] => {
-        if (!isCanvasAiGeneratorType(canvasItem.ai?.type) && canvasItem.ai?.type !== 'workflow') return [];
-        return (canvasItem.ai.outputs || []).reduce<CanvasGeneratedListEntry[]>((entries, output, outputIndex) => {
-          const outputItem = createCanvasAiOutputBufferItem(canvasItem, output, outputIndex);
-          if (!outputItem) return entries;
-          entries.push({
-            id: `${canvasItem.id}:${output.id || outputIndex}`,
-            canvasItem,
-            item: outputItem,
-            ai: {
-              type: outputItem.type === 'video' ? 'generated-video' : 'generated-image',
-              prompt: output.prompt || canvasItem.ai?.prompt,
-              status: output.status,
-              error: output.error,
-              generatedAt: output.generatedAt || canvasItem.ai?.generatedAt,
-            },
-          });
-          return entries;
-        }, []);
-      }),
-    ].sort((a, b) => (b.ai?.generatedAt || b.item.createdAt || 0) - (a.ai?.generatedAt || a.item.createdAt || 0))
-  ), [deferredCanvasItems]);
+  const canvasGeneratedItemsForList = useMemo<CanvasGeneratedListEntry[]>(
+    () => buildCanvasGeneratedItemsForList(deferredCanvasItems),
+    [deferredCanvasItems],
+  );
   const canvasGeneratedItemsForRender = useMemo(
     () => canvasGeneratedItemsForList.slice(0, CANVAS_GENERATED_LIST_RENDER_LIMIT),
     [canvasGeneratedItemsForList],

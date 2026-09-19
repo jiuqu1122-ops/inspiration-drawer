@@ -29,19 +29,27 @@ export const runChatMediaGeneration = async (input: {
   ) => Promise<CanvasAiGeneratedOutput[]>;
 }) => {
   const mediaType = input.toolName === 'generate_video' ? 'video' : 'image';
-  const referenceSources = Array.isArray(input.args.referenceImages)
-    ? input.args.referenceImages.map(String).map(value => value.trim()).filter(Boolean).slice(0, 9)
-    : [];
-  const referenceItems: CanvasImageItem[] = referenceSources.map((source, index) => {
+  const referenceGroups = [
+    { values: input.args.referenceImages, type: 'image' as const, label: 'image' },
+    { values: input.args.referenceVideos, type: 'video' as const, label: 'video' },
+    { values: input.args.referenceAudios, type: 'file' as const, label: 'audio' },
+  ];
+  const referenceItems: CanvasImageItem[] = referenceGroups.flatMap(group => (
+    Array.isArray(group.values) ? group.values : []
+  ).map(String).map(value => value.trim()).filter(Boolean).map((source, index) => {
     const itemId = createChatId('chat-reference-item');
     const remote = /^(?:https?:|data:|asset:)/i.test(source);
+    const sourceName = source.split(/[\\/]/).pop()?.split(/[?#]/)[0] || '';
+    const name = group.type === 'file' && !/\.[a-z0-9]{2,5}$/i.test(sourceName)
+      ? `Chat audio reference ${index + 1}.mp3`
+      : sourceName || `Chat ${group.label} reference ${index + 1}`;
     return {
       id: createChatId('chat-reference-node'),
       item: {
         id: itemId,
-        type: 'image',
-        content: `Chat reference ${index + 1}`,
-        name: `Chat reference ${index + 1}`,
+        type: group.type,
+        content: `Chat ${group.label} reference ${index + 1}`,
+        name,
         ...(remote ? { url: source, sourceUrl: source } : { path: source }),
         createdAt: Date.now() + index,
         isQuickAccess: false,
@@ -52,7 +60,7 @@ export const runChatMediaGeneration = async (input: {
       height: 240,
       inputs: [],
     };
-  });
+  }));
   let latestTarget = input.buildGeneratorNode(
     { x: 24, y: 24 },
     referenceItems.map(item => item.id),
@@ -76,6 +84,9 @@ export const runChatMediaGeneration = async (input: {
       ...(String(input.args.resolution || '').trim() ? { resolution: String(input.args.resolution).trim() } : {}),
       ...(Number(input.args.count) > 0 ? { count: Math.min(4, Math.max(1, Math.round(Number(input.args.count)))) } : {}),
       ...(mediaType === 'video' && Number(input.args.duration) > 0 ? { duration: Number(input.args.duration) } : {}),
+      ...(mediaType === 'video' && (input.args.inputMode === 'REF' || input.args.inputMode === 'FLF')
+        ? { videoInputMode: input.args.inputMode }
+        : {}),
     } : latestTarget.ai,
   };
   const patchTarget = (patch: Partial<NonNullable<CanvasImageItem['ai']>>, content?: string) => {

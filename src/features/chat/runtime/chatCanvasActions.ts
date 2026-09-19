@@ -25,34 +25,47 @@ type AgentOpenAiChatResult = {
   finishReason?: string;
 };
 
-export const addChatMediaToCanvasImpl = async (ctx: Pick<chatAgentActionContext, 'canvasAgent' | 'canvasItemsRef' | 'enterCanvasMode' | 'isCanvasModeRef' | 'scheduleCanvasFocusItemById' | 'showToast'>, media: ChatGeneratedMedia, options: { autoFocus?: boolean } = {}) => {
-  const { canvasAgent, canvasItemsRef, enterCanvasMode, isCanvasModeRef, scheduleCanvasFocusItemById, showToast } = ctx;
+export const addChatMediaToCanvasImpl = async (ctx: Pick<chatAgentActionContext, 'canvasAgent' | 'canvasItemsRef' | 'enterCanvasMode' | 'isCanvasModeRef' | 'scheduleCanvasFocusItemById' | 'showToast' | 'updateCanvasItemsImmediate'>, media: ChatGeneratedMedia, options: { autoFocus?: boolean } = {}) => {
+  const { canvasAgent, canvasItemsRef, enterCanvasMode, isCanvasModeRef, scheduleCanvasFocusItemById, showToast, updateCanvasItemsImmediate } = ctx;
     const assetId = media.assetId || media.id;
     if (!assetId) return;
     try {
-      const existing = canvasItemsRef.current.find(item => (
+      let target = canvasItemsRef.current.find(item => (
         item.item.sourceItemId === assetId || item.item.id === assetId
       ));
-      if (existing) {
-        if (!isCanvasModeRef.current) enterCanvasMode();
-        if (options.autoFocus) scheduleCanvasFocusItemById(existing.id);
-        return;
-      }
-
-      await canvasAgent.executeExternalTool('drawer_manage', {
-        action: 'add_items_to_canvas',
-        targetIds: [assetId],
-      }, { userRequest: options.autoFocus ? 'Chat 生成图片自动加入画布' : '用户点击发送到画布' });
-
-      if (options.autoFocus) {
-        const added = canvasItemsRef.current.find(item => (
+      if (!target) {
+        await canvasAgent.executeExternalTool('drawer_manage', {
+          action: 'add_items_to_canvas',
+          targetIds: [assetId],
+        }, { userRequest: options.autoFocus ? `Chat 生成${media.type === 'video' ? '视频' : '图片'}自动加入画布` : '用户点击发送到画布' });
+        target = canvasItemsRef.current.find(item => (
           item.item.sourceItemId === assetId || item.item.id === assetId
         ));
-        if (added) scheduleCanvasFocusItemById(added.id);
+      }
+
+      if (target) {
+        const targetId = target.id;
+        const generatedAt = Date.now();
+        updateCanvasItemsImmediate(items => items.map(item => item.id === targetId ? {
+          ...item,
+          chatGeneratedMedia: {
+            mediaId: media.id,
+            ...(media.assetId ? { assetId: media.assetId } : {}),
+            mediaType: media.type,
+            ...(media.prompt ? { prompt: media.prompt } : {}),
+            generatedAt,
+          },
+        } : item));
+      }
+
+      if (options.autoFocus) {
+        if (!isCanvasModeRef.current) enterCanvasMode();
+        if (target) scheduleCanvasFocusItemById(target.id);
       }
       if (!options.autoFocus) showToast('已发送到画布');
     } catch (error) {
-      showToast(`${options.autoFocus ? '生成图片自动加入画布失败' : '发送到画布失败'}：${String(error)}`);
+      const mediaLabel = media.type === 'video' ? '视频' : '图片';
+      showToast(`${options.autoFocus ? `生成${mediaLabel}自动加入画布失败` : '发送到画布失败'}：${String(error)}`);
     }
 
 };

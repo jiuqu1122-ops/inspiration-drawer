@@ -6,6 +6,7 @@ export type CanvasGeneratedListEntry = {
   canvasItem: CanvasImageItem;
   item: BufferItem;
   ai?: NonNullable<CanvasImageItem['ai']>;
+  source?: 'canvas' | 'chat' | 'workflow';
 };
 
 export type ImageThumbnailFileResult = {

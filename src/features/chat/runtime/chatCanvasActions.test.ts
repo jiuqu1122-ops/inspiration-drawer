@@ -1,12 +1,52 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CanvasImageItem } from '../../canvasModel';
 import {
+  addChatMediaToCanvasImpl,
   createChatBatchCanvasGroupImpl,
   fillChatBatchCanvasSlotImpl,
 } from './chatCanvasActions';
 
 describe('Chat batch canvas grouping', () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it('patches a newly added Chat image with persistent generation provenance', async () => {
+    const canvasItemsRef = { current: [] as CanvasImageItem[] };
+    const added: CanvasImageItem = {
+      id: 'canvas-chat-image',
+      item: { id: 'canvas-copy', sourceItemId: 'drawer-asset', type: 'image', content: 'result', createdAt: 1 },
+      x: 0, y: 0, width: 320, height: 240,
+    };
+    const updateCanvasItemsImmediate = (updater: (items: CanvasImageItem[]) => CanvasImageItem[]) => {
+      canvasItemsRef.current = updater(canvasItemsRef.current);
+      return canvasItemsRef.current;
+    };
+    await addChatMediaToCanvasImpl({
+      canvasItemsRef,
+      isCanvasModeRef: { current: true },
+      enterCanvasMode: vi.fn(),
+      scheduleCanvasFocusItemById: vi.fn(),
+      showToast: vi.fn(),
+      updateCanvasItemsImmediate,
+      canvasAgent: {
+        executeExternalTool: vi.fn(async () => {
+          canvasItemsRef.current = [added];
+          return { added: 1 };
+        }),
+      } as never,
+    }, {
+      id: 'chat-media',
+      assetId: 'drawer-asset',
+      type: 'image',
+      prompt: '产品图',
+    }, { autoFocus: true });
+
+    expect(canvasItemsRef.current[0]?.chatGeneratedMedia).toMatchObject({
+      mediaId: 'chat-media',
+      assetId: 'drawer-asset',
+      mediaType: 'image',
+      prompt: '产品图',
+    });
+  });
 
   it('keeps independently completed variants in one stable ordered group', async () => {
     vi.stubGlobal('window', {
