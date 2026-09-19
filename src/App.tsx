@@ -55,6 +55,7 @@ import {
 readCachedCloudAccount
 } from './features/cloudAccountSync';
 import { CloudAccountProvider } from './features/cloudAccountContext';
+import { CREDIT_RECHARGE_OPEN_EVENT } from './features/recharge/CreditRechargeOverlay';
 import {
 scheduleCloudAccountQuotaRefresh,
 setCloudAccountQuotaRefreshHandler
@@ -802,6 +803,12 @@ function MainApp() {
   const [isCanvasGeneratedMultiSelect, setIsCanvasGeneratedMultiSelect] = useState(false);
   const [canvasGeneratedSelectedIds, setCanvasGeneratedSelectedIds] = useState<string[]>([]);
   const [isInspirationSpaceOpen, setIsInspirationSpaceOpen] = useState(false);
+  const [isCreditRechargeOpen, setIsCreditRechargeOpen] = useState(false);
+  useEffect(() => {
+    const openCreditRecharge = () => setIsCreditRechargeOpen(true);
+    window.addEventListener(CREDIT_RECHARGE_OPEN_EVENT, openCreditRecharge);
+    return () => window.removeEventListener(CREDIT_RECHARGE_OPEN_EVENT, openCreditRecharge);
+  }, []);
   const [isDrawerAgentOpen, setIsDrawerAgentOpen] = useState(false);
   const [canvasTextAgentRunningIds, setCanvasTextAgentRunningIds] = useState<string[]>([]);
   const [canvasAgentSidebarWidth, setCanvasAgentSidebarWidth] = useState(readAgentSidebarWidth);
@@ -6552,7 +6559,7 @@ useEffect(() => {
       <AppToastHost />
 
 <AppPrimaryOverlays
-  scope={{ addInspirationSpaceShareAndReturnToCanvas, cancelVirtualDropJob, canRegisterByEmail, confirmSnip, deleteDrawerFolders, emailChallengeId, emailRegistrationError, emailVerificationCode, folderContextMenu, folders, formatVirtualDropBytes, getFolderActionIds, handleOpenFolderModal, inspirationSpaceTemplateOptions, isEmailCodeSending, isEmailVerifying, isInspirationSpaceOpen, isLicenseGateActive, isLicenseLoading, isMouseDown, keepDrawerOpenByPointer, LazyInspirationSpaceWindow, licenseGateMessage, licenseGateTitle, loadInspirationSpaceDrawerImages, openMoveExistingFolderModal, prepareInspirationSpaceTemplate, readInspirationSpaceDrawerImage, registrationDisplayName, registrationEmail, registrationInviteCode, requestEmailCode, selection, setActiveFolderId, setEditingFolderId, setEmailChallengeId, setEmailRegistrationError, setEmailVerificationCode, setEmailInviteCode: setRegistrationInviteCode, setFolderContextMenu, setIsInspirationSpaceOpen, setRegistrationDisplayName, setRegistrationEmail, setRenameValue, setSelection, snipMode, startPos, verifyEmailAccount, virtualDropJobs }}
+  scope={{ addInspirationSpaceShareAndReturnToCanvas, cancelVirtualDropJob, canRegisterByEmail, confirmSnip, deleteDrawerFolders, emailChallengeId, emailRegistrationError, emailVerificationCode, folderContextMenu, folders, formatVirtualDropBytes, getFolderActionIds, handleOpenFolderModal, inspirationSpaceTemplateOptions, isCreditRechargeOpen, isEmailCodeSending, isEmailVerifying, isInspirationSpaceOpen, isLicenseGateActive, isLicenseLoading, isMouseDown, keepDrawerOpenByPointer, LazyInspirationSpaceWindow, licenseGateMessage, licenseGateTitle, loadInspirationSpaceDrawerImages, openMoveExistingFolderModal, prepareInspirationSpaceTemplate, readInspirationSpaceDrawerImage, refreshCloudAccount, registrationDisplayName, registrationEmail, registrationInviteCode, requestEmailCode, selection, setActiveFolderId, setEditingFolderId, setEmailChallengeId, setEmailRegistrationError, setEmailVerificationCode, setEmailInviteCode: setRegistrationInviteCode, setFolderContextMenu, setIsCreditRechargeOpen, setIsInspirationSpaceOpen, setRegistrationDisplayName, setRegistrationEmail, setRenameValue, setSelection, snipMode, startPos, verifyEmailAccount, virtualDropJobs }}
 />
 
 <DrawerShell

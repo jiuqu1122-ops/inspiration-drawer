@@ -18780,6 +18780,7 @@ fn main() {
             commands::license::verify_email_registration,
             commands::license::sync_email_license,
             commands::license::get_cloud_account,
+            commands::license::create_cloud_recharge_session,
             commands::license::bind_cloud_referral,
             commands::license::get_cloud_credit_usage,
             commands::license::redeem_credit_code,

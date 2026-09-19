@@ -187,6 +187,13 @@ pub struct CloudCreditUsageResult {
     next_cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudRechargeSession {
+    url: String,
+    expires_at: Option<String>,
+}
+
 #[derive(Serialize)]
 struct CreditRedemptionRequest<'a> {
     code: &'a str,
@@ -1170,6 +1177,19 @@ pub async fn get_cloud_account(
 ) -> Result<CloudAccountSummary, String> {
     let response = sync_cloud_account(&app_handle).await?;
     summarize_cloud_account(&response)
+}
+
+#[tauri::command]
+pub async fn create_cloud_recharge_session(
+    app_handle: tauri::AppHandle,
+) -> Result<CloudRechargeSession, String> {
+    let access_token = cloud_access_token(&app_handle).await?;
+    post_cloud_with_bearer(
+        "/v1/recharge/session",
+        &access_token,
+        &serde_json::json!({}),
+    )
+    .await
 }
 
 #[tauri::command]

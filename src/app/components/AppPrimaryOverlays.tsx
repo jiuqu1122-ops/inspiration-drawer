@@ -3,6 +3,7 @@ import { Check,Edit3,FolderOpen,FolderPlus,Image as ImageIcon,KeyRound,Move,Send
 import React from 'react';
 import type { Folder } from '../../types';
 import type { VirtualDropUiJob } from '../../types/virtualDrop';
+import { CreditRechargeOverlay } from '../../features/recharge/CreditRechargeOverlay';
 
 export type AppPrimaryOverlaysScope = Record<string, any> & {
   folders: Folder[];
@@ -10,7 +11,7 @@ export type AppPrimaryOverlaysScope = Record<string, any> & {
 };
 
 export function AppPrimaryOverlays({ scope }: { scope: AppPrimaryOverlaysScope }) {
-  const { addInspirationSpaceShareAndReturnToCanvas, cancelVirtualDropJob, canRegisterByEmail, confirmSnip, deleteDrawerFolders, emailChallengeId, emailRegistrationError, emailVerificationCode, folderContextMenu, folders, formatVirtualDropBytes, getFolderActionIds, handleOpenFolderModal, inspirationSpaceTemplateOptions, isEmailCodeSending, isEmailVerifying, isInspirationSpaceOpen, isLicenseGateActive, isLicenseLoading, isMouseDown, keepDrawerOpenByPointer, LazyInspirationSpaceWindow, licenseGateMessage, licenseGateTitle, loadInspirationSpaceDrawerImages, openMoveExistingFolderModal, prepareInspirationSpaceTemplate, readInspirationSpaceDrawerImage, registrationDisplayName, registrationEmail, registrationInviteCode, requestEmailCode, selection, setActiveFolderId, setEditingFolderId, setEmailChallengeId, setEmailRegistrationError, setEmailVerificationCode, setEmailInviteCode, setFolderContextMenu, setIsInspirationSpaceOpen, setRegistrationDisplayName, setRegistrationEmail, setRenameValue, setSelection, snipMode, startPos, verifyEmailAccount, virtualDropJobs } = scope;
+  const { addInspirationSpaceShareAndReturnToCanvas, cancelVirtualDropJob, canRegisterByEmail, confirmSnip, deleteDrawerFolders, emailChallengeId, emailRegistrationError, emailVerificationCode, folderContextMenu, folders, formatVirtualDropBytes, getFolderActionIds, handleOpenFolderModal, inspirationSpaceTemplateOptions, isCreditRechargeOpen, isEmailCodeSending, isEmailVerifying, isInspirationSpaceOpen, isLicenseGateActive, isLicenseLoading, isMouseDown, keepDrawerOpenByPointer, LazyInspirationSpaceWindow, licenseGateMessage, licenseGateTitle, loadInspirationSpaceDrawerImages, openMoveExistingFolderModal, prepareInspirationSpaceTemplate, readInspirationSpaceDrawerImage, refreshCloudAccount, registrationDisplayName, registrationEmail, registrationInviteCode, requestEmailCode, selection, setActiveFolderId, setEditingFolderId, setEmailChallengeId, setEmailRegistrationError, setEmailVerificationCode, setEmailInviteCode, setFolderContextMenu, setIsCreditRechargeOpen, setIsInspirationSpaceOpen, setRegistrationDisplayName, setRegistrationEmail, setRenameValue, setSelection, snipMode, startPos, verifyEmailAccount, virtualDropJobs } = scope;
   return (
 <>
 <AnimatePresence>
@@ -50,6 +51,15 @@ export function AppPrimaryOverlays({ scope }: { scope: AppPrimaryOverlaysScope }
           </motion.div>
         )}
       </AnimatePresence>
+
+      <CreditRechargeOverlay
+        open={isCreditRechargeOpen}
+        onClose={() => {
+          setIsCreditRechargeOpen(false);
+          void refreshCloudAccount(true);
+        }}
+        onRechargeSuccess={() => void refreshCloudAccount(true)}
+      />
 
       <AnimatePresence>
         {folderContextMenu && (() => {
