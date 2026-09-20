@@ -16,6 +16,7 @@ import {
   normalizeVideoAspectRatioSelection,
   normalizeVideoDurationSelection,
   reconcileStaleCanvasAiModels,
+  reconcileStaleCanvasWorkflowModels,
   resolveEffectiveVideoResolution,
   resolveImageModelCapabilities,
   resolveVideoModelCapabilities,
@@ -33,6 +34,7 @@ import {
   reconcileCanvasAiModelsWithCatalog,
   resolveCanvasWalletVideoModelContext,
 } from './canvasWalletVideoModelContext';
+
 
 const catalogSnapshot = (): CloudImageModelsResult => ({
   provider: 'NEW_API',
@@ -578,5 +580,17 @@ describe('server-driven AI model capabilities', () => {
     expect(findAiCatalogModel(catalog, 'route-image-v2')?.id).toBe('test-image-x');
     expect(findAiCatalogModel(catalog, 'test image x')).toBeUndefined();
     expect(getDefaultAiCatalogModelId(catalogSnapshot(), 'image')).toBe('test-image-x');
+  });
+
+  it('reconciles stale ids inside expanded workflow snapshots without replacing explicit intent', () => {
+    const nested = {
+      workflowGroup: {
+        nodes: [{ ai: { type: 'image-generator', model: 'route-image-v2' } }],
+        nodeSnapshots: { nested: { ai: { type: 'image-generator', model: 'retired-image' } } },
+      },
+    };
+    const next = reconcileStaleCanvasWorkflowModels(nested, catalogSnapshot()) as typeof nested;
+    expect(next.workflowGroup.nodes[0].ai.model).toBe('test-image-x');
+    expect(next.workflowGroup.nodeSnapshots.nested.ai.model).toBe('retired-image');
   });
 });

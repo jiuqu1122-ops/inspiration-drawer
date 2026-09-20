@@ -704,3 +704,48 @@ export const reconcileStaleCanvasAiModels = (
   });
   return changed ? next : items;
 };
+
+/**
+ * Reconcile the same explicit model identity inside expanded workflow
+ * instances, imported templates, and runtime node snapshots.  The traversal
+ * only touches objects that already carry an `ai.model`; it never fuzzy-maps
+ * names or invents a default for a non-empty stale model.
+ */
+export const reconcileStaleCanvasWorkflowModels = (
+  value: unknown,
+  snapshot: CloudImageModelsResult,
+): unknown => {
+  const imageCatalog = getAiCatalogModels(snapshot, 'image');
+  const videoCatalog = getAiCatalogModels(snapshot, 'video');
+  const defaultImage = getDefaultAiCatalogModelId(snapshot, 'image');
+  const defaultVideo = getDefaultAiCatalogModelId(snapshot, 'video');
+  const visit = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(visit);
+    if (!node || typeof node !== 'object') return node;
+    const record = node as Record<string, unknown>;
+    let next: Record<string, unknown> = record;
+    const ai = record.ai && typeof record.ai === 'object' && !Array.isArray(record.ai)
+      ? record.ai as Record<string, unknown>
+      : null;
+    if (ai && ai.credentialSource !== 'local') {
+      const modality = ai.type === 'image-generator' ? 'image' : ai.type === 'video-generator' ? 'video' : null;
+      const catalog = modality === 'image' ? imageCatalog : videoCatalog;
+      if (modality && catalog.length > 0) {
+        const requested = String(ai.model || '').trim();
+        const current = findAiCatalogModel(catalog, requested);
+        const nextModel = current?.id || (!requested ? (modality === 'image' ? defaultImage : defaultVideo) : '');
+        if (nextModel && nextModel !== ai.model) {
+          next = { ...next, ai: { ...ai, model: nextModel, providerChannelId: undefined, providerCandidates: undefined } };
+        }
+      }
+    }
+    for (const key of ['workflowGroup', 'nodeSnapshots', 'template', 'workflow', 'nodes']) {
+      if (key in next) {
+        const updated = visit(next[key]);
+        if (updated !== next[key]) next = { ...next, [key]: updated };
+      }
+    }
+    return next;
+  };
+  return visit(value);
+};

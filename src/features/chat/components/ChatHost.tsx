@@ -15,6 +15,7 @@ import {
 import { useChatRuntime, type UseChatRuntimeOptions } from '../runtime/useChatRuntime';
 import { ChatView, type ChatViewProps } from './ChatView';
 import { useCloudAccount } from '../../cloudAccountContext';
+import { createCanvasWorkflowSnapshot, workflowSnapshotHash } from '../attachments/chatWorkflowAttachments';
 
 export type ChatHostProps = Omit<ChatViewProps, 'runtime'> & {
   visible: boolean;
@@ -33,6 +34,18 @@ export type ChatHostProps = Omit<ChatViewProps, 'runtime'> & {
 };
 
 const prepareChatAttachment = async (attachment: PendingChatAttachment) => {
+  if (attachment.type === 'workflow') {
+    const source = attachment.path.trim();
+    if (!source || /^workflow:\/\//i.test(source)) return attachment;
+    const payload = await invoke<unknown>('read_canvas_template_json', { path: source });
+    const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+    const workflow = Array.isArray(record.workflows) ? record.workflows[0] : record;
+    const workflowRecord = workflow && typeof workflow === 'object' ? workflow as Record<string, unknown> : {};
+    const nodes = Array.isArray(workflowRecord.nodes) ? workflowRecord.nodes : [];
+    const snapshot = createCanvasWorkflowSnapshot(nodes, String(workflowRecord.label || source.split(/[\\/]/).pop() || '导入工作流'), 'file');
+    const structureHash = workflowSnapshotHash(snapshot);
+    return { ...attachment, path: `workflow://${structureHash}`, metadataJson: JSON.stringify({ snapshot, structureHash, raw: payload }) };
+  }
   if (attachment.type !== 'image') return attachment;
   const source = attachment.path.trim();
   if (!source || !/^(?:https?:|data:|blob:|asset:)/i.test(source)) return attachment;

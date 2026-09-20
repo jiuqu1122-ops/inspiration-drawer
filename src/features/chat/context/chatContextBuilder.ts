@@ -1,6 +1,7 @@
 import { parseChatToolResult, type ChatAttachment, type ChatMessage, type ChatSummary } from '../model/chatTypes';
 import type { ChatVisionAttachmentResolution } from '../attachments/chatVisionAttachmentResolver';
 import { compactChatToolResultForProvider, serializeChatToolResult } from '../tools/chatToolResult';
+import { parseWorkflowAttachmentSnapshot } from '../attachments/chatWorkflowAttachments';
 import {
   DEFAULT_CHAT_CONTEXT_BUDGET,
   selectRecentMessagesForBudget,
@@ -85,8 +86,18 @@ const buildAttachmentContent = async (
   resolveAttachmentUrl?: (attachment: ChatAttachment) => Promise<string | ChatVisionAttachmentResolution>,
   reusedFromHistory = false,
 ) => {
-  if (!resolveAttachmentUrl || attachments.length === 0) return text;
+  if (attachments.length === 0) return text;
   const parts: Array<Record<string, unknown>> = [{ type: 'text', text }];
+  const workflowAttachments = attachments
+    .map(attachment => ({ attachment, snapshot: parseWorkflowAttachmentSnapshot(attachment) }))
+    .filter((item): item is { attachment: ChatAttachment; snapshot: NonNullable<ReturnType<typeof parseWorkflowAttachmentSnapshot>> } => Boolean(item.snapshot));
+  for (const { attachment, snapshot } of workflowAttachments) {
+    parts.push({
+      type: 'text',
+      text: `工作流附件 ${attachment.id}\n结构快照（仅供分析；未经用户确认不得应用或运行）：\n${JSON.stringify(snapshot)}`,
+    });
+  }
+  if (!resolveAttachmentUrl) return parts.length > 1 ? parts : text;
   const images = attachments.filter(item => item.type === 'image').slice(0, 6);
   const resolved = await Promise.all(images.map(attachment => (
     resolveAttachmentUrl(attachment).catch(() => '')

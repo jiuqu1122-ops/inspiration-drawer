@@ -1164,7 +1164,7 @@ describe('NewAPI video routing', () => {
   it('uses bounded server poll_after_ms hints', () => {
     expect(getCloudVideoPollAfterMs({ poll_after_ms: 8_000 })).toBe(8_000);
     expect(getCloudVideoPollAfterMs({ pollAfterMs: 200 })).toBe(1_000);
-    expect(getCloudVideoPollAfterMs({ data: { poll_after_ms: 90_000 } })).toBe(30_000);
+    expect(getCloudVideoPollAfterMs({ data: { poll_after_ms: 90_000 } })).toBe(90_000);
     expect(getCloudVideoPollAfterMs({ status: 'pending_confirmation' })).toBe(2_500);
   });
 

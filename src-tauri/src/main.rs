@@ -8945,13 +8945,13 @@ fn read_canvas_template_json_impl(
     if !normalized.is_file() {
         return Err("画布模板 JSON 文件不存在".to_string());
     }
-    let is_json = normalized
+    let is_workflow_document = normalized
         .extension()
         .and_then(|extension| extension.to_str())
-        .map(|extension| extension.eq_ignore_ascii_case("json"))
+        .map(|extension| matches!(extension.to_ascii_lowercase().as_str(), "json" | "workflow" | "canvas"))
         .unwrap_or(false);
-    if !is_json {
-        return Err("画布模板文件必须是 JSON 格式".to_string());
+    if !is_workflow_document {
+        return Err("工作流文件必须是 JSON、.workflow 或 .canvas 格式".to_string());
     }
     let metadata = fs::metadata(&normalized).map_err(|error| error.to_string())?;
     if metadata.len() > MAX_CANVAS_TEMPLATE_JSON_BYTES {

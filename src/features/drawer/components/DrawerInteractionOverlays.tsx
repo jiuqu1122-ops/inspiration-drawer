@@ -35,6 +35,12 @@ export function DrawerInteractionOverlays({ scope }: { scope: DrawerInteractionO
                     setIsDrawerAgentOpen(false);
                   }}
                   selectedItems={isCanvasMode ? canvasAgentSelectedItems : drawerAgentSelectedItems}
+                  workflowAttachmentOptions={(scope.canvasWorkflowTemplates || []).map((workflow: any) => ({
+                    id: workflow.id,
+                    label: workflow.label,
+                    source: 'template' as const,
+                    snapshot: { schema: 'inspiration-workflow-snapshot' as const, version: 1 as const, source: 'template' as const, label: workflow.label, nodes: workflow.nodes || [], edges: [], metadata: { templateId: workflow.id, hint: workflow.hint } },
+                  }))}
                   resolveSelectedItems={isCanvasMode ? () => buildCanvasAgentSelectedItems() : undefined}
                   onClearSelectedItems={() => {
                     if (isCanvasMode) {

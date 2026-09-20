@@ -1442,7 +1442,9 @@ pub async fn generate_cloud_videos(
         "/v1/ai/videos",
         &access_token,
         &request,
-        Duration::from_secs(25 * 60),
+        // Submission has its own transport deadline.  The caller owns the
+        // longer task-generation budget and will poll the returned task id.
+        Duration::from_secs(60),
     )
     .await
 }
@@ -1465,7 +1467,9 @@ pub async fn get_cloud_video_status(
     let access_token = cloud_access_token(&app_handle).await?;
     let client = reqwest::Client::builder()
         .no_proxy()
-        .timeout(Duration::from_secs(25 * 60))
+        // Each status request is bounded independently; this must not consume
+        // the total client-side generation budget.
+        .timeout(Duration::from_secs(30))
         .build()
         .map_err(|error| format!("cloud_unavailable: 无法初始化云端连接：{error}"))?;
     let mut request = client
@@ -1481,6 +1485,12 @@ pub async fn get_cloud_video_status(
         .await
         .map_err(|error| format!("cloud_unavailable: 无法连接额度服务器：{error}"))?;
     let status = response.status();
+    let retry_after_ms = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| seconds.saturating_mul(1_000));
     let body = response
         .text()
         .await
@@ -1495,7 +1505,10 @@ pub async fn get_cloud_video_status(
             .as_ref()
             .and_then(|value| value.message.as_deref())
             .unwrap_or("视频状态查询失败");
-        return Err(cloud_error(code, message));
+        let retry_hint = retry_after_ms
+            .map(|value| format!(" retry_after_ms={value}"))
+            .unwrap_or_default();
+        return Err(format!("{}{}", cloud_error(code, message), retry_hint));
     }
     serde_json::from_str(&body).map_err(|_| "cloud_invalid_response: 视频状态格式无效".to_string())
 }

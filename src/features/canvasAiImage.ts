@@ -679,7 +679,10 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
         requestError = error;
         return null;
       });
-    const recoveredImagesPromise = (async () => {
+    let recoveryPromise: Promise<string[] | null> | null = null;
+    const startRecovery = (force = false) => {
+      if (!force && recoveryPromise) return recoveryPromise;
+      recoveryPromise = (async () => {
       const deadline = Date.now() + CLOUD_WALLET_IMAGE_RECOVERY_WINDOW_MS;
       await delay(Math.min(1_200, CLOUD_WALLET_IMAGE_RECOVERY_WINDOW_MS));
       while (!requestReturnedUsableImages && Date.now() <= deadline) {
@@ -700,20 +703,39 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
         await delay(Math.min(CLOUD_WALLET_IMAGE_RECOVERY_POLL_INTERVAL_MS, remaining));
       }
       return null;
-    })();
+      })();
+      return recoveryPromise;
+    };
+    // Start the normal recovery window immediately, but allow one fresh window
+    // after a late POST failure.  This covers an upstream 504 that arrives
+    // after the original 90s reconciliation window without ever re-submitting.
+    const recoveredImagesPromise = startRecovery();
+    let lateRecoveryPromise: Promise<string[] | null> | null = null;
+    const startLateRecovery = () => {
+      lateRecoveryPromise ||= startRecovery(true);
+      return lateRecoveryPromise;
+    };
     const requestOutcome = requestImagesPromise.then(async images => {
       if (images && images.length > 0) return { images };
       if (requestError && !shouldReconcileCloudWalletImageError(requestError)) throw requestError;
       const recovered = await recoveredImagesPromise;
       if (recovered && recovered.length > 0) return { images: recovered };
-      if (requestError) throw requestError;
+      if (requestError) {
+        const lateRecovery = await startLateRecovery();
+        if (lateRecovery && lateRecovery.length > 0) return { images: lateRecovery };
+        throw requestError;
+      }
       return { images: [] };
     });
     const recoveredOutcome = recoveredImagesPromise.then(async images => {
       if (images && images.length > 0) return { images };
       const requested = await requestImagesPromise;
       if (requested && requested.length > 0) return { images: requested };
-      if (requestError) throw requestError;
+      if (requestError) {
+        const lateRecovery = await startLateRecovery();
+        if (lateRecovery && lateRecovery.length > 0) return { images: lateRecovery };
+        throw requestError;
+      }
       return { images: [] };
     });
     const result = await Promise.race([requestOutcome, recoveredOutcome]);
@@ -746,6 +768,9 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
   );
   if (referenceError) throw new Error(referenceError);
   try {
+    // One deadline covers submit plus every status request.  A phase change
+    // must not silently restart the 25-minute generation budget.
+    const generationDeadline = Date.now() + 25 * 60 * 1000;
     const duration = serverDriven
       ? normalizeVideoDurationSelection(options.videoCapabilities!, options.duration)
       : options.duration;
@@ -779,33 +804,52 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
         count: requestCount,
       },
     });
-    const output: string[] = [];
+    const directOutput: string[] = [];
     const taskIds: string[] = [];
+    const taskOutputById = new Map<string, string[]>();
     const initialTaskStatuses = new Map<string, unknown>();
     for (const item of result.results || []) {
       const taskId = getTaskIdFromResponse(item);
       const currentTask = taskId ? selectCloudWalletVideoTaskPayload(item, taskId) : item;
-      if (isNewApiVideoResultReady(currentTask)) output.push(...collectVideoStrings(currentTask));
+      if (isNewApiVideoResultReady(currentTask)) {
+        const ready = collectVideoStrings(currentTask);
+        if (taskId) taskOutputById.set(taskId, ready);
+        else directOutput.push(...ready);
+      }
       if (taskId) {
-        taskIds.push(taskId);
+        if (!taskIds.includes(taskId)) taskIds.push(taskId);
         initialTaskStatuses.set(taskId, currentTask);
       }
     }
-    if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
+    const initialOutput = () => [
+      ...directOutput,
+      ...taskIds.flatMap(id => taskOutputById.get(id) || []),
+    ];
+    if (initialOutput().length >= requestCount) return initialOutput().slice(0, requestCount);
     if (taskIds.length === 0) {
-      if (output.length > 0) return Array.from(new Set(output)).slice(0, requestCount);
+      const noTaskOutput = initialOutput();
+      if (noTaskOutput.length > 0) return noTaskOutput.slice(0, requestCount);
       throw new Error('云端视频渠道没有返回任务 ID 或视频地址');
     }
-    const deadline = Date.now() + 25 * 60 * 1000;
     const taskFailures: string[] = [];
-    for (const taskId of Array.from(new Set(taskIds))) {
+    for (const taskId of taskIds) {
       let lastStatus: unknown = initialTaskStatuses.get(taskId) ?? null;
-      while (Date.now() < deadline) {
+      while (Date.now() < generationDeadline) {
         await delay(getCloudVideoPollAfterMs(lastStatus));
-        const statusResponse = await invoke<unknown>('get_cloud_video_status', {
-          taskId,
-          clientRequestId,
-        });
+        let statusResponse: unknown;
+        try {
+          statusResponse = await invoke<unknown>('get_cloud_video_status', {
+            taskId,
+            clientRequestId,
+          });
+        } catch (error) {
+          // A transient GET failure does not change the upstream task identity.
+          // Keep polling the same task after its requested backoff; only clear
+          // authentication/validation failures escape as terminal errors.
+          if (!isRetryableServerError(error)) throw error;
+          lastStatus = error;
+          continue;
+        }
         // Some upstream video APIs return a task list instead of one task.
         // Never let a historical task's terminal state or media URLs decide
         // the outcome of the task that this request actually started.
@@ -816,16 +860,18 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
           break;
         }
         if (!isNewApiVideoResultReady(lastStatus)) continue;
-        output.push(...collectVideoStrings(lastStatus));
-        if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
+        taskOutputById.set(taskId, collectVideoStrings(lastStatus));
       }
       const failure = getNewApiVideoFailureMessage(lastStatus);
       if (failure && !taskFailures.includes(failure)) taskFailures.push(failure);
     }
+    const output = initialOutput();
     if (output.length === 0) {
       throw new Error(taskFailures.join('；') || '云端视频任务超时或没有返回视频地址');
     }
-    return Array.from(new Set(output)).slice(0, requestCount);
+    // URL presentation de-duplication is intentionally not used for completion
+    // accounting: two valid outputs may point at the same CDN URL.
+    return output.slice(0, requestCount);
   } catch (error) {
     throw new Error(getErrorMessage(error));
   }
@@ -3747,9 +3793,24 @@ const findVideoLifecycleValue = (
 };
 
 export const getCloudVideoPollAfterMs = (value: unknown, fallback = 2_500) => {
-  const candidate = findVideoLifecycleValue(value, new Set(['poll_after_ms', 'pollafterms']));
+  if (typeof value === 'string') {
+    const retryHint = value.match(/retry[_-]?after(?:[_-]?ms)?\s*[:=]\s*(\d+)/i);
+    if (retryHint) {
+      const parsedHint = Number(retryHint[1]);
+      if (Number.isFinite(parsedHint)) {
+        const isMilliseconds = /retry[_-]?after[_-]?ms/i.test(retryHint[0]);
+        const milliseconds = isMilliseconds ? parsedHint : parsedHint * 1_000;
+        return Math.max(1_000, Math.min(24 * 60 * 60_000, Math.round(milliseconds)));
+      }
+    }
+  }
+  const candidate = findVideoLifecycleValue(value, new Set([
+    'poll_after_ms', 'pollafterms', 'retry_after_ms', 'retryafterms', 'retry_after', 'retryafter',
+  ]));
   const parsed = Number(candidate);
-  return Number.isFinite(parsed) ? Math.max(1_000, Math.min(30_000, Math.round(parsed))) : fallback;
+  return Number.isFinite(parsed)
+    ? Math.max(1_000, Math.min(24 * 60 * 60_000, Math.round(parsed)))
+    : fallback;
 };
 
 export const isNewApiVideoResultReady = (value: unknown) => {

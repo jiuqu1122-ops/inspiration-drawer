@@ -1,0 +1,82 @@
+import type { PendingChatAttachment } from '../model/chatTypes';
+import { createChatId } from '../model/chatTypes';
+
+export type ChatWorkflowAttachmentSource = 'canvas' | 'selection' | 'template' | 'file';
+
+export type ChatWorkflowAttachmentSnapshot = {
+  schema: 'inspiration-workflow-snapshot';
+  version: 1;
+  source: ChatWorkflowAttachmentSource;
+  label: string;
+  nodes: unknown[];
+  edges: unknown[];
+  metadata?: Record<string, unknown>;
+};
+
+export type ChatWorkflowAttachmentOption = {
+  id: string;
+  label: string;
+  source: Exclude<ChatWorkflowAttachmentSource, 'file'>;
+  snapshot: ChatWorkflowAttachmentSnapshot;
+};
+
+const stableSerialize = (value: unknown): string => {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableSerialize).join(',')}]`;
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stableSerialize(item)}`)
+    .join(',')}}`;
+};
+
+export const workflowSnapshotHash = (snapshot: ChatWorkflowAttachmentSnapshot) => {
+  let hash = 2166136261;
+  for (const char of stableSerialize(snapshot)) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+};
+
+export const createWorkflowAttachment = (
+  snapshot: ChatWorkflowAttachmentSnapshot,
+  label = snapshot.label,
+): PendingChatAttachment => {
+  const hash = workflowSnapshotHash(snapshot);
+  return {
+    id: createChatId('workflow-attachment'),
+    type: 'workflow',
+    path: `workflow://${hash}`,
+    mimeType: 'application/json',
+    metadataJson: JSON.stringify({ snapshot: { ...snapshot, label }, structureHash: hash }),
+  };
+};
+
+export const createCanvasWorkflowSnapshot = (
+  nodes: unknown[],
+  label: string,
+  source: ChatWorkflowAttachmentSource = 'selection',
+): ChatWorkflowAttachmentSnapshot => {
+  const edges = nodes.flatMap(node => {
+    if (!node || typeof node !== 'object') return [];
+    const record = node as Record<string, unknown>;
+    const target = String(record.id || '').trim();
+    const inputs = Array.isArray(record.inputs) ? record.inputs.map(String).filter(Boolean) : [];
+    return target ? inputs.map(sourceId => ({ source: sourceId, target })) : [];
+  });
+  const snapshot = { schema: 'inspiration-workflow-snapshot' as const, version: 1 as const, source, label, nodes, edges };
+  return { ...snapshot, metadata: { structureHash: workflowSnapshotHash(snapshot) } };
+};
+
+export const parseWorkflowAttachmentSnapshot = (attachment: PendingChatAttachment) => {
+  if (attachment.type !== 'workflow' || !attachment.metadataJson) return null;
+  try {
+    const parsed = JSON.parse(attachment.metadataJson) as { snapshot?: ChatWorkflowAttachmentSnapshot };
+    const snapshot = parsed.snapshot;
+    if (!snapshot || snapshot.schema !== 'inspiration-workflow-snapshot' || snapshot.version !== 1) return null;
+    if (!Array.isArray(snapshot.nodes) || !Array.isArray(snapshot.edges)) return null;
+    return snapshot;
+  } catch (_) {
+    return null;
+  }
+};

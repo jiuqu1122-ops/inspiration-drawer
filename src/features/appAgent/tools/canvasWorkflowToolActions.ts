@@ -154,6 +154,7 @@ if (name === 'canvas_create_text_agent') {
           metadata: {
             ...workflowDraftArg.metadata,
             ...(selectedReferenceImageNodeIds.length > 0 ? { selectedReferenceImageNodeIds } : {}),
+            draftVersion: 1,
           },
         };
         if (args.languagePolicy && typeof args.languagePolicy === 'object') {
@@ -178,6 +179,11 @@ if (name === 'canvas_create_text_agent') {
         if (!currentDraft) throw new Error('没有激活的工作流草稿，请先创建草稿 (canvas_create_workflow_draft)');
         if (activeWorkflowDraftId !== currentDraft.id) {
           setActiveWorkflowDraftId(currentDraft.id);
+        }
+        const expectedDraftVersion = Number(args.expectedDraftVersion);
+        const currentDraftVersion = Number(currentDraft.metadata?.draftVersion || 1);
+        if (Number.isFinite(expectedDraftVersion) && expectedDraftVersion !== currentDraftVersion) {
+          throw new Error(`workflow draft version conflict: expected ${expectedDraftVersion}, current ${currentDraftVersion}`);
         }
         let updatedDraft: WorkflowRecipeDraft = { ...currentDraft, outputs: [...currentDraft.outputs] };
 
@@ -383,6 +389,7 @@ if (name === 'canvas_create_text_agent') {
           };
         }
 
+        updatedDraft.metadata = { ...updatedDraft.metadata, draftVersion: currentDraftVersion + 1 };
         activeWorkflowDraftRef.current = updatedDraft;
         setActiveDraftForDisplay(updatedDraft);
         showToast('工作流草稿已更新');
