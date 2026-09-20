@@ -341,6 +341,53 @@ describe('canvas generation credits', () => {
     }, pricing)).toMatchObject({ available: true, resolution: '2k', totalCredits: 12 });
   });
 
+  it('prices known legacy workflow image ids against canonical wallet pricing', () => {
+    const pricing = {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3', canvasTextAgentCredits: '1',
+      imageDefaultCredits: '999999', videoDefaultCredits: '500', videoModels: [],
+      imageModels: [{
+        model: 'nano-banana-pro',
+        billingType: 'image_resolution' as const,
+        creditsByResolution: { '2k': '18', '4k': '20' },
+      }],
+    };
+
+    expect(estimateCanvasImageGenerationCredits({
+      model: 'Xais Nano Pro_2K', resolution: '2k', count: 1, serverDriven: true,
+    }, pricing)).toMatchObject({
+      available: true, billingType: 'image_resolution', unitCredits: 18, totalCredits: 18,
+    });
+
+    const workflow = {
+      id: 'legacy-wallet-pricing-workflow', label: 'Legacy wallet pricing workflow', hint: '',
+      nodes: [{
+        id: 'render', x: 0, y: 0, width: 100, height: 100,
+        item: { id: 'render', type: 'text' as const, content: '' },
+        ai: { type: 'image-generator' as const, model: 'Xais Nano Pro_2K', resolution: '2k', count: 1 },
+      }],
+    } as CanvasWorkflowTemplate;
+    expect(estimateCanvasWorkflowCredits(workflow, {
+      pricing,
+      resolveImagePricingIdentity: () => ({ model: 'Xais Nano Pro_2K', serverDriven: true }),
+    })).toMatchObject({ imageCredits: 18, totalCredits: 18, pricingState: 'ready' });
+  });
+
+  it('does not use an unrelated canonical price for an unknown server model', () => {
+    const pricing = {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3', canvasTextAgentCredits: '1',
+      imageDefaultCredits: '999999', videoDefaultCredits: '500', videoModels: [],
+      imageModels: [{
+        model: 'nano-banana-pro',
+        billingType: 'image_resolution' as const,
+        creditsByResolution: { '2k': '18' },
+      }],
+    };
+
+    expect(estimateCanvasImageGenerationCredits({
+      model: 'custom-pro-2k', resolution: '2k', count: 1, serverDriven: true,
+    }, pricing)).toMatchObject({ available: false, reason: 'pricing_unavailable', totalCredits: 0 });
+  });
+
   it('reports loading instead of legacy defaults while wallet pricing is unavailable', () => {
     expect(estimateCanvasImageGenerationCredits({
       model: 'canonical-image', resolution: '2k', serverDriven: true,

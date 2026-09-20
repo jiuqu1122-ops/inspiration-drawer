@@ -142,6 +142,22 @@ const imagePricingToken = (
   return token;
 };
 
+// The wallet catalog uses canonical model ids, while older saved workflows
+// may still contain the provider-facing ids below. Keep this mapping explicit
+// and finite: it is a compatibility bridge, not a fuzzy/similar-model match.
+const CANONICAL_IMAGE_PRICING_MODEL_BY_TOKEN: Record<string, string> = {
+  nanobananapro: 'nano-banana-pro',
+  nanobananaprofast: 'nano-banana-pro-fast',
+  nanobanana2: 'nano-banana-2',
+  nanobanana2fast: 'nano-banana-2-fast',
+  image2: 'image2',
+};
+
+const getKnownCanonicalImagePricingModel = (
+  model?: string | null,
+  capabilities?: readonly string[] | null,
+) => CANONICAL_IMAGE_PRICING_MODEL_BY_TOKEN[imagePricingToken(model, capabilities)];
+
 const videoModelToken = (model?: string | null) => {
   const token = imageModelToken(model);
   if (token === 'sourcemix20' || token === 'seedance20') return 'seedance2';
@@ -282,7 +298,13 @@ const findCanvasImagePrice = (
 ) => {
   const exactModel = String(model || '').trim();
   const exact = pricing?.imageModels.find(item => item.model === exactModel);
-  if (exact || exactOnly) return exact;
+  if (exact) return exact;
+  if (exactOnly) {
+    const canonicalModel = getKnownCanonicalImagePricingModel(model, capabilities);
+    return canonicalModel
+      ? pricing?.imageModels.find(item => item.model === canonicalModel)
+      : undefined;
+  }
   const token = imageModelToken(model);
   const pricingToken = imagePricingToken(model, capabilities);
   return pricing?.imageModels.find(item => imageModelToken(item.model) === pricingToken)
