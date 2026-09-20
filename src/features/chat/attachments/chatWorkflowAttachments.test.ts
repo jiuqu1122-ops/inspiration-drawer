@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createCanvasWorkflowSnapshot,
   createWorkflowAttachment,
+  getSelectedWorkflowAttachmentLabel,
   parseWorkflowAttachmentSnapshot,
   workflowSnapshotHash,
 } from './chatWorkflowAttachments';
@@ -20,5 +21,11 @@ describe('chat workflow attachments', () => {
     expect(parseWorkflowAttachmentSnapshot({
       id: 'bad', type: 'workflow', path: 'workflow://bad', metadataJson: '{"snapshot":{"version":2}}',
     })).toBeNull();
+  });
+
+  it('uses the selected workflow node name as the snapshot label', () => {
+    expect(getSelectedWorkflowAttachmentLabel([
+      { name: '工业设计效果图工作流（优化版）' },
+    ])).toBe('工业设计效果图工作流（优化版）');
   });
 });

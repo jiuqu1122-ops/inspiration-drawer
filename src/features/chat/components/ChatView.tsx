@@ -5,6 +5,7 @@ import type { ChatGeneratedMedia, ChatImageModelOption, PendingChatAttachment } 
 import {
   createCanvasWorkflowSnapshot,
   createWorkflowAttachment,
+  getSelectedWorkflowAttachmentLabel,
   type ChatWorkflowAttachmentOption,
 } from '../attachments/chatWorkflowAttachments';
 import { clearChatWorkflowDraft, loadChatWorkflowDraft, saveChatWorkflowDraft } from '../attachments/chatWorkflowDraftStore';
@@ -127,6 +128,10 @@ export const ChatView = memo(function ChatView({
       .filter((item, index, items) => items.findIndex(candidate => candidate.path === item.path) === index)
       .slice(0, 6);
   }, [attachments, ignoredSelectionAttachmentIds, selectionAttachmentIds, selectionAttachments]);
+  const selectedWorkflowAttachmentLabel = useMemo(
+    () => getSelectedWorkflowAttachmentLabel(selectedItems),
+    [selectedItems],
+  );
   const addWorkflowAttachment = useCallback((option: ChatWorkflowAttachmentOption) => {
     const attachment = createWorkflowAttachment(option.snapshot, option.label);
     setAttachments(current => current.some(item => item.path === attachment.path) ? current : [...current, attachment].slice(0, 6));
@@ -134,21 +139,15 @@ export const ChatView = memo(function ChatView({
   }, []);
   const addSelectedWorkflowAttachment = useCallback(() => {
     if (selectedItems.length === 0) return;
-    const selectedNames = selectedItems
-      .map(item => item.name.trim())
-      .filter(Boolean);
-    const label = selectedItems.length === 1 && selectedNames[0]
-      ? selectedNames[0]
-      : `当前选中节点组（${selectedItems.length}）`;
     const snapshot = createCanvasWorkflowSnapshot(
       selectedItems.map(item => ({ ...item })),
-      label,
+      selectedWorkflowAttachmentLabel,
       'selection',
     );
     const attachment = createWorkflowAttachment(snapshot);
     setAttachments(current => [...current, attachment].slice(0, 6));
     setWorkflowPickerOpen(false);
-  }, [selectedItems]);
+  }, [selectedItems, selectedWorkflowAttachmentLabel]);
   const selectionAttachmentKey = selectionAttachments.map(item => item.id).join('|');
   useEffect(() => {
     const currentIds = new Set(selectionAttachmentKey ? selectionAttachmentKey.split('|') : []);
@@ -290,7 +289,7 @@ export const ChatView = memo(function ChatView({
         <div className="chat-composer-wrap">
           {workflowPickerOpen && <div className="chat-workflow-picker" role="dialog" aria-label="选择画布工作流">
             <div className="chat-workflow-picker__head"><strong>添加工作流快照</strong><button type="button" onClick={() => setWorkflowPickerOpen(false)}><X size={13} /></button></div>
-            {selectedItems.length > 0 && <button type="button" onClick={addSelectedWorkflowAttachment}><WorkflowIcon />当前选中节点组<span>{selectedItems.length} 个节点 · 可校验后再应用</span></button>}
+            {selectedItems.length > 0 && <button type="button" onClick={addSelectedWorkflowAttachment}><WorkflowIcon />{selectedWorkflowAttachmentLabel}<span>{selectedItems.length} 个节点 · 可校验后再应用</span></button>}
             {workflowAttachmentOptions.map(option => <button type="button" key={option.id} onClick={() => addWorkflowAttachment(option)}><WorkflowIcon />{option.label}<span>{option.source} · {option.snapshot.nodes.length} 个节点</span></button>)}
             {selectedItems.length === 0 && workflowAttachmentOptions.length === 0 && <p>请先选择画布节点或导入模板。</p>}
           </div>}

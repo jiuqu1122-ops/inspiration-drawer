@@ -20,6 +20,13 @@ export type ChatWorkflowAttachmentOption = {
   snapshot: ChatWorkflowAttachmentSnapshot;
 };
 
+export const getSelectedWorkflowAttachmentLabel = (items: Array<{ name?: string }>) => {
+  const names = items.map(item => String(item.name || '').trim()).filter(Boolean);
+  if (items.length === 1) return names[0] || '当前选中节点';
+  if (names[0]) return `${names[0]} 等 ${items.length} 个节点`;
+  return `当前选中节点组（${items.length}）`;
+};
+
 const stableSerialize = (value: unknown): string => {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableSerialize).join(',')}]`;
