@@ -80,3 +80,24 @@ export const parseWorkflowAttachmentSnapshot = (attachment: PendingChatAttachmen
     return null;
   }
 };
+
+const attachmentPathName = (path: string) => {
+  const normalized = String(path || '').trim();
+  if (!normalized) return '';
+  const name = normalized.split(/[\\/]/).pop() || '';
+  return name.trim();
+};
+
+/**
+ * Returns the user-facing label for an attachment without changing its
+ * persisted shape. Workflow attachments use the snapshot label because their
+ * path is intentionally only a stable workflow:// hash.
+ */
+export const getChatAttachmentDisplayName = (attachment: PendingChatAttachment) => {
+  if (attachment.type === 'workflow') {
+    const snapshot = parseWorkflowAttachmentSnapshot(attachment);
+    const label = String(snapshot?.label || '').trim();
+    if (label) return label;
+  }
+  return attachmentPathName(attachment.path) || '附件';
+};

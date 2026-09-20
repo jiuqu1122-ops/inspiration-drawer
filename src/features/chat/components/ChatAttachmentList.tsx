@@ -1,6 +1,7 @@
 import { File, Image as ImageIcon, X } from 'lucide-react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import type { ChatAttachment, PendingChatAttachment } from '../model/chatTypes';
+import { getChatAttachmentDisplayName } from '../attachments/chatWorkflowAttachments';
 
 type AttachmentLike = ChatAttachment | PendingChatAttachment;
 
@@ -25,7 +26,7 @@ export function ChatAttachmentList({
     <div className={`chat-attachments ${compact ? 'chat-attachments--compact' : ''}`}>
       {attachments.map(attachment => {
         const preview = attachment.type === 'image' ? attachmentPreview(attachment) : '';
-        const name = attachment.path.split(/[\\/]/).pop() || '附件';
+        const name = getChatAttachmentDisplayName(attachment);
         return (
           <div key={attachment.id} className="chat-attachment" title={name}>
             {preview ? (
@@ -35,7 +36,7 @@ export function ChatAttachmentList({
                 {attachment.type === 'image' ? <ImageIcon size={14} /> : <File size={14} />}
               </span>
             )}
-            {!compact && <span className="chat-attachment__name">{name}</span>}
+            {(!compact || attachment.type !== 'image') && <span className="chat-attachment__name">{name}</span>}
             {onRemove && (
               <button type="button" className="chat-attachment__remove" onClick={() => onRemove(attachment.id)} aria-label={`移除 ${name}`}>
                 <X size={12} />

@@ -249,4 +249,37 @@ describe('Chat context builder', () => {
       ],
     });
   });
+
+  it('keeps a workflow snapshot when the vision selector has no image attachments', async () => {
+    const latest = message('message-3', 'user', '请看看这个工作流', {
+      attachments: [{
+        id: 'workflow-attachment-1',
+        messageId: 'message-3',
+        type: 'workflow',
+        path: 'workflow://abcd1234',
+        mimeType: 'application/json',
+        metadataJson: JSON.stringify({
+          snapshot: {
+            schema: 'inspiration-workflow-snapshot',
+            version: 1,
+            source: 'selection',
+            label: '当前选中节点组',
+            nodes: [{ id: 'node-1', type: 'image' }],
+            edges: [],
+          },
+        }),
+        createdAt: 3,
+      }],
+    });
+    const context = await buildChatContext({
+      messages: [latest],
+      latestUserMessage: latest,
+      visionAttachments: [],
+    });
+
+    const encoded = JSON.stringify(context);
+    expect(encoded).toContain('工作流附件 workflow-attachment-1');
+    expect(encoded).toContain('当前选中节点组');
+    expect(encoded).toContain('node-1');
+  });
 });

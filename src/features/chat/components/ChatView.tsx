@@ -134,9 +134,15 @@ export const ChatView = memo(function ChatView({
   }, []);
   const addSelectedWorkflowAttachment = useCallback(() => {
     if (selectedItems.length === 0) return;
+    const selectedNames = selectedItems
+      .map(item => item.name.trim())
+      .filter(Boolean);
+    const label = selectedItems.length === 1 && selectedNames[0]
+      ? selectedNames[0]
+      : `当前选中节点组（${selectedItems.length}）`;
     const snapshot = createCanvasWorkflowSnapshot(
       selectedItems.map(item => ({ ...item })),
-      selectedItems.length === 1 ? '当前选中节点' : `当前选中节点组（${selectedItems.length}）`,
+      label,
       'selection',
     );
     const attachment = createWorkflowAttachment(snapshot);

@@ -117,6 +117,18 @@ const buildAttachmentContent = async (
   return parts.length > 1 ? parts : text;
 };
 
+const attachmentsForLatestUserContext = (
+  latestAttachments: ChatAttachment[],
+  visionAttachments?: ChatAttachment[],
+) => {
+  if (!visionAttachments || visionAttachments.length === 0) return latestAttachments;
+  const visionIds = new Set(visionAttachments.map(attachment => attachment.id));
+  const nonImageLatest = latestAttachments.filter(attachment => (
+    attachment.type !== 'image' && !visionIds.has(attachment.id)
+  ));
+  return [...nonImageLatest, ...visionAttachments];
+};
+
 export const buildChatContext = async (input: {
   messages: ChatMessage[];
   latestUserMessage: ChatMessage;
@@ -153,7 +165,7 @@ export const buildChatContext = async (input: {
     role: 'user',
     content: await buildAttachmentContent(
       input.latestUserMessage.content,
-      input.visionAttachments || input.latestUserMessage.attachments,
+      attachmentsForLatestUserContext(input.latestUserMessage.attachments, input.visionAttachments),
       input.resolveAttachmentUrl,
       input.reusedVisionAttachments,
     ),
