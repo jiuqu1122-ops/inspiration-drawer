@@ -87,9 +87,12 @@ export const estimateCanvasTextAgentCredits = (
   if (options.serverDriven && !pricing) {
     return { available: false, reason: 'pricing_loading', totalCredits: 0 };
   }
+  // Older wallet responses do not expose CANVAS_TEXT yet. In that case the
+  // server's explicit agent request price remains the compatible price for
+  // ordinary workflow text-agent roles; it is not a client-side default.
   const configuredValue = role === 'inspiration_analyzer'
     ? pricing?.inspirationAnalysisCredits
-    : pricing?.canvasTextAgentCredits;
+    : pricing?.canvasTextAgentCredits ?? pricing?.agentRequestCredits;
   const configuredCredits = Number(configuredValue);
   if (options.serverDriven && (!Number.isFinite(configuredCredits) || configuredCredits < 0)) {
     return { available: false, reason: 'pricing_unavailable', totalCredits: 0 };
@@ -323,7 +326,13 @@ const resolveServerImageResolution = (ai?: CanvasImageCreditInput | null) => {
     .filter(Boolean)));
   const preferred = normalizedResolution(ai?.defaultResolution);
   if (preferred && (supported.length === 0 || supported.includes(preferred))) return preferred;
-  return supported.length === 1 ? supported[0]! : '';
+  if (supported.length === 1) return supported[0]!;
+  // Older workflow snapshots encode the selected resolution in the provider
+  // model id (for example `Xais Nano Pro_2K`) and omit `ai.resolution`.
+  // Recover only that explicit suffix; do not invent a default for an
+  // otherwise ambiguous canonical model.
+  const encodedResolution = rawImageModelToken(ai?.model).match(/(?:1k|2k|4k)/)?.[0];
+  return encodedResolution || '';
 };
 
 const unavailableImageEstimate = (

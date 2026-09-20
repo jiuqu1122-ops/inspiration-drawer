@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW } from './canvasTemplates';
 import type { CanvasWorkflowTemplate } from './canvasTemplates';
 import { findAiCatalogModel } from './aiModelCapabilities';
 import {
@@ -213,6 +214,8 @@ describe('canvas generation credits', () => {
       videoModels: [],
     };
     expect(estimateCanvasTextAgentCredits(pricing, 'general')).toMatchObject({ available: true, unitCredits: 10, totalCredits: 10 });
+    expect(estimateCanvasTextAgentCredits(pricing, 'general', { serverDriven: true }))
+      .toMatchObject({ available: true, unitCredits: 10, totalCredits: 10 });
   });
 
   it('uses 2K pricing for the dual Banana Pro and Banana 2 capability', () => {
@@ -353,7 +356,7 @@ describe('canvas generation credits', () => {
     };
 
     expect(estimateCanvasImageGenerationCredits({
-      model: 'Xais Nano Pro_2K', resolution: '2k', count: 1, serverDriven: true,
+      model: 'Xais Nano Pro_2K', count: 1, serverDriven: true,
     }, pricing)).toMatchObject({
       available: true, billingType: 'image_resolution', unitCredits: 18, totalCredits: 18,
     });
@@ -363,7 +366,7 @@ describe('canvas generation credits', () => {
       nodes: [{
         id: 'render', x: 0, y: 0, width: 100, height: 100,
         item: { id: 'render', type: 'text' as const, content: '' },
-        ai: { type: 'image-generator' as const, model: 'Xais Nano Pro_2K', resolution: '2k', count: 1 },
+        ai: { type: 'image-generator' as const, model: 'Xais Nano Pro_2K', count: 1 },
       }],
     } as CanvasWorkflowTemplate;
     expect(estimateCanvasWorkflowCredits(workflow, {
@@ -386,6 +389,52 @@ describe('canvas generation credits', () => {
     expect(estimateCanvasImageGenerationCredits({
       model: 'custom-pro-2k', resolution: '2k', count: 1, serverDriven: true,
     }, pricing)).toMatchObject({ available: false, reason: 'pricing_unavailable', totalCredits: 0 });
+  });
+
+  it('keeps a legacy workflow priced when the server omits CANVAS_TEXT', () => {
+    const pricing = {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3',
+      imageDefaultCredits: '999999', videoDefaultCredits: '500', videoModels: [],
+      imageModels: [{
+        model: 'nano-banana-pro',
+        billingType: 'image_resolution' as const,
+        creditsByResolution: { '2k': '18' },
+      }],
+    };
+    const workflow = {
+      id: 'legacy-server-workflow', label: 'Legacy server workflow', hint: '',
+      nodes: [
+        {
+          id: 'strategy', x: 0, y: 0, width: 100, height: 100,
+          item: { id: 'strategy', type: 'text' as const, content: '' },
+          textMode: 'agent' as const,
+        },
+        {
+          id: 'render', x: 0, y: 0, width: 100, height: 100,
+          item: { id: 'render', type: 'text' as const, content: '' },
+          ai: { type: 'image-generator' as const, model: 'Xais Nano Pro_2K', resolution: '2k', count: 1 },
+        },
+      ],
+    } as CanvasWorkflowTemplate;
+
+    expect(estimateCanvasWorkflowCredits(workflow, {
+      pricing,
+      serverDriven: true,
+      resolveImagePricingIdentity: () => ({ model: 'Xais Nano Pro_2K', serverDriven: true }),
+    })).toMatchObject({ llmCredits: 7, imageCredits: 18, totalCredits: 25, pricingState: 'ready' });
+
+    expect(estimateCanvasWorkflowCredits(PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW, {
+      pricing,
+      serverDriven: true,
+    })).toMatchObject({
+      imageNodeCount: 5,
+      imageOutputCount: 5,
+      imageCredits: 90,
+      llmNodeCount: 1,
+      llmCredits: 7,
+      totalCredits: 97,
+      pricingState: 'ready',
+    });
   });
 
   it('reports loading instead of legacy defaults while wallet pricing is unavailable', () => {
