@@ -118,4 +118,23 @@ describe('Chat tool router', () => {
     expect(result.requiresApproval).toBe(true);
     expect(executor).not.toHaveBeenCalled();
   });
+
+  it('accepts the legacy selected-shapes alias from persisted Chat sessions', async () => {
+    const executor = vi.fn(async (name: string) => ({ name }));
+    const result = await routeChatToolCall({
+      name: 'get_canvas_selected_shapes',
+      args: {},
+      context: {
+        userText: 'read current canvas selection',
+        conversationId: 'conversation-1',
+        messageId: 'message-1',
+        recentMessages: [],
+      },
+      executor,
+      approvalMode: 'auto',
+    });
+
+    expect(executor).toHaveBeenCalledWith('get_canvas_selection', {}, expect.any(Object));
+    expect(result.result).toEqual({ name: 'get_canvas_selection' });
+  });
 });

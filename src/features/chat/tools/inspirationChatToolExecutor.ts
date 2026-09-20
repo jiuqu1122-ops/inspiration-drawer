@@ -3,6 +3,7 @@ import type { CanvasImageItem } from '../../canvasModel';
 import { getGeneratedMediaFromToolCall, type ChatGeneratedMedia, type ChatToolExecutor, type ChatToolExecutionContext } from '../model/chatTypes';
 import { executeBatchImageOperation } from './batchImageOperation';
 import { executeImageVariantOperation } from './imageVariantOperation';
+import { normalizeChatToolName } from './chatToolNames';
 
 type WorkflowDescriptor = { id: string; label: string; hint?: string };
 
@@ -87,7 +88,8 @@ export const createInspirationChatToolExecutor = (input: {
   createFile: (request: Record<string, unknown>) => Promise<unknown>;
   getCanvasItems?: () => CanvasImageItem[];
   getSelectedCanvasIds?: () => string[];
-}): ChatToolExecutor => async (name, args, context) => {
+}): ChatToolExecutor => async (rawName, args, context) => {
+  const name = normalizeChatToolName(rawName);
   const execution = { userRequest: context.userText };
   if (name === 'web_search') {
     return input.searchWeb(
