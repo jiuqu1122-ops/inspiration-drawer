@@ -513,6 +513,9 @@ export const runDerivedUiEffect06 = (ctx: Pick<derivedUiEffectContext, 'canvasCo
 
 export const runDerivedUiEffect07 = (ctx: Pick<derivedUiEffectContext, 'clearIdleAutoClose' | 'closeTimerRef' | 'drawerHeightRef' | 'drawerWidthRef' | 'isLicenseGateActive' | 'isPointerInsideDrawerRef' | 'isPostInstallLaunchRef' | 'isStartupOverlayActive' | 'licenseStatus' | 'setDrawerState' | 'setIsOpen' | 'startupAutoCloseSuppressedRef' | 'startupAutoCloseTimerRef' | 'stateRef' | 'triggerModeRef'>) => {
   const { clearIdleAutoClose, closeTimerRef, drawerHeightRef, drawerWidthRef, isLicenseGateActive, isPointerInsideDrawerRef, isPostInstallLaunchRef, isStartupOverlayActive, licenseStatus, setDrawerState, setIsOpen, startupAutoCloseSuppressedRef, startupAutoCloseTimerRef, stateRef, triggerModeRef } = ctx;
+    // Do not keep the startup registration gate above the browser/email window.
+    // Restore the normal drawer behavior after the gate is dismissed.
+    void invoke('set_topmost', { topmost: !isLicenseGateActive }).catch(() => {});
     if (!isLicenseGateActive) return;
     if (shouldDeferLicenseGateForPostInstall({
       isPostInstallLaunch: isPostInstallLaunchRef.current,

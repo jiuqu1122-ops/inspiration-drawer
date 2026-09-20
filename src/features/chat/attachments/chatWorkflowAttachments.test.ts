@@ -3,6 +3,7 @@ import {
   createCanvasWorkflowSnapshot,
   createWorkflowAttachment,
   getSelectedWorkflowAttachmentLabel,
+  getWorkflowSelectionKey,
   parseWorkflowAttachmentSnapshot,
   workflowSnapshotHash,
 } from './chatWorkflowAttachments';
@@ -27,5 +28,16 @@ describe('chat workflow attachments', () => {
     expect(getSelectedWorkflowAttachmentLabel([
       { name: '工业设计效果图工作流（优化版）' },
     ])).toBe('工业设计效果图工作流（优化版）');
+  });
+
+  it('keeps equivalent selection objects on the same candidate identity', () => {
+    expect(getWorkflowSelectionKey([
+      { id: 'node-b', name: 'B' },
+      { id: 'node-a', name: 'A' },
+    ])).toBe('node-a|node-b');
+    expect(getWorkflowSelectionKey([
+      { id: 'node-a', name: 'A' },
+      { id: 'node-b', name: 'B' },
+    ])).toBe('node-a|node-b');
   });
 });

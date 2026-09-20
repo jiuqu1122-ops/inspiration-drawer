@@ -20,6 +20,16 @@ export type ChatWorkflowAttachmentOption = {
   snapshot: ChatWorkflowAttachmentSnapshot;
 };
 
+/** Stable identity for a canvas selection. It changes only when the selected
+ * node set changes, not when the host rebuilds equivalent selection objects. */
+export const getWorkflowSelectionKey = (items: Array<{ id?: string; sourceItemId?: string; name?: string }>) => (
+  items
+    .map((item, index) => String(item.id || item.sourceItemId || item.name || `selection-${index}`).trim())
+    .filter(Boolean)
+    .sort()
+    .join('|')
+);
+
 export const getSelectedWorkflowAttachmentLabel = (items: Array<{ name?: string }>) => {
   const names = items.map(item => String(item.name || '').trim()).filter(Boolean);
   if (items.length === 1) return names[0] || '当前选中节点';

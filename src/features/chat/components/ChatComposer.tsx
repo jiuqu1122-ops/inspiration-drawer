@@ -2,7 +2,7 @@ import { ArrowUp, Check, ChevronDown, FileJson, Globe2, LoaderCircle, Paperclip,
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useRef, useState } from 'react';
 import type { ChatImageModelOption, PendingChatAttachment } from '../model/chatTypes';
-import { createChatId } from '../model/chatTypes';
+import { createPendingChatAttachments, SUPPORTED_CHAT_LOCAL_FILE_EXTENSIONS } from '../attachments/chatLocalFileAttachments';
 import { isAutomaticChatModel } from '../runtime/chatModelSelection';
 import { ChatAttachmentList } from './ChatAttachmentList';
 import { ChatImageSettings } from './ChatImageSettings';
@@ -110,25 +110,17 @@ export function ChatComposer({
     return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('keydown', onKeyDown); };
   }, [attachmentMenuOpen]);
   const addPaths = (paths: string[]) => {
-    const known = new Set(attachments.map(item => item.path));
-    const added = paths.filter(path => path && !known.has(path)).slice(0, 6 - attachments.length).map(path => ({
-      id: createChatId('chat-attachment'),
-      type: /\.(?:png|jpe?g|webp|gif|bmp|avif)$/i.test(path)
-        ? 'image'
-        : /\.(?:json|workflow|canvas)$/i.test(path) ? 'workflow' : 'file',
-      path,
-      mimeType: /\.png$/i.test(path)
-        ? 'image/png'
-        : /\.webp$/i.test(path)
-          ? 'image/webp'
-          : /\.(?:json|workflow|canvas)$/i.test(path)
-            ? 'application/json'
-            : 'image/jpeg',
-    } satisfies PendingChatAttachment));
+    const added = createPendingChatAttachments(paths, attachments, 6);
     onAttachmentsChange([...attachments, ...added]);
   };
   const chooseFiles = async () => {
-    const selected = await open({ multiple: true, filters: [{ name: '图片或工作流', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif', 'json', 'workflow', 'canvas'] }] });
+    const selected = await open({
+      multiple: true,
+      filters: [{
+        name: '图片、工作流和文档',
+        extensions: [...SUPPORTED_CHAT_LOCAL_FILE_EXTENSIONS],
+      }],
+    });
     if (!selected) return;
     addPaths(Array.isArray(selected) ? selected : [selected]);
   };

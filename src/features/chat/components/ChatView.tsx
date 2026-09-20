@@ -2,10 +2,12 @@ import { Bot, MessageSquarePlus, PanelLeft, Trash2, Workflow, X } from 'lucide-r
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentCanvasSelectionItem, WorkflowResultCardData } from '../../agentModel';
 import type { ChatGeneratedMedia, ChatImageModelOption, PendingChatAttachment } from '../model/chatTypes';
+import { getVisibleSelectionChatAttachments, selectionToChatAttachments } from '../attachments/chatSelectionAttachments';
 import {
   createCanvasWorkflowSnapshot,
   createWorkflowAttachment,
   getSelectedWorkflowAttachmentLabel,
+  getWorkflowSelectionKey,
   type ChatWorkflowAttachmentOption,
 } from '../attachments/chatWorkflowAttachments';
 import { clearChatWorkflowDraft, loadChatWorkflowDraft, saveChatWorkflowDraft } from '../attachments/chatWorkflowDraftStore';
@@ -49,19 +51,6 @@ export type ChatViewProps = {
 const CANVAS_CHAT_HISTORY_WIDTH = 116;
 const CANVAS_CHAT_EDGE_GAP = 8;
 
-const selectionToAttachments = (items: AgentCanvasSelectionItem[]): PendingChatAttachment[] => items
-  .flatMap(item => item.references || [])
-  .filter(reference => reference.mediaType === 'image' && Boolean(reference.path || reference.source))
-  .slice(0, 6)
-  .map(reference => ({
-    id: `selection-${reference.id}`,
-    type: 'image',
-    path: reference.path || reference.source || '',
-    thumbnailPath: reference.thumbnail,
-    mimeType: 'image/jpeg',
-    metadataJson: JSON.stringify({ nodeId: reference.nodeId, sourceItemId: reference.sourceItemId }),
-  }));
-
 export const ChatView = memo(function ChatView({
   runtime,
   variant,
@@ -93,12 +82,17 @@ export const ChatView = memo(function ChatView({
   const [ignoredSelectionAttachmentIds, setIgnoredSelectionAttachmentIds] = useState<string[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [workflowPickerOpen, setWorkflowPickerOpen] = useState(false);
+  const [workflowCandidateActive, setWorkflowCandidateActive] = useState(false);
+  const [workflowCandidateBaselineKey, setWorkflowCandidateBaselineKey] = useState('');
   const workflowDraftLoadedRef = useRef(false);
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const activeConversationIdRef = useRef(runtime.activeConversationId);
   activeConversationIdRef.current = runtime.activeConversationId;
   useEffect(() => {
     workflowDraftLoadedRef.current = false;
+    setWorkflowCandidateActive(false);
+    setWorkflowCandidateBaselineKey('');
+    setWorkflowPickerOpen(false);
     const draft = loadChatWorkflowDraft(runtime.activeConversationId);
     workflowDraftLoadedRef.current = true;
     setAttachments(draft);
@@ -116,38 +110,36 @@ export const ChatView = memo(function ChatView({
   const effectiveModel = chatModelOptions.find(option => (
     option.toLowerCase() === normalizedModel.toLowerCase()
   )) || (modelOptions.length > 0 ? 'default' : normalizedModel || chatModelOptions[0] || 'default');
-  const selectionAttachments = useMemo(() => selectionToAttachments(selectedItems), [selectedItems]);
+  const selectionAttachments = useMemo(() => selectionToChatAttachments(selectedItems), [selectedItems]);
   const selectionAttachmentIds = useMemo(
     () => new Set(selectionAttachments.map(item => item.id)),
     [selectionAttachments],
   );
   const composerAttachments = useMemo(() => {
-    const visibleSelectionAttachments = selectionAttachments
-      .filter(item => !ignoredSelectionAttachmentIds.includes(item.id));
+    const visibleSelectionAttachments = getVisibleSelectionChatAttachments(
+      selectionAttachments,
+      workflowCandidateActive,
+      ignoredSelectionAttachmentIds,
+    );
     return [...visibleSelectionAttachments, ...attachments.filter(item => !selectionAttachmentIds.has(item.id))]
       .filter((item, index, items) => items.findIndex(candidate => candidate.path === item.path) === index)
       .slice(0, 6);
-  }, [attachments, ignoredSelectionAttachmentIds, selectionAttachmentIds, selectionAttachments]);
+  }, [attachments, ignoredSelectionAttachmentIds, selectionAttachmentIds, selectionAttachments, workflowCandidateActive]);
   const selectedWorkflowAttachmentLabel = useMemo(
     () => getSelectedWorkflowAttachmentLabel(selectedItems),
+    [selectedItems],
+  );
+  const workflowSelectionKey = useMemo(
+    () => getWorkflowSelectionKey(selectedItems),
     [selectedItems],
   );
   const addWorkflowAttachment = useCallback((option: ChatWorkflowAttachmentOption) => {
     const attachment = createWorkflowAttachment(option.snapshot, option.label);
     setAttachments(current => current.some(item => item.path === attachment.path) ? current : [...current, attachment].slice(0, 6));
+    setWorkflowCandidateActive(false);
+    setWorkflowCandidateBaselineKey('');
     setWorkflowPickerOpen(false);
   }, []);
-  const addSelectedWorkflowAttachment = useCallback(() => {
-    if (selectedItems.length === 0) return;
-    const snapshot = createCanvasWorkflowSnapshot(
-      selectedItems.map(item => ({ ...item })),
-      selectedWorkflowAttachmentLabel,
-      'selection',
-    );
-    const attachment = createWorkflowAttachment(snapshot);
-    setAttachments(current => [...current, attachment].slice(0, 6));
-    setWorkflowPickerOpen(false);
-  }, [selectedItems, selectedWorkflowAttachmentLabel]);
   const selectionAttachmentKey = selectionAttachments.map(item => item.id).join('|');
   useEffect(() => {
     const currentIds = new Set(selectionAttachmentKey ? selectionAttachmentKey.split('|') : []);
@@ -156,6 +148,29 @@ export const ChatView = memo(function ChatView({
       return next.length === current.length ? current : next;
     });
   }, [selectionAttachmentKey]);
+  useEffect(() => {
+    if (!workflowCandidateActive || workflowSelectionKey === workflowCandidateBaselineKey) return;
+    if (selectedItems.length === 0) {
+      setWorkflowCandidateBaselineKey(workflowSelectionKey);
+      return;
+    }
+    const snapshot = createCanvasWorkflowSnapshot(
+      selectedItems.map(item => ({ ...item })),
+      selectedWorkflowAttachmentLabel,
+      'selection',
+    );
+    const attachment = createWorkflowAttachment(snapshot);
+    setAttachments(current => current.some(item => item.path === attachment.path)
+      ? current
+      : [...current, attachment].slice(0, 6));
+    setIgnoredSelectionAttachmentIds(current => Array.from(new Set([
+      ...current,
+      ...selectionAttachments.map(item => item.id),
+    ])));
+    setWorkflowCandidateActive(false);
+    setWorkflowCandidateBaselineKey('');
+    setWorkflowPickerOpen(false);
+  }, [selectedItems, selectedWorkflowAttachmentLabel, selectionAttachments, workflowCandidateActive, workflowCandidateBaselineKey, workflowSelectionKey]);
   useEffect(() => {
     const move = (event: PointerEvent) => {
       if (!resizeRef.current || !onWidthChange) return;
@@ -181,6 +196,9 @@ export const ChatView = memo(function ChatView({
       .map(attachment => attachment.id);
     setInput('');
     setAttachments([]);
+    setWorkflowCandidateActive(false);
+    setWorkflowCandidateBaselineKey('');
+    setWorkflowPickerOpen(false);
     clearChatWorkflowDraft(sourceConversationId);
     const sent = await runtime.sendMessage(
       pendingInput,
@@ -288,10 +306,10 @@ export const ChatView = memo(function ChatView({
         />
         <div className="chat-composer-wrap">
           {workflowPickerOpen && <div className="chat-workflow-picker" role="dialog" aria-label="选择画布工作流">
-            <div className="chat-workflow-picker__head"><strong>添加工作流快照</strong><button type="button" onClick={() => setWorkflowPickerOpen(false)}><X size={13} /></button></div>
-            {selectedItems.length > 0 && <button type="button" onClick={addSelectedWorkflowAttachment}><WorkflowIcon />{selectedWorkflowAttachmentLabel}<span>{selectedItems.length} 个节点 · 可校验后再应用</span></button>}
+            <div className="chat-workflow-picker__head"><strong>添加工作流快照</strong><button type="button" onClick={() => { setWorkflowPickerOpen(false); setWorkflowCandidateActive(false); setWorkflowCandidateBaselineKey(''); }}><X size={13} /></button></div>
+            {workflowCandidateActive && <div className="chat-workflow-picker__hint" role="status">请在画布中点击要添加的工作流节点或节点组，选中后会自动加入附件。</div>}
             {workflowAttachmentOptions.map(option => <button type="button" key={option.id} onClick={() => addWorkflowAttachment(option)}><WorkflowIcon />{option.label}<span>{option.source} · {option.snapshot.nodes.length} 个节点</span></button>)}
-            {selectedItems.length === 0 && workflowAttachmentOptions.length === 0 && <p>请先选择画布节点或导入模板。</p>}
+            {!workflowCandidateActive && selectedItems.length === 0 && workflowAttachmentOptions.length === 0 && <p>请先选择画布节点或导入模板。</p>}
           </div>}
           <ChatComposer
             value={input}
@@ -324,7 +342,11 @@ export const ChatView = memo(function ChatView({
             onImageResolutionChange={onImageResolutionChange}
             webSearchEnabled={runtime.webSearchEnabled}
             onWebSearchEnabledChange={runtime.setWebSearchEnabled}
-            onChooseWorkflow={() => setWorkflowPickerOpen(true)}
+            onChooseWorkflow={() => {
+              setWorkflowCandidateBaselineKey(workflowSelectionKey);
+              setWorkflowCandidateActive(true);
+              setWorkflowPickerOpen(true);
+            }}
           />
         </div>
       </div>

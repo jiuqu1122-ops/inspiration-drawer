@@ -1144,6 +1144,16 @@
   color: var(--chat-muted);
 }
 
+.chat-workflow-picker__hint {
+  margin: 2px 4px 6px;
+  padding: 7px 8px;
+  color: var(--chat-text-soft);
+  background: var(--chat-soft);
+  border-radius: 6px;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .chat-workflow-picker > button {
   width: 100%;
   display: grid;

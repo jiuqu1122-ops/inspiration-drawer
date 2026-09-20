@@ -1216,9 +1216,9 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
               <div className="mt-5 space-y-2.5 text-xs leading-5 text-stone-600 dark:text-stone-300">
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">本次更新</p>
-                  <p>优化图片保存逻辑：画布参考图只保留在画布，需要时仍可主动保存到素材抽屉。</p>
-                  <p className="mt-1">素材卡片按图片或视频的实际比例显示，并自动补齐瀑布流空位。</p>
-                  <p className="mt-1">滑动到底部会自动加载更多素材，无需再手动点击。</p>
+                  <p>Chat 支持工作流创建和修改，可从画布选择节点或节点组生成工作流快照。</p>
+                  <p className="mt-1">本地附件支持 TXT、Word、Excel、PDF，并按文件类型保留正确的 MIME 信息。</p>
+                  <p className="mt-1">修复工作流节点移动后价格显示丢失，以及图片/视频任务恢复和重复查询问题。</p>
                 </div>
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">免责说明</p>
@@ -1491,11 +1491,11 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
                 <button data-drawer-dialog-close="true" onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.20</p>
-                <p>优化画布生成节点的模型、比例、清晰度、格式和数量切换，减少选择后的界面卡顿。</p>
-                <p>优化生成结果落地、缩略图回填和抽屉同步，生成完成后画布操作更加流畅。</p>
-                <p>钱包参考图改为直接上传 COS，并兼容不同渠道返回的参考图字段。</p>
-                <p>减少钱包余额的重复同步，同时保留最近一次可用余额缓存。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v8.0.12</p>
+                <p>Chat 支持工作流创建和修改，可从画布选择节点或节点组生成工作流快照，并继续进行多轮修改。</p>
+                <p>本地附件选择支持 TXT、DOC/DOCX、XLS/XLSX、PDF，并按扩展名标记正确的 MIME 类型。</p>
+                <p>修复工作流节点移动后价格显示为“价格未配置”的问题，并增强任务恢复、轮询和重复查询处理。</p>
+                <p>启动注册界面不再强制窗口置顶，注册时可切换到邮箱或浏览器查看验证码。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

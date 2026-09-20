@@ -324,7 +324,9 @@ export const runDrawerCoreEffect05 = (ctx: Pick<drawerCoreEffectContext, 'clearI
       }
 
       setIsOpen(true);
-      invoke('set_topmost', { topmost: true }).catch(() => {});
+      // The registration gate must stay usable alongside an email/browser
+      // window. Normal drawer openings remain topmost once the gate is gone.
+      invoke('set_topmost', { topmost: !licenseGateActiveRef.current }).catch(() => {});
     };
 
     listen('drawer-opened', () => handleOpened(false)).then(f => unlistenOpen = f);

@@ -171,7 +171,6 @@ export const runSettingsEffect05 = (ctx: Pick<settingsEffectContext, 'cloudStart
     invoke('get_auto_start').then((res: any) => setIsAutoStart(!!res)).catch(()=>{});
     invoke('get_local_ip').then((res: any) => setLocalIP(String(res || ''))).catch(()=>{});
     invoke('get_mobile_pair_url').then((res: any) => setMobilePairUrl(String(res || ''))).catch(()=>{});
-    invoke('set_topmost', { topmost: true }).catch(()=>{});
     void refreshLicenseStatus(true);
     if (!cloudStartupSyncStartedRef.current) {
       cloudStartupSyncStartedRef.current = true;
