@@ -568,6 +568,8 @@ type CloudImageGenerationResult = {
 export type CloudImageGenerationLookup = {
   status: 'pending' | 'reserved' | 'processing' | 'succeeded' | 'failed' | 'refunded' | string;
   completedAt?: number | null;
+  confirmationRequired?: boolean;
+  recoveryStatus?: string;
   images: string[];
   provider?: string;
   providerChannelId?: string;
@@ -691,6 +693,7 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
           const lookup = await getCloudWalletImageGenerationByRequest(clientRequestId);
           const images = getCloudWalletImageLookupImages(lookup);
           if (images.length > 0) return images;
+          if (lookup.confirmationRequired && lookup.recoveryStatus === 'manual_confirmation_required') return null;
           const status = String(lookup.status || '').trim().toLowerCase();
           if (status === 'failed' || status === 'refunded' || status === 'cancelled' || status === 'canceled') {
             return null;
@@ -2377,6 +2380,7 @@ export const shouldTryNextCanvasAiImageCandidate = (error: unknown) => {
 
 export const shouldRetrySameCanvasAiImageCandidate = (error: unknown) => {
   const message = getErrorMessage(error).trim();
+  if (/AMBIGUOUS_SUBMIT|IMAGE_TASK_RECOVERY_REQUIRED|IMAGE_RESULT_PERSISTENCE_FAILED|duplicate_request|结果待确认/i.test(message)) return false;
   const statusMatch = message.match(/(?:status[_ ]?code\s*[=:]\s*|HTTP\s+|\()(\d{3})(?:\)|\b)/i);
   const status = statusMatch ? Number(statusMatch[1]) : 0;
   if ([429, 503, 529].includes(status)) return true;
@@ -4060,6 +4064,9 @@ export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptio
           candidateError = error;
           if (attempt === 0 && shouldRetrySameCanvasAiImageCandidate(error)) {
             console.warn('Canvas AI preferred channel is temporarily busy; retrying the same channel', candidate, error);
+            // Clear only a retryable attempt error, not preparation failures.
+            // Otherwise the next iteration's "if (candidateError) break" skips the retry.
+            candidateError = null;
             await delay(1_200);
             continue;
           }

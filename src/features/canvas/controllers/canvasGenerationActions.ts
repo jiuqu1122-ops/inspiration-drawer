@@ -1296,6 +1296,9 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       let xaisReferenceRetryCount = 0;
 
       const retryWithStableInputs = async (cause: unknown) => {
+        // An accepted/uncertain task needs read-side recovery, never changed references + another POST.
+        const outcome = cause instanceof Error ? cause.message : String(cause || '');
+        if (/AMBIGUOUS_SUBMIT|IMAGE_TASK_RECOVERY_REQUIRED|IMAGE_RESULT_PERSISTENCE_FAILED|duplicate_request|结果待确认/i.test(outcome)) return false;
         if (isXaisWorkerRequest) return false;
         if (!preparedInputs.usedRemoteFirst || didRetryWithStableInputs || generatedOutputs.length > 0) return false;
         didRetryWithStableInputs = true;
@@ -1335,6 +1338,9 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       };
 
       const retryWithFreshRemoteInputs = async (cause: unknown) => {
+        // An accepted/uncertain task needs read-side recovery, never changed references + another POST.
+        const outcome = cause instanceof Error ? cause.message : String(cause || '');
+        if (/AMBIGUOUS_SUBMIT|IMAGE_TASK_RECOVERY_REQUIRED|IMAGE_RESULT_PERSISTENCE_FAILED|duplicate_request|结果待确认/i.test(outcome)) return false;
         if ((!isXaisWorkerRequest && !usePortableWalletReferences) || generatedOutputs.length > 0 || xaisReferenceRetryCount >= 3) return false;
         const message = cause instanceof Error ? cause.message : String(cause || '');
         if (!/(?:Failed to download media|DownloadFailed|Bad Gateway|fetch-object|CreateAsset|InvalidParameter\.Name|Name must be no more|Invalid image file|image file or mode|Bad request to openai|reference (?:image HTTP|URL did not return an image)|trycloudflare|cloudflared|Cloudflare Tunnel)/i.test(message)) {

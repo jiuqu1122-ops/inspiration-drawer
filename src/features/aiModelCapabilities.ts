@@ -1,3 +1,4 @@
+// MODEL_CATALOG_STABILITY_PATCH_V1
 import type {
   AiCatalogModel,
   AiModelCapabilities,
@@ -629,9 +630,11 @@ export const cacheSuccessfulAiCatalog = (snapshot: CloudImageModelsResult) => {
 
 export const getCachedAiCatalog = () => lastSuccessfulCatalogSnapshot;
 
-export const clearCachedAiCatalogForTests = () => {
+export const clearCachedAiCatalog = () => {
   lastSuccessfulCatalogSnapshot = null;
 };
+
+export const clearCachedAiCatalogForTests = clearCachedAiCatalog;
 
 export const getDefaultAiCatalogModelId = (
   snapshot: CloudImageModelsResult,
