@@ -17,6 +17,13 @@ import { resolveCanvasWalletVideoModelContext } from '../canvasWalletVideoModelC
 
 export type CanvasNodeViewModelScope = Record<string, any>;
 
+export const isCanvasCloudVideoGeneratorType = (type?: string | null) => type === 'video-generator';
+
+export const shouldShowCanvasWalletVideoCapabilityWarning = (
+  type: string | null | undefined,
+  capabilityStatus: string | null | undefined,
+) => isCanvasCloudVideoGeneratorType(type) && capabilityStatus === 'unresolved';
+
 export function canvasAiPersistedRouteHintsForNode(
   isTextCanvasItem: boolean,
   ai: CanvasImageItem['ai'],
@@ -49,6 +56,7 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           const isCanvasVideoEnhancementItem = canvasItem.ai?.type === 'video-enhancement';
                           const isQuickVideoEnhancementItem = isCanvasVideoEnhancementItem && canvasItem.ai?.enhancementEngine === 'quick';
                           const isCanvasEnhancementItem = isCanvasImageEnhancementItem || isCanvasVideoEnhancementItem;
+                          const isCanvasLocalMediaToolItem = isCanvasFrameInterpolationItem || isCanvasEnhancementItem;
                           const isCanvasSingleVideoInputItem = isCanvasFrameInterpolationItem || isCanvasVideoEnhancementItem;
                           const isCanvasWorkflowItem = canvasItem.ai?.type === 'workflow';
                           const isCanvasReferenceBridgeItem = isCanvasWorkflowReferenceBridge(canvasItem);
@@ -75,7 +83,7 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             }).filter((reference): reference is { id: string; name: string | undefined; source: string } => !!reference)
                             : [];
                           const canvasAiMediaType = getCanvasAiMediaType(canvasItem.ai);
-                          const canvasWalletVideoModelContext = canvasAiMediaType === 'video'
+                          const canvasWalletVideoModelContext = isCanvasCloudVideoGeneratorType(canvasItem.ai?.type)
                             ? resolveCanvasWalletVideoModelContext(
                               canvasItem.ai,
                               canvasAiCloudImageModels,
@@ -99,7 +107,8 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             ? canvasWalletVideoModelContext.canonicalModelId || String(canvasItem.ai?.model || '').trim()
                             : canvasAiItemCatalogCandidate?.model
                               || getCanvasAiResolvedModel(canvasAiItemProvider, canvasItem.ai?.model, canvasAiMediaType);
-                          const canvasAiCatalog = canvasAiCredentialSource === 'wallet'
+                          const canvasAiCatalog = !isCanvasLocalMediaToolItem
+                            && canvasAiCredentialSource === 'wallet'
                             && canvasItem.ai?.credentialSource !== 'local'
                             ? getAiCatalogModels(canvasAiCloudImageModels, canvasAiMediaType)
                             : [];
@@ -109,13 +118,15 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                               canvasAiPersistedProviderCandidates.find(candidate => candidate.canonicalModelId)?.canonicalModelId
                                 || canvasAiItemModel,
                             );
-                          const canvasAiSelectedChannel = (canvasAiMediaType === 'video'
-                            ? canvasAiCloudImageModels?.videoChannels
-                            : canvasAiCloudImageModels?.channels)?.find((channel: { id: string; provider: string }) => (
+                          const canvasAiSelectedChannel = isCanvasLocalMediaToolItem
+                            ? undefined
+                            : (canvasAiMediaType === 'video'
+                              ? canvasAiCloudImageModels?.videoChannels
+                              : canvasAiCloudImageModels?.channels)?.find((channel: { id: string; provider: string }) => (
                               channel.id === (canvasWalletVideoModelContext?.selectedCandidate?.providerChannelId
                                 || canvasAiPersistedProviderChannelId)
                               && canvasAiProviderForCloudKind(channel.provider) === canvasAiItemProvider
-                            ));
+                              ));
                           const canvasAiSelectedCandidate = canvasWalletVideoModelContext?.selectedCandidate
                             || canvasAiPersistedProviderCandidates.find(candidate => (
                             candidate.provider === canvasAiItemProvider
@@ -134,7 +145,7 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           const canvasAiItemProviderCandidates = canvasWalletVideoModelContext?.providerCandidates
                             || hydrateCanvasAiModelCandidateCapabilities(
                               canvasAiPersistedProviderCandidates,
-                              canvasAiCloudImageModels?.channels,
+                              isCanvasLocalMediaToolItem ? undefined : canvasAiCloudImageModels?.channels,
                             );
                           const canvasAiLegacyCandidateImageResolutionValues = getCanvasAiImageResolutionValuesForCandidates(
                             canvasAiItemProviderCandidates,

@@ -22,7 +22,7 @@ import { clearCanvasWorkflowInternalSlot,getCanvasWorkflowInternalSlotBinding,re
 import { normalizeDesignAgentConfig } from '../../designAgentNode';
 import { ThreeSceneNode } from '../../three/components/ThreeSceneNode';
 import { shouldMountThreeSceneRenderer } from '../../three/model/threeSceneInteraction';
-import { buildCanvasNodeViewModel } from '../canvasNodeViewModel';
+import { buildCanvasNodeViewModel, shouldShowCanvasWalletVideoCapabilityWarning } from '../canvasNodeViewModel';
 import { findAiCatalogModel,getAiCatalogModels,getDefaultAiCatalogModelId,getImageAspectRatioOptionsForResolution,hasServerAiCatalog,normalizeCapabilityOption,normalizeImageAspectRatioOption,normalizeVideoAspectRatioSelection,normalizeVideoDurationSelection,resolveEffectiveVideoResolution,resolveImageModelCapabilities,resolveVideoModelCapabilities } from '../../aiModelCapabilities';
 import { ImageRuleSwitchPanel } from './ImageRuleSwitchPanel';
 import type { BufferItem } from '../../../types';
@@ -1499,8 +1499,10 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                           )}
                                         </div>
                                       )}
-                                      {canvasAiMediaType === 'video'
-                                        && canvasWalletVideoModelContext?.capabilityStatus === 'unresolved' && (
+                                      {shouldShowCanvasWalletVideoCapabilityWarning(
+                                        canvasItem.ai?.type,
+                                        canvasWalletVideoModelContext?.capabilityStatus,
+                                      ) && (
                                         <div className="rounded-[12px] bg-amber-500/10 px-2.5 py-2 text-[10px] font-semibold leading-4 text-amber-700 dark:bg-amber-400/10 dark:text-amber-100">
                                           模型能力尚未加载，请刷新模型
                                         </div>
