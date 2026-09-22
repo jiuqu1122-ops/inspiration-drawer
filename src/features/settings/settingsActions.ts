@@ -1,3 +1,5 @@
+// MODEL_CATALOG_STABILITY_PATCH_V1
+import { beginCatalogRefresh, isCurrentCatalogRefresh, cancelCatalogRefresh } from '../modelCatalogRefresh';
 import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import React from 'react';
@@ -117,6 +119,10 @@ export const refreshCanvasAiOpenAiModelsImpl = async (ctx: Pick<settingsCatalogA
       ? 'cloud-wallet-image-models'
       : isCanvasAiLicenseManaged ? 'managed' : apiKeys.join('\n');
     canvasAiModelRefreshSignatureRef.current = `${provider}\n${effectiveCanvasAiGatewayKind}\n${effectiveCanvasAiApiProvider}\n${endpoint}\n${keySignature}\n${effectiveCanvasAiModel}\n${canvasAiHeadersText}`;
+    const catalogTicket = canvasAiUsesCloudImageModels
+      ? beginCatalogRefresh(setCanvasAiCloudImageModels)
+      : undefined;
+    const loadingTicket = beginCatalogRefresh(setIsRefreshingCanvasAiOpenAiModels);
     setIsRefreshingCanvasAiOpenAiModels(true);
     setCanvasAiOpenAiModelError('');
     try {
@@ -178,6 +184,9 @@ export const refreshCanvasAiOpenAiModelsImpl = async (ctx: Pick<settingsCatalogA
           }
           return models;
         })();
+      // An older slow refresh may finish after a newer manual/focus response.
+      // Reject it before caching, reconciling nodes, or emitting model changes.
+      if (catalogTicket && !isCurrentCatalogRefresh(catalogTicket)) return;
       const rawModels = successfulModels.map(model => model.trim()).filter(Boolean);
       const normalized = detectedProvider === 'xais-chat'
         ? sortCanvasAiModelsForProvider(detectedProvider, Array.from(new Set(rawModels
@@ -274,6 +283,7 @@ export const refreshCanvasAiOpenAiModelsImpl = async (ctx: Pick<settingsCatalogA
       }
       if (!silent) showToast(normalized.length > 0 ? `已刷新 ${normalized.length} 个模型` : '没有读取到可用模型');
     } catch (err: any) {
+      if (catalogTicket && !isCurrentCatalogRefresh(catalogTicket)) return;
       const msg = String(err || '刷新模型列表失败');
       if (canvasAiUsesCloudImageModels) {
         setCanvasAiCloudImageModels(current => current || getCachedAiCatalog());
@@ -281,7 +291,10 @@ export const refreshCanvasAiOpenAiModelsImpl = async (ctx: Pick<settingsCatalogA
       setCanvasAiOpenAiModelError(msg);
       if (!silent) showToast('刷新模型列表失败');
     } finally {
-      setIsRefreshingCanvasAiOpenAiModels(false);
+      if (isCurrentCatalogRefresh(loadingTicket)) {
+        setIsRefreshingCanvasAiOpenAiModels(false);
+        cancelCatalogRefresh(loadingTicket);
+      }
     }
 
 };

@@ -1,3 +1,5 @@
+// MODEL_CATALOG_STABILITY_PATCH_V1
+import { beginCatalogRefresh, isCurrentCatalogRefresh, cancelCatalogRefresh } from '../modelCatalogRefresh';
 import { invoke } from '@tauri-apps/api/core';
 import { emitTo,listen } from '@tauri-apps/api/event';
 import React from 'react';
@@ -107,11 +109,17 @@ export const runSettingsEffect03 = (ctx: Pick<settingsEffectContext, 'canvasAiUs
   const { canvasAiUsesCloudImageModels, effectiveCanvasAiProvider, isCanvasMode, setCanvasAiCloudImageModels, updateCanvasItemsImmediate } = ctx;
     if (!isCanvasMode || !canvasAiUsesCloudImageModels) return;
     let disposed = false;
+    let inFlight = false;
+    let catalogTicket: ReturnType<typeof beginCatalogRefresh> | undefined;
     const refreshCloudPricing = () => {
+      if (disposed || inFlight) return;
+      inFlight = true;
+      const ticket = beginCatalogRefresh(setCanvasAiCloudImageModels);
+      catalogTicket = ticket;
       void invoke<CloudImageModelsResult>('get_cloud_image_models', {
         provider: effectiveCanvasAiProvider,
       }).then((result) => {
-        if (disposed) return;
+        if (disposed || !isCurrentCatalogRefresh(ticket)) return;
         const channels = (result.channels || []).map(channel => ({
           ...channel,
           models: Array.from(new Set([
@@ -131,7 +139,9 @@ export const runSettingsEffect03 = (ctx: Pick<settingsEffectContext, 'canvasAiUs
         setCanvasAiCloudImageModels(snapshot);
         updateCanvasItemsImmediate(previous => reconcileCanvasAiModelsWithCatalog(previous, snapshot));
       }).catch(() => {
-        // Keep the last known pricing while temporarily offline.
+        // Keep the last known catalog and pricing while temporarily offline.
+      }).finally(() => {
+        inFlight = false;
       });
     };
     refreshCloudPricing();
@@ -140,6 +150,7 @@ export const runSettingsEffect03 = (ctx: Pick<settingsEffectContext, 'canvasAiUs
     const interval = window.setInterval(refreshCloudPricing, 5 * 60_000);
     return () => {
       disposed = true;
+      cancelCatalogRefresh(catalogTicket);
       window.removeEventListener('focus', onFocus);
       window.clearInterval(interval);
     };

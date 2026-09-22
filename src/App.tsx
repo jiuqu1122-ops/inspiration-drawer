@@ -1,3 +1,4 @@
+// MODEL_CATALOG_STABILITY_PATCH_V1
 // src/App.tsx
 import {
 ArchiveRestore,
@@ -1888,7 +1889,7 @@ function MainApp() {
     if (canvasAiCredentialSource === 'wallet' && canvasAiCloudImageModels) {
       const channels = canvasAiCloudImageModels.channels || [];
       const catalog = getAiCatalogModels(canvasAiCloudImageModels, 'image');
-      if (catalog.length > 0) {
+      if (hasServerAiCatalog(canvasAiCloudImageModels)) {
         const defaultModelId = getDefaultAiCatalogModelId(canvasAiCloudImageModels, 'image');
         const orderedCatalog = [...catalog].sort((left, right) => (
           Number(right.id === defaultModelId) - Number(left.id === defaultModelId)

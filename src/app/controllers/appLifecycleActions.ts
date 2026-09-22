@@ -1,3 +1,6 @@
+// MODEL_CATALOG_STABILITY_PATCH_V1
+import { invalidateCatalogRefreshOwner } from '../../features/modelCatalogRefresh';
+import { clearCachedAiCatalog } from '../../features/aiModelCapabilities';
 import { invoke } from '@tauri-apps/api/core';
 import { cursorPosition } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -556,6 +559,8 @@ export const confirmCloudAccountLogoutImpl = (ctx: Pick<appLifecycleActionContex
               setLicenseStatus(nextStatus);
               setCloudAccount(null);
               clearCachedCloudAccount();
+              invalidateCatalogRefreshOwner(setCanvasAiCloudImageModels);
+              clearCachedAiCatalog();
               setCanvasAiCloudImageModels(null);
               setRegistrationEmail('');
               setRegistrationDisplayName('');
