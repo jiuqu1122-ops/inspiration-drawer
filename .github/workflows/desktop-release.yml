@@ -1,0 +1,88 @@
+name: Publish desktop release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+jobs:
+  build-sign-and-publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify release version
+        shell: pwsh
+        run: |
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargoVersion = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"$').Matches[0].Groups[1].Value
+          if ($packageVersion -ne $env:RELEASE_VERSION -or $tauriVersion -ne $env:RELEASE_VERSION -or $cargoVersion -ne $env:RELEASE_VERSION) {
+            throw "Release version mismatch: requested=$env:RELEASE_VERSION package=$packageVersion tauri=$tauriVersion cargo=$cargoVersion"
+          }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build web assets
+        run: npm run build
+
+      - name: Materialize updater signing key
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_CONTENT: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_CONTENT)) {
+            throw 'TAURI_SIGNING_PRIVATE_KEY is not configured.'
+          }
+          $keyPath = Join-Path $env:RUNNER_TEMP 'inspiration-drawer-updater.key'
+          [System.IO.File]::WriteAllText($keyPath, $env:TAURI_SIGNING_PRIVATE_KEY_CONTENT)
+          "TAURI_SIGNING_PRIVATE_KEY_PATH=$keyPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build signed updater assets
+        run: npm run updater:release -- ${{ inputs.version }}
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v$env:RELEASE_VERSION"
+          $assets = @(Get-ChildItem dist-updater -File | ForEach-Object { $_.FullName })
+          if ($assets.Count -ne 3) {
+            throw "Expected exactly three updater assets, found $($assets.Count)."
+          }
+          gh release create $tag @assets `
+            --repo $env:GITHUB_REPOSITORY `
+            --target $env:GITHUB_SHA `
+            --title "Inspiration Drawer $env:RELEASE_VERSION" `
+            --notes "Image retry reliability and model catalog refresh stability fixes." `
+            --latest
