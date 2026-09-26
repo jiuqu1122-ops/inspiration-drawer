@@ -84,5 +84,5 @@ jobs:
             --repo $env:GITHUB_REPOSITORY `
             --target $env:GITHUB_SHA `
             --title "Inspiration Drawer $env:RELEASE_VERSION" `
-            --notes "Image retry reliability and model catalog refresh stability fixes." `
+            --notes "Stable image and video result recovery, canvas persistence fixes, and improved cloud license connectivity." `
             --latest

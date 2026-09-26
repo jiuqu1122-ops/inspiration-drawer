@@ -12,7 +12,7 @@ import { getAutoRecoverableAiMediaResultSource } from '../../aiImageResultRecove
 import { getCloudWalletImageGenerationByRequest,getCloudWalletImageLookupImages } from '../../canvasAiImage';
 import { buildCanvasAiOutputRemoteResultPatch } from '../../canvasAiOutputs';
 import { getCanvasAiMediaType } from '../../canvasAiRuntime';
-import { CANVAS_AI_TIMED_OUT_RECOVERY_MAX_AGE_MS,getCanvasAiTimedOutRecoveryCandidates,isCanvasAiImageLookupPending } from '../../canvasAiTimedOutRecovery';
+import { getCanvasAiTimedOutRecoveryCandidates,isCanvasAiImageLookupPending } from '../../canvasAiTimedOutRecovery';
 import { type CanvasAiGeneratedOutput,type CanvasImageItem,type CanvasItemBox } from '../../canvasModel';
 import { shouldDeferLicenseGateForPostInstall,shouldInvokeLicenseGateDrawerOpen } from '../../startup';
 import { type TriggerMode } from '../../triggerModel';
@@ -288,17 +288,28 @@ export const runDerivedUiEffect02 = (ctx: Pick<derivedUiEffectContext, 'CANVAS_A
           });
         }
       }).catch((error) => {
-        const generatedAt = Number(output.generatedAt || canvasItem.ai?.generatedAt || 0);
-        const outputAge = generatedAt > 0 ? Math.max(0, Date.now() - generatedAt) : Number.POSITIVE_INFINITY;
-        shouldRetrySourceRecovery = outputAge < CANVAS_AI_TIMED_OUT_RECOVERY_MAX_AGE_MS;
-        if (shouldRetrySourceRecovery) {
-          canvasAiOutputSourceRecoveryRetryAtRef.current.set(
-            recoveryKey,
-            Date.now() + CANVAS_AI_OUTPUT_SOURCE_RECOVERY_RETRY_DELAY_MS,
-          );
-          canvasAiOutputSourceRecoveryAttemptedRef.current.delete(recoveryKey);
-        }
-        console.warn('AI output source recovery failed; will retry while the result is recent:', error);
+        // A paid, successful result remains recoverable for the lifetime of
+        // its stable API URL. Do not permanently abandon it after a short
+        // age window; reopening the canvas must be able to try again.
+        shouldRetrySourceRecovery = true;
+        canvasAiOutputSourceRecoveryRetryAtRef.current.set(
+          recoveryKey,
+          Date.now() + CANVAS_AI_OUTPUT_SOURCE_RECOVERY_RETRY_DELAY_MS,
+        );
+        canvasAiOutputSourceRecoveryAttemptedRef.current.delete(recoveryKey);
+        updateCanvasItemsImmediate(prev => prev.map((item) => {
+          if (item.id !== canvasItem.id || !item.ai?.outputs?.length) return item;
+          const outputs = item.ai.outputs.map((currentOutput, currentIndex) => {
+            const matches = output.id
+              ? currentOutput.id === output.id
+              : currentIndex === outputIndex;
+            return matches && currentOutput.cacheStatus !== 'ready'
+              ? { ...currentOutput, sourceUrl: stableSource, cacheStatus: 'failed' as const }
+              : currentOutput;
+          });
+          return { ...item, ai: { ...item.ai, outputs } };
+        }));
+        console.warn('AI output source recovery failed; will retry from the stable API URL:', error);
       }).finally(() => {
         canvasAiOutputSourceRecoveryInFlightRef.current.delete(recoveryKey);
         window.setTimeout(() => {

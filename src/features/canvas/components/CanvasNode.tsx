@@ -1300,7 +1300,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                   )}
                                                   {didOutputImageCacheFail && !output.path && !isOutputError && (
                                                     <div className="pointer-events-none absolute inset-x-3 bottom-3 z-10 rounded-md bg-amber-50/94 px-2.5 py-1.5 text-[9px] font-black text-amber-800 shadow-sm ring-1 ring-amber-950/[0.08] backdrop-blur-md dark:bg-amber-950/86 dark:text-amber-100 dark:ring-amber-100/[0.1]">
-                                                      本地缓存失败，保留远程预览
+                                                      本地保存失败，正在重试；远程预览保留
                                                     </div>
                                                   )}
                                                 </div>

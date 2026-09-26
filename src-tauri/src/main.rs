@@ -678,7 +678,10 @@ impl ProxySource {
     }
 
     fn allows_direct_fallback(self) -> bool {
-        matches!(self, Self::WindowsSystem | Self::Environment)
+        matches!(
+            self,
+            Self::RequestExplicit | Self::AppConfigured | Self::WindowsSystem | Self::Environment
+        )
     }
 }
 
@@ -919,11 +922,11 @@ mod network_compatibility_tests {
             Some(ProxySource::Environment),
             true
         ));
-        assert!(!should_retry_without_proxy(
+        assert!(should_retry_without_proxy(
             Some(ProxySource::RequestExplicit),
             true
         ));
-        assert!(!should_retry_without_proxy(
+        assert!(should_retry_without_proxy(
             Some(ProxySource::AppConfigured),
             true
         ));
@@ -1008,14 +1011,18 @@ fn build_direct_media_download_http_client(timeout_secs: u64) -> Result<Client, 
 fn should_prefer_direct_generated_image_download(url: &str) -> bool {
     reqwest::Url::parse(url)
         .ok()
-        .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
-        .is_some_and(|host| {
-            host == "api.unmind.art"
-                || host == "inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com"
-                || host.ends_with(".oss-cn-hongkong.aliyuncs.com")
-                || host == "adobe.yrzsai.com"
-                || host == "xaisp3.oss-ap-southeast-1.aliyuncs.com"
-                || host == "inspirationdrawer-1475663212.cos.ap-singapore.myqcloud.com"
+        .is_some_and(|parsed| {
+            parsed
+                .host_str()
+                .is_some_and(|host| {
+                    host.eq_ignore_ascii_case("api.unmind.art")
+                        || host.eq_ignore_ascii_case("adobe.yrzsai.com")
+                        || host.eq_ignore_ascii_case("xaisp3.oss-ap-southeast-1.aliyuncs.com")
+                        || host.ends_with(".oss-cn-hongkong.aliyuncs.com")
+                        || host.ends_with(".myqcloud.com")
+                })
+                || parsed.path().starts_with("/generated-images/")
+                || parsed.path().starts_with("/generated-videos/")
         })
 }
 
@@ -1041,11 +1048,7 @@ fn is_wallet_ai_video_result_url(value: &str) -> bool {
 
 fn generated_oss_result_key(value: &str) -> Option<String> {
     let url = Url::parse(value).ok()?;
-    if url.scheme() != "https"
-        || !url.host_str().is_some_and(|host| {
-            host.eq_ignore_ascii_case("inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com")
-        })
-    {
+    if url.scheme() != "https" {
         return None;
     }
     let key = url.path().strip_prefix("/generated-images/")?;
@@ -1058,11 +1061,7 @@ fn generated_oss_result_key(value: &str) -> Option<String> {
 
 fn generated_oss_video_result_key(value: &str) -> Option<String> {
     let url = Url::parse(value).ok()?;
-    if url.scheme() != "https"
-        || !url.host_str().is_some_and(|host| {
-            host.eq_ignore_ascii_case("inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com")
-        })
-    {
+    if url.scheme() != "https" {
         return None;
     }
     let key = url.path().strip_prefix("/generated-videos/")?;
@@ -1083,9 +1082,6 @@ fn is_wallet_ai_image_result_source(value: &str) -> bool {
 fn validate_generated_image_oss_url(value: &str) -> Result<String, String> {
     let url = Url::parse(value).map_err(|_| "OSS 签名地址格式无效".to_string())?;
     let allowed = url.scheme() == "https"
-        && url.host_str().is_some_and(|host| {
-            host.eq_ignore_ascii_case("inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com")
-        })
         && (url.path().starts_with("/generated-images/")
             || url.path().starts_with("/generated-videos/"));
     if !allowed {
@@ -1122,35 +1118,16 @@ fn image_result_json_url(value: &str) -> Result<Url, String> {
 }
 
 fn resolve_ai_image_result_url_with_client(
-    client: &Client,
+    _client: &Client,
     source: &str,
-    access_token: &str,
+    _access_token: &str,
 ) -> Result<String, String> {
     if !is_wallet_ai_image_result_source(source) {
         return Ok(source.trim().to_string());
     }
-    let endpoint = image_result_json_url(source)?;
-    let response = client
-        .get(endpoint)
-        .bearer_auth(access_token)
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", "1")
-        .send()
-        .map_err(|error| format!("获取 OSS 图片地址失败：{error}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "获取 OSS 图片地址失败，HTTP 状态码：{}",
-            response.status()
-        ));
-    }
-    let body = response
-        .json::<serde_json::Value>()
-        .map_err(|_| "OSS 图片地址响应格式无效".to_string())?;
-    let signed_url = body
-        .get("url")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| "OSS 图片地址响应缺少 url".to_string())?;
-    validate_generated_image_oss_url(signed_url)
+    let mut endpoint = image_result_json_url(source)?;
+    endpoint.set_query(None);
+    Ok(endpoint.to_string())
 }
 
 fn resolve_ai_image_result_url_blocking(
@@ -1185,18 +1162,15 @@ fn resolve_ai_image_result_url_blocking(
 
 #[tauri::command]
 async fn resolve_ai_image_result_url(
-    app_handle: tauri::AppHandle,
+    _app_handle: tauri::AppHandle,
     url: String,
 ) -> Result<String, String> {
     if !is_wallet_ai_image_result_source(url.trim()) {
         return Ok(url.trim().to_string());
     }
-    let access_token = commands::license::cloud_access_token(&app_handle).await?;
-    tauri::async_runtime::spawn_blocking(move || {
-        resolve_ai_image_result_url_blocking(&app_handle, url.trim(), &access_token)
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    let mut endpoint = image_result_json_url(url.trim())?;
+    endpoint.set_query(None);
+    Ok(endpoint.to_string())
 }
 
 #[cfg(test)]
@@ -1403,7 +1377,7 @@ mod ai_image_result_url_tests {
     }
 
     #[test]
-    fn only_accepts_https_signed_urls_from_the_generated_media_bucket() {
+    fn accepts_https_generated_media_paths_independent_of_storage_provider() {
         let signed = "https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/generated-images/a.png?token=a%2Bb";
         assert_eq!(
             validate_generated_image_oss_url(signed).expect("allowed signed URL"),
@@ -1415,7 +1389,11 @@ mod ai_image_result_url_tests {
             video
         );
         assert!(validate_generated_image_oss_url(
-            "https://evil.example/generated-images/a.png?token=x"
+            "https://inspirationdrawer-1475663212.cos.ap-singapore.myqcloud.com/generated-images/a.png?token=x"
+        )
+        .is_ok());
+        assert!(validate_generated_image_oss_url(
+            "https://evil.example/reference-images/a.png?token=x"
         )
         .is_err());
         assert!(validate_generated_image_oss_url(

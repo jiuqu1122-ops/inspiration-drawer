@@ -666,6 +666,19 @@ fn cloud_http_fallback(status: reqwest::StatusCode, body: &str) -> String {
     let compact = body
         .replace(['\r', '\n', '\t'], " ")
         .split_whitespace()
+        .map(|part| {
+            let lower = part.to_ascii_lowercase();
+            if lower.contains("token")
+                || lower.contains("api_key")
+                || lower.contains("authorization")
+                || lower.contains("http://")
+                || lower.contains("https://")
+            {
+                "[已隐藏]"
+            } else {
+                part
+            }
+        })
         .collect::<Vec<_>>()
         .join(" ");
     let detail = if compact.starts_with('<') {
@@ -678,23 +691,90 @@ fn cloud_http_fallback(status: reqwest::StatusCode, body: &str) -> String {
     format!("云端请求失败（HTTP {}）：{detail}", status.as_u16())
 }
 
+fn cloud_transport_error(error: &reqwest::Error, method: &str, via_proxy: bool) -> String {
+    let detail = error.to_string().to_ascii_lowercase();
+    let category = if error.is_timeout() {
+        "请求超时"
+    } else if error.is_connect() {
+        if via_proxy {
+            "代理连接失败"
+        } else if detail.contains("certificate") || detail.contains("tls") {
+            "TLS 连接失败"
+        } else if detail.contains("dns") || detail.contains("resolve") {
+            "DNS 解析失败"
+        } else {
+            "无法建立连接"
+        }
+    } else if error.is_request() {
+        "请求构造失败"
+    } else if error.is_body() {
+        "响应传输失败"
+    } else {
+        "网络错误"
+    };
+    format!("cloud_unavailable: {method} {category}；凭证和请求地址已隐藏")
+}
+
+fn should_retry_cloud_transport(error: &reqwest::Error, method: &str) -> bool {
+    error.is_connect() || (method == "GET" && error.is_timeout())
+}
+
+async fn send_cloud_request<F>(
+    app_handle: &tauri::AppHandle,
+    timeout: Duration,
+    method: &'static str,
+    build: F,
+) -> Result<reqwest::Response, String>
+where
+    F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+{
+    let (configured, direct) = crate::build_async_http_clients_with_direct_fallback(
+        Some(app_handle),
+        None,
+        timeout.as_secs().max(1),
+    )
+    .map_err(|error| format!("cloud_unavailable: {error}"))?;
+    let app_proxy_configured = !crate::read_network_proxy(app_handle).trim().is_empty();
+    let proxy_available = crate::effective_proxy(Some(app_handle), None).is_some();
+    let mut clients: Vec<(reqwest::Client, bool)> = Vec::with_capacity(2);
+    // Direct is the default route. A proxy explicitly entered in the app is
+    // intentionally preferred, but it still gets a direct fallback.
+    if app_proxy_configured {
+        clients.push((configured, proxy_available));
+        if let Some(direct) = direct {
+            clients.push((direct, false));
+        }
+    } else if let Some(direct) = direct {
+        clients.push((direct, false));
+        clients.push((configured, proxy_available));
+    } else {
+        clients.push((configured, proxy_available));
+    }
+    for (index, (client, via_proxy)) in clients.iter().enumerate() {
+        match build(client).send().await {
+            Ok(response) => return Ok(response),
+            Err(error) if index + 1 < clients.len() && should_retry_cloud_transport(&error, method) => continue,
+            Err(error) => return Err(cloud_transport_error(&error, method, *via_proxy)),
+        }
+    }
+    Err(format!("cloud_unavailable: {method} 网络错误"))
+}
+
 async fn post_cloud<T: for<'de> Deserialize<'de>>(
+    app_handle: &tauri::AppHandle,
     path: &str,
     request_body: &impl Serialize,
 ) -> Result<T, String> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|err| format!("cloud_unavailable: 无法初始化云端连接：{err}"))?;
-    let response = client
-        .post(format!("{CLOUD_API_BASE_URL}{path}"))
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
-        .json(request_body)
-        .send()
-        .await
-        .map_err(|err| format!("cloud_unavailable: 无法连接授权服务器：{err}"))?;
+    let body = serde_json::to_value(request_body)
+        .map_err(|_| "cloud_invalid_request: 请求内容格式无效".to_string())?;
+    let response = send_cloud_request(app_handle, Duration::from_secs(20), "POST", |client| {
+        client
+            .post(format!("{CLOUD_API_BASE_URL}{path}"))
+            .header("x-client-version", env!("CARGO_PKG_VERSION"))
+            .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
+            .json(&body)
+    })
+    .await?;
     let status = response.status();
     let body = response
         .text()
@@ -718,29 +798,23 @@ async fn post_cloud<T: for<'de> Deserialize<'de>>(
 }
 
 async fn post_cloud_email_sync_once(
+    app_handle: &tauri::AppHandle,
     request_body: &CloudLicenseSyncRequest<'_>,
 ) -> Result<EmailVerificationResponse, EmailSyncRequestError> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|err| EmailSyncRequestError {
-            status: None,
-            retry_after: None,
-            message: format!("cloud_unavailable: 无法初始化云端连接：{err}"),
-        })?;
-    let response = client
-        .post(format!("{CLOUD_API_BASE_URL}/v1/auth/email/sync"))
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
-        .json(request_body)
-        .send()
-        .await
-        .map_err(|err| EmailSyncRequestError {
-            status: None,
-            retry_after: None,
-            message: format!("cloud_unavailable: 无法连接授权服务器：{err}"),
-        })?;
+    let body = serde_json::to_value(request_body).map_err(|_| EmailSyncRequestError {
+        status: None,
+        retry_after: None,
+        message: "cloud_invalid_request: 请求内容格式无效".to_string(),
+    })?;
+    let response = send_cloud_request(app_handle, Duration::from_secs(20), "POST", |client| {
+        client
+            .post(format!("{CLOUD_API_BASE_URL}/v1/auth/email/sync"))
+            .header("x-client-version", env!("CARGO_PKG_VERSION"))
+            .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
+            .json(&body)
+    })
+    .await
+    .map_err(|message| EmailSyncRequestError { status: None, retry_after: None, message })?;
     let status = response.status();
     let retry_after = parse_retry_after(
         response
@@ -778,34 +852,33 @@ async fn post_cloud_email_sync_once(
 }
 
 async fn post_cloud_with_bearer<T: for<'de> Deserialize<'de>>(
+    app_handle: &tauri::AppHandle,
     path: &str,
     access_token: &str,
     request_body: &impl Serialize,
 ) -> Result<T, String> {
-    post_cloud_with_bearer_timeout(path, access_token, request_body, Duration::from_secs(20)).await
+    post_cloud_with_bearer_timeout(app_handle, path, access_token, request_body, Duration::from_secs(20)).await
 }
 
 async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
+    app_handle: &tauri::AppHandle,
     path: &str,
     access_token: &str,
     request_body: &impl Serialize,
     timeout: Duration,
 ) -> Result<T, String> {
     let request_started_at = Instant::now();
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(timeout)
-        .build()
-        .map_err(|err| format!("cloud_unavailable: 无法初始化云端连接：{err}"))?;
-    let response = client
-        .post(format!("{CLOUD_API_BASE_URL}{path}"))
-        .bearer_auth(access_token)
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
-        .json(request_body)
-        .send()
-        .await
-        .map_err(|err| format!("cloud_unavailable: 无法连接额度服务器：{err}"))?;
+    let body = serde_json::to_value(request_body)
+        .map_err(|_| "cloud_invalid_request: 请求内容格式无效".to_string())?;
+    let response = send_cloud_request(app_handle, timeout, "POST", |client| {
+        client
+            .post(format!("{CLOUD_API_BASE_URL}{path}"))
+            .bearer_auth(access_token)
+            .header("x-client-version", env!("CARGO_PKG_VERSION"))
+            .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
+            .json(&body)
+    })
+    .await?;
     let response_received_at = Instant::now();
     let status = response.status();
     let body = response
@@ -838,22 +911,18 @@ async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
 }
 
 async fn get_cloud_with_bearer<T: for<'de> Deserialize<'de>>(
+    app_handle: &tauri::AppHandle,
     path: &str,
     access_token: &str,
 ) -> Result<T, String> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|err| format!("cloud_unavailable: 无法初始化云端连接：{err}"))?;
-    let response = client
-        .get(format!("{CLOUD_API_BASE_URL}{path}"))
-        .bearer_auth(access_token)
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
-        .send()
-        .await
-        .map_err(|err| format!("cloud_unavailable: 无法连接额度服务器：{err}"))?;
+    let response = send_cloud_request(app_handle, Duration::from_secs(30), "GET", |client| {
+        client
+            .get(format!("{CLOUD_API_BASE_URL}{path}"))
+            .bearer_auth(access_token)
+            .header("x-client-version", env!("CARGO_PKG_VERSION"))
+            .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
+    })
+    .await?;
     let status = response.status();
     let body = response
         .text()
@@ -965,7 +1034,7 @@ async fn sync_cloud_account_uncached(
     };
     let mut attempt = 0;
     let response = loop {
-        match post_cloud_email_sync_once(&request).await {
+        match post_cloud_email_sync_once(app_handle, &request).await {
             Ok(response) => break response,
             Err(error) => {
                 if attempt + 1 >= EMAIL_SYNC_MAX_ATTEMPTS || !is_retryable_email_sync_error(&error)
@@ -1035,7 +1104,10 @@ fn email_sync_retry_delay(retry_index: usize, retry_after: Option<Duration>) -> 
 }
 
 fn is_retryable_email_sync_error(error: &EmailSyncRequestError) -> bool {
-    matches!(error.status, None | Some(429 | 500 | 502 | 503 | 504))
+    // The sync endpoint is a POST. Once a response is lost we cannot know
+    // whether the server accepted the license, so never replay it here.
+    let _ = error;
+    false
 }
 
 fn parse_retry_after(value: Option<&str>) -> Option<Duration> {
@@ -1097,9 +1169,13 @@ pub fn get_license_status(app_handle: tauri::AppHandle) -> Result<LicenseStatus,
 }
 
 #[tauri::command]
-pub async fn request_email_verification(email: String) -> Result<EmailCodeChallenge, String> {
+pub async fn request_email_verification(
+    app_handle: tauri::AppHandle,
+    email: String,
+) -> Result<EmailCodeChallenge, String> {
     let email = validate_email(&email)?;
     post_cloud(
+        &app_handle,
         "/v1/auth/email/send-code",
         &EmailCodeRequest { email: &email },
     )
@@ -1132,6 +1208,7 @@ pub async fn verify_email_registration(
         })
     });
     let response = post_cloud::<EmailVerificationResponse>(
+        &app_handle,
         "/v1/auth/email/verify",
         &EmailVerificationRequest {
             email: &email,
@@ -1195,6 +1272,7 @@ pub async fn create_cloud_recharge_session(
 ) -> Result<CloudRechargeSession, String> {
     let access_token = cloud_access_token(&app_handle).await?;
     post_cloud_with_bearer(
+        &app_handle,
         "/v1/recharge/session",
         &access_token,
         &serde_json::json!({}),
@@ -1213,6 +1291,7 @@ pub async fn bind_cloud_referral(
     }
     let synced = sync_cloud_account(&app_handle).await?;
     let _: serde_json::Value = post_cloud_with_bearer(
+        &app_handle,
         "/v1/referrals/bind",
         &synced.access_token,
         &ReferralBindRequest { invite_code: &invite_code },
@@ -1227,7 +1306,7 @@ pub async fn get_cloud_credit_usage(
     app_handle: tauri::AppHandle,
 ) -> Result<CloudCreditUsageResult, String> {
     let access_token = cloud_access_token(&app_handle).await?;
-    get_cloud_with_bearer("/v1/wallet/usage?limit=50", &access_token).await
+    get_cloud_with_bearer(&app_handle, "/v1/wallet/usage?limit=50", &access_token).await
 }
 
 #[tauri::command]
@@ -1241,6 +1320,7 @@ pub async fn redeem_credit_code(
     }
     let synced = sync_cloud_account(&app_handle).await?;
     let redeemed = post_cloud_with_bearer::<CreditRedemptionResponse>(
+        &app_handle,
         "/v1/wallet/redeem",
         &synced.access_token,
         &CreditRedemptionRequest { code },
@@ -1300,6 +1380,7 @@ pub async fn generate_cloud_images(
     let access_token = cloud_access_token(&app_handle).await?;
     let token_ready_at = Instant::now();
     let result = post_cloud_with_bearer_timeout::<CloudImageGenerationResult>(
+        &app_handle,
         "/v1/ai/images/generations",
         &access_token,
         &request,
@@ -1352,6 +1433,7 @@ pub async fn get_cloud_image_generation_by_request(
     let encoded_request_id =
         url::form_urlencoded::byte_serialize(client_request_id.as_bytes()).collect::<String>();
     get_cloud_with_bearer::<CloudImageGenerationLookup>(
+        &app_handle,
         &format!("/v1/ai/images/generations/by-request/{encoded_request_id}"),
         &access_token,
     )
@@ -1367,20 +1449,14 @@ pub async fn get_cloud_image_models(
     // IMAGE channel selection, so the client provider must not constrain it.
     let _ = provider;
     let access_token = cloud_access_token(&app_handle).await?;
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|error| format!("cloud_unavailable: 无法初始化云端连接：{error}"))?;
-    let request = client
-        .get(format!("{CLOUD_API_BASE_URL}/v1/ai/images/models"))
-        .bearer_auth(access_token)
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION);
-    let response = request
-        .send()
-        .await
-        .map_err(|error| format!("cloud_unavailable: 无法连接生图模型服务：{error}"))?;
+    let response = send_cloud_request(&app_handle, Duration::from_secs(30), "GET", |client| {
+        client
+            .get(format!("{CLOUD_API_BASE_URL}/v1/ai/images/models"))
+            .bearer_auth(&access_token)
+            .header("x-client-version", env!("CARGO_PKG_VERSION"))
+            .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
+    })
+    .await?;
     let status = response.status();
     let body = response
         .text()
@@ -1439,6 +1515,7 @@ pub async fn generate_cloud_videos(
     // This bridge only enforces conservative transport safety bounds.
     let access_token = cloud_access_token(&app_handle).await?;
     post_cloud_with_bearer_timeout::<CloudVideoGenerationResult>(
+        &app_handle,
         "/v1/ai/videos",
         &access_token,
         &request,
@@ -1465,25 +1542,19 @@ pub async fn get_cloud_video_status(
         return Err("invalid_request: 视频任务 ID 无效".to_string());
     }
     let access_token = cloud_access_token(&app_handle).await?;
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        // Each status request is bounded independently; this must not consume
-        // the total client-side generation budget.
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|error| format!("cloud_unavailable: 无法初始化云端连接：{error}"))?;
-    let mut request = client
-        .get(format!("{CLOUD_API_BASE_URL}/v1/ai/videos/{task_id}"))
-        .bearer_auth(access_token)
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION);
-    if let Some(client_request_id) = client_request_id.filter(|value| !value.trim().is_empty()) {
-        request = request.query(&[("clientRequestId", client_request_id)]);
-    }
-    let response = request
-        .send()
-        .await
-        .map_err(|error| format!("cloud_unavailable: 无法连接额度服务器：{error}"))?;
+    let request_id = client_request_id.filter(|value| !value.trim().is_empty());
+    let response = send_cloud_request(&app_handle, Duration::from_secs(30), "GET", |client| {
+        let mut request = client
+            .get(format!("{CLOUD_API_BASE_URL}/v1/ai/videos/{task_id}"))
+            .bearer_auth(&access_token)
+            .header("x-client-version", env!("CARGO_PKG_VERSION"))
+            .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION);
+        if let Some(request_id) = request_id.as_deref() {
+            request = request.query(&[("clientRequestId", request_id)]);
+        }
+        request
+    })
+    .await?;
     let status = response.status();
     let retry_after_ms = response
         .headers()
@@ -1579,7 +1650,7 @@ pub fn require_feature(app_handle: &tauri::AppHandle, feature: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::{
-        email_sync_retry_delay, is_retryable_email_sync_error, normalize_cloud_image_references,
+        cloud_http_fallback, email_sync_retry_delay, is_retryable_email_sync_error, normalize_cloud_image_references,
         parse_cloud_image_reference, parse_retry_after, validate_display_name, validate_email,
         CloudCreditUsageResult, CloudImageGenerationRequest, CloudImageModelsResponse,
         CloudImageReference, CloudVideoGenerationRequest, EmailSyncRequestError,
@@ -1783,18 +1854,18 @@ mod tests {
     }
 
     #[test]
-    fn email_sync_retries_only_transient_failures_and_reads_retry_after() {
+    fn email_sync_does_not_replay_post_after_a_lost_or_error_response() {
         assert_eq!(
             parse_retry_after(Some("12")),
             Some(std::time::Duration::from_secs(12))
         );
         assert_eq!(parse_retry_after(Some("invalid")), None);
-        assert!(is_retryable_email_sync_error(&EmailSyncRequestError {
+        assert!(!is_retryable_email_sync_error(&EmailSyncRequestError {
             status: Some(429),
             retry_after: None,
             message: String::new(),
         }));
-        assert!(is_retryable_email_sync_error(&EmailSyncRequestError {
+        assert!(!is_retryable_email_sync_error(&EmailSyncRequestError {
             status: Some(500),
             retry_after: None,
             message: String::new(),
@@ -1881,6 +1952,17 @@ mod tests {
             value["pricing"]["videoModels"][0]["billingType"],
             serde_json::json!("video_flat")
         );
+    }
+
+    #[test]
+    fn cloud_http_errors_hide_tokens_and_signed_urls() {
+        let message = cloud_http_fallback(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"message":"token=secret https://api.example.test/x?sig=secret"}"#,
+        );
+        assert!(!message.contains("secret"));
+        assert!(!message.contains("api.example.test"));
+        assert!(message.contains("HTTP 400"));
     }
 
     #[test]
