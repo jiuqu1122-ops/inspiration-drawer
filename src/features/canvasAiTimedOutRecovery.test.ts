@@ -79,4 +79,29 @@ describe('canvas AI timed-out recovery', () => {
     expect(getCanvasAiTimedOutRecoveryCandidates([node], 20_000)).toHaveLength(0);
     expect(getCanvasAiTimedOutRecoveryCandidates([node], 910_000)).toHaveLength(1);
   });
+
+  it('keeps a historical successful video receipt recoverable when media is missing', () => {
+    const node = imageNode();
+    node.ai = {
+      ...node.ai!,
+      type: 'video-generator',
+      outputs: [{
+        id: 'video-output-1',
+        taskId: 'upstream-video-1',
+        clientRequestId: 'video-request-1',
+        mediaType: 'video',
+        status: 'success',
+        generatedAt: 10_000,
+      }],
+    };
+    const candidates = getCanvasAiTimedOutRecoveryCandidates(
+      [node],
+      10_000 + CANVAS_AI_TIMED_OUT_RECOVERY_MAX_AGE_MS + 1,
+    );
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      clientRequestId: 'video-request-1',
+      mediaType: 'video',
+    });
+  });
 });

@@ -9,7 +9,7 @@ import { CANVAS_AI_OUTPUT_SOURCE_RECOVERY_CONCURRENCY } from '../../../utils/can
 import { createCanvasAiOutputBufferItem,getCanvasAiOutputDisplaySource } from '../../../utils/canvasItemSelectors';
 import { getCanvasAiOutputPreviewSlots } from '../../../utils/canvasWorkflowRuntime';
 import { getAutoRecoverableAiMediaResultSource } from '../../aiImageResultRecovery';
-import { getCloudWalletImageGenerationByRequest,getCloudWalletImageLookupImages } from '../../canvasAiImage';
+import { getCloudWalletImageGenerationByRequest,getCloudWalletImageLookupImages,getCloudWalletVideoDeliveredResults,getCloudWalletVideoStatus } from '../../canvasAiImage';
 import { buildCanvasAiOutputRemoteResultPatch } from '../../canvasAiOutputs';
 import { getCanvasAiMediaType } from '../../canvasAiRuntime';
 import { getCanvasAiTimedOutRecoveryCandidates,isCanvasAiImageLookupPending } from '../../canvasAiTimedOutRecovery';
@@ -17,10 +17,10 @@ import { type CanvasAiGeneratedOutput,type CanvasImageItem,type CanvasItemBox } 
 import { shouldDeferLicenseGateForPostInstall,shouldInvokeLicenseGateDrawerOpen } from '../../startup';
 import { type TriggerMode } from '../../triggerModel';
 
-type derivedUiEffectContext = { isCanvasMode: boolean; canvasAiTimedOutRecoveryInFlightRef: React.RefObject<Set<string>>; canvasItems: CanvasImageItem[]; canvasAiTimedOutRecoverySettledRef: React.RefObject<Set<string>>; canvasItemsRef: React.RefObject<CanvasImageItem[]>; updateCanvasItemsImmediate: (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => CanvasImageItem[]; addGeneratedImagesToDrawer: (generatedItems: BufferItem[], options?: { canvasId?: string; onOutputCachePatch?: (outputId: string, matchSources: string[], patch: Partial<CanvasAiGeneratedOutput>) => void; canvasOutputClientRequestId?: string; }) => void; activeCanvasIdRef: React.RefObject<string>; scheduleCanvasChangedNodesPatchSave: (ids: string[]) => void; scheduleCanvasStateSave: (options?: { syncNodes?: boolean; }) => void; enqueueCanvasAiOutputThumbnailJob: (job: CanvasAiOutputThumbnailJob) => void; refreshCloudAccount: (silent?: boolean) => Promise<CloudAccountSummary>; showToast: (message: string) => void; getCanvasAiErrorSummary: (error?: string | null) => string; setCanvasAiTimedOutRecoveryTick: React.Dispatch<React.SetStateAction<number>>; canvasAiOutputSourceRecoveryInFlightRef: React.RefObject<Set<string>>; itemsRef: React.RefObject<BufferItem[]>; canvasAiOutputSourceRecoveryRetryAtRef: React.RefObject<Map<string, number>>; canvasAiOutputSourceRecoveryAttemptedRef: React.RefObject<Set<string>>; cacheCanvasGeneratedImageSource: (source: string, name: string, options?: { throwOnFailure?: boolean; }) => Promise<{ url: string; path: string; sourceUrl: string; }>; setItems: React.Dispatch<React.SetStateAction<BufferItem[]>>; CANVAS_AI_OUTPUT_SOURCE_RECOVERY_RETRY_DELAY_MS: 8000; setCanvasAiOutputSourceRecoveryTick: React.Dispatch<React.SetStateAction<number>>; isCanvasInteractingRef: React.RefObject<boolean>; isCanvasZoomingRef: React.RefObject<boolean>; canvasPanRef: React.RefObject<{ pointerId: number; button: number; startClientX: number; startClientY: number; startScrollLeft: number; startScrollTop: number; } | null>; CANVAS_AI_OUTPUT_CACHE_STALE_MS: number; canvasRenderableItems: CanvasImageItem[]; ensureImageThumbnail: (item: BufferItem) => void; canvasAiOutputThumbnailRecoveryAttemptedRef: React.RefObject<Set<string>>; canvasNavItems: { item: CanvasImageItem; box: CanvasItemBox; }[]; canvasNavThumbnailCacheRef: React.RefObject<Map<string, CanvasNavThumbnailCacheEntry>>; isCanvasNavigatorVisible: boolean; getCanvasItemNavPreview: (canvasItem: CanvasImageItem) => CanvasNavPreview | null; getCanvasNavThumbnailSignature: (canvasItem: CanvasImageItem, preview?: CanvasNavPreview | null) => string; setCanvasNavThumbnailRevision: React.Dispatch<React.SetStateAction<number>>; setCanvasToolbarTop: React.Dispatch<React.SetStateAction<string>>; canvasToolbarRef: React.RefObject<HTMLDivElement | null>; canvasNavigatorPanelRef: React.RefObject<HTMLDivElement | null>; CANVAS_NAV_PANEL_TOP_MARGIN: 12; canvasHandleOcclusionInputsRef: React.RefObject<{ renderedItems: CanvasImageItem[]; connections: unknown; renderScale: number; selectedIds: string[]; } | null>; renderedItems: CanvasImageItem[]; connections: unknown; canvasConnections: { source: CanvasImageItem; target: CanvasImageItem; }[]; renderScale: number; canvasRenderScale: number; selectedIds: string[]; canvasSelectedIds: string[]; refreshCanvasConnectionHandleOcclusion: (options?: { renderedItems?: CanvasImageItem[]; affectedItemIds?: ReadonlySet<string>; }) => void; isLicenseGateActive: boolean; isPostInstallLaunchRef: React.RefObject<boolean>; licenseStatus: LicenseStatus | null; isPointerInsideDrawerRef: React.RefObject<boolean>; startupAutoCloseSuppressedRef: React.RefObject<boolean>; clearIdleAutoClose: () => void; closeTimerRef: React.RefObject<any>; startupAutoCloseTimerRef: React.RefObject<any>; isStartupOverlayActive: boolean; setIsOpen: React.Dispatch<React.SetStateAction<boolean>>; setDrawerState: React.Dispatch<React.SetStateAction<"closed" | "pre_open" | "open" | "closing">>; stateRef: React.RefObject<{ isOpen: boolean; isPinned: boolean; showTextInput: boolean; isSearchActive: boolean; isAntiTouchMode: boolean; }>; isOpen: boolean; drawerWidthRef: React.RefObject<number>; drawerHeightRef: React.RefObject<number>; triggerModeRef: React.RefObject<TriggerMode>; };
+type derivedUiEffectContext = { isCanvasMode: boolean; canvasAiTimedOutRecoveryInFlightRef: React.RefObject<Set<string>>; canvasItems: CanvasImageItem[]; canvasAiTimedOutRecoverySettledRef: React.RefObject<Set<string>>; canvasItemsRef: React.RefObject<CanvasImageItem[]>; updateCanvasItemsImmediate: (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => CanvasImageItem[]; addGeneratedImagesToDrawer: (generatedItems: BufferItem[], options?: { canvasId?: string; onOutputCachePatch?: (outputId: string, matchSources: string[], patch: Partial<CanvasAiGeneratedOutput>) => void; canvasOutputClientRequestId?: string; }) => void; addGeneratedVideosToDrawer: (generatedItems: BufferItem[]) => void; activeCanvasIdRef: React.RefObject<string>; scheduleCanvasChangedNodesPatchSave: (ids: string[]) => void; scheduleCanvasStateSave: (options?: { syncNodes?: boolean; }) => void; enqueueCanvasAiOutputThumbnailJob: (job: CanvasAiOutputThumbnailJob) => void; refreshCloudAccount: (silent?: boolean) => Promise<CloudAccountSummary>; showToast: (message: string) => void; getCanvasAiErrorSummary: (error?: string | null) => string; setCanvasAiTimedOutRecoveryTick: React.Dispatch<React.SetStateAction<number>>; canvasAiOutputSourceRecoveryInFlightRef: React.RefObject<Set<string>>; itemsRef: React.RefObject<BufferItem[]>; canvasAiOutputSourceRecoveryRetryAtRef: React.RefObject<Map<string, number>>; canvasAiOutputSourceRecoveryAttemptedRef: React.RefObject<Set<string>>; cacheCanvasGeneratedImageSource: (source: string, name: string, options?: { throwOnFailure?: boolean; }) => Promise<{ url: string; path: string; sourceUrl: string; }>; setItems: React.Dispatch<React.SetStateAction<BufferItem[]>>; CANVAS_AI_OUTPUT_SOURCE_RECOVERY_RETRY_DELAY_MS: 8000; setCanvasAiOutputSourceRecoveryTick: React.Dispatch<React.SetStateAction<number>>; isCanvasInteractingRef: React.RefObject<boolean>; isCanvasZoomingRef: React.RefObject<boolean>; canvasPanRef: React.RefObject<{ pointerId: number; button: number; startClientX: number; startClientY: number; startScrollLeft: number; startScrollTop: number; } | null>; CANVAS_AI_OUTPUT_CACHE_STALE_MS: number; canvasRenderableItems: CanvasImageItem[]; ensureImageThumbnail: (item: BufferItem) => void; canvasAiOutputThumbnailRecoveryAttemptedRef: React.RefObject<Set<string>>; canvasNavItems: { item: CanvasImageItem; box: CanvasItemBox; }[]; canvasNavThumbnailCacheRef: React.RefObject<Map<string, CanvasNavThumbnailCacheEntry>>; isCanvasNavigatorVisible: boolean; getCanvasItemNavPreview: (canvasItem: CanvasImageItem) => CanvasNavPreview | null; getCanvasNavThumbnailSignature: (canvasItem: CanvasImageItem, preview?: CanvasNavPreview | null) => string; setCanvasNavThumbnailRevision: React.Dispatch<React.SetStateAction<number>>; setCanvasToolbarTop: React.Dispatch<React.SetStateAction<string>>; canvasToolbarRef: React.RefObject<HTMLDivElement | null>; canvasNavigatorPanelRef: React.RefObject<HTMLDivElement | null>; CANVAS_NAV_PANEL_TOP_MARGIN: 12; canvasHandleOcclusionInputsRef: React.RefObject<{ renderedItems: CanvasImageItem[]; connections: unknown; renderScale: number; selectedIds: string[]; } | null>; renderedItems: CanvasImageItem[]; connections: unknown; canvasConnections: { source: CanvasImageItem; target: CanvasImageItem; }[]; renderScale: number; canvasRenderScale: number; selectedIds: string[]; canvasSelectedIds: string[]; refreshCanvasConnectionHandleOcclusion: (options?: { renderedItems?: CanvasImageItem[]; affectedItemIds?: ReadonlySet<string>; }) => void; isLicenseGateActive: boolean; isPostInstallLaunchRef: React.RefObject<boolean>; licenseStatus: LicenseStatus | null; isPointerInsideDrawerRef: React.RefObject<boolean>; startupAutoCloseSuppressedRef: React.RefObject<boolean>; clearIdleAutoClose: () => void; closeTimerRef: React.RefObject<any>; startupAutoCloseTimerRef: React.RefObject<any>; isStartupOverlayActive: boolean; setIsOpen: React.Dispatch<React.SetStateAction<boolean>>; setDrawerState: React.Dispatch<React.SetStateAction<"closed" | "pre_open" | "open" | "closing">>; stateRef: React.RefObject<{ isOpen: boolean; isPinned: boolean; showTextInput: boolean; isSearchActive: boolean; isAntiTouchMode: boolean; }>; isOpen: boolean; drawerWidthRef: React.RefObject<number>; drawerHeightRef: React.RefObject<number>; triggerModeRef: React.RefObject<TriggerMode>; };
 
-export const runDerivedUiEffect01 = (ctx: Pick<derivedUiEffectContext, 'activeCanvasIdRef' | 'addGeneratedImagesToDrawer' | 'canvasAiTimedOutRecoveryInFlightRef' | 'canvasAiTimedOutRecoverySettledRef' | 'canvasItems' | 'canvasItemsRef' | 'enqueueCanvasAiOutputThumbnailJob' | 'getCanvasAiErrorSummary' | 'isCanvasMode' | 'refreshCloudAccount' | 'scheduleCanvasChangedNodesPatchSave' | 'scheduleCanvasStateSave' | 'setCanvasAiTimedOutRecoveryTick' | 'showToast' | 'updateCanvasItemsImmediate'>) => {
-  const { activeCanvasIdRef, addGeneratedImagesToDrawer, canvasAiTimedOutRecoveryInFlightRef, canvasAiTimedOutRecoverySettledRef, canvasItems, canvasItemsRef, enqueueCanvasAiOutputThumbnailJob, getCanvasAiErrorSummary, isCanvasMode, refreshCloudAccount, scheduleCanvasChangedNodesPatchSave, scheduleCanvasStateSave, setCanvasAiTimedOutRecoveryTick, showToast, updateCanvasItemsImmediate } = ctx;
+export const runDerivedUiEffect01 = (ctx: Pick<derivedUiEffectContext, 'activeCanvasIdRef' | 'addGeneratedImagesToDrawer' | 'addGeneratedVideosToDrawer' | 'canvasAiTimedOutRecoveryInFlightRef' | 'canvasAiTimedOutRecoverySettledRef' | 'canvasItems' | 'canvasItemsRef' | 'enqueueCanvasAiOutputThumbnailJob' | 'getCanvasAiErrorSummary' | 'isCanvasMode' | 'refreshCloudAccount' | 'scheduleCanvasChangedNodesPatchSave' | 'scheduleCanvasStateSave' | 'setCanvasAiTimedOutRecoveryTick' | 'showToast' | 'updateCanvasItemsImmediate'>) => {
+  const { activeCanvasIdRef, addGeneratedImagesToDrawer, addGeneratedVideosToDrawer, canvasAiTimedOutRecoveryInFlightRef, canvasAiTimedOutRecoverySettledRef, canvasItems, canvasItemsRef, enqueueCanvasAiOutputThumbnailJob, getCanvasAiErrorSummary, isCanvasMode, refreshCloudAccount, scheduleCanvasChangedNodesPatchSave, scheduleCanvasStateSave, setCanvasAiTimedOutRecoveryTick, showToast, updateCanvasItemsImmediate } = ctx;
     if (!isCanvasMode) return;
     const availableSlots = Math.max(
       0,
@@ -47,19 +47,52 @@ export const runDerivedUiEffect01 = (ctx: Pick<derivedUiEffectContext, 'activeCa
       canvasAiTimedOutRecoveryInFlightRef.current.add(recoveryKey);
       let shouldPollAgain = false;
 
-      void getCloudWalletImageGenerationByRequest(clientRequestId)
+      const isVideo = candidate.mediaType === 'video';
+      const requestedTaskId = String(output.taskId || clientRequestId).trim();
+      const lookupPromise = isVideo
+        ? getCloudWalletVideoStatus(requestedTaskId, clientRequestId)
+        : getCloudWalletImageGenerationByRequest(clientRequestId);
+      void lookupPromise
         .then(async (lookup) => {
-          if (isCanvasAiImageLookupPending(lookup.status)) {
-            shouldPollAgain = true;
-            return;
-          }
-          const recoveredImages = getCloudWalletImageLookupImages(lookup);
-          if (recoveredImages.length === 0) {
-            canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
-            return;
+          let recoveredSources: string[] = [];
+          if (isVideo) {
+            recoveredSources = getCloudWalletVideoDeliveredResults(lookup, requestedTaskId);
+            if (recoveredSources.length === 0) {
+              const status = (() => {
+                const visit = (value: unknown, depth = 0): string => {
+                  if (!value || typeof value !== 'object' || depth > 8) return '';
+                  if (Array.isArray(value)) return value.map(item => visit(item, depth + 1)).find(Boolean) || '';
+                  const record = value as Record<string, unknown>;
+                  const direct = record.status ?? record.state ?? record.task_status ?? record.taskStatus;
+                  if (typeof direct === 'string') return direct.trim().toLowerCase().replace(/[\s-]+/g, '_');
+                  return Object.values(record).map(item => visit(item, depth + 1)).find(Boolean) || '';
+                };
+                return visit(lookup);
+              })();
+              if (!status || isCanvasAiImageLookupPending(status)) {
+                shouldPollAgain = true;
+              } else {
+                canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
+              }
+              return;
+            }
+          } else {
+            const imageLookup = lookup as { status?: string; images?: string[]; };
+            if (isCanvasAiImageLookupPending(imageLookup.status)) {
+              shouldPollAgain = true;
+              return;
+            }
+            recoveredSources = getCloudWalletImageLookupImages({
+              status: String(imageLookup.status || ''),
+              images: imageLookup.images || [],
+            });
+            if (recoveredSources.length === 0) {
+              canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
+              return;
+            }
           }
 
-          const source = recoveredImages[0]?.trim();
+          const source = recoveredSources[0]?.trim();
           if (!source) {
             canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
             return;
@@ -79,9 +112,9 @@ export const runDerivedUiEffect01 = (ctx: Pick<derivedUiEffectContext, 'activeCa
           const remoteResult = buildCanvasAiOutputRemoteResultPatch(source);
           const recoveredOutput: CanvasAiGeneratedOutput = {
             ...latestOutput,
-            taskId: clientRequestId,
+            taskId: isVideo ? requestedTaskId : clientRequestId,
             clientRequestId,
-            mediaType: 'image',
+            mediaType: candidate.mediaType,
             ...remoteResult,
             status: 'success',
             error: undefined,
@@ -110,7 +143,8 @@ export const runDerivedUiEffect01 = (ctx: Pick<derivedUiEffectContext, 'activeCa
             outputIndex,
           );
           if (drawerItem) {
-            addGeneratedImagesToDrawer([drawerItem], {
+            if (isVideo) addGeneratedVideosToDrawer([drawerItem]);
+            else addGeneratedImagesToDrawer([drawerItem], {
               canvasId: activeCanvasIdRef.current || DEFAULT_CANVAS_ID,
               canvasOutputClientRequestId: clientRequestId,
             });
@@ -126,11 +160,11 @@ export const runDerivedUiEffect01 = (ctx: Pick<derivedUiEffectContext, 'activeCa
           });
           canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
           void refreshCloudAccount(true).catch(() => {});
-          showToast('已自动找回一张此前超时的生成图片');
+          showToast(isVideo ? '已自动找回一条此前超时的视频' : '已自动找回一张此前超时的生成图片');
         })
         .catch((error) => {
           const message = error instanceof Error ? error.message : String(error || '');
-          if (/image_request_not_found|invalid_request/i.test(message)) {
+          if (/image_request_not_found|video_task_not_found|invalid_request/i.test(message)) {
             canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
             return;
           }

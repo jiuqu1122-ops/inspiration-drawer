@@ -16,6 +16,7 @@ import {
   buildNewApiVideoPrompt,
   buildCanvasAiIndexedReferencePrompt,
   collectVideoStrings,
+  getCloudWalletVideoDeliveredResults,
   selectCloudWalletVideoTaskPayload,
   executeNewApiImageProtocol,
   formatNewApiImageProtocolError,
@@ -202,6 +203,56 @@ describe('cloud wallet video result parsing', () => {
     }, 'completed-task');
     expect(getNewApiVideoTaskState(completed)).toBe('succeeded');
     expect(collectVideoStrings(completed)).toEqual(['https://upstream.example/current.mp4']);
+  });
+
+  it('keeps a root wallet envelope when the upstream task id is nested', () => {
+    expect(getCloudWalletVideoDeliveredResults({
+      task_id: 'client-request-1',
+      status: 'succeeded',
+      upstreamTaskIds: ['upstream-1'],
+      walletVideoResults: ['https://api.unmind.art/v1/ai/video-results/stable.mp4'],
+    }, 'upstream-1')).toEqual([
+      'https://api.unmind.art/v1/ai/video-results/stable.mp4',
+    ]);
+  });
+
+  it('keeps the server root envelope compatible with the old selector', () => {
+    const response = {
+      task_id: 'task-1',
+      taskId: 'task-1',
+      status: 'succeeded',
+      walletVideoResults: ['https://api.unmind.art/v1/ai/video-results/current.mp4'],
+      upstreamTaskIds: ['task-1'],
+      upstream: { task_id: 'task-1', status: 'succeeded', video_url: 'https://provider/current.mp4' },
+    };
+    const selected = selectCloudWalletVideoTaskPayload(response, 'task-1') as Record<string, unknown>;
+    expect(selected.task_id).toBe('task-1');
+    expect(selected.status).toBe('succeeded');
+    expect(selected.walletVideoResults).toEqual(['https://api.unmind.art/v1/ai/video-results/current.mp4']);
+  });
+
+  it('does not treat a task receipt or status endpoint as delivered video', () => {
+    expect(getCloudWalletVideoDeliveredResults({
+      task_id: 'upstream-1',
+      status: 'processing',
+      video_url: 'https://api.unmind.art/v1/ai/videos/upstream-1',
+    }, 'upstream-1')).toEqual([]);
+    expect(getCloudWalletVideoDeliveredResults({
+      task_id: 'upstream-1',
+      status: 'processing',
+      walletVideoResults: ['https://api.unmind.art/v1/ai/video-results/not-ready.mp4'],
+    }, 'upstream-1')).toEqual([]);
+  });
+
+  it('recovers only the current task from a mixed historical result list', () => {
+    expect(getCloudWalletVideoDeliveredResults({
+      results: [
+        { task_id: 'old', status: 'failed', video_url: 'https://upstream.example/old.mp4' },
+        { task_id: 'current', status: 'succeeded', walletVideoResults: ['https://api.unmind.art/v1/ai/video-results/current.mp4'] },
+      ],
+    }, 'current')).toEqual([
+      'https://api.unmind.art/v1/ai/video-results/current.mp4',
+    ]);
   });
 });
 

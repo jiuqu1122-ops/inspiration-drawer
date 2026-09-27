@@ -616,6 +616,18 @@ export const getCloudWalletImageGenerationByRequest = async (
   clientRequestId: clientRequestId.trim(),
 });
 
+/** The video status command is deliberately kept as a raw response.  Older
+ * server receipts and newer root envelopes use different nesting, so callers
+ * should pass it through getCloudWalletVideoDeliveredResults before creating
+ * a canvas output. */
+export const getCloudWalletVideoStatus = async (
+  taskId: string,
+  clientRequestId?: string,
+) => invoke<unknown>('get_cloud_video_status', {
+  taskId: taskId.trim(),
+  ...(clientRequestId?.trim() ? { clientRequestId: clientRequestId.trim() } : {}),
+});
+
 type CloudVideoGenerationResult = {
   results: unknown[];
   provider: string;
@@ -856,6 +868,12 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
         // Some upstream video APIs return a task list instead of one task.
         // Never let a historical task's terminal state or media URLs decide
         // the outcome of the task that this request actually started.
+        const delivered = getCloudWalletVideoDeliveredResults(statusResponse, taskId);
+        if (delivered.length > 0) {
+          lastStatus = statusResponse;
+          taskOutputById.set(taskId, delivered);
+          break;
+        }
         lastStatus = selectCloudWalletVideoTaskPayload(statusResponse, taskId);
         const statusState = getNewApiVideoTaskState(lastStatus);
         if (isNewApiVideoFailureState(statusState)) {
@@ -863,7 +881,13 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
           break;
         }
         if (!isNewApiVideoResultReady(lastStatus)) continue;
-        taskOutputById.set(taskId, collectVideoStrings(lastStatus));
+        const ready = collectVideoStrings(lastStatus)
+          .map(cleanExtractedMediaUrl)
+          .filter(isCloudWalletVideoResultSource);
+        if (ready.length > 0) {
+          taskOutputById.set(taskId, Array.from(new Set(ready)));
+          break;
+        }
       }
       const failure = getNewApiVideoFailureMessage(lastStatus);
       if (failure && !taskFailures.includes(failure)) taskFailures.push(failure);
@@ -2588,6 +2612,93 @@ export const collectVideoStrings = (value: unknown, output: string[] = []): stri
   return output;
 };
 
+const isCloudWalletVideoResultSource = (value: string) => {
+  const source = cleanExtractedMediaUrl(value);
+  if (/^data:video\//i.test(source)) return true;
+  try {
+    const url = new URL(source);
+    return /\/v1\/ai\/video-results\//i.test(url.pathname)
+      || /\.(?:avi|m4v|mov|mp4|webm)$/i.test(url.pathname);
+  } catch (_) {
+    return false;
+  }
+};
+
+const cloudWalletVideoTaskMatches = (value: Record<string, unknown>, expectedTaskId: string) => {
+  for (const [key, nested] of Object.entries(value)) {
+    const normalized = normalizeVideoTaskFieldKey(key);
+    if (CLOUD_WALLET_VIDEO_TASK_ID_KEYS.has(normalized)
+      && (typeof nested === 'string' || typeof nested === 'number')
+      && String(nested).trim() === expectedTaskId) {
+      return true;
+    }
+    if ((normalized === 'task_ids' || normalized === 'upstream_task_ids') && Array.isArray(nested)
+      && nested.some(item => (typeof item === 'string' || typeof item === 'number') && String(item).trim() === expectedTaskId)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const directCloudWalletVideoSources = (value: Record<string, unknown>) => {
+  const candidates: unknown[] = [];
+  for (const key of ['walletVideoResults', 'video_url', 'videoUrl', 'video', 'videos']) {
+    if (value[key] !== undefined) candidates.push(value[key]);
+  }
+  if (Array.isArray(value.results) && value.results.every(item => typeof item === 'string')) {
+    candidates.push(value.results);
+  }
+  return Array.from(new Set(collectVideoStrings(candidates)
+    .map(cleanExtractedMediaUrl)
+    .filter(isCloudWalletVideoResultSource)));
+};
+
+const findCloudWalletVideoDeliveredResults = (
+  value: unknown,
+  expectedTaskId: string,
+  seen = new Set<object>(),
+  depth = 0,
+): string[] => {
+  if (!value || typeof value !== 'object' || depth > 10 || seen.has(value)) return [];
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return Array.from(new Set(value.flatMap(item => (
+      findCloudWalletVideoDeliveredResults(item, expectedTaskId, seen, depth + 1)
+    ))));
+  }
+  const record = value as Record<string, unknown>;
+  if (cloudWalletVideoTaskMatches(record, expectedTaskId)) {
+    const state = getNewApiVideoTaskState(record);
+    const terminal = !state || isNewApiVideoSuccessState(state);
+    const direct = terminal ? directCloudWalletVideoSources(record) : [];
+    if (direct.length > 0) return direct;
+    if (Array.isArray(record.results)) {
+      const matchingResult = record.results.find(item => (
+        item && typeof item === 'object' && cloudWalletVideoTaskMatches(item as Record<string, unknown>, expectedTaskId)
+      ));
+      if (matchingResult) {
+        const nested = findCloudWalletVideoDeliveredResults(matchingResult, expectedTaskId, seen, depth + 1);
+        if (nested.length > 0) return nested;
+      }
+    }
+  }
+  return Array.from(new Set(Object.values(record).flatMap(nested => (
+    findCloudWalletVideoDeliveredResults(nested, expectedTaskId, seen, depth + 1)
+  ))));
+};
+
+/**
+ * Extract only the result belonging to the requested cloud task.  A result
+ * URL is accepted only when it is stable wallet storage (or an inline/video
+ * file URL), which prevents a task receipt or an upstream status endpoint
+ * from becoming a completed canvas output.
+ */
+export const getCloudWalletVideoDeliveredResults = (value: unknown, taskId: string) => {
+  const expectedTaskId = String(taskId || '').trim();
+  if (!expectedTaskId) return [];
+  return findCloudWalletVideoDeliveredResults(value, expectedTaskId);
+};
+
 const collectXaisWorkerMediaStrings = (value: unknown, mediaType: 'image' | 'video') => (
   mediaType === 'video' ? collectVideoStrings(value) : collectImageStrings(value)
 );
@@ -3664,7 +3775,7 @@ const CLOUD_WALLET_VIDEO_TASK_ID_KEYS = new Set([
 ]);
 
 const normalizeVideoTaskFieldKey = (value: string) => (
-  value.trim().toLowerCase().replace(/[\s-]+/g, '_')
+  value.trim().replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().replace(/[\s-]+/g, '_')
 );
 
 const findCloudWalletVideoTaskPayload = (
