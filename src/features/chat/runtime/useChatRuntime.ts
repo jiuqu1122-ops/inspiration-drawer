@@ -29,6 +29,7 @@ import {
 import { buildChatContext, buildSummaryRequestMessages } from '../context/chatContextBuilder';
 import { estimateChatTokens } from '../context/chatContextBudget';
 import type { ChatVisionAttachmentResolver } from '../attachments/chatVisionAttachmentResolver';
+import { formatReferenceUploadFailureNotice } from '../../referenceUploadError';
 import {
   getChatToolDefinitions,
   resolveDirectVisualTool,
@@ -2186,7 +2187,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       const visionFailures = visionResolver?.failures() || [];
       if (visionFailures.length > 0) {
         optionsRef.current.onNotice?.(
-          `${visionFailures.length} 张图片暂时无法上传，已跳过这些图片以避免发送过大的内容。`,
+          formatReferenceUploadFailureNotice(visionFailures.map(failure => failure.error)),
         );
       }
       await runModelLoop(

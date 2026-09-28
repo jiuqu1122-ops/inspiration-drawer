@@ -55,6 +55,34 @@ describe('Chat Vision attachment resolver', () => {
     expect(invokeCommand.mock.calls.some(call => call[0] === 'read_local_image_data_url')).toBe(false);
   });
 
+  it('keeps the backend upload stage and redacts sensitive upload details', async () => {
+    const invokeCommand = vi.fn(async (command: string) => {
+      if (command === 'prepare_chat_vision_image') {
+        return {
+          path: 'C:\\cache\\vision.jpg',
+          mimeType: 'image/jpeg',
+          byteLength: MAX_INLINE_VISION_BYTES + 1,
+          width: 1600,
+          height: 900,
+        };
+      }
+      if (command === 'upload_wallet_reference_images') {
+        throw new Error(
+          '上传图片文件失败：连接被重置 https://oss.example.test/file?X-Amz-Signature=secret '
+          + 'Authorization: Bearer token-secret C:\\Users\\private\\reference.jpg',
+        );
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const resolver = createChatVisionAttachmentResolver({ invokeCommand });
+    const result = await resolver.resolve(attachment('attachment-sensitive'));
+    expect(result.error).toContain('上传图片文件失败：连接被重置');
+    expect(result.error).not.toContain('https://');
+    expect(result.error).not.toContain('X-Amz-Signature');
+    expect(result.error).not.toContain('token-secret');
+    expect(result.error).not.toContain('C:\\Users\\private');
+  });
+
   it('allows only a tiny bounded inline fallback', async () => {
     const invokeCommand = vi.fn(async (command: string) => {
       if (command === 'prepare_chat_vision_image') {

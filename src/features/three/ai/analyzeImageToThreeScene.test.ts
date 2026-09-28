@@ -166,8 +166,33 @@ describe('analyzeImageToThreeScene', () => {
       requestCompletion,
     })).rejects.toMatchObject({
       stage: 'upload',
-      message: '参考图片处理失败，请重试。',
+      message: '上传图片文件失败：upload unavailable',
     } satisfies Partial<ThreeSceneAnalysisError>);
+    expect(requestCompletion).not.toHaveBeenCalled();
+  });
+
+  it('reports multiple reference failures with their individual upload stages', async () => {
+    const requestCompletion = vi.fn();
+    await expect(analyzeImagesToThreeScene({
+      images: [
+        { id: 'front', source: 'asset://front.jpg' },
+        { id: 'back', source: 'asset://back.jpg' },
+      ],
+      resolveImage: async attachment => attachment.id.includes('front')
+        ? { error: '获取上传凭证失败：服务器返回 HTTP 401' }
+        : { error: '上传图片文件失败：对象存储返回 HTTP 413' },
+      requestCompletion,
+    })).rejects.toMatchObject({
+      stage: 'upload',
+      message: expect.stringContaining('2 张参考图上传失败：'),
+    } satisfies Partial<ThreeSceneAnalysisError>);
+    await analyzeImagesToThreeScene({
+      images: [{ id: 'safe', source: 'asset://safe.jpg' }],
+      resolveImage: async () => ({ error: '参考图兼容上传失败：连接被重置' }),
+      requestCompletion,
+    }).catch(error => {
+      expect(error.message).toBe('参考图兼容上传失败：连接被重置');
+    });
     expect(requestCompletion).not.toHaveBeenCalled();
   });
 });

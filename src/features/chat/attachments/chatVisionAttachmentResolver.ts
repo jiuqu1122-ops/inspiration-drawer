@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { ChatAttachment } from '../model/chatTypes';
 import { estimateDataUrlBytes, MAX_INLINE_VISION_BYTES } from '../context/chatRequestSize';
+import { formatReferenceUploadError } from '../../referenceUploadError';
 
 export const CHAT_VISION_UPLOAD_CONCURRENCY = 2;
 
@@ -49,8 +50,6 @@ const createTaskLimiter = (limit: number) => {
   });
 };
 
-const errorText = (error: unknown) => String(error instanceof Error ? error.message : error || '图片上传失败');
-
 export const createChatVisionAttachmentResolver = (options: {
   invokeCommand?: InvokeCommand;
   concurrency?: number;
@@ -78,8 +77,10 @@ export const createChatVisionAttachmentResolver = (options: {
         inline: true,
       };
     }
+    let failureStage: 'prepare' | 'upload' = 'prepare';
     try {
       const prepared = await invokeCommand('prepare_chat_vision_image', { source }) as PreparedVisionImage;
+      failureStage = 'upload';
       try {
         const uploaded = await invokeCommand('upload_wallet_reference_images', {
           sources: [prepared.path],
@@ -96,14 +97,18 @@ export const createChatVisionAttachmentResolver = (options: {
         };
       } catch (uploadError) {
         if (prepared.byteLength <= MAX_INLINE_VISION_BYTES) {
-          const dataUrl = String(await invokeCommand('read_local_image_data_url', { path: prepared.path }) || '');
-          if (/^data:image\//i.test(dataUrl) && estimateDataUrlBytes(dataUrl) <= MAX_INLINE_VISION_BYTES) {
-            return {
-              attachmentId: attachment.id,
-              url: dataUrl,
-              transportBytes: estimateDataUrlBytes(dataUrl),
-              inline: true,
-            };
+          try {
+            const dataUrl = String(await invokeCommand('read_local_image_data_url', { path: prepared.path }) || '');
+            if (/^data:image\//i.test(dataUrl) && estimateDataUrlBytes(dataUrl) <= MAX_INLINE_VISION_BYTES) {
+              return {
+                attachmentId: attachment.id,
+                url: dataUrl,
+                transportBytes: estimateDataUrlBytes(dataUrl),
+                inline: true,
+              };
+            }
+          } catch {
+            // Preserve the original staged upload error when the optional inline fallback also fails.
           }
         }
         throw uploadError;
@@ -111,7 +116,7 @@ export const createChatVisionAttachmentResolver = (options: {
     } catch (error) {
       return {
         attachmentId: attachment.id,
-        error: errorText(error),
+        error: formatReferenceUploadError(error, failureStage),
         transportBytes: 0,
         inline: false,
       };

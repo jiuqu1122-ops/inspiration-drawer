@@ -433,6 +433,7 @@ import {
 clearLegacyStartupFlags,
 isLaunchIntroDoneThisPage
 } from './features/startup';
+import { isReferenceUploadErrorText,sanitizeReferenceUploadError } from './features/referenceUploadError';
 import { EDGE_WIDTH,getStoredTriggerMode,type TriggerMode } from './features/triggerModel';
 import {
 SILICONFLOW_DEFAULT_ENDPOINT,
@@ -541,7 +542,9 @@ type CanvasFolderMediaPagingState = {
 };
 
 const getCanvasAiErrorSummary = (error?: string | null) => {
-  const message = String(error || '').replace(/\s+/g, ' ').trim();
+  const safeMessage = sanitizeReferenceUploadError(error);
+  if (isReferenceUploadErrorText(safeMessage)) return safeMessage;
+  const message = safeMessage.replace(/\s+/g, ' ').trim();
   if (!message) return '生成失败，请重试';
   if (/Tmpfiles|Litterbox|R2|r2\.local\.json|兜底|鍏滃簳/i.test(message)) {
     return message.length > 260 ? `${message.slice(0, 260)}...` : message;

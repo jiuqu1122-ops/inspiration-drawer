@@ -691,40 +691,218 @@ fn cloud_http_fallback(status: reqwest::StatusCode, body: &str) -> String {
     format!("云端请求失败（HTTP {}）：{detail}", status.as_u16())
 }
 
-fn cloud_transport_error(error: &reqwest::Error, method: &str, via_proxy: bool) -> String {
-    let detail = error.to_string().to_ascii_lowercase();
-    let category = if error.is_timeout() {
-        "请求超时"
+fn reqwest_error_detail(error: &reqwest::Error) -> String {
+    let mut detail = error.to_string().to_ascii_lowercase();
+    let mut source = std::error::Error::source(error);
+    while let Some(current) = source {
+        detail.push(' ');
+        detail.push_str(&current.to_string().to_ascii_lowercase());
+        source = current.source();
+    }
+    detail
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CloudTransportErrorCategory {
+    Timeout,
+    Tls,
+    ConnectionReset,
+    ProxyConnect,
+    Dns,
+    Connect,
+    Request,
+    ResponseBody,
+    Network,
+    Initialization,
+}
+
+impl CloudTransportErrorCategory {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Tls => "tls",
+            Self::ConnectionReset => "connection_reset",
+            Self::ProxyConnect => "proxy_connect",
+            Self::Dns => "dns",
+            Self::Connect => "connect",
+            Self::Request => "request",
+            Self::ResponseBody => "response_body",
+            Self::Network => "network",
+            Self::Initialization => "initialization",
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Timeout => "请求超时",
+            Self::Tls => "TLS 连接失败",
+            Self::ConnectionReset => "连接被重置",
+            Self::ProxyConnect => "代理连接失败",
+            Self::Dns => "DNS 解析失败",
+            Self::Connect => "无法建立连接",
+            Self::Request => "请求构造失败",
+            Self::ResponseBody => "响应传输失败",
+            Self::Network => "网络错误",
+            Self::Initialization => "网络连接初始化失败",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CloudTransportFailure {
+    pub category: CloudTransportErrorCategory,
+    pub fallback_attempted: bool,
+}
+
+impl CloudTransportFailure {
+    pub(crate) fn from_reqwest(
+        error: &reqwest::Error,
+        via_proxy: bool,
+        fallback_attempted: bool,
+    ) -> Self {
+        Self {
+            category: cloud_transport_category(error, via_proxy),
+            fallback_attempted,
+        }
+    }
+
+    fn safe_message(self, method: &str) -> String {
+        format!(
+            "cloud_unavailable: {method} {}；凭证和请求地址已隐藏",
+            self.category.label()
+        )
+    }
+}
+
+fn cloud_transport_category(
+    error: &reqwest::Error,
+    via_proxy: bool,
+) -> CloudTransportErrorCategory {
+    let detail = reqwest_error_detail(error);
+    if error.is_timeout() {
+        CloudTransportErrorCategory::Timeout
+    } else if detail.contains("certificate")
+        || detail.contains("tls")
+        || detail.contains("handshake")
+    {
+        CloudTransportErrorCategory::Tls
+    } else if detail.contains("connection reset")
+        || detail.contains("connection was reset")
+        || detail.contains("forcibly closed")
+    {
+        CloudTransportErrorCategory::ConnectionReset
     } else if error.is_connect() {
         if via_proxy {
-            "代理连接失败"
-        } else if detail.contains("certificate") || detail.contains("tls") {
-            "TLS 连接失败"
+            CloudTransportErrorCategory::ProxyConnect
         } else if detail.contains("dns") || detail.contains("resolve") {
-            "DNS 解析失败"
+            CloudTransportErrorCategory::Dns
         } else {
-            "无法建立连接"
+            CloudTransportErrorCategory::Connect
         }
     } else if error.is_request() {
-        "请求构造失败"
+        CloudTransportErrorCategory::Request
     } else if error.is_body() {
-        "响应传输失败"
+        CloudTransportErrorCategory::ResponseBody
     } else {
-        "网络错误"
-    };
-    format!("cloud_unavailable: {method} {category}；凭证和请求地址已隐藏")
+        CloudTransportErrorCategory::Network
+    }
 }
 
 fn should_retry_cloud_transport(error: &reqwest::Error, method: &str) -> bool {
     error.is_connect() || (method == "GET" && error.is_timeout())
 }
 
-async fn send_cloud_request<F>(
+#[derive(Clone, Copy)]
+pub(crate) struct CloudRequestLogContext {
+    pub operation: &'static str,
+    pub upload_bytes: usize,
+}
+
+async fn send_cloud_request_with_clients_detailed<F>(
+    clients: &[(reqwest::Client, bool)],
+    method: &'static str,
+    log_context: Option<CloudRequestLogContext>,
+    build: &F,
+) -> Result<reqwest::Response, CloudTransportFailure>
+where
+    F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+{
+    for (index, (client, via_proxy)) in clients.iter().enumerate() {
+        let route = if *via_proxy { "proxy" } else { "direct" };
+        let attempt_started_at = std::time::Instant::now();
+        // Invoke the factory for every route. RequestBuilder bodies (notably
+        // multipart forms and streams) are consumed by send and cannot be
+        // cloned safely for a fallback attempt.
+        match build(client).send().await {
+            Ok(response) => {
+                if let Some(context) = log_context {
+                    eprintln!(
+                        "[cloud_transport] operation={} route={} connect_failure_category=none fallback_attempted={} upload_bytes={} elapsed_ms={} http_status={}",
+                        context.operation,
+                        route,
+                        index > 0,
+                        context.upload_bytes,
+                        attempt_started_at.elapsed().as_millis(),
+                        response.status().as_u16(),
+                    );
+                }
+                return Ok(response);
+            }
+            Err(error) => {
+                let has_fallback = index + 1 < clients.len();
+                let fallback_attempted =
+                    has_fallback && should_retry_cloud_transport(&error, method);
+                if let Some(context) = log_context {
+                    let category = cloud_transport_category(&error, *via_proxy);
+                    eprintln!(
+                        "[cloud_transport] operation={} route={} connect_failure_category={} fallback_attempted={} upload_bytes={} elapsed_ms={} http_status=none",
+                        context.operation,
+                        route,
+                        category.code(),
+                        fallback_attempted,
+                        context.upload_bytes,
+                        attempt_started_at.elapsed().as_millis(),
+                    );
+                }
+                if fallback_attempted {
+                    continue;
+                }
+                return Err(CloudTransportFailure::from_reqwest(
+                    &error,
+                    *via_proxy,
+                    index > 0,
+                ));
+            }
+        }
+    }
+    Err(CloudTransportFailure {
+        category: CloudTransportErrorCategory::Network,
+        fallback_attempted: clients.len() > 1,
+    })
+}
+
+#[cfg(test)]
+async fn send_cloud_request_with_clients<F>(
+    clients: &[(reqwest::Client, bool)],
+    method: &'static str,
+    log_context: Option<CloudRequestLogContext>,
+    build: &F,
+) -> Result<reqwest::Response, String>
+where
+    F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+{
+    send_cloud_request_with_clients_detailed(clients, method, log_context, build)
+        .await
+        .map_err(|failure| failure.safe_message(method))
+}
+
+pub(crate) async fn send_cloud_request_detailed<F>(
     app_handle: &tauri::AppHandle,
     timeout: Duration,
     method: &'static str,
+    log_context: Option<CloudRequestLogContext>,
     build: F,
-) -> Result<reqwest::Response, String>
+) -> Result<reqwest::Response, CloudTransportFailure>
 where
     F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
 {
@@ -733,7 +911,10 @@ where
         None,
         timeout.as_secs().max(1),
     )
-    .map_err(|error| format!("cloud_unavailable: {error}"))?;
+    .map_err(|_| CloudTransportFailure {
+        category: CloudTransportErrorCategory::Initialization,
+        fallback_attempted: false,
+    })?;
     let app_proxy_configured = !crate::read_network_proxy(app_handle).trim().is_empty();
     let proxy_available = crate::effective_proxy(Some(app_handle), None).is_some();
     let mut clients: Vec<(reqwest::Client, bool)> = Vec::with_capacity(2);
@@ -750,14 +931,225 @@ where
     } else {
         clients.push((configured, proxy_available));
     }
-    for (index, (client, via_proxy)) in clients.iter().enumerate() {
-        match build(client).send().await {
-            Ok(response) => return Ok(response),
-            Err(error) if index + 1 < clients.len() && should_retry_cloud_transport(&error, method) => continue,
-            Err(error) => return Err(cloud_transport_error(&error, method, *via_proxy)),
+    send_cloud_request_with_clients_detailed(&clients, method, log_context, &build).await
+}
+
+pub(crate) async fn send_cloud_request<F>(
+    app_handle: &tauri::AppHandle,
+    timeout: Duration,
+    method: &'static str,
+    log_context: Option<CloudRequestLogContext>,
+    build: F,
+) -> Result<reqwest::Response, String>
+where
+    F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+{
+    send_cloud_request_detailed(app_handle, timeout, method, log_context, build)
+        .await
+        .map_err(|failure| failure.safe_message(method))
+}
+
+#[cfg(test)]
+mod cloud_transport_tests {
+    use super::send_cloud_request_with_clients;
+    use reqwest::header::CONNECTION;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    fn header_end(bytes: &[u8]) -> Option<usize> {
+        bytes
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| index + 4)
+    }
+
+    fn content_length(headers: &[u8]) -> usize {
+        String::from_utf8_lossy(headers)
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0)
+    }
+
+    fn spawn_test_server(
+        status: &'static str,
+        response_body: &'static [u8],
+        response_delay: Duration,
+    ) -> (String, Arc<Mutex<Vec<u8>>>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener");
+        let address = listener.local_addr().expect("test address");
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let captured_request = captured.clone();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("test request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("read timeout");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        request.extend_from_slice(&buffer[..read]);
+                        if let Some(end) = header_end(&request) {
+                            let expected = end + content_length(&request[..end]);
+                            if request.len() >= expected {
+                                break;
+                            }
+                        }
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(error) => panic!("test request read failed: {error}"),
+                }
+            }
+            *captured_request.lock().expect("captured request") = request;
+            thread::sleep(response_delay);
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response_body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(response_body);
+            let _ = stream.flush();
+        });
+        (
+            format!("http://{address}/reference-images"),
+            captured,
+            handle,
+        )
+    }
+
+    fn direct_test_client(timeout: Duration) -> reqwest::Client {
+        reqwest::Client::builder()
+            .no_proxy()
+            .connect_timeout(Duration::from_millis(200))
+            .timeout(timeout)
+            .build()
+            .expect("direct test client")
+    }
+
+    fn unavailable_proxy_client() -> reqwest::Client {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("closed proxy port");
+        let address = listener.local_addr().expect("closed proxy address");
+        drop(listener);
+        reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(format!("http://{address}")).expect("test proxy"))
+            .connect_timeout(Duration::from_millis(100))
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("proxy test client")
+    }
+
+    #[test]
+    fn connect_failure_falls_back_and_rebuilds_multipart_body() {
+        let (url, captured, server) = spawn_test_server(
+            "200 OK",
+            br#"{"objectKey":"reference-images/test.png"}"#,
+            Duration::ZERO,
+        );
+        let clients = vec![
+            (unavailable_proxy_client(), true),
+            (direct_test_client(Duration::from_secs(2)), false),
+        ];
+        let attempts = AtomicUsize::new(0);
+        let image_bytes = b"multipart-image-payload".to_vec();
+        let response = tauri::async_runtime::block_on(send_cloud_request_with_clients(
+            &clients,
+            "POST",
+            None,
+            &|client| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                let part = reqwest::multipart::Part::bytes(image_bytes.clone())
+                    .file_name("reference.png")
+                    .mime_str("image/png")
+                    .expect("multipart MIME");
+                client
+                    .post(&url)
+                    .header(CONNECTION, "close")
+                    .multipart(reqwest::multipart::Form::new().part("image", part))
+            },
+        ))
+        .expect("direct fallback response");
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        server.join().expect("test server");
+        let request = captured.lock().expect("captured request");
+        assert!(String::from_utf8_lossy(&request).contains("multipart/form-data"));
+        assert!(request
+            .windows(image_bytes.len())
+            .any(|window| window == image_bytes));
+    }
+
+    #[test]
+    fn http_client_errors_do_not_replay_post() {
+        for (status_line, expected_status) in [
+            ("400 Bad Request", reqwest::StatusCode::BAD_REQUEST),
+            ("401 Unauthorized", reqwest::StatusCode::UNAUTHORIZED),
+            (
+                "413 Payload Too Large",
+                reqwest::StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+        ] {
+            let (url, _, server) = spawn_test_server(status_line, b"{}", Duration::ZERO);
+            let client = direct_test_client(Duration::from_secs(2));
+            let clients = vec![(client.clone(), false), (client, false)];
+            let attempts = AtomicUsize::new(0);
+            let response = tauri::async_runtime::block_on(send_cloud_request_with_clients(
+                &clients,
+                "POST",
+                None,
+                &|client| {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    client.post(&url).header(CONNECTION, "close").body("upload")
+                },
+            ))
+            .expect("HTTP response");
+
+            assert_eq!(response.status(), expected_status);
+            assert_eq!(attempts.load(Ordering::SeqCst), 1);
+            server.join().expect("test server");
         }
     }
-    Err(format!("cloud_unavailable: {method} 网络错误"))
+
+    #[test]
+    fn post_upload_timeout_is_classified_and_not_replayed() {
+        let (url, _, server) = spawn_test_server("200 OK", b"{}", Duration::from_millis(250));
+        let client = direct_test_client(Duration::from_millis(50));
+        let clients = vec![(client.clone(), false), (client, false)];
+        let attempts = AtomicUsize::new(0);
+        let error = tauri::async_runtime::block_on(send_cloud_request_with_clients(
+            &clients,
+            "POST",
+            None,
+            &|client| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                client.post(&url).header(CONNECTION, "close").body("upload")
+            },
+        ))
+        .expect_err("upload timeout");
+
+        assert!(error.contains("请求超时"), "{error}");
+        assert!(!error.contains("127.0.0.1"), "{error}");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        server.join().expect("test server");
+    }
 }
 
 async fn post_cloud<T: for<'de> Deserialize<'de>>(
@@ -767,13 +1159,19 @@ async fn post_cloud<T: for<'de> Deserialize<'de>>(
 ) -> Result<T, String> {
     let body = serde_json::to_value(request_body)
         .map_err(|_| "cloud_invalid_request: 请求内容格式无效".to_string())?;
-    let response = send_cloud_request(app_handle, Duration::from_secs(20), "POST", |client| {
-        client
-            .post(format!("{CLOUD_API_BASE_URL}{path}"))
-            .header("x-client-version", env!("CARGO_PKG_VERSION"))
-            .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
-            .json(&body)
-    })
+    let response = send_cloud_request(
+        app_handle,
+        Duration::from_secs(20),
+        "POST",
+        None,
+        |client| {
+            client
+                .post(format!("{CLOUD_API_BASE_URL}{path}"))
+                .header("x-client-version", env!("CARGO_PKG_VERSION"))
+                .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
+                .json(&body)
+        },
+    )
     .await?;
     let status = response.status();
     let body = response
@@ -806,15 +1204,25 @@ async fn post_cloud_email_sync_once(
         retry_after: None,
         message: "cloud_invalid_request: 请求内容格式无效".to_string(),
     })?;
-    let response = send_cloud_request(app_handle, Duration::from_secs(20), "POST", |client| {
-        client
-            .post(format!("{CLOUD_API_BASE_URL}/v1/auth/email/sync"))
-            .header("x-client-version", env!("CARGO_PKG_VERSION"))
-            .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
-            .json(&body)
-    })
+    let response = send_cloud_request(
+        app_handle,
+        Duration::from_secs(20),
+        "POST",
+        None,
+        |client| {
+            client
+                .post(format!("{CLOUD_API_BASE_URL}/v1/auth/email/sync"))
+                .header("x-client-version", env!("CARGO_PKG_VERSION"))
+                .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
+                .json(&body)
+        },
+    )
     .await
-    .map_err(|message| EmailSyncRequestError { status: None, retry_after: None, message })?;
+    .map_err(|message| EmailSyncRequestError {
+        status: None,
+        retry_after: None,
+        message,
+    })?;
     let status = response.status();
     let retry_after = parse_retry_after(
         response
@@ -857,7 +1265,14 @@ async fn post_cloud_with_bearer<T: for<'de> Deserialize<'de>>(
     access_token: &str,
     request_body: &impl Serialize,
 ) -> Result<T, String> {
-    post_cloud_with_bearer_timeout(app_handle, path, access_token, request_body, Duration::from_secs(20)).await
+    post_cloud_with_bearer_timeout(
+        app_handle,
+        path,
+        access_token,
+        request_body,
+        Duration::from_secs(20),
+    )
+    .await
 }
 
 async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
@@ -870,7 +1285,7 @@ async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
     let request_started_at = Instant::now();
     let body = serde_json::to_value(request_body)
         .map_err(|_| "cloud_invalid_request: 请求内容格式无效".to_string())?;
-    let response = send_cloud_request(app_handle, timeout, "POST", |client| {
+    let response = send_cloud_request(app_handle, timeout, "POST", None, |client| {
         client
             .post(format!("{CLOUD_API_BASE_URL}{path}"))
             .bearer_auth(access_token)
@@ -888,7 +1303,9 @@ async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
     if path == "/v1/ai/images/generations" {
         eprintln!(
             "[cloud_image_http_timing] responseWaitMs={} bodyReadMs={} totalMs={}",
-            response_received_at.duration_since(request_started_at).as_millis(),
+            response_received_at
+                .duration_since(request_started_at)
+                .as_millis(),
             response_received_at.elapsed().as_millis(),
             request_started_at.elapsed().as_millis(),
         );
@@ -915,7 +1332,7 @@ async fn get_cloud_with_bearer<T: for<'de> Deserialize<'de>>(
     path: &str,
     access_token: &str,
 ) -> Result<T, String> {
-    let response = send_cloud_request(app_handle, Duration::from_secs(30), "GET", |client| {
+    let response = send_cloud_request(app_handle, Duration::from_secs(30), "GET", None, |client| {
         client
             .get(format!("{CLOUD_API_BASE_URL}{path}"))
             .bearer_auth(access_token)
@@ -1217,7 +1634,10 @@ pub async fn verify_email_registration(
             machine_id: &machine_id,
             display_name: display_name.as_deref(),
             legacy_license,
-            invite_code: invite_code.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+            invite_code: invite_code
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty()),
             app_version: env!("CARGO_PKG_VERSION"),
         },
     )
@@ -1294,7 +1714,9 @@ pub async fn bind_cloud_referral(
         &app_handle,
         "/v1/referrals/bind",
         &synced.access_token,
-        &ReferralBindRequest { invite_code: &invite_code },
+        &ReferralBindRequest {
+            invite_code: &invite_code,
+        },
     )
     .await?;
     let refreshed = sync_cloud_account(&app_handle).await?;
@@ -1449,13 +1871,19 @@ pub async fn get_cloud_image_models(
     // IMAGE channel selection, so the client provider must not constrain it.
     let _ = provider;
     let access_token = cloud_access_token(&app_handle).await?;
-    let response = send_cloud_request(&app_handle, Duration::from_secs(30), "GET", |client| {
-        client
-            .get(format!("{CLOUD_API_BASE_URL}/v1/ai/images/models"))
-            .bearer_auth(&access_token)
-            .header("x-client-version", env!("CARGO_PKG_VERSION"))
-            .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
-    })
+    let response = send_cloud_request(
+        &app_handle,
+        Duration::from_secs(30),
+        "GET",
+        None,
+        |client| {
+            client
+                .get(format!("{CLOUD_API_BASE_URL}/v1/ai/images/models"))
+                .bearer_auth(&access_token)
+                .header("x-client-version", env!("CARGO_PKG_VERSION"))
+                .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
+        },
+    )
     .await?;
     let status = response.status();
     let body = response
@@ -1543,17 +1971,23 @@ pub async fn get_cloud_video_status(
     }
     let access_token = cloud_access_token(&app_handle).await?;
     let request_id = client_request_id.filter(|value| !value.trim().is_empty());
-    let response = send_cloud_request(&app_handle, Duration::from_secs(30), "GET", |client| {
-        let mut request = client
-            .get(format!("{CLOUD_API_BASE_URL}/v1/ai/videos/{task_id}"))
-            .bearer_auth(&access_token)
-            .header("x-client-version", env!("CARGO_PKG_VERSION"))
-            .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION);
-        if let Some(request_id) = request_id.as_deref() {
-            request = request.query(&[("clientRequestId", request_id)]);
-        }
-        request
-    })
+    let response = send_cloud_request(
+        &app_handle,
+        Duration::from_secs(30),
+        "GET",
+        None,
+        |client| {
+            let mut request = client
+                .get(format!("{CLOUD_API_BASE_URL}/v1/ai/videos/{task_id}"))
+                .bearer_auth(&access_token)
+                .header("x-client-version", env!("CARGO_PKG_VERSION"))
+                .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION);
+            if let Some(request_id) = request_id.as_deref() {
+                request = request.query(&[("clientRequestId", request_id)]);
+            }
+            request
+        },
+    )
     .await?;
     let status = response.status();
     let retry_after_ms = response

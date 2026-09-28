@@ -855,7 +855,7 @@ pub(crate) fn build_async_http_client(
     let mut builder = reqwest::Client::builder()
         .user_agent(APP_USER_AGENT)
         .redirect(Policy::limited(10))
-        .connect_timeout(Duration::from_secs(20))
+        .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(timeout_secs));
 
     if let Some(proxy) = effective_proxy(app_handle, explicit_proxy) {
@@ -901,7 +901,7 @@ fn build_direct_async_http_client(timeout_secs: u64) -> Result<reqwest::Client, 
     reqwest::Client::builder()
         .user_agent(APP_USER_AGENT)
         .redirect(Policy::limited(10))
-        .connect_timeout(Duration::from_secs(20))
+        .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(timeout_secs))
         .no_proxy()
         .build()
@@ -967,6 +967,309 @@ struct ReferenceUploadTicket {
     upload_url: String,
     method: String,
     headers: HashMap<String, String>,
+}
+
+fn is_valid_reference_upload_object_key(value: &str) -> bool {
+    value
+        .strip_prefix("reference-images/")
+        .is_some_and(|filename| {
+            !filename.is_empty()
+                && filename.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+                })
+        })
+}
+
+fn parse_reference_upload_ticket(body: &str) -> Result<ReferenceUploadTicket, String> {
+    let ticket: ReferenceUploadTicket =
+        serde_json::from_str(body).map_err(|_| "上传授权响应无效".to_string())?;
+    if !ticket.method.eq_ignore_ascii_case("PUT")
+        || !is_valid_reference_upload_object_key(&ticket.object_key)
+    {
+        return Err("上传授权参数无效".to_string());
+    }
+    Ok(ticket)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReferenceUploadOperation {
+    PrepareReference,
+    UploadTicket,
+    SignedPut,
+    LegacyReferenceUpload,
+}
+
+impl ReferenceUploadOperation {
+    fn code(self) -> &'static str {
+        match self {
+            Self::PrepareReference => "prepare_reference",
+            Self::UploadTicket => "upload_ticket",
+            Self::SignedPut => "signed_put",
+            Self::LegacyReferenceUpload => "legacy_reference_upload",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::PrepareReference => "准备参考图失败",
+            Self::UploadTicket => "获取上传凭证失败",
+            Self::SignedPut => "上传图片文件失败",
+            Self::LegacyReferenceUpload => "参考图兼容上传失败",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReferenceUploadFailureReason {
+    Transport(commands::license::CloudTransportFailure),
+    HttpStatus(u16),
+    InvalidResponse,
+    InvalidTicket,
+    CredentialsUnavailable,
+    UnsupportedImage,
+    LocalPreparation,
+    TaskTerminated,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReferenceUploadFailure {
+    reference_index: Option<usize>,
+    operation: ReferenceUploadOperation,
+    reason: ReferenceUploadFailureReason,
+}
+
+impl ReferenceUploadFailure {
+    fn new(
+        reference_index: Option<usize>,
+        operation: ReferenceUploadOperation,
+        reason: ReferenceUploadFailureReason,
+    ) -> Self {
+        Self {
+            reference_index,
+            operation,
+            reason,
+        }
+    }
+
+    fn transport(
+        reference_index: Option<usize>,
+        operation: ReferenceUploadOperation,
+        failure: commands::license::CloudTransportFailure,
+    ) -> Self {
+        Self::new(
+            reference_index,
+            operation,
+            ReferenceUploadFailureReason::Transport(failure),
+        )
+    }
+
+    fn message(self) -> String {
+        let detail = match self.reason {
+            ReferenceUploadFailureReason::Transport(failure) => {
+                let mut detail = failure.category.label().to_string();
+                if failure.fallback_attempted {
+                    detail.push_str("（已尝试备用网络路径）");
+                }
+                detail
+            }
+            ReferenceUploadFailureReason::HttpStatus(status) => match self.operation {
+                ReferenceUploadOperation::SignedPut => {
+                    format!("对象存储返回 HTTP {status}")
+                }
+                _ => format!("服务器返回 HTTP {status}"),
+            },
+            ReferenceUploadFailureReason::InvalidResponse => "服务器响应无效".to_string(),
+            ReferenceUploadFailureReason::InvalidTicket => "上传凭证参数无效".to_string(),
+            ReferenceUploadFailureReason::CredentialsUnavailable => {
+                "登录凭证不可用，请重新登录".to_string()
+            }
+            ReferenceUploadFailureReason::UnsupportedImage => "仅支持可读取的图片文件".to_string(),
+            ReferenceUploadFailureReason::LocalPreparation => "无法读取或处理本地图片".to_string(),
+            ReferenceUploadFailureReason::TaskTerminated => "上传任务异常终止".to_string(),
+        };
+        format!("{}：{detail}", self.operation.title())
+    }
+}
+
+fn format_reference_upload_failures(failures: &[ReferenceUploadFailure]) -> String {
+    if failures.is_empty() {
+        return "参考图上传失败".to_string();
+    }
+    if failures.len() == 1 {
+        return failures[0].message();
+    }
+
+    let mut sorted = failures.to_vec();
+    sorted.sort_by_key(|failure| failure.reference_index.unwrap_or(usize::MAX));
+    let details = sorted
+        .into_iter()
+        .map(|failure| match failure.reference_index {
+            Some(index) => format!("- 1 张（参考图 {}）：{}", index + 1, failure.message()),
+            None => format!("- 1 张：{}", failure.message()),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{} 张参考图上传失败：\n{details}", failures.len())
+}
+
+#[cfg(test)]
+mod reference_upload_contract_tests {
+    use super::{
+        format_reference_upload_failures, parse_reference_upload_ticket, ReferenceUploadFailure,
+        ReferenceUploadFailureReason, ReferenceUploadOperation,
+    };
+    use crate::commands::license::{CloudTransportErrorCategory, CloudTransportFailure};
+
+    fn transport_failure(
+        index: Option<usize>,
+        operation: ReferenceUploadOperation,
+        category: CloudTransportErrorCategory,
+    ) -> ReferenceUploadFailure {
+        ReferenceUploadFailure::transport(
+            index,
+            operation,
+            CloudTransportFailure {
+                category,
+                fallback_attempted: false,
+            },
+        )
+    }
+
+    #[test]
+    fn parses_reference_image_object_key_from_ticket_response() {
+        let ticket = parse_reference_upload_ticket(
+            r#"{
+                "objectKey":"reference-images/12d2e7bb-6e3f-4ba0-bdb0-b82023a67e23.png",
+                "uploadUrl":"https://storage.example.test/signed-upload",
+                "method":"PUT",
+                "headers":{"Content-Type":"image/png"}
+            }"#,
+        )
+        .expect("valid upload ticket");
+
+        assert_eq!(
+            ticket.object_key,
+            "reference-images/12d2e7bb-6e3f-4ba0-bdb0-b82023a67e23.png"
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_reference_image_object_key() {
+        let result = parse_reference_upload_ticket(
+            r#"{
+                "objectKey":"reference-images/../secret.png",
+                "uploadUrl":"https://storage.example.test/signed-upload",
+                "method":"PUT",
+                "headers":{}
+            }"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn upload_ticket_tls_failure_has_ticket_stage() {
+        let message = transport_failure(
+            Some(0),
+            ReferenceUploadOperation::UploadTicket,
+            CloudTransportErrorCategory::Tls,
+        )
+        .message();
+        assert_eq!(message, "获取上传凭证失败：TLS 连接失败");
+    }
+
+    #[test]
+    fn upload_ticket_http_401_has_ticket_stage() {
+        let message = ReferenceUploadFailure::new(
+            Some(0),
+            ReferenceUploadOperation::UploadTicket,
+            ReferenceUploadFailureReason::HttpStatus(401),
+        )
+        .message();
+        assert_eq!(message, "获取上传凭证失败：服务器返回 HTTP 401");
+    }
+
+    #[test]
+    fn signed_put_reset_has_file_upload_stage() {
+        let message = transport_failure(
+            Some(0),
+            ReferenceUploadOperation::SignedPut,
+            CloudTransportErrorCategory::ConnectionReset,
+        )
+        .message();
+        assert_eq!(message, "上传图片文件失败：连接被重置");
+    }
+
+    #[test]
+    fn signed_put_http_403_and_413_name_object_storage() {
+        for status in [403, 413] {
+            let message = ReferenceUploadFailure::new(
+                Some(0),
+                ReferenceUploadOperation::SignedPut,
+                ReferenceUploadFailureReason::HttpStatus(status),
+            )
+            .message();
+            assert_eq!(
+                message,
+                format!("上传图片文件失败：对象存储返回 HTTP {status}")
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_failure_has_compatibility_stage() {
+        let message = transport_failure(
+            None,
+            ReferenceUploadOperation::LegacyReferenceUpload,
+            CloudTransportErrorCategory::ConnectionReset,
+        )
+        .message();
+        assert_eq!(message, "参考图兼容上传失败：连接被重置");
+    }
+
+    #[test]
+    fn multiple_failures_include_count_stage_and_reference_number() {
+        let failures = vec![
+            transport_failure(
+                Some(0),
+                ReferenceUploadOperation::UploadTicket,
+                CloudTransportErrorCategory::ConnectionReset,
+            ),
+            transport_failure(
+                Some(2),
+                ReferenceUploadOperation::SignedPut,
+                CloudTransportErrorCategory::Timeout,
+            ),
+        ];
+        let message = format_reference_upload_failures(&failures);
+        assert!(message.starts_with("2 张参考图上传失败："));
+        assert!(message.contains("参考图 1）：获取上传凭证失败：连接被重置"));
+        assert!(message.contains("参考图 3）：上传图片文件失败：请求超时"));
+    }
+
+    #[test]
+    fn formatted_failures_never_expose_request_secrets_or_local_paths() {
+        let secret_ticket_body = r#"{
+            "token":"secret-token",
+            "uploadUrl":"https://storage.example.test/file?X-Amz-Signature=secret-signature",
+            "path":"C:\\Users\\private\\reference.png"
+        }"#;
+        assert!(parse_reference_upload_ticket(secret_ticket_body).is_err());
+        let message = ReferenceUploadFailure::new(
+            Some(0),
+            ReferenceUploadOperation::UploadTicket,
+            ReferenceUploadFailureReason::InvalidResponse,
+        )
+        .message();
+        for secret in [
+            "secret-token",
+            "https://",
+            "X-Amz-Signature",
+            "secret-signature",
+            "C:\\Users\\private",
+        ] {
+            assert!(!message.contains(secret));
+        }
+    }
 }
 
 fn media_download_redirect_policy() -> Policy {
@@ -12307,6 +12610,122 @@ async fn create_r2_public_image_urls(
     .map_err(|e| e.to_string())?
 }
 
+async fn upload_wallet_reference_image(
+    app_handle: &tauri::AppHandle,
+    access_token: &str,
+    index: usize,
+    object: R2PreparedObject,
+) -> Result<(usize, String), ReferenceUploadFailure> {
+    let extension = object.ext.trim().trim_start_matches('.');
+    let filename = format!("reference-{}.{}", index + 1, extension);
+    let upload_bytes = object.bytes.len();
+    let ticket_body = serde_json::json!({
+        "filename": filename,
+        "mime": object.content_type,
+        "sizeBytes": upload_bytes,
+    });
+    let ticket_response = commands::license::send_cloud_request_detailed(
+        app_handle,
+        Duration::from_secs(120),
+        "POST",
+        Some(commands::license::CloudRequestLogContext {
+            operation: ReferenceUploadOperation::UploadTicket.code(),
+            upload_bytes,
+        }),
+        |client| {
+            client
+                .post(format!(
+                    "{INSPIRATION_SPACE_API_BASE_URL}/v1/ai/reference-images/upload-ticket"
+                ))
+                .bearer_auth(access_token)
+                .header("x-client-version", env!("CARGO_PKG_VERSION"))
+                .header("x-wallet-protocol", "1")
+                .json(&ticket_body)
+        },
+    )
+    .await
+    .map_err(|failure| {
+        ReferenceUploadFailure::transport(
+            Some(index),
+            ReferenceUploadOperation::UploadTicket,
+            failure,
+        )
+    })?;
+    let ticket_status = ticket_response.status();
+    if !ticket_status.is_success() {
+        return Err(ReferenceUploadFailure::new(
+            Some(index),
+            ReferenceUploadOperation::UploadTicket,
+            ReferenceUploadFailureReason::HttpStatus(ticket_status.as_u16()),
+        ));
+    }
+    let ticket_response_body = ticket_response.text().await.map_err(|error| {
+        ReferenceUploadFailure::transport(
+            Some(index),
+            ReferenceUploadOperation::UploadTicket,
+            commands::license::CloudTransportFailure::from_reqwest(&error, false, false),
+        )
+    })?;
+    let ticket = parse_reference_upload_ticket(&ticket_response_body).map_err(|detail| {
+        let reason = if detail == "上传授权响应无效" {
+            ReferenceUploadFailureReason::InvalidResponse
+        } else {
+            ReferenceUploadFailureReason::InvalidTicket
+        };
+        ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::UploadTicket, reason)
+    })?;
+    let upload_url = reqwest::Url::parse(ticket.upload_url.trim()).map_err(|_| {
+        ReferenceUploadFailure::new(
+            Some(index),
+            ReferenceUploadOperation::UploadTicket,
+            ReferenceUploadFailureReason::InvalidTicket,
+        )
+    })?;
+    if upload_url.scheme() != "https" {
+        return Err(ReferenceUploadFailure::new(
+            Some(index),
+            ReferenceUploadOperation::UploadTicket,
+            ReferenceUploadFailureReason::InvalidTicket,
+        ));
+    }
+
+    // RequestBuilder, body, and headers are rebuilt for every route attempt.
+    // This is required for streaming/multipart callers as well: a consumed body
+    // must never be reused for a fallback request.
+    let upload_response = commands::license::send_cloud_request_detailed(
+        app_handle,
+        Duration::from_secs(120),
+        "PUT",
+        Some(commands::license::CloudRequestLogContext {
+            operation: ReferenceUploadOperation::SignedPut.code(),
+            upload_bytes,
+        }),
+        |client| {
+            let mut request = client
+                .put(upload_url.clone())
+                .header(reqwest::header::CONTENT_LENGTH, upload_bytes)
+                .body(object.bytes.clone());
+            for (name, value) in &ticket.headers {
+                request = request.header(name.as_str(), value.as_str());
+            }
+            request
+        },
+    )
+    .await
+    .map_err(|failure| {
+        ReferenceUploadFailure::transport(Some(index), ReferenceUploadOperation::SignedPut, failure)
+    })?;
+    let status = upload_response.status();
+    if !status.is_success() {
+        return Err(ReferenceUploadFailure::new(
+            Some(index),
+            ReferenceUploadOperation::SignedPut,
+            ReferenceUploadFailureReason::HttpStatus(status.as_u16()),
+        ));
+    }
+    Ok((index, ticket.object_key))
+}
+
 #[tauri::command]
 async fn upload_wallet_reference_images(
     app_handle: tauri::AppHandle,
@@ -12316,144 +12735,132 @@ async fn upload_wallet_reference_images(
     if sources.is_empty() {
         return Err("没有需要上传的参考图".to_string());
     }
-    let access_token = commands::license::cloud_access_token(&app_handle).await?;
+    let source_count = sources.len().min(32);
+    let access_token = commands::license::cloud_access_token(&app_handle)
+        .await
+        .map_err(|_| {
+            ReferenceUploadFailure::new(
+                None,
+                ReferenceUploadOperation::UploadTicket,
+                ReferenceUploadFailureReason::CredentialsUnavailable,
+            )
+            .message()
+        })?;
     let token_ready_at = Instant::now();
     let timing_app_handle = app_handle.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let prepared = sources
+    let prepared_results = tauri::async_runtime::spawn_blocking(move || {
+        sources
             .iter()
             .take(32)
-            .map(|source| {
-                let object = source_to_r2_object(source)?;
-                if !object.content_type.starts_with("image/") {
-                    return Err("钱包参考图上传仅支持图片".to_string());
-                }
-                Ok(object)
+            .enumerate()
+            .map(|(index, source)| match source_to_r2_object(source) {
+                Ok(object) if object.content_type.starts_with("image/") => Ok((index, object)),
+                Ok(_) => Err(ReferenceUploadFailure::new(
+                    Some(index),
+                    ReferenceUploadOperation::PrepareReference,
+                    ReferenceUploadFailureReason::UnsupportedImage,
+                )),
+                Err(_) => Err(ReferenceUploadFailure::new(
+                    Some(index),
+                    ReferenceUploadOperation::PrepareReference,
+                    ReferenceUploadFailureReason::LocalPreparation,
+                )),
             })
-            .collect::<Result<Vec<_>, String>>()?;
-        let references_prepared_at = Instant::now();
-        let ticket_client = reqwest::blocking::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|error| format!("参考图授权连接初始化失败：{error}"))?;
-        let upload_client = reqwest::blocking::Client::builder()
-            .no_proxy()
-            .redirect(Policy::none())
-            .timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|error| format!("参考图直传连接初始化失败：{error}"))?;
-        let upload_one = |index: usize, object: R2PreparedObject| -> Result<(usize, String), String> {
-            let extension = object.ext.trim().trim_start_matches('.');
-            let filename = format!("reference-{}.{}", index + 1, extension);
-            let ticket_response = ticket_client
-                .post(format!(
-                    "{INSPIRATION_SPACE_API_BASE_URL}/v1/ai/reference-images/upload-ticket"
-                ))
-                .bearer_auth(&access_token)
-                .header("x-client-version", env!("CARGO_PKG_VERSION"))
-                .header("x-wallet-protocol", "1")
-                .json(&serde_json::json!({
-                    "filename": filename,
-                    "mime": object.content_type.clone(),
-                    "sizeBytes": object.bytes.len(),
-                }))
-                .send()
-                .map_err(|error| format!("参考图上传授权失败：{error}"))?;
-            let ticket_status = ticket_response.status();
-            let ticket_body = ticket_response
-                .text()
-                .map_err(|error| format!("读取参考图上传授权响应失败：{error}"))?;
-            if !ticket_status.is_success() {
-                return Err(format!(
-                    "参考图上传授权失败（HTTP {}）：{}",
-                    ticket_status.as_u16(),
-                    ticket_body
-                ));
-            }
-            let ticket: ReferenceUploadTicket = serde_json::from_str(&ticket_body)
-                .map_err(|error| format!("参考图上传授权响应无效：{error}"))?;
-            if ticket.method.to_ascii_uppercase() != "PUT"
-                || !ticket.object_key.starts_with("reference-images/")
-            {
-                return Err("参考图上传授权参数无效".to_string());
-            }
-            let upload_url = reqwest::Url::parse(ticket.upload_url.trim())
-                .map_err(|error| format!("参考图上传 URL 无效：{error}"))?;
-            if upload_url.scheme() != "https" {
-                return Err("参考图上传 URL 必须使用 HTTPS".to_string());
-            }
-            let mut request = upload_client
-                .put(upload_url)
-                .header(reqwest::header::CONTENT_LENGTH, object.bytes.len())
-                .body(object.bytes);
-            for (name, value) in ticket.headers {
-                request = request.header(name, value);
-            }
-            let response = request
-                .send()
-                .map_err(|error| format!("参考图直传 COS 失败：{error}"))?;
-            let status = response.status();
-            if !status.is_success() {
-                return Err(format!("参考图直传 COS 失败（HTTP {}）", status.as_u16()));
-            }
-            Ok((index, ticket.object_key))
-        };
-        let mut indexed_object_keys = Vec::with_capacity(prepared.len());
-        let mut pending = prepared.into_iter().enumerate();
-        loop {
-            let batch = pending.by_ref().take(4).collect::<Vec<_>>();
-            if batch.is_empty() {
-                break;
-            }
-            let results = thread::scope(|scope| {
-                let upload_one = &upload_one;
-                batch
-                    .into_iter()
-                    .map(|(index, object)| scope.spawn(move || upload_one(index, object)))
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .map(|handle| {
-                        handle
-                            .join()
-                            .map_err(|_| "参考图直传任务异常终止".to_string())?
-                    })
-                    .collect::<Result<Vec<_>, String>>()
-            })?;
-            indexed_object_keys.extend(results);
-        }
-        indexed_object_keys.sort_by_key(|(index, _)| *index);
-        eprintln!(
-            "[wallet_reference_upload_timing] count={} tokenMs={} localPreparationMs={} uploadMs={} totalMs={}",
-            indexed_object_keys.len(),
-            token_ready_at.duration_since(command_started_at).as_millis(),
-            references_prepared_at.duration_since(token_ready_at).as_millis(),
-            references_prepared_at.elapsed().as_millis(),
-            command_started_at.elapsed().as_millis(),
-        );
-        let _ = append_ai_debug_log(
-            timing_app_handle,
-            "canvas-image-timing".to_string(),
-            serde_json::json!({
-                "at": chrono::Utc::now().to_rfc3339(),
-                "label": "walletReferenceUpload",
-                "value": {
-                    "count": indexed_object_keys.len(),
-                    "tokenMs": token_ready_at.duration_since(command_started_at).as_millis(),
-                    "localPreparationMs": references_prepared_at.duration_since(token_ready_at).as_millis(),
-                    "uploadMs": references_prepared_at.elapsed().as_millis(),
-                    "totalMs": command_started_at.elapsed().as_millis(),
-                },
-            })
-            .to_string(),
-        );
-        Ok(indexed_object_keys
-            .into_iter()
-            .map(|(_, object_key)| object_key)
-            .collect())
+            .collect::<Vec<_>>()
     })
     .await
-    .map_err(|error| format!("参考图直传任务失败：{error}"))?
+    .map_err(|_| {
+        ReferenceUploadFailure::new(
+            None,
+            ReferenceUploadOperation::PrepareReference,
+            ReferenceUploadFailureReason::TaskTerminated,
+        )
+        .message()
+    })?;
+    let mut prepared = Vec::with_capacity(prepared_results.len());
+    let mut failures = Vec::new();
+    for result in prepared_results {
+        match result {
+            Ok(value) => prepared.push(value),
+            Err(failure) => failures.push(failure),
+        }
+    }
+    if !failures.is_empty() {
+        return Err(format_reference_upload_failures(&failures));
+    }
+    let references_prepared_at = Instant::now();
+
+    let mut indexed_object_keys = Vec::with_capacity(prepared.len());
+    let mut pending = prepared.into_iter();
+    loop {
+        let batch = pending.by_ref().take(4).collect::<Vec<_>>();
+        if batch.is_empty() {
+            break;
+        }
+        let handles = batch
+            .into_iter()
+            .map(|(index, object)| {
+                let upload_app_handle = app_handle.clone();
+                let upload_access_token = access_token.clone();
+                let handle = tauri::async_runtime::spawn(async move {
+                    upload_wallet_reference_image(
+                        &upload_app_handle,
+                        &upload_access_token,
+                        index,
+                        object,
+                    )
+                    .await
+                });
+                (index, handle)
+            })
+            .collect::<Vec<_>>();
+        for (index, handle) in handles {
+            match handle.await {
+                Ok(Ok(value)) => indexed_object_keys.push(value),
+                Ok(Err(failure)) => failures.push(failure),
+                Err(_) => failures.push(ReferenceUploadFailure::new(
+                    Some(index),
+                    ReferenceUploadOperation::UploadTicket,
+                    ReferenceUploadFailureReason::TaskTerminated,
+                )),
+            }
+        }
+    }
+    indexed_object_keys.sort_by_key(|(index, _)| *index);
+    eprintln!(
+        "[wallet_reference_upload_timing] count={} failed={} tokenMs={} localPreparationMs={} uploadMs={} totalMs={}",
+        indexed_object_keys.len(),
+        failures.len(),
+        token_ready_at.duration_since(command_started_at).as_millis(),
+        references_prepared_at.duration_since(token_ready_at).as_millis(),
+        references_prepared_at.elapsed().as_millis(),
+        command_started_at.elapsed().as_millis(),
+    );
+    let _ = append_ai_debug_log(
+        timing_app_handle,
+        "canvas-image-timing".to_string(),
+        serde_json::json!({
+            "at": chrono::Utc::now().to_rfc3339(),
+            "label": "walletReferenceUpload",
+            "value": {
+                "count": indexed_object_keys.len(),
+                "failed": failures.len(),
+                "requested": source_count,
+                "tokenMs": token_ready_at.duration_since(command_started_at).as_millis(),
+                "localPreparationMs": references_prepared_at.duration_since(token_ready_at).as_millis(),
+                "uploadMs": references_prepared_at.elapsed().as_millis(),
+                "totalMs": command_started_at.elapsed().as_millis(),
+            },
+        })
+        .to_string(),
+    );
+    if !failures.is_empty() {
+        return Err(format_reference_upload_failures(&failures));
+    }
+    Ok(indexed_object_keys
+        .into_iter()
+        .map(|(_, object_key)| object_key)
+        .collect())
 }
 
 #[tauri::command]
@@ -12464,53 +12871,122 @@ async fn create_oss_public_image_urls(
     if sources.is_empty() {
         return Err("没有需要上传到 OSS 的本地参考图".to_string());
     }
-    let images = tauri::async_runtime::spawn_blocking(move || {
+    let prepared_images = tauri::async_runtime::spawn_blocking(move || {
         use base64::{engine::general_purpose, Engine as _};
         sources
             .iter()
             .take(13)
             .enumerate()
             .map(|(index, source)| {
-                let object = source_to_r2_object(source)?;
+                let object = source_to_r2_object(source).map_err(|_| {
+                    ReferenceUploadFailure::new(
+                        Some(index),
+                        ReferenceUploadOperation::PrepareReference,
+                        ReferenceUploadFailureReason::LocalPreparation,
+                    )
+                })?;
                 if !object.content_type.starts_with("image/") {
-                    return Err("OSS 参考图桥接仅支持图片".to_string());
+                    return Err(ReferenceUploadFailure::new(
+                        Some(index),
+                        ReferenceUploadOperation::PrepareReference,
+                        ReferenceUploadFailureReason::UnsupportedImage,
+                    ));
                 }
-                Ok(OssReferenceImageUpload {
-                    filename: format!("reference-{}.{}", index, object.ext),
-                    mime: object.content_type,
-                    data: general_purpose::STANDARD.encode(object.bytes),
-                })
+                let byte_length = object.bytes.len();
+                Ok((
+                    OssReferenceImageUpload {
+                        filename: format!("reference-{}.{}", index, object.ext),
+                        mime: object.content_type,
+                        data: general_purpose::STANDARD.encode(object.bytes),
+                    },
+                    byte_length,
+                ))
             })
-            .collect::<Result<Vec<_>, String>>()
+            .collect::<Result<Vec<_>, ReferenceUploadFailure>>()
     })
     .await
-    .map_err(|error| error.to_string())??;
+    .map_err(|_| {
+        ReferenceUploadFailure::new(
+            None,
+            ReferenceUploadOperation::PrepareReference,
+            ReferenceUploadFailureReason::TaskTerminated,
+        )
+        .message()
+    })?
+    .map_err(|failure| failure.message())?;
 
-    let access_token = commands::license::cloud_access_token(&app_handle).await?;
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|error| format!("OSS 参考图连接初始化失败：{error}"))?;
-    let response = client
-        .post("https://api.unmind.art/v1/ai/reference-images")
-        .bearer_auth(access_token)
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", "1")
-        .json(&serde_json::json!({ "images": images }))
-        .send()
+    let access_token = commands::license::cloud_access_token(&app_handle)
         .await
-        .map_err(|error| format!("OSS 参考图上传失败：{error}"))?;
+        .map_err(|_| {
+            ReferenceUploadFailure::new(
+                None,
+                ReferenceUploadOperation::LegacyReferenceUpload,
+                ReferenceUploadFailureReason::CredentialsUnavailable,
+            )
+            .message()
+        })?;
+    let upload_bytes = prepared_images
+        .iter()
+        .map(|(_, byte_length)| *byte_length)
+        .sum();
+    let images = prepared_images
+        .into_iter()
+        .map(|(image, _)| image)
+        .collect::<Vec<_>>();
+    let request_body = serde_json::json!({ "images": images });
+    let response = commands::license::send_cloud_request_detailed(
+        &app_handle,
+        Duration::from_secs(120),
+        "POST",
+        Some(commands::license::CloudRequestLogContext {
+            operation: ReferenceUploadOperation::LegacyReferenceUpload.code(),
+            upload_bytes,
+        }),
+        |client| {
+            client
+                .post(format!(
+                    "{INSPIRATION_SPACE_API_BASE_URL}/v1/ai/reference-images"
+                ))
+                .bearer_auth(&access_token)
+                .header("x-client-version", env!("CARGO_PKG_VERSION"))
+                .header("x-wallet-protocol", "1")
+                .json(&request_body)
+        },
+    )
+    .await
+    .map_err(|failure| {
+        ReferenceUploadFailure::transport(
+            None,
+            ReferenceUploadOperation::LegacyReferenceUpload,
+            failure,
+        )
+        .message()
+    })?;
     let status = response.status();
-    let body = response.text().await.map_err(|error| error.to_string())?;
     if !status.is_success() {
-        return Err(format!(
-            "OSS 参考图上传失败（{}）：{}",
-            status.as_u16(),
-            body
-        ));
+        return Err(ReferenceUploadFailure::new(
+            None,
+            ReferenceUploadOperation::LegacyReferenceUpload,
+            ReferenceUploadFailureReason::HttpStatus(status.as_u16()),
+        )
+        .message());
     }
-    serde_json::from_str(&body).map_err(|error| format!("OSS 参考图响应无效：{error}"))
+    let body = response.text().await.map_err(|error| {
+        ReferenceUploadFailure::transport(
+            None,
+            ReferenceUploadOperation::LegacyReferenceUpload,
+            commands::license::CloudTransportFailure::from_reqwest(&error, false, false),
+        )
+        .message()
+    })?;
+    serde_json::from_str(&body).map_err(|_| {
+        ReferenceUploadFailure::new(
+            None,
+            ReferenceUploadOperation::LegacyReferenceUpload,
+            ReferenceUploadFailureReason::InvalidResponse,
+        )
+        .message()
+    })
 }
 
 #[tauri::command]
@@ -12525,20 +13001,23 @@ async fn delete_oss_public_image_urls(
         return Err("OSS 临时分享 ID 无效".to_string());
     }
     let access_token = commands::license::cloud_access_token(&app_handle).await?;
-    let response = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|error| error.to_string())?
-        .delete(format!(
-            "https://api.unmind.art/v1/ai/reference-images/{share_id}"
-        ))
-        .bearer_auth(access_token)
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", "1")
-        .send()
-        .await
-        .map_err(|error| format!("OSS 临时参考图清理失败：{error}"))?;
+    let response = commands::license::send_cloud_request(
+        &app_handle,
+        Duration::from_secs(30),
+        "DELETE",
+        None,
+        |client| {
+            client
+                .delete(format!(
+                    "{INSPIRATION_SPACE_API_BASE_URL}/v1/ai/reference-images/{share_id}"
+                ))
+                .bearer_auth(&access_token)
+                .header("x-client-version", env!("CARGO_PKG_VERSION"))
+                .header("x-wallet-protocol", "1")
+        },
+    )
+    .await
+    .map_err(|message| format!("OSS 临时参考图清理失败：{message}"))?;
     if response.status().is_success() {
         Ok(())
     } else {
