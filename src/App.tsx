@@ -808,8 +808,16 @@ function MainApp() {
   const [canvasGeneratedSelectedIds, setCanvasGeneratedSelectedIds] = useState<string[]>([]);
   const [isInspirationSpaceOpen, setIsInspirationSpaceOpen] = useState(false);
   const [isCreditRechargeOpen, setIsCreditRechargeOpen] = useState(false);
+  const isCreditRechargeOpenRef = useRef(false);
+  useLayoutEffect(() => {
+    isCreditRechargeOpenRef.current = isCreditRechargeOpen;
+  }, [isCreditRechargeOpen]);
   useEffect(() => {
-    const openCreditRecharge = () => setIsCreditRechargeOpen(true);
+    const openCreditRecharge = () => {
+      isCreditRechargeOpenRef.current = true;
+      keepDrawerOpenByPointer();
+      setIsCreditRechargeOpen(true);
+    };
     window.addEventListener(CREDIT_RECHARGE_OPEN_EVENT, openCreditRecharge);
     return () => window.removeEventListener(CREDIT_RECHARGE_OPEN_EVENT, openCreditRecharge);
   }, []);
@@ -5404,7 +5412,8 @@ useEffect(() => {
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || element.isContentEditable || !!element.closest('[data-canvas-edit-control="true"]');
   };
 
-  useEffect(() => { return runWindowSnipEffect08({ canvasBrushEditor, confirmDialog, drawerAutoCloseBlockRef, editingFolderId, folderContextMenu, isCanvasWorkbenchActive, isDraggingOver, isDraggingTitleRef, isDrawerAgentOpen, isGlobalMouseDown, isPinned, isResizingState, isSearchActive, isSnipSessionActive, isSplashVisible, isTextEntryActive, selectedImage, selectedVideo, showFolderModal, showLaunchIntro, showMoveExistingFolderModal, showMoveFolderModal, showTextInput, showUpdateLog, showWebImageCollector, snipMode, startupAutoCloseSuppressedRef, textInputDialog }); }, [
+  useEffect(() => { return runWindowSnipEffect08({ isCreditRechargeOpen, canvasBrushEditor, confirmDialog, drawerAutoCloseBlockRef, editingFolderId, folderContextMenu, isCanvasWorkbenchActive, isDraggingOver, isDraggingTitleRef, isDrawerAgentOpen, isGlobalMouseDown, isPinned, isResizingState, isSearchActive, isSnipSessionActive, isSplashVisible, isTextEntryActive, selectedImage, selectedVideo, showFolderModal, showLaunchIntro, showMoveExistingFolderModal, showMoveFolderModal, showTextInput, showUpdateLog, showWebImageCollector, snipMode, startupAutoCloseSuppressedRef, textInputDialog }); }, [
+    isCreditRechargeOpen,
     isDraggingOver,
     isCanvasWorkbenchActive,
     isPinned,
@@ -5465,6 +5474,7 @@ useEffect(() => {
 
   const shouldBlockAutoClose = () => (
     licenseGateActiveRef.current ||
+    isCreditRechargeOpenRef.current ||
     Date.now() < drawerPanelInteractionHoldUntilRef.current ||
     isDraggingTitleRef.current ||
     startupAutoCloseSuppressedRef.current ||
@@ -5489,6 +5499,7 @@ useEffect(() => {
 
   const shouldBlockIdleAutoClose = () => (
     licenseGateActiveRef.current ||
+    isCreditRechargeOpenRef.current ||
     Date.now() < drawerPanelInteractionHoldUntilRef.current ||
     isDraggingTitleRef.current ||
     startupAutoCloseSuppressedRef.current ||
@@ -5580,6 +5591,7 @@ useEffect(() => {
   ]);
 
   useEffect(() => { return runWindowSnipEffect14({ appWindow, clearIdleAutoClose, closeTimerRef, drawerState, isDraggingOver, isDraggingTitleRef, isMainWorkbenchActiveRef, isOpen, isPinnedRef, isPointerInsideDrawerRef, isResizingState, isSelectMode, isSnipSessionActive, isSplashVisibleRef, lastDrawerPointerDownAtRef, lastSelectedDrawerItemIdRef, setIsOpen, setIsPinned, setIsSelectMode, setSelectedIds, shouldBlockAutoClose, showLaunchIntroRef, showUpdateLogRef, snipExitInFlightRef, snipModeActiveRef }); }, [
+    isCreditRechargeOpen,
     isOpen,
     drawerState,
     isCanvasWorkbenchActive,
@@ -5607,6 +5619,7 @@ useEffect(() => {
   ]);
 
   useEffect(() => { return runWindowSnipEffect15({ clearIdleAutoClose, drawerState, isDrawerActive, isPointerInsideDrawerRef, scheduleIdleAutoClose, shouldBlockIdleAutoClose }); }, [
+    isCreditRechargeOpen,
     isDrawerActive,
     drawerState,
     isPinned,
@@ -5633,6 +5646,7 @@ useEffect(() => {
   ]);
 
   useEffect(() => { return runWindowSnipEffect16({ clearIdleAutoClose, isPointerInsideDrawerRef, scheduleIdleAutoClose }); }, [
+    isCreditRechargeOpen,
     isDrawerActive,
     drawerState,
     isPinned,
@@ -6544,7 +6558,7 @@ useEffect(() => {
       <AppToastHost />
 
 <AppPrimaryOverlays
-  scope={{ addInspirationSpaceShareAndReturnToCanvas, cancelVirtualDropJob, canRegisterByEmail, confirmSnip, deleteDrawerFolders, emailChallengeId, emailRegistrationError, emailVerificationCode, folderContextMenu, folders, formatVirtualDropBytes, getFolderActionIds, handleOpenFolderModal, inspirationSpaceTemplateOptions, isCreditRechargeOpen, isEmailCodeSending, isEmailVerifying, isInspirationSpaceOpen, isLicenseGateActive, isLicenseLoading, isMouseDown, keepDrawerOpenByPointer, LazyInspirationSpaceWindow, licenseGateMessage, licenseGateTitle, loadInspirationSpaceDrawerImages, openMoveExistingFolderModal, prepareInspirationSpaceTemplate, readInspirationSpaceDrawerImage, refreshCloudAccount, registrationDisplayName, registrationEmail, registrationInviteCode, requestEmailCode, selection, setActiveFolderId, setEditingFolderId, setEmailChallengeId, setEmailRegistrationError, setEmailVerificationCode, setEmailInviteCode: setRegistrationInviteCode, setFolderContextMenu, setIsCreditRechargeOpen, setIsInspirationSpaceOpen, setRegistrationDisplayName, setRegistrationEmail, setRenameValue, setSelection, snipMode, startPos, verifyEmailAccount, virtualDropJobs }}
+  scope={{ handleFloatingLayerPointerLeave, addInspirationSpaceShareAndReturnToCanvas, cancelVirtualDropJob, canRegisterByEmail, confirmSnip, deleteDrawerFolders, emailChallengeId, emailRegistrationError, emailVerificationCode, folderContextMenu, folders, formatVirtualDropBytes, getFolderActionIds, handleOpenFolderModal, inspirationSpaceTemplateOptions, isCreditRechargeOpen, isEmailCodeSending, isEmailVerifying, isInspirationSpaceOpen, isLicenseGateActive, isLicenseLoading, isMouseDown, keepDrawerOpenByPointer, LazyInspirationSpaceWindow, licenseGateMessage, licenseGateTitle, loadInspirationSpaceDrawerImages, openMoveExistingFolderModal, prepareInspirationSpaceTemplate, readInspirationSpaceDrawerImage, refreshCloudAccount, registrationDisplayName, registrationEmail, registrationInviteCode, requestEmailCode, selection, setActiveFolderId, setEditingFolderId, setEmailChallengeId, setEmailRegistrationError, setEmailVerificationCode, setEmailInviteCode: setRegistrationInviteCode, setFolderContextMenu, setIsCreditRechargeOpen, setIsInspirationSpaceOpen, setRegistrationDisplayName, setRegistrationEmail, setRenameValue, setSelection, snipMode, startPos, verifyEmailAccount, virtualDropJobs }}
 />
 
 <DrawerShell

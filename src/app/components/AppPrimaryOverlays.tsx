@@ -54,6 +54,8 @@ export function AppPrimaryOverlays({ scope }: { scope: AppPrimaryOverlaysScope }
 
       <CreditRechargeOverlay
         open={isCreditRechargeOpen}
+        onInteract={keepDrawerOpenByPointer}
+        onPointerLeave={scope.handleFloatingLayerPointerLeave}
         onClose={() => {
           setIsCreditRechargeOpen(false);
           void refreshCloudAccount(true);

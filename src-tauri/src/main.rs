@@ -12,6 +12,7 @@ mod snip_desktop;
 mod native_drag;
 mod native_drop;
 mod repositories;
+mod recharge;
 mod services;
 mod update_cache;
 mod virtual_drop;
@@ -19296,6 +19297,8 @@ fn main() {
             prewarm_note_window,
             show_note_window,
             hide_note_window,
+            recharge::open_credit_recharge_window,
+            recharge::close_credit_recharge_window,
             move_current_window_by,
             resize_current_window,
             animate_current_window_resize,

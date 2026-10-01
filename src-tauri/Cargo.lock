@@ -2631,7 +2631,7 @@ dependencies = [
 
 [[package]]
 name = "inspiration-drawer"
-version = "8.0.20"
+version = "8.0.21"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2664,6 +2664,7 @@ dependencies = [
  "time",
  "tokio",
  "url",
+ "webview2-com",
  "winapi",
  "zip",
 ]

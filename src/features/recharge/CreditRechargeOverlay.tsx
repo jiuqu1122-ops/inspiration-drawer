@@ -1,5 +1,7 @@
 import { AlertCircle, RefreshCw, ShieldCheck, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { isTauri } from '@tauri-apps/api/core';
+import { useEffect, useRef, useState, type PointerEvent } from 'react';
+import { closeNativeRechargeWindow, startNativeRechargeSession } from './nativeRecharge';
 
 const RECHARGE_URL = 'https://catfk.com/shop/JQMFPFJH';
 
@@ -12,39 +14,73 @@ export function requestOpenCreditRecharge() {
 type CreditRechargeOverlayProps = {
   open: boolean;
   onClose: () => void;
+  onInteract: () => void;
+  onPointerLeave: (event: PointerEvent) => void;
 };
 
 export function CreditRechargeOverlay({
   open,
   onClose,
+  onInteract,
+  onPointerLeave,
 }: CreditRechargeOverlayProps) {
   const [isPageLoading, setIsPageLoading] = useState(true);
   const [error, setError] = useState('');
   const [requestVersion, setRequestVersion] = useState(0);
+  const [nativeWindowOpened, setNativeWindowOpened] = useState(false);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const native = isTauri();
+  const closeRecharge = () => {
+    if (native) void closeNativeRechargeWindow().catch(() => {});
+    onCloseRef.current();
+  };
 
   useEffect(() => {
     if (!open) return;
     setError('');
     setIsPageLoading(true);
-  }, [open, requestVersion]);
+    setNativeWindowOpened(false);
+    if (native) {
+      return startNativeRechargeSession({
+        onReady: () => {
+          setIsPageLoading(false);
+          setNativeWindowOpened(true);
+        },
+        onClosed: () => onCloseRef.current(),
+        onError: (message) => {
+          setIsPageLoading(false);
+          setNativeWindowOpened(false);
+          setError(message);
+        },
+      });
+    }
+  }, [native, open, requestVersion]);
 
   useEffect(() => {
     if (!open) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') {
+        if (native) void closeNativeRechargeWindow().catch(() => {});
+        onCloseRef.current();
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose, open]);
+  }, [native, open]);
 
-  if (!open) return null;
+  if (!open || (native && nativeWindowOpened && !error)) return null;
 
   return (
     <div
       data-credit-recharge-overlay="true"
       className="pointer-events-auto absolute inset-0 z-[100210] flex items-center justify-center bg-stone-950/35 backdrop-blur-[2px]"
+      onPointerEnter={onInteract}
+      onPointerMove={onInteract}
+      onPointerDownCapture={onInteract}
+      onPointerLeave={onPointerLeave}
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget) closeRecharge();
       }}
     >
       <section
@@ -66,7 +102,7 @@ export function CreditRechargeOverlay({
           <button
             type="button"
             aria-label="关闭充值页面"
-            onClick={onClose}
+            onClick={closeRecharge}
             className="grid h-8 w-8 place-items-center rounded-[9px] text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 dark:hover:bg-stone-800 dark:hover:text-stone-200"
           >
             <X className="h-4 w-4" />
@@ -74,7 +110,7 @@ export function CreditRechargeOverlay({
         </div>
 
         <div className="relative h-[calc(100%-3rem)]">
-          <iframe
+          {!native && <iframe
             key={requestVersion}
             title="积分充值商店"
             src={RECHARGE_URL}
@@ -86,7 +122,7 @@ export function CreditRechargeOverlay({
               setIsPageLoading(false);
               setError('充值页面加载失败，请重试');
             }}
-          />
+          />}
 
           {isPageLoading && !error && (
             <div className="absolute inset-0 bg-[#f7f7f4] p-5 dark:bg-stone-950 sm:p-8">
