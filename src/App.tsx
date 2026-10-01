@@ -1641,7 +1641,7 @@ function MainApp() {
   const createBlankFloatingNote = async () => { return createBlankFloatingNoteImpl({ BLANK_NOTE_CREATE_LOCK_STORAGE_KEY, activeFolderId, blankFloatingNoteCreateLockRef, createAssetId, createFloatingNote, lastBlankFloatingNoteCreatedAtRef, pushDrawerUndoSnapshot, setIsCreatingBlankNote, setItems, setQuickRailMode }); };
 
   const [showSettings, setShowSettings] = useState(false);
-  const [activeSettingCategory, setActiveSettingCategory] = useState<string>('license');
+  const [activeSettingCategory, setActiveSettingCategory] = useState<string>('');
   const [showHelp, setShowHelp] = useState(false);
   const [showAboutSoftware, setShowAboutSoftware] = useState(false);
   const [showContact, setShowContact] = useState(false);
@@ -2361,6 +2361,7 @@ function MainApp() {
   const toggleSettings = () => {
     if (!showSettings) {
       setIsDrawerAgentOpen(false);
+      setActiveSettingCategory('');
       setShowSettings(true); setIsSearchActive(false); setShowTextInput(false); setShowWebImageCollector(false); setShowFolderModal(false);
     } else {
       setShowSettings(false);

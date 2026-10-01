@@ -236,6 +236,8 @@
 }
 
 .chat-header {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -803,7 +805,7 @@
   padding: 28px;
   text-align: center;
   color: var(--chat-muted);
-  transform: translateY(-3%);
+  pointer-events: none;
 }
 
 .chat-empty__mark {

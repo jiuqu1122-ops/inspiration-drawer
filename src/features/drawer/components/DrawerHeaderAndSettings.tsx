@@ -75,7 +75,7 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                 <div
                   data-drawer-header="true"
                   data-canvas-header={isCanvasMode ? 'true' : undefined}
-                  className={isCanvasMode && isCanvasChromeHidden ? 'hidden' : 'min-h-16 px-5 border-b border-stone-200/70 dark:border-stone-800 flex flex-nowrap justify-between items-center gap-4 bg-white dark:bg-stone-950 relative cursor-move z-20'}
+                  className={isCanvasMode && isCanvasChromeHidden ? 'hidden' : 'min-h-16 px-5 border-b border-stone-200/70 dark:border-stone-800 flex flex-nowrap justify-between items-center gap-4 bg-white dark:bg-stone-950 relative cursor-move z-[100041]'}
                   onPointerDown={startDrawerTitleDrag}
                 >
                   <h2 data-drawer-title="true" className="flex h-9 min-w-[140px] max-w-full items-center gap-2 text-[18px] font-semibold tracking-[-0.02em] leading-none text-stone-900 pointer-events-none relative dark:text-stone-100">
