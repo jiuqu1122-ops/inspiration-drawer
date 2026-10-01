@@ -1,7 +1,7 @@
-import { invoke } from '@tauri-apps/api/core';
 import { AlertCircle, RefreshCw, ShieldCheck, X } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
-import type { CloudRechargeSession } from '../../types/license';
+import { useEffect, useState } from 'react';
+
+const RECHARGE_URL = 'https://catfk.com/shop/JQMFPFJH';
 
 export const CREDIT_RECHARGE_OPEN_EVENT = 'wallet-open-credit-recharge';
 
@@ -12,51 +12,20 @@ export function requestOpenCreditRecharge() {
 type CreditRechargeOverlayProps = {
   open: boolean;
   onClose: () => void;
-  onRechargeSuccess: () => void;
 };
-
-function rechargeErrorMessage(error: unknown) {
-  const message = String(error || '').replace(/^[a-z_]+:\s*/i, '').trim();
-  return message || '暂时无法连接充值页面，请稍后重试';
-}
 
 export function CreditRechargeOverlay({
   open,
   onClose,
-  onRechargeSuccess,
 }: CreditRechargeOverlayProps) {
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const [sessionUrl, setSessionUrl] = useState('');
-  const [sessionOrigin, setSessionOrigin] = useState('');
   const [isPageLoading, setIsPageLoading] = useState(true);
   const [error, setError] = useState('');
   const [requestVersion, setRequestVersion] = useState(0);
 
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
-    setSessionUrl('');
-    setSessionOrigin('');
     setError('');
     setIsPageLoading(true);
-
-    void invoke<CloudRechargeSession>('create_cloud_recharge_session')
-      .then((session) => {
-        if (cancelled) return;
-        const url = new URL(session.url);
-        if (url.protocol !== 'https:') {
-          throw new Error('充值页面未使用安全连接');
-        }
-        setSessionOrigin(url.origin);
-        setSessionUrl(url.toString());
-      })
-      .catch((reason) => {
-        if (cancelled) return;
-        setIsPageLoading(false);
-        setError(rechargeErrorMessage(reason));
-      });
-
-    return () => { cancelled = true; };
   }, [open, requestVersion]);
 
   useEffect(() => {
@@ -67,20 +36,6 @@ export function CreditRechargeOverlay({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose, open]);
-
-  useEffect(() => {
-    if (!open || !sessionOrigin) return;
-    const handleMessage = (event: MessageEvent) => {
-      if (
-        event.origin !== sessionOrigin
-        || event.source !== iframeRef.current?.contentWindow
-        || event.data?.type !== 'wallet-recharge-success'
-      ) return;
-      onRechargeSuccess();
-    };
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
-  }, [onRechargeSuccess, open, sessionOrigin]);
 
   if (!open) return null;
 
@@ -105,7 +60,7 @@ export function CreditRechargeOverlay({
             </span>
             <div className="min-w-0">
               <h2 className="truncate text-[12px] font-bold text-stone-800 dark:text-stone-100">积分充值</h2>
-              <p className="truncate text-[9px] text-stone-400 dark:text-stone-500">由 UNMIND 官网安全提供</p>
+              <p className="truncate text-[9px] text-stone-400 dark:text-stone-500">由 catfk.com 提供</p>
             </div>
           </div>
           <button
@@ -119,21 +74,19 @@ export function CreditRechargeOverlay({
         </div>
 
         <div className="relative h-[calc(100%-3rem)]">
-          {sessionUrl && (
-            <iframe
-              ref={iframeRef}
-              title="UNMIND 积分充值"
-              src={sessionUrl}
-              className="h-full w-full border-0 bg-white"
-              referrerPolicy="no-referrer"
-              sandbox="allow-forms allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-              onLoad={() => setIsPageLoading(false)}
-              onError={() => {
-                setIsPageLoading(false);
-                setError('充值页面加载失败，请重试');
-              }}
-            />
-          )}
+          <iframe
+            key={requestVersion}
+            title="积分充值商店"
+            src={RECHARGE_URL}
+            className="h-full w-full border-0 bg-white"
+            referrerPolicy="no-referrer"
+            sandbox="allow-forms allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+            onLoad={() => setIsPageLoading(false)}
+            onError={() => {
+              setIsPageLoading(false);
+              setError('充值页面加载失败，请重试');
+            }}
+          />
 
           {isPageLoading && !error && (
             <div className="absolute inset-0 bg-[#f7f7f4] p-5 dark:bg-stone-950 sm:p-8">

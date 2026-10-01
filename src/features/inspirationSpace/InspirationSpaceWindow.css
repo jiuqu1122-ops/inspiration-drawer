@@ -22,11 +22,12 @@
 
 .inspiration-space-window button,
 .inspiration-space-window input,
-.inspiration-space-window textarea { font: inherit; }
+.inspiration-space-window textarea,
+.inspiration-space-window select { font: inherit; }
 
 .inspiration-space-window button { cursor: pointer; }
 .inspiration-space-window button:disabled { cursor: wait; opacity: 0.58; }
-.inspiration-space-window :is(button, input, textarea):focus-visible { outline: 2px solid rgba(195, 132, 12, 0.42); outline-offset: 2px; }
+.inspiration-space-window :is(button, input, textarea, select):focus-visible { outline: 2px solid rgba(195, 132, 12, 0.42); outline-offset: 2px; }
 .inspiration-space-window.embedded { height: 100%; min-height: 0; }
 
 .inspiration-space-header {
@@ -167,6 +168,7 @@
 .inspiration-space-empty-cover { height: 100%; display: grid; place-items: center; align-content: center; gap: 8px; color: #8b8578; background: radial-gradient(circle at 38% 35%, #f8f4e7, #e5e0d3); }
 .inspiration-space-empty-cover svg { width: 28px; }
 .inspiration-space-empty-cover span { font-size: 9px; }
+.inspiration-space-empty-cover.agent { color: #665bb1; background: radial-gradient(circle at 38% 35%, #f5f1ff, #dfdaf4); }
 .inspiration-space-preview-button { position: absolute; top: 50%; z-index: 3; width: 32px; height: 42px; display: grid; place-items: center; border: 1px solid rgba(255, 255, 255, 0.4); border-radius: 9px; color: white; background: rgba(36, 33, 26, 0.64); opacity: 0; transform: translateY(-50%); transition: opacity 150ms ease, background-color 150ms ease; }
 .inspiration-space-cover:hover .inspiration-space-preview-button,
 .inspiration-space-preview-button:focus-visible { opacity: 1; }
@@ -218,7 +220,7 @@
 .inspiration-space-modal > header > button { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--is-line); border-radius: 9px; color: var(--is-muted); background: #f4f2ec; }
 .inspiration-space-modal > header > button:hover { color: var(--is-ink); background: #ebe8df; }
 .inspiration-space-modal > header > button svg { width: 15px; }
-.inspiration-space-submit-modes { padding: 4px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; border-radius: 11px; background: #efede6; }
+.inspiration-space-submit-modes { padding: 4px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; border-radius: 11px; background: #efede6; }
 .inspiration-space-submit-modes button { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 0; border-radius: 8px; color: var(--is-muted); background: transparent; font-size: 10px; font-weight: 700; }
 .inspiration-space-submit-modes button svg { width: 14px; }
 .inspiration-space-submit-modes button.active { color: var(--is-ink); background: var(--is-surface); box-shadow: 0 4px 13px rgba(48, 42, 29, 0.09); }
@@ -278,9 +280,14 @@
 .inspiration-space-file-drop small,
 .inspiration-space-preview-picker small { color: #8a7b58; font-size: 8px; font-weight: 500; }
 .inspiration-space-field { display: grid; gap: 6px; color: #5f5a50; font-size: 9px; font-weight: 700; }
-.inspiration-space-field :is(input, textarea) { width: 100%; border: 1px solid var(--is-line); border-radius: 10px; outline: 0; color: var(--is-ink); background: #faf9f5; font-size: 10px; font-weight: 500; }
-.inspiration-space-field input { height: 40px; padding: 0 11px; }
+.inspiration-space-field :is(input, textarea, select) { width: 100%; border: 1px solid var(--is-line); border-radius: 10px; outline: 0; color: var(--is-ink); background: #faf9f5; font-size: 10px; font-weight: 500; }
+.inspiration-space-field :is(input, select) { height: 40px; padding: 0 11px; }
 .inspiration-space-field textarea { padding: 10px 11px; resize: vertical; line-height: 1.65; }
+.inspiration-space-agent-summary { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid #ddd6f3; border-radius: 10px; color: #514597; background: #f7f5ff; }
+.inspiration-space-agent-summary > svg { width: 19px; flex: 0 0 auto; }
+.inspiration-space-agent-summary > span { min-width: 0; display: grid; gap: 3px; }
+.inspiration-space-agent-summary strong { font-size: 10px; }
+.inspiration-space-agent-summary small { overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .inspiration-space-field.prompt > small { justify-self: end; color: var(--is-muted); font-size: 8px; }
 .inspiration-space-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .inspiration-space-preview-strip { display: grid; grid-template-columns: repeat(6, 1fr); gap: 7px; }

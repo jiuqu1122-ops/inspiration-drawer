@@ -7,9 +7,9 @@ import { normalizeImageVariants } from './imageVariantNormalization';
 import { normalizeChatToolName } from './chatToolNames';
 
 const SUPPORTED_TOOLS = new Set([
-  'web_search', 'create_file', 'get_canvas_selection', 'get_canvas_selected_shapes', 'search_assets', 'generate_image', 'generate_image_variants', 'edit_image', 'generate_video',
+  'web_search', 'create_file', 'create_agent', 'get_canvas_selection', 'get_canvas_selected_shapes', 'search_assets', 'generate_image', 'generate_image_variants', 'edit_image', 'generate_video',
   'interpolate_video', 'enhance_image', 'enhance_video', 'fuse_images',
-  'batch_image_operation', 'add_to_canvas', 'create_canvas_generator', 'list_workflows', 'run_workflow',
+  'batch_image_operation', 'add_to_canvas', 'create_canvas_generator', 'create_workflow', 'list_workflows', 'run_workflow',
 ]);
 
 const AUTO_EXECUTE_MEDIA_TOOLS = new Set([
@@ -25,10 +25,11 @@ const AUTO_EXECUTE_MEDIA_TOOLS = new Set([
 ]);
 
 const permissionActionForChatTool = (name: string, args: Record<string, unknown>): LegacyAgentAction => {
-  if (name === 'web_search' || name === 'create_file' || name === 'get_canvas_selection' || name === 'get_canvas_selected_shapes' || name === 'search_assets' || name === 'list_workflows') {
+  if (name === 'web_search' || name === 'create_file' || name === 'create_agent' || name === 'get_canvas_selection' || name === 'get_canvas_selected_shapes' || name === 'search_assets' || name === 'list_workflows') {
     return { tool: name === 'search_assets' ? 'drawer_search_inspirations' : 'app_get_context', arguments: args };
   }
   if (name === 'run_workflow') return { tool: 'canvas_run_workflow', arguments: args };
+  if (name === 'create_workflow') return { tool: 'canvas_create_workflow', arguments: { ...args, autoRun: false } };
   const mediaToolType = name === 'interpolate_video'
     ? 'frame-interpolation'
     : name === 'enhance_image'
@@ -87,6 +88,23 @@ export const routeChatToolCall = async (input: {
   if (name === 'web_search' && !String(input.args.query || '').trim()) throw new Error('联网搜索词不能为空');
   if (name === 'create_file' && (!String(input.args.fileName || '').trim() || !String(input.args.format || '').trim())) {
     throw new Error('生成文件需要文件名和格式');
+  }
+  if (name === 'create_agent' && (
+    !String(input.args.name || '').trim()
+    || !String(input.args.description || '').trim()
+    || !String(input.args.instructions || '').trim()
+    || !Array.isArray(input.args.triggers)
+    || input.args.triggers.length === 0
+    || !input.args.triggers.every(value => typeof value === 'string' && value.trim())
+  )) {
+    throw new Error('创建智能体需要名称、适用场景、触发关键词和技能指令');
+  }
+  if (name === 'create_workflow' && (
+    !String(input.args.label || '').trim()
+    || !Array.isArray(input.args.steps)
+    || input.args.steps.length === 0
+  )) {
+    throw new Error('创建工作流需要名称和步骤');
   }
   const permission = evaluateLegacyActionPermission(permissionActionForChatTool(name, input.args), {
     userText: input.context.userText,

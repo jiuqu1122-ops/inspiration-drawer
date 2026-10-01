@@ -3,6 +3,7 @@ import type { ChatThinkingStepStatus } from '../model/chatTypes';
 const CHAT_TOOL_LABELS: Record<string, string> = {
   web_search: '联网搜索',
   create_file: '生成文件',
+  create_agent: '创建智能体',
   get_canvas_selection: '读取画布选中项',
   search_assets: '搜索素材库',
   generate_image: '生成图片',
@@ -16,6 +17,7 @@ const CHAT_TOOL_LABELS: Record<string, string> = {
   fuse_images: '溶图',
   add_to_canvas: '发送到画布',
   create_canvas_generator: '创建生成节点',
+  create_workflow: '创建工作流',
   list_workflows: '读取工作流',
   run_workflow: '运行工作流',
 };

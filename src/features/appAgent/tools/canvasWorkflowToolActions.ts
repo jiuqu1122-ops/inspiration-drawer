@@ -538,6 +538,7 @@ if (name === 'canvas_create_text_agent') {
           if (validation.errors.length > 0) throw new Error(`Workflow 校验失败：${validation.errors[0]}`);
           if (validation.warnings.length > 0) console.warn('Product details workflow validation warnings:', validation.warnings, workflow);
           const preflight = await resolveAgentWorkflowInputIds(workflow, selectedInputIds, {
+            allowMissingRequired: args.autoRun !== true,
             useImplicitInputs: false,
           });
           if (!isCanvasModeRef.current) enterCanvasMode();
@@ -779,7 +780,9 @@ if (name === 'canvas_create_text_agent') {
         const validation = validateCanvasWorkflowTemplate(workflow);
         if (validation.errors.length > 0) throw new Error(`Workflow 校验失败：${validation.errors[0]}`);
         if (validation.warnings.length > 0) console.warn('Agent workflow validation warnings:', validation.warnings, workflow);
-        const preflight = await resolveAgentWorkflowInputIds(workflow, selectedInputIds);
+        const preflight = await resolveAgentWorkflowInputIds(workflow, selectedInputIds, {
+          allowMissingRequired: args.autoRun !== true,
+        });
         if (!isCanvasModeRef.current) enterCanvasMode();
         const inputBounds = preflight.inputIds.length > 0 ? getCanvasItemsBounds(preflight.inputIds) : null;
         const base = inputBounds

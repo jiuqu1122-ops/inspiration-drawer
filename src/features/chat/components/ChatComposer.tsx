@@ -133,12 +133,13 @@ export function ChatComposer({
       onDrop={event => {
         event.preventDefault();
         setDragging(false);
+        if (Array.from(event.dataTransfer.files).some(file => /\.md$/i.test(file.name))) return;
         addPaths(Array.from(event.dataTransfer.files)
           .map(file => (file as File & { path?: string }).path || '')
           .filter(Boolean));
       }}
     >
-      {dragging && <div className="chat-composer__drop">松开以添加图片</div>}
+      {dragging && <div className="chat-composer__drop">松开以添加文件或导入智能体</div>}
       <ChatAttachmentList attachments={attachments} onRemove={id => onAttachmentsChange(attachments.filter(item => item.id !== id))} />
       <textarea
         ref={textareaRef}

@@ -1,5 +1,5 @@
-import { Bot, MessageSquarePlus, PanelLeft, Trash2, Workflow, X } from 'lucide-react';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Bot, Check, MessageSquarePlus, PanelLeft, Sparkles, Trash2, Workflow, X } from 'lucide-react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import type { AgentCanvasSelectionItem, WorkflowResultCardData } from '../../agentModel';
 import type { ChatGeneratedMedia, ChatImageModelOption, PendingChatAttachment } from '../model/chatTypes';
 import { getVisibleSelectionChatAttachments, selectionToChatAttachments } from '../attachments/chatSelectionAttachments';
@@ -12,9 +12,12 @@ import {
 } from '../attachments/chatWorkflowAttachments';
 import { clearChatWorkflowDraft, loadChatWorkflowDraft, saveChatWorkflowDraft } from '../attachments/chatWorkflowDraftStore';
 import { setCanvasChatSidebarWidth } from '../runtime/canvasChatVisibility';
+import { CHAT_SKILLS_CHANGED_EVENT, getSelectedChatSkill, importChatSkillMarkdown, loadChatSkills, MAX_SKILL_MARKDOWN_LENGTH, saveChatSkill, selectChatSkill, suggestChatSkill, type ChatSkill } from '../skills/chatSkills';
 import { normalizeSupportedChatModel, resolveAvailableChatModels } from '../runtime/chatModelSelection';
 import type { useChatRuntime } from '../runtime/useChatRuntime';
 import { ChatComposer } from './ChatComposer';
+import { ChatAgentPanel } from './ChatAgentPanel';
+import { isChatAgentCreationFollowup, isChatAgentCreationRequest } from '../tools/chatToolDefinitions';
 import { ChatMessageList } from './ChatMessageList';
 import './chat.css';
 
@@ -78,6 +81,11 @@ export const ChatView = memo(function ChatView({
   workflowAttachmentOptions = [],
 }: ChatViewProps) {
   const [input, setInput] = useState('');
+  const [skills, setSkills] = useState<ChatSkill[]>(loadChatSkills);
+  const [skillRevision, setSkillRevision] = useState(0);
+  const [agentPanelOpen, setAgentPanelOpen] = useState(false);
+  const [agentImportFeedback, setAgentImportFeedback] = useState('');
+  const [suggestedSkill, setSuggestedSkill] = useState<ChatSkill | null>(null);
   const [attachments, setAttachments] = useState<PendingChatAttachment[]>([]);
   const [ignoredSelectionAttachmentIds, setIgnoredSelectionAttachmentIds] = useState<string[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -88,6 +96,17 @@ export const ChatView = memo(function ChatView({
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const activeConversationIdRef = useRef(runtime.activeConversationId);
   activeConversationIdRef.current = runtime.activeConversationId;
+  useEffect(() => {
+    const refresh = () => { setSkills(loadChatSkills()); setSkillRevision(value => value + 1); setSuggestedSkill(null); };
+    window.addEventListener(CHAT_SKILLS_CHANGED_EVENT, refresh);
+    window.addEventListener('storage', refresh);
+    return () => { window.removeEventListener(CHAT_SKILLS_CHANGED_EVENT, refresh); window.removeEventListener('storage', refresh); };
+  }, []);
+  const selectedSkill = useMemo(
+    () => getSelectedChatSkill(runtime.activeConversationId),
+    [runtime.activeConversationId, skillRevision],
+  );
+  useEffect(() => { setSuggestedSkill(null); }, [runtime.activeConversationId]);
   useEffect(() => {
     workflowDraftLoadedRef.current = false;
     setWorkflowCandidateActive(false);
@@ -187,7 +206,14 @@ export const ChatView = memo(function ChatView({
     if (variant !== 'canvas') return;
     setCanvasChatSidebarWidth(canvasRenderedWidth + CANVAS_CHAT_EDGE_GAP);
   }, [canvasRenderedWidth, variant]);
-  const send = async () => {
+  const send = async (skipSuggestion = false) => {
+    if (!skipSuggestion && input.trim()
+      && !isChatAgentCreationRequest(input)
+      && !isChatAgentCreationFollowup(runtime.messages, input)) {
+      const candidate = suggestChatSkill(input, skills);
+      if (candidate && candidate.id !== selectedSkill?.id) { setSuggestedSkill(candidate); return; }
+    }
+    setSuggestedSkill(null);
     const sourceConversationId = runtime.activeConversationId;
     const pendingInput = input;
     const pendingAttachments = composerAttachments;
@@ -246,12 +272,31 @@ export const ChatView = memo(function ChatView({
   const shellStyle = variant === 'canvas'
     ? { width: canvasRenderedWidth, top: `var(--canvas-chat-top, ${topOffset}px)` }
     : undefined;
+  const handleAgentDrop = async (event: DragEvent<HTMLElement>) => {
+    const file = Array.from(event.dataTransfer.files).find(candidate => /\.md$/i.test(candidate.name));
+    if (!file) return;
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      if (file.size > MAX_SKILL_MARKDOWN_LENGTH * 4) throw new Error('Markdown 文件过大，请精简后再导入。');
+      const skill = importChatSkillMarkdown(await file.text(), file.name);
+      saveChatSkill(skill);
+      setAgentImportFeedback(`已导入智能体“${skill.name}”，可在智能体模块中检查并启用。`);
+      setAgentPanelOpen(true);
+    } catch (cause) {
+      setAgentImportFeedback(cause instanceof Error ? cause.message : '智能体导入失败');
+    }
+  };
   return (
     <section
       className={`chat-shell chat-shell--${variant} ${historyOpen ? 'is-history-open' : 'is-history-closed'}`}
       style={{ ...shellStyle, ...(visible ? {} : { visibility: 'hidden', pointerEvents: 'none' }) }}
       data-chat-view="true"
       aria-hidden={!visible}
+      onDragOver={event => {
+        if (event.dataTransfer.types.includes('Files') || Array.from(event.dataTransfer.items).some(item => item.kind === 'file')) event.preventDefault();
+      }}
+      onDrop={event => { void handleAgentDrop(event); }}
     >
       {variant === 'canvas' && onWidthChange && (
         <div className="chat-resize" onPointerDown={event => { resizeRef.current = { startX: event.clientX, startWidth: width || 480 }; }} />
@@ -285,10 +330,14 @@ export const ChatView = memo(function ChatView({
               aria-label={historyOpen ? '收起会话历史' : '展开会话历史'}
             ><PanelLeft size={16} /></button>
             <span className="chat-brand"><Bot size={15} /></span>
-            <div><strong>{runtime.activeConversation?.title || '新对话'}</strong><small>通用 AI Chat</small></div>
+            <div><strong>{runtime.activeConversation?.title || '新对话'}</strong><small>{selectedSkill ? `智能体 · ${selectedSkill.name}` : '通用 AI Chat'}</small></div>
           </div>
-          <button type="button" className="chat-icon-button" onClick={onClose} title="关闭聊天"><X size={16} /></button>
+          <div className="chat-header__actions">
+            <button type="button" className={`chat-agent-trigger ${selectedSkill ? 'is-active' : ''}`} onClick={() => setAgentPanelOpen(value => !value)} title="选择或管理智能体" aria-label="选择或管理智能体" aria-expanded={agentPanelOpen}><Sparkles size={14} /><span>智能体</span></button>
+            <button type="button" className="chat-icon-button" onClick={onClose} title="关闭聊天"><X size={16} /></button>
+          </div>
         </header>
+        {agentPanelOpen && <ChatAgentPanel conversationId={runtime.activeConversationId} skills={skills} selectedSkill={selectedSkill} onClose={() => setAgentPanelOpen(false)} onChange={() => { setSkills(loadChatSkills()); setSkillRevision(value => value + 1); setSuggestedSkill(null); }} />}
         <ChatMessageList
           messages={runtime.messages}
           visible={visible}
@@ -305,6 +354,13 @@ export const ChatView = memo(function ChatView({
           workflowResult={workflowResult}
         />
         <div className="chat-composer-wrap">
+          {agentImportFeedback && <div className="chat-agent-import-feedback" role="status">{agentImportFeedback}<button type="button" onClick={() => setAgentImportFeedback('')} aria-label="关闭导入提示"><X size={12} /></button></div>}
+          {suggestedSkill && <div className="chat-agent-suggestion" role="status">
+            <span>这条消息可能适合 <strong>{suggestedSkill.name}</strong>。是否{selectedSkill ? '切换' : '启用'}？</span>
+            <button type="button" onClick={() => { selectChatSkill(runtime.activeConversationId, suggestedSkill.id); void send(true); }}><Check size={12} />{selectedSkill ? '切换' : '启用'}并发送</button>
+            <button type="button" onClick={() => void send(true)}>{selectedSkill ? '保持当前并发送' : '直接发送'}</button>
+            <button type="button" onClick={() => setSuggestedSkill(null)} aria-label="取消发送"><X size={12} /></button>
+          </div>}
           {workflowPickerOpen && <div className="chat-workflow-picker" role="dialog" aria-label="选择画布工作流">
             <div className="chat-workflow-picker__head"><strong>添加工作流快照</strong><button type="button" onClick={() => { setWorkflowPickerOpen(false); setWorkflowCandidateActive(false); setWorkflowCandidateBaselineKey(''); }}><X size={13} /></button></div>
             {workflowCandidateActive && <div className="chat-workflow-picker__hint" role="status">请在画布中点击要添加的工作流节点或节点组，选中后会自动加入附件。</div>}
@@ -313,9 +369,10 @@ export const ChatView = memo(function ChatView({
           </div>}
           <ChatComposer
             value={input}
-            onChange={setInput}
+            onChange={value => { setInput(value); setSuggestedSkill(null); }}
             attachments={composerAttachments}
             onAttachmentsChange={next => {
+              setSuggestedSkill(null);
               const nextIds = new Set(next.map(item => item.id));
               setIgnoredSelectionAttachmentIds(selectionAttachments
                 .filter(item => !nextIds.has(item.id))

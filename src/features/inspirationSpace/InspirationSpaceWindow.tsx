@@ -1,4 +1,5 @@
 import {
+  Bot,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -17,8 +18,10 @@ import {
 import type { ChangeEvent, FormEvent } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { CHAT_SKILLS_CHANGED_EVENT, chatSkillToMarkdown, importChatSkillMarkdown, importSharedChatSkill, loadChatSkills, MAX_SKILL_MARKDOWN_LENGTH, saveChatSkill, type ChatSkill } from '../chat/skills/chatSkills';
 import {
   INSPIRATION_SPACE_API_BASE_URL,
+  isAgentSharePayload,
   isPromptSharePayload,
   type InspirationSpaceDrawerImageOption,
   type InspirationSpacePreparedTemplate,
@@ -29,7 +32,7 @@ import {
 } from './model';
 import './InspirationSpaceWindow.css';
 
-type SubmitMode = 'JSON' | 'PROMPT';
+type SubmitMode = 'JSON' | 'PROMPT' | 'AGENT';
 type PreviewImage = { dataUrl: string; width: number; height: number };
 type PreparedJson = {
   fileName: string;
@@ -44,6 +47,7 @@ const SHARE_KIND_LABELS: Record<InspirationShareKind, string> = {
   NODE_PRESET: '节点预设',
   WORKFLOW: '工作流',
   PROMPT: '提示词',
+  AGENT: '智能体',
 };
 const MAX_IMAGE_DIMENSION = 1_600;
 const MAX_IMAGE_BYTES = 850 * 1024;
@@ -226,6 +230,9 @@ export function InspirationSpaceWindow({
   const [submitMode, setSubmitMode] = useState<SubmitMode>('JSON');
   const [prepared, setPrepared] = useState<PreparedJson | null>(null);
   const [promptText, setPromptText] = useState('');
+  const [agentMarkdown, setAgentMarkdown] = useState('');
+  const [agentFileName, setAgentFileName] = useState('');
+  const [availableSkills, setAvailableSkills] = useState<ChatSkill[]>(loadChatSkills);
   const [extraPreviews, setExtraPreviews] = useState<PreviewImage[]>([]);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -243,11 +250,20 @@ export function InspirationSpaceWindow({
   const [drawerImageOrigin, setDrawerImageOrigin] = useState<'ALL' | InspirationSpaceDrawerImageOption['origin']>('ALL');
   const [visibleDrawerImageCount, setVisibleDrawerImageCount] = useState(DRAWER_IMAGE_PAGE_SIZE);
   const [nativePickerLoading, setNativePickerLoading] = useState(false);
-  const promptPreviewRequired = submitMode === 'PROMPT' || prepared?.kind === 'PROMPT';
+  const promptPreviewRequired = submitMode === 'PROMPT' || (submitMode === 'JSON' && prepared?.kind === 'PROMPT');
   const visibleSubmissionPreviews = [
     ...(promptPreviewRequired ? extraPreviews.slice(0, 1) : extraPreviews),
-    ...(promptPreviewRequired ? [] : prepared?.embeddedPreviews || []),
+    ...(submitMode === 'JSON' && !promptPreviewRequired ? prepared?.embeddedPreviews || [] : []),
   ].slice(0, 6);
+  useEffect(() => {
+    const refresh = () => setAvailableSkills(loadChatSkills());
+    window.addEventListener(CHAT_SKILLS_CHANGED_EVENT, refresh);
+    window.addEventListener('storage', refresh);
+    return () => {
+      window.removeEventListener(CHAT_SKILLS_CHANGED_EVENT, refresh);
+      window.removeEventListener('storage', refresh);
+    };
+  }, []);
   const filteredTemplateOptions = useMemo(() => {
     const needle = nativePickerQuery.trim().toLocaleLowerCase('zh-CN');
     if (!needle) return templateOptions;
@@ -308,26 +324,33 @@ export function InspirationSpaceWindow({
 
   const addToCanvas = async (item: InspirationShare) => {
     if (pendingShareId) return;
-    if (!onAddToCanvas && !isTauri()) {
+    if (item.kind !== 'AGENT' && !onAddToCanvas && !isTauri()) {
       setError('浏览器预览无法连接画布，请在灵感抽屉应用内使用');
       return;
     }
     setPendingShareId(item.id);
     setError('');
-    setNotice('正在读取资源并发送到画布…');
+    setNotice(item.kind === 'AGENT' ? '正在下载并适配智能体…' : '正在读取资源并发送到画布…');
     try {
       const payload = await downloadInspirationShare(item.id);
-      if (!onAddToCanvas) throw new Error('当前窗口没有可用的画布连接');
-      const message = await onAddToCanvas(item, payload);
+      let message: string;
+      if (item.kind === 'AGENT') {
+        if (!isAgentSharePayload(payload)) throw new Error('智能体分享文件无效');
+        const skill = importSharedChatSkill(payload.markdown, item.fileName, item.id);
+        message = `“${skill.name}”已添加到 Chat 智能体模块，可在对话中选择或按需启用。`;
+      } else {
+        if (!onAddToCanvas) throw new Error('当前窗口没有可用的画布连接');
+        message = await onAddToCanvas(item, payload);
+      }
       recordDownload(item.id);
       setPendingShareId('');
       setAddedShareIds((current) => new Set(current).add(item.id));
       setNotice(message);
-      if (embedded) onClose?.();
+      if (embedded && item.kind !== 'AGENT') onClose?.();
     } catch (reason) {
       setPendingShareId('');
       setNotice('');
-      setError(reason instanceof Error ? reason.message : '添加到画布失败');
+      setError(reason instanceof Error ? reason.message : '添加资源失败');
     }
   };
 
@@ -387,6 +410,53 @@ export function InspirationSpaceWindow({
       setProgress('');
       setBusy(false);
     }
+  };
+
+  const prepareAgentFile = async (file: File) => {
+    setBusy(true);
+    setError('');
+    setProgress('正在分析 Markdown 并适配 Chat / 画布能力…');
+    try {
+      if (!/\.md$/i.test(file.name)) throw new Error('请选择 .md 格式的智能体文件');
+      if (file.size > MAX_SKILL_MARKDOWN_LENGTH * 4) throw new Error('Markdown 文件过大，请精简后再导入');
+      const markdown = await file.text();
+      const skill = importChatSkillMarkdown(markdown, file.name);
+      saveChatSkill(skill);
+      setAgentMarkdown(markdown);
+      setAgentFileName(file.name);
+      setTitle(skill.name);
+      setDescription(skill.description);
+      setNotice(`已添加“${skill.name}”到 Chat 智能体模块；${skill.conversionNotes.length} 项画布适配提示可在模块中查看。`);
+    } catch (reason) {
+      setAgentMarkdown('');
+      setAgentFileName('');
+      setError(reason instanceof Error ? reason.message : '智能体文件处理失败');
+    } finally {
+      setProgress('');
+      setBusy(false);
+    }
+  };
+
+  const selectAgentFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (file) await prepareAgentFile(file);
+  };
+
+  const selectExistingAgent = (skillId: string) => {
+    const skill = availableSkills.find(candidate => candidate.id === skillId);
+    if (!skill) return;
+    const markdown = chatSkillToMarkdown(skill);
+    if (markdown.length > MAX_SKILL_MARKDOWN_LENGTH) {
+      setError('这个智能体的 Markdown 内容过长，暂时无法分享');
+      return;
+    }
+    setAgentMarkdown(markdown);
+    setAgentFileName(`${skill.name.replace(/[\\/:*?"<>|]+/g, '-').slice(0, 72)}.md`);
+    setTitle(skill.name);
+    setDescription(skill.description);
+    setError('');
+    setNotice(`已选择 Chat 智能体“${skill.name}”`);
   };
 
   const openNativePicker = async (mode: 'TEMPLATE' | 'IMAGE') => {
@@ -485,8 +555,13 @@ export function InspirationSpaceWindow({
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const isDirectPromptSubmission = submitMode === 'PROMPT';
-    if (!isDirectPromptSubmission && !prepared) {
+    const isAgentSubmission = submitMode === 'AGENT';
+    if (submitMode === 'JSON' && !prepared) {
       setError('请先选择 JSON 文件');
+      return;
+    }
+    if (isAgentSubmission && !agentMarkdown) {
+      setError('请先选择 Markdown 智能体文件或已有 Chat 智能体');
       return;
     }
     if (title.trim().length < 2 || authorName.trim().length < 2) {
@@ -497,21 +572,23 @@ export function InspirationSpaceWindow({
       setError('提示词内容至少填写 10 个字符');
       return;
     }
-    const kind: InspirationShareKind = isDirectPromptSubmission ? 'PROMPT' : prepared!.kind;
+    const kind: InspirationShareKind = isDirectPromptSubmission ? 'PROMPT' : isAgentSubmission ? 'AGENT' : prepared!.kind;
     if (kind === 'PROMPT' && extraPreviews.length !== 1) {
       setError('提示词分享必须上传 1 张由该提示词生成的效果图');
       return;
     }
     const previews = [
       ...(kind === 'PROMPT' ? extraPreviews.slice(0, 1) : extraPreviews),
-      ...(kind === 'PROMPT' ? [] : prepared?.embeddedPreviews || []),
+      ...(submitMode === 'JSON' && kind !== 'PROMPT' ? prepared?.embeddedPreviews || [] : []),
     ].slice(0, 6);
     const payload = isDirectPromptSubmission
       ? { type: 'inspiration-drawer-prompt-share', version: 1, title: title.trim(), prompt: promptText.trim() }
-      : prepared!.payload;
+      : isAgentSubmission
+        ? { type: 'inspiration-drawer-agent-share', version: 1, markdown: agentMarkdown }
+        : prepared!.payload;
     const fileName = isDirectPromptSubmission
       ? `${title.trim().replace(/\.json$/i, '') || '提示词分享'}.json`
-      : prepared!.fileName;
+      : isAgentSubmission ? agentFileName : prepared!.fileName;
     setBusy(true);
     setError('');
     setProgress('正在提交审核…');
@@ -529,6 +606,8 @@ export function InspirationSpaceWindow({
       setNotice(result.message);
       setPrepared(null);
       setPromptText('');
+      setAgentMarkdown('');
+      setAgentFileName('');
       setExtraPreviews([]);
       setTitle('');
       setDescription('');
@@ -566,11 +645,11 @@ export function InspirationSpaceWindow({
         <div>
           <span className="inspiration-space-eyebrow">INSPIRATION SPACE</span>
           <h1>找到灵感，直接放进画布。</h1>
-          <p>浏览社区分享的节点预设、工作流和提示词。无需下载文件，点击一次即可添加到当前画布。</p>
+          <p>浏览社区分享的节点预设、工作流、提示词和智能体。画布资源可直接添加，智能体可一键加入 Chat。</p>
         </div>
         <div className="inspiration-space-intro-note">
           <Sparkles aria-hidden="true" />
-          <div><strong>应用内原生导入</strong><small>预设生成节点 · 工作流生成模块 · 提示词附带效果图</small></div>
+          <div><strong>应用内原生导入</strong><small>画布预设与工作流 · 提示词 · Markdown 智能体</small></div>
         </div>
       </section>
 
@@ -582,6 +661,7 @@ export function InspirationSpaceWindow({
               ['WORKFLOW', '工作流'],
               ['NODE_PRESET', '节点预设'],
               ['PROMPT', '提示词'],
+              ['AGENT', '智能体'],
             ] as Array<['' | InspirationShareKind, string]>).map(([value, label]) => (
               <button
                 type="button"
@@ -622,7 +702,7 @@ export function InspirationSpaceWindow({
                 <div className="inspiration-space-cover">
                   {activePreview
                     ? <img key={activePreview.id} src={activePreview.url} alt={`${item.title} 的展示图`} loading="lazy" />
-                    : <div className="inspiration-space-empty-cover"><ImageIcon /><span>暂无展示图</span></div>}
+                    : <div className={`inspiration-space-empty-cover ${item.kind === 'AGENT' ? 'agent' : ''}`}>{item.kind === 'AGENT' ? <Bot /> : <ImageIcon />}<span>{item.kind === 'AGENT' ? 'CHAT / 画布智能体' : '暂无展示图'}</span></div>}
                   <em>{SHARE_KIND_LABELS[item.kind]}</em>
                   {previewCount > 1 && (
                     <>
@@ -664,8 +744,8 @@ export function InspirationSpaceWindow({
                       onClick={() => void addToCanvas(item)}
                       disabled={Boolean(pendingShareId)}
                     >
-                      {isPending ? <RefreshCw className="spin" /> : isAdded ? <Check /> : item.kind === 'PROMPT' ? <Plus /> : <Download />}
-                      {isPending ? '添加中…' : isAdded ? '已添加' : '添加到画布'}
+                      {isPending ? <RefreshCw className="spin" /> : isAdded ? <Check /> : item.kind === 'PROMPT' ? <Plus /> : item.kind === 'AGENT' ? <Bot /> : <Download />}
+                      {isPending ? '添加中…' : isAdded ? '已添加' : item.kind === 'AGENT' ? '添加到 Chat' : '添加到画布'}
                       <b>{item.downloadCount}</b>
                     </button>
                   </footer>
@@ -689,6 +769,7 @@ export function InspirationSpaceWindow({
             <div className="inspiration-space-submit-modes">
               <button type="button" className={submitMode === 'JSON' ? 'active' : ''} onClick={() => setSubmitMode('JSON')}><Workflow />预设 / 工作流</button>
               <button type="button" className={submitMode === 'PROMPT' ? 'active' : ''} onClick={() => setSubmitMode('PROMPT')}><Sparkles />提示词分享</button>
+              <button type="button" className={submitMode === 'AGENT' ? 'active' : ''} onClick={() => setSubmitMode('AGENT')}><Bot />智能体分享</button>
             </div>
             {nativePickerMode && (
               <section className="inspiration-space-native-picker">
@@ -793,12 +874,28 @@ export function InspirationSpaceWindow({
                     : '也可以从电脑选择节点预设、工作流或提示词 JSON'}</small></span>
                 </label>
               </>
-            ) : (
+            ) : submitMode === 'PROMPT' ? (
               <label className="inspiration-space-field prompt">
                 <strong>提示词内容</strong>
                 <textarea value={promptText} onChange={(event) => setPromptText(event.target.value)} maxLength={20_000} rows={7} placeholder="粘贴完整提示词，保留必要的格式、变量和使用说明…" />
                 <small>{promptText.length.toLocaleString('zh-CN')} / 20,000 字符</small>
               </label>
+            ) : (
+              <>
+                <label className="inspiration-space-file-drop agent" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); event.stopPropagation(); const file = event.dataTransfer.files[0]; if (file) void prepareAgentFile(file); }}>
+                  <input type="file" accept=".md,text/markdown" onChange={event => void selectAgentFile(event)} disabled={busy} />
+                  <Upload />
+                  <span><strong>{agentFileName || '选择或拖入 .md 智能体文件'}</strong><small>导入时自动分析，并转换成 Chat / 画布可用的技能指令</small></span>
+                </label>
+                {availableSkills.length > 0 && <label className="inspiration-space-field">
+                  <strong>或分享已有 Chat 智能体</strong>
+                  <select value="" onChange={event => selectExistingAgent(event.target.value)}>
+                    <option value="" disabled>选择已创建的智能体</option>
+                    {availableSkills.map(skill => <option key={skill.id} value={skill.id}>{skill.name}</option>)}
+                  </select>
+                </label>}
+                {agentMarkdown && <div className="inspiration-space-agent-summary"><Bot /><span><strong>{title || '智能体已就绪'}</strong><small>{agentFileName} · 可提交分享审核</small></span></div>}
+              </>
             )}
             <div className="inspiration-space-form-grid">
               <label className="inspiration-space-field"><strong>标题</strong><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={80} /></label>
@@ -828,7 +925,7 @@ export function InspirationSpaceWindow({
             {(error || progress) && <div className={`inspiration-space-message ${error ? 'error' : 'notice'}`}>{error || progress}</div>}
             <footer>
               <small>投稿会先进入审核，通过后才会公开。</small>
-              <button type="submit" disabled={busy || (submitMode === 'JSON' ? !prepared || promptPreviewRequired && extraPreviews.length !== 1 : promptText.trim().length < 10 || extraPreviews.length !== 1)}>
+              <button type="submit" disabled={busy || (submitMode === 'JSON' ? !prepared || promptPreviewRequired && extraPreviews.length !== 1 : submitMode === 'PROMPT' ? promptText.trim().length < 10 || extraPreviews.length !== 1 : !agentMarkdown)}>
                 {busy ? progress || '处理中…' : '提交审核'}
               </button>
             </footer>

@@ -2,8 +2,10 @@ import { parseChatToolResult, type ChatAttachment, type ChatMessage, type ChatSu
 import type { ChatVisionAttachmentResolution } from '../attachments/chatVisionAttachmentResolver';
 import { compactChatToolResultForProvider, serializeChatToolResult } from '../tools/chatToolResult';
 import { parseWorkflowAttachmentSnapshot } from '../attachments/chatWorkflowAttachments';
+import type { ChatSkill } from '../skills/chatSkills';
 import {
   DEFAULT_CHAT_CONTEXT_BUDGET,
+  estimateChatTokens,
   selectRecentMessagesForBudget,
   trimTextToTokenBudget,
   type ChatContextBudget,
@@ -27,6 +29,7 @@ export const GENERAL_CHAT_SYSTEM_PROMPT = [
   '生成图片后结果会显示在聊天中并自动加入画布；不要重复调用 add_to_canvas，除非用户要求定位或再次添加已有媒体。',
   '用户开启联网搜索，或明确要求查询最新、实时、网页信息时，调用 web_search。使用搜索结果回答时，要用 Markdown 链接 [来源标题](URL) 标注来源，不要编造链接。',
   '当用户明确要求生成可下载文件、Word、Excel、PDF、CSV、JSON、Markdown 或 TXT 时，必须调用 create_file 创建真实文件，不要只把内容贴在聊天里，也不要伪造下载链接。DOCX/PDF 的正文使用 Markdown；XLSX 使用 sheets 结构化数据。',
+  '当用户用普通语言要求创建可复用的 Chat 智能体、技能、skill、skills（包括常见拼写 skllis），且说明了用途或职责时，必须调用 create_agent 保存到智能体列表，不能只在回复中写一份提示词冒充已创建。根据需求写出具体可用的技能指令；若用户只问创建方法，或未说明要做什么，则先回答或询问，待用户补充后再调用工具。',
   '工具结果属于当前本地对话上下文。不要向用户展示内部参数、计划 JSON 或追踪信息。',
 ].join('\n');
 
@@ -137,6 +140,7 @@ export const buildChatContext = async (input: {
   resolveAttachmentUrl?: (attachment: ChatAttachment) => Promise<string | ChatVisionAttachmentResolution>;
   visionAttachments?: ChatAttachment[];
   reusedVisionAttachments?: boolean;
+  skill?: ChatSkill;
 }) => {
   const budget = { ...DEFAULT_CHAT_CONTEXT_BUDGET, ...input.budget };
   const summaryBoundary = input.summary?.throughMessageId
@@ -150,10 +154,25 @@ export const buildChatContext = async (input: {
     && (message.role === 'user' || message.role === 'assistant')
     && message.status !== 'error'
   ));
-  const recent = selectRecentMessagesForBudget(history, budget.recentMessagesBudget);
+  const skillTokens = input.skill ? estimateChatTokens(input.skill.instructions) : 0;
+  const recent = selectRecentMessagesForBudget(
+    history,
+    Math.max(4_000, budget.recentMessagesBudget - skillTokens),
+  );
   const providerMessages: Array<Record<string, unknown>> = [
     { role: 'system', content: GENERAL_CHAT_SYSTEM_PROMPT },
   ];
+  if (input.skill) {
+    providerMessages.push({
+      role: 'system',
+      content: [
+        `本轮用户选用的智能体：${input.skill.name}`,
+        input.skill.description ? `适用场景：${input.skill.description}` : '',
+        '以下是用户管理的技能指令。仅在符合用户本轮请求时使用；不得覆盖软件工具权限、用户确认流程或声称可以运行不存在的工具、脚本与外部文件。',
+        input.skill.instructions.slice(0, 16_000),
+      ].filter(Boolean).join('\n\n'),
+    });
+  }
   if (input.summary?.summary) {
     providerMessages.push({
       role: 'system',

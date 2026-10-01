@@ -98,11 +98,6 @@ export type CloudCreditUsageResult = {
   nextCursor?: string | null;
 };
 
-export type CloudRechargeSession = {
-  url: string;
-  expiresAt?: string | null;
-};
-
 export type AiModelModality = 'chat' | 'image' | 'video';
 
 /**

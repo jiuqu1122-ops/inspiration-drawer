@@ -18903,7 +18903,7 @@ async fn inspiration_space_list(
     if !normalized_kind.is_empty()
         && !matches!(
             normalized_kind.as_str(),
-            "NODE_PRESET" | "WORKFLOW" | "PROMPT"
+            "NODE_PRESET" | "WORKFLOW" | "PROMPT" | "AGENT"
         )
     {
         return Err("灵感空间资源类型无效".to_string());

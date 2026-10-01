@@ -4,6 +4,7 @@ import { getGeneratedMediaFromToolCall, type ChatGeneratedMedia, type ChatToolEx
 import { executeBatchImageOperation } from './batchImageOperation';
 import { executeImageVariantOperation } from './imageVariantOperation';
 import { normalizeChatToolName } from './chatToolNames';
+import { createChatSkill, importChatSkillMarkdown, loadChatSkills, saveChatSkill, selectChatSkill } from '../skills/chatSkills';
 
 type WorkflowDescriptor = { id: string; label: string; hint?: string };
 
@@ -103,6 +104,34 @@ export const createInspirationChatToolExecutor = (input: {
       conversationId: context.conversationId,
     });
   }
+  if (name === 'create_agent') {
+    const agentName = String(args.name || '').trim();
+    const existing = loadChatSkills().find(skill => skill.name.toLocaleLowerCase() === agentName.toLocaleLowerCase());
+    const skill = existing || (() => {
+      const adapted = importChatSkillMarkdown(String(args.instructions || ''), 'chat-created.md');
+      return {
+        ...createChatSkill(
+          agentName,
+          String(args.description || ''),
+          adapted.instructions,
+          Array.isArray(args.triggers) ? args.triggers.map(String) : [],
+        ),
+        conversionNotes: adapted.conversionNotes,
+      };
+    })();
+    if (!existing) saveChatSkill(skill);
+    const activate = args.activate === true && /(?:启用|使用|切换|开始用|马上用|立即用|activate|use\s+(?:it|this))/i.test(context.userText);
+    if (activate) selectChatSkill(context.conversationId, skill.id);
+    return {
+      created: !existing,
+      id: skill.id,
+      name: skill.name,
+      description: skill.description,
+      triggers: skill.triggers,
+      activated: activate,
+      message: existing ? '同名智能体已存在，未重复创建。' : '智能体已保存到列表。',
+    };
+  }
   if (name === 'get_canvas_selection') {
     return input.executeExistingTool('app_get_context', { scopes: ['canvas'], detail: 'compact' }, execution);
   }
@@ -173,6 +202,18 @@ export const createInspirationChatToolExecutor = (input: {
   }
   if (name === 'create_canvas_generator') {
     return input.executeExistingTool('canvas_create_generator', { ...args, autoRun: false }, execution);
+  }
+  if (name === 'create_workflow') {
+    const label = String(args.label || '').trim();
+    const steps = Array.isArray(args.steps) ? args.steps : [];
+    if (!label || steps.length === 0) throw new Error('创建工作流需要名称和步骤');
+    return input.executeExistingTool('canvas_create_workflow', {
+      label,
+      hint: typeof args.hint === 'string' ? args.hint : undefined,
+      steps,
+      inputIds: Array.isArray(args.inputIds) ? args.inputIds : [],
+      autoRun: false,
+    }, execution);
   }
   if (name === 'list_workflows') {
     const query = String(args.query || '').trim().toLowerCase();

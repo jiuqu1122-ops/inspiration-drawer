@@ -803,9 +803,18 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
             activeWorkflowDraftRef.current = updated;
             setActiveDraftForDisplay(updated);  // 触发 re-render，panel 立即响应
           }}
-          onSave={() => {
-            void canvasAgent.sendMessage('保存这个工作流');
-            setShowWorkflowDraftPanel(false);
+          onSave={async () => {
+            try {
+              await canvasAgent.executeExternalTool(
+                'canvas_update_workflow_draft',
+                { action: 'save_draft_as_workflow' },
+                { userRequest: '保存这个工作流' },
+              );
+              setShowWorkflowDraftPanel(false);
+            } catch (error) {
+              console.warn('保存工作流草稿失败:', error);
+              showToast(`工作流保存失败：${String(error)}`);
+            }
           }}
           onDiscard={() => {
             setShowWorkflowDraftPanel(false);

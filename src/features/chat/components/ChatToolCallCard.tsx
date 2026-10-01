@@ -91,6 +91,13 @@ export function ChatToolCallCard({ call, onResolve }: {
   onResolve: (id: string, approved: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const createdAgentName = (() => {
+    if (call.toolName !== 'create_agent' || call.status !== 'completed' || !call.resultJson) return '';
+    try {
+      const result = JSON.parse(call.resultJson) as Record<string, unknown>;
+      return typeof result.name === 'string' ? result.name : '';
+    } catch { return ''; }
+  })();
   const active = call.status === 'pending' || call.status === 'running';
   const batchProgress = readBatchProgress(call);
   const batchRevisionRequested = batchProgress?.phase === 'revision';
@@ -113,7 +120,7 @@ export function ChatToolCallCard({ call, onResolve }: {
         <span className="chat-tool__icon">
           {active ? <LoaderCircle size={13} className="chat-spin" /> : call.status === 'completed' || batchProgress?.phase === 'confirming' || batchRevisionRequested ? <Check size={13} /> : <ShieldAlert size={13} />}
         </span>
-        <span className="chat-tool__label">{getChatToolLabel(call.toolName)}</span>
+        <span className="chat-tool__label">{createdAgentName ? `智能体：${createdAgentName}` : getChatToolLabel(call.toolName)}</span>
         <span className="chat-tool__status">{batchProgress ? batchStatusLabel(batchProgress) : STATUS_LABELS[call.status] || call.status}</span>
         <ChevronDown size={12} className={expanded ? 'chat-tool__chevron is-open' : 'chat-tool__chevron'} />
       </button>

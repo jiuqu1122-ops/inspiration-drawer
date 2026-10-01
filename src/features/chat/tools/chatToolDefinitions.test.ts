@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { CHAT_TOOL_DEFINITIONS, getChatToolDefinitions, resolveDirectVisualTool, shouldComposeImageVariants, shouldDirectGenerateImage, shouldExposeBatchImageOperation, shouldExposeChatTools, shouldExposeWebSearch, shouldUseIndependentImageVariants } from './chatToolDefinitions';
+import type { ChatMessage } from '../model/chatTypes';
+import { CHAT_TOOL_DEFINITIONS, getChatToolDefinitions, isChatAgentCreationFollowup, isChatAgentCreationRequest, resolveDirectVisualTool, shouldComposeImageVariants, shouldDirectGenerateImage, shouldExposeBatchImageOperation, shouldExposeChatTools, shouldExposeWebSearch, shouldForceChatAgentCreation, shouldUseIndependentImageVariants } from './chatToolDefinitions';
 
 describe('Chat tool exposure', () => {
+  it('exposes canvas tools for an active agent even when the user refers to its instructions briefly', () => {
+    expect(getChatToolDefinitions('按这个智能体继续', false, false, false, 0, true)
+      .map(tool => tool.function.name)).toContain('create_workflow');
+  });
   it('registers only the supported Chat tools', () => {
     expect(CHAT_TOOL_DEFINITIONS.map(tool => tool.function.name)).toEqual([
       'web_search',
       'create_file',
+      'create_agent',
       'get_canvas_selection',
       'search_assets',
       'generate_image',
@@ -19,6 +25,7 @@ describe('Chat tool exposure', () => {
       'fuse_images',
       'add_to_canvas',
       'create_canvas_generator',
+      'create_workflow',
       'list_workflows',
       'run_workflow',
     ]);
@@ -44,9 +51,54 @@ describe('Chat tool exposure', () => {
     '搜索素材库里的宝马内饰参考',
     '看看当前画布里有什么',
     '运行产品设计工作流',
+    '帮我创建一个产品设计工作流',
+    'Build a reusable workflow',
     '把刚生成的图放进画布',
   ])('exposes tools for explicit software or media intent: %s', text => {
     expect(shouldExposeChatTools(text)).toBe(true);
+  });
+
+  it('offers a real creation tool for workflow requests', () => {
+    expect(getChatToolDefinitions('创建一个产品设计工作流').map(tool => tool.function.name)).toContain('create_workflow');
+    expect(resolveDirectVisualTool('帮我创建一套商品图片工作流')).toBeNull();
+  });
+
+  it('exposes agent creation for a natural language request without confusing usage or how-to questions', () => {
+    expect(isChatAgentCreationRequest('帮我创建一个专门做产品外观设计的智能体')).toBe(true);
+    expect(isChatAgentCreationRequest('新增一个写营销文案的 skill')).toBe(true);
+    expect(isChatAgentCreationRequest('帮我创建一个整理素材的技能')).toBe(true);
+    expect(isChatAgentCreationRequest('帮我创建一个整理素材的 skllis')).toBe(true);
+    expect(isChatAgentCreationRequest('帮我创建一个整理素材的 skills')).toBe(true);
+    expect(isChatAgentCreationRequest('Build a research skills agent')).toBe(true);
+    expect(isChatAgentCreationRequest('创建一个可以先分析工业设计需求、再整理参考素材、最后提出三套 CMF 方案的智能体')).toBe(true);
+    expect(getChatToolDefinitions('帮我创建一个专门做产品外观设计的智能体').map(tool => tool.function.name))
+      .toContain('create_agent');
+    expect(isChatAgentCreationRequest('帮我用智能体创建一个工作流')).toBe(false);
+    expect(isChatAgentCreationRequest('如何创建一个智能体？')).toBe(false);
+    expect(isChatAgentCreationRequest('创建一个智能体要怎么做？')).toBe(false);
+    expect(shouldForceChatAgentCreation('创建一个产品设计智能体')).toBe(true);
+    expect(shouldForceChatAgentCreation('创建一个智能体')).toBe(false);
+    expect(getChatToolDefinitions('如何创建一个智能体？').map(tool => tool.function.name))
+      .not.toContain('create_agent');
+  });
+
+  it('keeps agent creation available after Chat asks for the missing purpose', () => {
+    const user = {
+      id: 'user-1', conversationId: 'conversation-1', role: 'user', content: '帮我创建一个技能',
+      status: 'completed', createdAt: 1, attachments: [], toolCalls: [],
+    } satisfies ChatMessage;
+    const assistant = {
+      id: 'assistant-1', conversationId: 'conversation-1', role: 'assistant', content: '你希望这个技能负责什么任务？',
+      status: 'completed', createdAt: 2, attachments: [], toolCalls: [],
+    } satisfies ChatMessage;
+    expect(isChatAgentCreationFollowup([user, assistant], '负责产品外观分析')).toBe(true);
+    expect(isChatAgentCreationFollowup([
+      user, assistant,
+      { ...user, id: 'user-2', content: '负责产品外观分析', createdAt: 3 },
+    ], '负责产品外观分析')).toBe(true);
+    expect(getChatToolDefinitions('负责产品外观分析', false, false, false, 0, false, true)
+      .map(tool => tool.function.name)).toContain('create_agent');
+    expect(isChatAgentCreationFollowup([user, assistant], '算了')).toBe(false);
   });
 
   it.each([

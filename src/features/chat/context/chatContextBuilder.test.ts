@@ -21,6 +21,22 @@ const message = (
 });
 
 describe('Chat context builder', () => {
+  it('adds the selected agent instructions to this turn while preserving the core prompt', async () => {
+    const latest = message('message-1', 'user', '请做一个产品方案');
+    const context = await buildChatContext({
+      messages: [latest], latestUserMessage: latest,
+      skill: {
+        id: 'skill-1', name: '产品设计师', description: '产品设计', triggers: ['产品'],
+        instructions: '先分析需求，再给出方案。', source: 'created', conversionNotes: [], updatedAt: 1,
+      },
+    });
+    expect(context[0]).toEqual({ role: 'system', content: GENERAL_CHAT_SYSTEM_PROMPT });
+    expect(context[1]).toMatchObject({ role: 'system' });
+    expect(String(context[1].content)).toContain('产品设计师');
+    expect(String(context[1].content)).toContain('先分析需求，再给出方案');
+    expect(context[context.length - 1]).toEqual({ role: 'user', content: '请做一个产品方案' });
+  });
+
   it('keeps the stable system, summary, recent history, latest input order', async () => {
     const old = message('message-1', 'user', '已经写入摘要的旧消息');
     const boundary = message('message-2', 'assistant', '摘要边界');

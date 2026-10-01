@@ -2,6 +2,19 @@ import { describe, expect, it, vi } from 'vitest';
 import { routeChatToolCall } from './chatToolRouter';
 
 describe('Chat tool router', () => {
+  it('routes explicit agent creation to local storage without an extra approval', async () => {
+    const executor = vi.fn(async () => ({ created: true, id: 'agent-1' }));
+    const context = { userText: '创建一个产品设计智能体', conversationId: 'conversation-1', messageId: 'message-1', recentMessages: [] };
+    const result = await routeChatToolCall({
+      name: 'create_agent',
+      args: { name: '产品设计师', description: '设计产品外观', triggers: ['外观'], instructions: '先分析需求。' },
+      context, executor, approvalMode: 'ask',
+    });
+    expect(result.requiresApproval).toBe(false);
+    expect(executor).toHaveBeenCalledOnce();
+    await expect(routeChatToolCall({ name: 'create_agent', args: { name: '空' }, context, executor }))
+      .rejects.toThrow('技能指令');
+  });
   it('runs an explicit batch image operation without a second confirmation', async () => {
     const executor = vi.fn(async () => ({ ok: true }));
     const onExecuting = vi.fn();
@@ -117,6 +130,26 @@ describe('Chat tool router', () => {
 
     expect(result.requiresApproval).toBe(true);
     expect(executor).not.toHaveBeenCalled();
+  });
+
+  it('routes workflow creation as a safe write and does not run it', async () => {
+    const executor = vi.fn(async () => ({ workflowId: 'workflow-1' }));
+    const steps = [{ id: 'image-1', type: 'image-generator', label: '主视觉', prompt: '生成产品主视觉' }];
+    const result = await routeChatToolCall({
+      name: 'create_workflow',
+      args: { label: '产品主视觉工作流', steps },
+      context: {
+        userText: '创建一个产品主视觉工作流',
+        conversationId: 'conversation-1',
+        messageId: 'message-1',
+        recentMessages: [],
+      },
+      executor,
+      approvalMode: 'ask',
+    });
+    expect(result.requiresApproval).toBe(false);
+    expect(result.permission.riskLevel).toBe('safe_write');
+    expect(executor).toHaveBeenCalledWith('create_workflow', { label: '产品主视觉工作流', steps }, expect.any(Object));
   });
 
   it('accepts the legacy selected-shapes alias from persisted Chat sessions', async () => {

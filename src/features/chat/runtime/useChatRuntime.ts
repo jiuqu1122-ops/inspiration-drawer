@@ -27,11 +27,14 @@ import {
   writeActiveChatConversationId,
 } from '../storage/chatStorage';
 import { buildChatContext, buildSummaryRequestMessages } from '../context/chatContextBuilder';
+import { getSelectedChatSkill } from '../skills/chatSkills';
 import { estimateChatTokens } from '../context/chatContextBudget';
 import type { ChatVisionAttachmentResolver } from '../attachments/chatVisionAttachmentResolver';
 import { formatReferenceUploadFailureNotice } from '../../referenceUploadError';
 import {
   getChatToolDefinitions,
+  isChatAgentCreationFollowup,
+  shouldForceChatAgentCreation,
   resolveDirectVisualTool,
   shouldComposeImageVariants,
   shouldExposeBatchImageOperation,
@@ -1325,6 +1328,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     const hasRecentMedia = Boolean(latestGeneratedMedia(conversationMessages));
     const currentImageAttachmentCount = imageSelection.attachments.length;
     const toolIntentText = imageSelection.toolIntentText;
+    const agentCreationFollowup = isChatAgentCreationFollowup(conversationMessages, userText);
     const directVisualTool = resolveDirectVisualTool(
       toolIntentText,
       hasRecentMedia,
@@ -1343,6 +1347,10 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     const previousFileCreateCount = depth === 0
       ? 0
       : providerToolCallCount(providerMessages, 'create_file');
+    const agentCreatedThisTurn = depth > 0 && conversationMessages.some(message => (
+      message.id === assistantMessageId
+      && message.toolCalls.some(call => call.toolName === 'create_agent' && call.status === 'completed')
+    ));
     const previousBatchImageOperationCount = depth === 0
       ? 0
       : providerToolCallCount(providerMessages, 'batch_image_operation');
@@ -1358,7 +1366,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       && webSearchCount < MAX_WEB_SEARCH_QUERIES_PER_TURN;
     const batchImageOperationAvailable = batchImageOperationRequested
       && previousBatchImageOperationCount === 0;
-    const tools = previousFileCreateCount > 0
+    const tools = previousFileCreateCount > 0 || agentCreatedThisTurn
       ? []
       : getChatToolDefinitions(
         toolIntentText,
@@ -1366,12 +1374,20 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         webSearchAvailable,
         webSearchCount >= MAX_WEB_SEARCH_QUERIES_PER_TURN,
         currentImageAttachmentCount,
+        Boolean(getSelectedChatSkill(conversationId)),
+        agentCreationFollowup,
       ).filter(tool => (
         (previousBatchImageOperationCount === 0 || tool.function.name !== 'batch_image_operation')
         && (previousImageVariantCount === 0 || tool.function.name !== 'generate_image_variants')
         && (previousCompositeImageCount === 0 || tool.function.name !== 'generate_image')
       ));
     const requestInstructions: Array<Record<string, unknown>> = [];
+    if (agentCreationFollowup && !agentCreatedThisTurn) {
+      requestInstructions.push({
+        role: 'system',
+        content: '当前消息是在补充此前创建智能体/技能的需求。结合前文判断用途是否已足够明确：足够明确就调用 create_agent 真正保存；若仍缺少职责或目标，继续询问。不要只给出技能文本却声称已创建。',
+      });
+    }
     if (independentImageVariantsRequested && previousImageVariantCount === 0) {
       requestInstructions.push({
         role: 'system',
@@ -1439,6 +1455,12 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         content: '请求的文件已经成功生成。不要再调用任何工具；用一句简洁的话告诉用户文件已生成，并提示可通过文件卡片打开或另存为。',
       });
     }
+    if (agentCreatedThisTurn) {
+      requestInstructions.push({
+        role: 'system',
+        content: '本轮智能体创建工具已经执行。不要再调用工具；根据工具结果准确告诉用户是否新建成功，以及可在 Chat 顶部的“智能体”入口查看和选择。不要声称已启用，除非工具结果中的 activated 为 true。',
+      });
+    }
     const normalizedProviderMessages = webSearchCount > 0
       ? flattenWebSearchContext(providerMessages)
       : providerMessages;
@@ -1456,11 +1478,14 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     if (activeConversationIdRef.current === conversationId) {
       syncActiveConversationActivity(conversationId);
     }
-    const toolChoice = independentImageVariantsRequested && previousImageVariantCount === 0
-      ? { type: 'function', function: { name: 'generate_image_variants' } }
-      : compositeImageVariantsRequested && previousCompositeImageCount === 0
-        ? { type: 'function', function: { name: 'generate_image' } }
-        : undefined;
+    const toolChoice = shouldForceChatAgentCreation(userText)
+      && !agentCreatedThisTurn && tools.some(tool => tool.function.name === 'create_agent')
+      ? { type: 'function', function: { name: 'create_agent' } }
+      : independentImageVariantsRequested && previousImageVariantCount === 0
+        ? { type: 'function', function: { name: 'generate_image_variants' } }
+        : compositeImageVariantsRequested && previousCompositeImageCount === 0
+          ? { type: 'function', function: { name: 'generate_image' } }
+          : undefined;
     let result: ChatProviderResult | undefined;
     let expectedRequestId = requestId;
     try {
@@ -2168,6 +2193,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         resolveAttachmentUrl: visionResolver?.resolve || optionsRef.current.resolveAttachmentUrl,
         visionAttachments: imageSelection.attachments,
         reusedVisionAttachments: imageSelection.reusedFromHistory,
+        skill: getSelectedChatSkill(conversation.id),
       });
       if (imageSelection.attachments.length > 0) {
         patchThinkingStep(assistantMessage.id, 'attachments', {

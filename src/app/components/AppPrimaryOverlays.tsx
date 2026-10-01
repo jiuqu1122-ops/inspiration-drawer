@@ -58,7 +58,6 @@ export function AppPrimaryOverlays({ scope }: { scope: AppPrimaryOverlaysScope }
           setIsCreditRechargeOpen(false);
           void refreshCloudAccount(true);
         }}
-        onRechargeSuccess={() => void refreshCloudAccount(true)}
       />
 
       <AnimatePresence>

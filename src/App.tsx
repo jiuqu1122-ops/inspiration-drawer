@@ -5329,7 +5329,7 @@ useEffect(() => {
       transitionStyle = 'transform 0.35s cubic-bezier(0.16, 1, 0.3, 1)';
   }
   const drawerShellTransform = transformX === '0px' ? 'none' : `translateX(${transformX})`;
-  const drawerShellClassName = `pointer-events-auto absolute inset-0 z-40 h-full w-full min-h-[560px] min-w-[880px] border flex flex-row rounded-[16px] overflow-hidden isolate${drawerShellTransform === 'none' ? '' : ' will-change-transform'}`;
+  const drawerShellClassName = `pointer-events-auto absolute inset-0 z-40 h-full w-full min-h-0 min-w-0 border flex flex-row rounded-[16px] overflow-hidden isolate${drawerShellTransform === 'none' ? '' : ' will-change-transform'}`;
   const drawerSidebarClassName = isCanvasMode && isCanvasChromeHidden
     ? 'hidden'
     : `${isFolderSidebarLayout ? '' : 'w-16'} relative h-full border-r flex flex-col pt-3 pb-4 z-10 shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${isFolderSidebarLayout ? 'items-stretch' : 'items-center'}`;
