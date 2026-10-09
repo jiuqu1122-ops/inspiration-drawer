@@ -320,7 +320,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
       await invoke('hide_note_window', { label: noteLabel });
     } catch (err) {
       console.warn('hide_note_window failed, fallback to frontend hide:', err);
-      await appWindow.hide().catch(() => {});
+      await invoke('diagnostic_hide_window').catch(() => {});
     }
   };
 
@@ -358,7 +358,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     localStorage.setItem(FLOATING_NOTE_DESTROY_BRIDGE_KEY, JSON.stringify(payload));
     emitTo('main', 'floating-note-destroyed', payload).catch(() => {});
     deleteFloatingNoteSnapshot(noteLabel);
-    await invoke('hide_note_window', { label: noteLabel }).catch(() => appWindow.hide().catch(() => {}));
+    await invoke('hide_note_window', { label: noteLabel }).catch(() => invoke('diagnostic_hide_window').catch(() => {}));
   };
 
   const persistFloatingNoteView = (patch: { zoom?: number; width?: number; height?: number; mediumWidth?: number }) => {

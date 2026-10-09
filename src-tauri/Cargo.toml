@@ -1,6 +1,6 @@
 [package]
 name = "inspiration-drawer"
-version = "8.0.21"
+version = "8.0.22"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -51,7 +51,8 @@ tauri-plugin-global-shortcut = "2"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38.2"
-# Use winapi instead of an extra windows/windows-core dependency to avoid version conflicts
+windows-core = "0.61.2"
+# Match windows-core to WebView2; use winapi for other native APIs to avoid version conflicts
 # with Tauri 2.0.x's own windows-rs dependency graph.
 winapi = { version = "0.3.9", features = [
   "std",

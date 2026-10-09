@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::async_runtime::Mutex as AsyncMutex;
 use tauri::Manager;
 use tokio::sync::OnceCell;
@@ -25,12 +26,21 @@ const EMAIL_SYNC_BACKOFF_SECONDS: [u64; 4] = [5, 15, 30, 60];
 struct CachedCloudToken {
     value: String,
     expires_at: Instant,
+    license_key: [u8; 32],
+}
+
+impl CachedCloudToken {
+    fn matches_license_at(&self, license_key: &[u8; 32], now: Instant) -> bool {
+        self.expires_at > now && &self.license_key == license_key
+    }
 }
 
 static CLOUD_TOKEN_CACHE: OnceLock<Mutex<Option<CachedCloudToken>>> = OnceLock::new();
+static CLOUD_AUTH_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 struct EmailSyncFlight {
     result: OnceCell<Result<EmailVerificationResponse, String>>,
+    license_key: [u8; 32],
 }
 
 static EMAIL_SYNC_FLIGHT: OnceLock<AsyncMutex<Option<Arc<EmailSyncFlight>>>> = OnceLock::new();
@@ -78,6 +88,211 @@ struct EmailVerificationResponse {
     license: String,
     access_token: String,
     account: CloudAccountResponse,
+    #[serde(default)]
+    access_token_expires_in: Option<String>,
+    // Populated from the HTTPS response Date header, never used for auth.
+    #[serde(default, rename = "__clientServerTime")]
+    server_time: Option<i64>,
+}
+
+fn license_cache_key(license: &str) -> [u8; 32] {
+    Sha256::digest(license.as_bytes()).into()
+}
+
+fn token_duration(value: &str) -> Option<u64> {
+    let split = value.len().checked_sub(1)?;
+    let amount = value.get(..split)?;
+    let unit = value.get(split..)?;
+    if amount.is_empty() || !amount.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let multiplier = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86400,
+        _ => return None,
+    };
+    amount.parse::<u64>().ok()?.checked_mul(multiplier)
+}
+
+fn token_cache_lifetime(response: &EmailVerificationResponse) -> Duration {
+    let mut seconds = 12 * 60;
+    if let Some(duration) = response
+        .access_token_expires_in
+        .as_deref()
+        .and_then(token_duration)
+    {
+        seconds = seconds.min(duration);
+    }
+    // JWT payload is decoded only to shorten the cache lifetime. This does not
+    // verify a token or grant access; the server remains the verifier.
+    if let Some(claims) = response
+        .access_token
+        .split('.')
+        .nth(1)
+        .and_then(|part| general_purpose::URL_SAFE_NO_PAD.decode(part).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+    {
+        if let Some(exp) = claims.get("exp").and_then(|value| value.as_i64()) {
+            let issued_at = claims.get("iat").and_then(|value| value.as_i64());
+            if let Some(reference) = response.server_time.or(issued_at) {
+                seconds = seconds.min(exp.saturating_sub(reference).max(0) as u64);
+            }
+        }
+    }
+    let margin = (seconds / 10).clamp(1, 30);
+    Duration::from_secs(seconds.saturating_sub(margin))
+}
+
+pub(crate) fn cloud_tokens_same_account(original: &str, current: &str) -> bool {
+    let subject = |token: &str| -> Option<String> {
+        let bytes = general_purpose::URL_SAFE_NO_PAD
+            .decode(token.split('.').nth(1)?)
+            .ok()?;
+        let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        claims.get("sub")?.as_str().map(str::to_owned)
+    };
+    match (subject(original), subject(current)) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
+    }
+}
+
+fn server_time(response: &reqwest::Response) -> Option<i64> {
+    response
+        .headers()
+        .get(reqwest::header::DATE)?
+        .to_str()
+        .ok()
+        .and_then(|value| chrono::DateTime::parse_from_rfc2822(value).ok())
+        .map(|value| value.timestamp())
+}
+
+fn parse_auth_response<T: for<'de> Deserialize<'de>>(
+    body: &str,
+    server_time: Option<i64>,
+) -> Result<T, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_str(body)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("__clientServerTime".into(), serde_json::json!(server_time));
+    }
+    serde_json::from_value(value)
+}
+
+#[cfg(test)]
+mod cloud_token_tests {
+    use super::*;
+    fn jwt(sub: &str, issued: i64, expires: i64) -> String {
+        format!(
+            "header.{}.signature",
+            general_purpose::URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(&serde_json::json!({
+                    "sub": sub, "iat": issued, "exp": expires,
+                }))
+                .unwrap()
+            )
+        )
+    }
+    fn response(
+        token: &str,
+        duration: Option<&str>,
+        server_time: Option<i64>,
+    ) -> EmailVerificationResponse {
+        serde_json::from_value(serde_json::json!({
+            "license": "fixture-license", "accessToken": token, "accessTokenExpiresIn": duration,
+            "__clientServerTime": server_time, "account": { "user": {} },
+        }))
+        .unwrap()
+    }
+    #[test]
+    fn short_server_lifetimes_and_server_clock_limit_cached_tokens() {
+        let token = jwt("fixture-account", 1_000_000, 1_000_060);
+        let auth = response(&token, Some("1m"), Some(1_000_010));
+        let lifetime = token_cache_lifetime(&auth);
+        assert_eq!(lifetime.as_secs(), 45);
+        let now = Instant::now();
+        let entry = CachedCloudToken {
+            value: token.clone(),
+            expires_at: now + lifetime,
+            license_key: license_cache_key(&auth.license),
+        };
+        assert!(entry.matches_license_at(
+            &license_cache_key(&auth.license),
+            now + Duration::from_secs(44)
+        ));
+        assert!(!entry.matches_license_at(
+            &license_cache_key(&auth.license),
+            now + Duration::from_secs(45)
+        ));
+        assert!(!entry.matches_license_at(&license_cache_key("different-login"), now));
+        assert_eq!(
+            token_cache_lifetime(&response(&token, Some("15m"), Some(1_000_061))).as_secs(),
+            0
+        );
+        // No dependency on the user's potentially wrong wall clock.
+        assert_eq!(
+            token_cache_lifetime(&response(&token, None, Some(1_000_010))),
+            lifetime
+        );
+    }
+    #[test]
+    fn uses_jwt_duration_for_legacy_responses_and_rejects_malformed_duration_safely() {
+        let token = jwt("fixture-account", 100, 160);
+        assert_eq!(
+            token_cache_lifetime(&response(&token, None, None)).as_secs(),
+            54
+        );
+        assert_eq!(
+            token_cache_lifetime(&response("opaque-legacy-token", None, None)).as_secs(),
+            690
+        );
+        for value in ["", "永久", "0", "-1m", "1ms", "18446744073709551615d"] {
+            assert!(token_duration(value).is_none());
+        }
+        assert_eq!(token_duration("15m"), Some(900));
+    }
+    #[test]
+    fn login_replaces_old_token_and_old_401_cannot_evict_the_new_login() {
+        let old = response("old-token", Some("15m"), None);
+        let new = response("new-token", Some("15m"), None);
+        cache_cloud_access_token(&old);
+        cache_cloud_access_token(&new);
+        assert!(!invalidate_cloud_token("old-token"));
+        assert_eq!(
+            CLOUD_TOKEN_CACHE
+                .get()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .value,
+            "new-token"
+        );
+        assert!(invalidate_cloud_token("new-token"));
+        assert!(CLOUD_TOKEN_CACHE.get().unwrap().lock().unwrap().is_none());
+    }
+    #[test]
+    fn task_polling_can_refresh_a_token_but_must_not_change_accounts() {
+        assert!(cloud_tokens_same_account(
+            &jwt("a", 100, 160),
+            &jwt("a", 150, 210)
+        ));
+        assert!(!cloud_tokens_same_account(
+            &jwt("a", 100, 160),
+            &jwt("b", 150, 210)
+        ));
+    }
+    #[test]
+    fn response_metadata_comes_from_headers_and_operation_logs_hide_dynamic_ids() {
+        let auth: EmailVerificationResponse = parse_auth_response(r#"{"license":"fixture","accessToken":"fixture-token","account":{"user":{}},"__clientServerTime":999}"#, Some(123)).unwrap();
+        assert_eq!(auth.server_time, Some(123));
+        assert_eq!(
+            cloud_operation("/v1/ai/tasks/private-task-id?token=secret"),
+            "task_status"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -314,8 +529,7 @@ pub struct CloudAiModelCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     default_aspect_ratio: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    aspect_ratios_by_resolution:
-        Option<std::collections::HashMap<String, Vec<String>>>,
+    aspect_ratios_by_resolution: Option<std::collections::HashMap<String, Vec<String>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     durations: Option<Vec<f64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -823,6 +1037,7 @@ async fn send_cloud_request_with_clients_detailed<F>(
     method: &'static str,
     log_context: Option<CloudRequestLogContext>,
     build: &F,
+    diagnostic_app: Option<&tauri::AppHandle>,
 ) -> Result<reqwest::Response, CloudTransportFailure>
 where
     F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
@@ -833,8 +1048,45 @@ where
         // Invoke the factory for every route. RequestBuilder bodies (notably
         // multipart forms and streams) are consumed by send and cannot be
         // cloned safely for a fallback attempt.
-        match build(client).send().await {
+        let request = build(client).build();
+        let operation = request
+            .as_ref()
+            .ok()
+            .map(|request| cloud_operation(request.url().path()))
+            .unwrap_or("request_build");
+        let cloud_token = request
+            .as_ref()
+            .ok()
+            .filter(|request| request.url().host_str() == Some("api.unmind.art"))
+            .and_then(|request| request.headers().get(reqwest::header::AUTHORIZATION))
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .map(str::to_owned);
+        let response = match request {
+            Ok(request) => client.execute(request).await,
+            Err(error) => Err(error),
+        };
+        match response {
             Ok(response) => {
+                if let Some(app) = diagnostic_app {
+                    if let Some(token) = cloud_token.as_deref() {
+                        observe_cloud_auth_rejection(app, token, response.status(), operation);
+                    }
+                    if !response.status().is_success()
+                        || index > 0
+                        || attempt_started_at.elapsed() >= Duration::from_secs(3)
+                    {
+                        crate::renderer_diagnostics::record(
+                            app,
+                            "main",
+                            "cloud_http_response",
+                            serde_json::json!({
+                                "operation": operation, "method": method, "route": route, "attempt": index + 1,
+                                "httpStatus": response.status().as_u16(), "elapsedMs": attempt_started_at.elapsed().as_millis() as u64,
+                            }),
+                        );
+                    }
+                }
                 if let Some(context) = log_context {
                     eprintln!(
                         "[cloud_transport] operation={} route={} connect_failure_category=none fallback_attempted={} upload_bytes={} elapsed_ms={} http_status={}",
@@ -852,6 +1104,18 @@ where
                 let has_fallback = index + 1 < clients.len();
                 let fallback_attempted =
                     has_fallback && should_retry_cloud_transport(&error, method);
+                if let Some(app) = diagnostic_app {
+                    crate::renderer_diagnostics::record(
+                        app,
+                        "main",
+                        "cloud_transport_failure",
+                        serde_json::json!({
+                            "operation": operation, "method": method, "route": route, "attempt": index + 1,
+                            "category": cloud_transport_category(&error, *via_proxy).code(),
+                            "fallbackAttempted": fallback_attempted, "elapsedMs": attempt_started_at.elapsed().as_millis() as u64,
+                        }),
+                    );
+                }
                 if let Some(context) = log_context {
                     let category = cloud_transport_category(&error, *via_proxy);
                     eprintln!(
@@ -881,6 +1145,23 @@ where
     })
 }
 
+fn cloud_operation(path: &str) -> &'static str {
+    match path {
+        "/v1/auth/email/send-code" => "email_send_code",
+        "/v1/auth/email/verify" => "email_verify",
+        "/v1/auth/email/sync" => "account_sync",
+        "/v1/ai/images/models" => "image_models",
+        "/v1/ai/images/generations" => "image_generate",
+        "/v1/ai/models" => "chat_models",
+        "/v1/ai/tasks" => "task_submit",
+        "/v1/ai/reference-images" => "reference_images",
+        _ if path.starts_with("/v1/ai/tasks/") => "task_status",
+        _ if path.starts_with("/v1/ai/videos/") => "video_status",
+        _ if path.starts_with("/v1/ai/images/generations/by-request/") => "image_status",
+        _ => "other_cloud_request",
+    }
+}
+
 #[cfg(test)]
 async fn send_cloud_request_with_clients<F>(
     clients: &[(reqwest::Client, bool)],
@@ -891,7 +1172,7 @@ async fn send_cloud_request_with_clients<F>(
 where
     F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
 {
-    send_cloud_request_with_clients_detailed(clients, method, log_context, build)
+    send_cloud_request_with_clients_detailed(clients, method, log_context, build, None)
         .await
         .map_err(|failure| failure.safe_message(method))
 }
@@ -911,9 +1192,19 @@ where
         None,
         timeout.as_secs().max(1),
     )
-    .map_err(|_| CloudTransportFailure {
-        category: CloudTransportErrorCategory::Initialization,
-        fallback_attempted: false,
+    .map_err(|_| {
+        crate::renderer_diagnostics::record(
+            app_handle,
+            "main",
+            "cloud_transport_failure",
+            serde_json::json!({
+                "operation": "client_initialize", "method": method, "category": "initialization",
+            }),
+        );
+        CloudTransportFailure {
+            category: CloudTransportErrorCategory::Initialization,
+            fallback_attempted: false,
+        }
     })?;
     let app_proxy_configured = !crate::read_network_proxy(app_handle).trim().is_empty();
     let proxy_available = crate::effective_proxy(Some(app_handle), None).is_some();
@@ -931,7 +1222,14 @@ where
     } else {
         clients.push((configured, proxy_available));
     }
-    send_cloud_request_with_clients_detailed(&clients, method, log_context, &build).await
+    send_cloud_request_with_clients_detailed(
+        &clients,
+        method,
+        log_context,
+        &build,
+        Some(app_handle),
+    )
+    .await
 }
 
 pub(crate) async fn send_cloud_request<F>(
@@ -1174,10 +1472,12 @@ async fn post_cloud<T: for<'de> Deserialize<'de>>(
     )
     .await?;
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|err| format!("cloud_invalid_response: 无法读取授权服务器响应：{err}"))?;
+    let response_server_time = server_time(&response);
+    let body_started = Instant::now();
+    let body = response.text().await.map_err(|err| {
+        observe_cloud_response_failure(app_handle, status, cloud_operation(path), &err);
+        format!("cloud_invalid_response: 无法读取授权服务器响应：{err}")
+    })?;
     if !status.is_success() {
         let parsed = serde_json::from_str::<CloudApiError>(&body).ok();
         let fallback = cloud_http_fallback(status, &body);
@@ -1191,8 +1491,12 @@ async fn post_cloud<T: for<'de> Deserialize<'de>>(
             .unwrap_or(&fallback);
         return Err(cloud_error(code, message));
     }
-    serde_json::from_str::<T>(&body)
-        .map_err(|_| "cloud_invalid_response: 授权服务器返回格式无效".to_string())
+    parse_auth_response::<T>(
+        &body,
+        response_server_time
+            .map(|time| time.saturating_add(body_started.elapsed().as_secs() as i64)),
+    )
+    .map_err(|_| "cloud_invalid_response: 授权服务器返回格式无效".to_string())
 }
 
 async fn post_cloud_email_sync_once(
@@ -1224,16 +1528,21 @@ async fn post_cloud_email_sync_once(
         message,
     })?;
     let status = response.status();
+    let response_server_time = server_time(&response);
+    let body_started = Instant::now();
     let retry_after = parse_retry_after(
         response
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|value| value.to_str().ok()),
     );
-    let body = response.text().await.map_err(|err| EmailSyncRequestError {
-        status: Some(status.as_u16()),
-        retry_after,
-        message: format!("cloud_invalid_response: 无法读取授权服务器响应：{err}"),
+    let body = response.text().await.map_err(|err| {
+        observe_cloud_response_failure(app_handle, status, "account_sync", &err);
+        EmailSyncRequestError {
+            status: Some(status.as_u16()),
+            retry_after,
+            message: format!("cloud_invalid_response: 无法读取授权服务器响应：{err}"),
+        }
     })?;
     if !status.is_success() {
         let parsed = serde_json::from_str::<CloudApiError>(&body).ok();
@@ -1252,7 +1561,12 @@ async fn post_cloud_email_sync_once(
             message: cloud_error(code, message),
         });
     }
-    serde_json::from_str::<EmailVerificationResponse>(&body).map_err(|_| EmailSyncRequestError {
+    parse_auth_response::<EmailVerificationResponse>(
+        &body,
+        response_server_time
+            .map(|time| time.saturating_add(body_started.elapsed().as_secs() as i64)),
+    )
+    .map_err(|_| EmailSyncRequestError {
         status: Some(status.as_u16()),
         retry_after,
         message: "cloud_invalid_response: 授权服务器返回格式无效".to_string(),
@@ -1296,10 +1610,10 @@ async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
     .await?;
     let response_received_at = Instant::now();
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|err| format!("cloud_invalid_response: 无法读取额度服务器响应：{err}"))?;
+    let body = response.text().await.map_err(|err| {
+        observe_cloud_response_failure(app_handle, status, cloud_operation(path), &err);
+        format!("cloud_invalid_response: 无法读取额度服务器响应：{err}")
+    })?;
     if path == "/v1/ai/images/generations" {
         eprintln!(
             "[cloud_image_http_timing] responseWaitMs={} bodyReadMs={} totalMs={}",
@@ -1341,10 +1655,10 @@ async fn get_cloud_with_bearer<T: for<'de> Deserialize<'de>>(
     })
     .await?;
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|err| format!("cloud_invalid_response: 无法读取额度服务器响应：{err}"))?;
+    let body = response.text().await.map_err(|err| {
+        observe_cloud_response_failure(app_handle, status, cloud_operation(path), &err);
+        format!("cloud_invalid_response: 无法读取额度服务器响应：{err}")
+    })?;
     if !status.is_success() {
         let parsed = serde_json::from_str::<CloudApiError>(&body).ok();
         let fallback = cloud_http_fallback(status, &body);
@@ -1436,17 +1750,16 @@ mod quota_tests {
 
 async fn sync_cloud_account_uncached(
     app_handle: &tauri::AppHandle,
+    current: &str,
 ) -> Result<EmailVerificationResponse, String> {
-    let current = read_license_content(app_handle)?
-        .ok_or_else(|| "license_missing: 请先完成邮箱注册或登录".to_string())?;
-    let payload = decode_license_payload_unverified(&current)
+    let payload = decode_license_payload_unverified(current)
         .ok_or_else(|| "malformed_license: 本地授权格式无效".to_string())?;
     if payload.license_id.is_none() {
         return Err("cloud_account_required: 请先完成邮箱注册或登录".to_string());
     }
     let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
     let request = CloudLicenseSyncRequest {
-        license: &current,
+        license: current,
         machine_id: &machine_id,
     };
     let mut attempt = 0;
@@ -1464,22 +1777,33 @@ async fn sync_cloud_account_uncached(
             }
         }
     };
-    verify_and_save_cloud_license(app_handle, machine_id, response.license.clone())?;
-    cache_cloud_access_token(&response.access_token);
+    verify_and_save_cloud_license(app_handle, machine_id, &response, Some(current))?;
     Ok(response)
 }
 
 async fn sync_cloud_account(
     app_handle: &tauri::AppHandle,
 ) -> Result<EmailVerificationResponse, String> {
+    let current = {
+        let _guard = CLOUD_AUTH_WRITE_LOCK
+            .lock()
+            .map_err(|_| "cloud_account_busy: 授权状态暂时无法更新".to_string())?;
+        read_license_content(app_handle)?
+            .ok_or_else(|| "license_missing: 请先完成邮箱注册或登录".to_string())?
+    };
+    let license_key = license_cache_key(&current);
     let flight_store = EMAIL_SYNC_FLIGHT.get_or_init(|| AsyncMutex::new(None));
     let flight = {
         let mut guard = flight_store.lock().await;
-        if let Some(flight) = guard.as_ref() {
+        if let Some(flight) = guard
+            .as_ref()
+            .filter(|flight| flight.license_key == license_key)
+        {
             flight.clone()
         } else {
             let flight = Arc::new(EmailSyncFlight {
                 result: OnceCell::new(),
+                license_key,
             });
             *guard = Some(flight.clone());
             flight
@@ -1488,7 +1812,7 @@ async fn sync_cloud_account(
 
     let result = flight
         .result
-        .get_or_init(|| async { sync_cloud_account_uncached(app_handle).await })
+        .get_or_init(|| async { sync_cloud_account_uncached(app_handle, &current).await })
         .await
         .clone();
 
@@ -1532,24 +1856,90 @@ fn parse_retry_after(value: Option<&str>) -> Option<Duration> {
     Some(Duration::from_secs(seconds))
 }
 
-fn cache_cloud_access_token(access_token: &str) {
+fn cache_cloud_access_token(response: &EmailVerificationResponse) {
     let cache = CLOUD_TOKEN_CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(mut guard) = cache.lock() {
         *guard = Some(CachedCloudToken {
-            value: access_token.to_string(),
-            expires_at: Instant::now() + Duration::from_secs(12 * 60),
+            value: response.access_token.clone(),
+            expires_at: Instant::now() + token_cache_lifetime(response),
+            license_key: license_cache_key(&response.license),
         });
     }
 }
 
+pub(crate) fn invalidate_cloud_token(access_token: &str) -> bool {
+    let Some(cache) = CLOUD_TOKEN_CACHE.get() else {
+        return false;
+    };
+    let Ok(mut guard) = cache.lock() else {
+        return false;
+    };
+    // Do not evict a new login's token for an old in-flight request's 401.
+    if guard
+        .as_ref()
+        .is_some_and(|cached| cached.value == access_token)
+    {
+        *guard = None;
+        return true;
+    }
+    false
+}
+
+pub(crate) fn observe_cloud_auth_rejection(
+    app: &tauri::AppHandle,
+    token: &str,
+    status: reqwest::StatusCode,
+    operation: &'static str,
+) {
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        let invalidated = invalidate_cloud_token(token);
+        crate::renderer_diagnostics::record(
+            app,
+            "main",
+            "cloud_auth_rejected",
+            serde_json::json!({
+                "operation": operation, "httpStatus": 401, "cachedTokenInvalidated": invalidated,
+                "automaticRequestReplay": false,
+            }),
+        );
+    }
+}
+
+pub(crate) fn observe_cloud_response_failure(
+    app: &tauri::AppHandle,
+    status: reqwest::StatusCode,
+    operation: &'static str,
+    error: &reqwest::Error,
+) {
+    crate::renderer_diagnostics::record(
+        app,
+        "main",
+        "cloud_response_failure",
+        serde_json::json!({
+            "operation": operation, "httpStatus": status.as_u16(),
+            "category": if error.is_timeout() { "timeout" } else if error.is_decode() { "decode" } else { "response_body" },
+        }),
+    );
+}
+
 pub(crate) async fn cloud_access_token(app_handle: &tauri::AppHandle) -> Result<String, String> {
-    let cache = CLOUD_TOKEN_CACHE.get_or_init(|| Mutex::new(None));
-    if let Ok(guard) = cache.lock() {
-        if let Some(cached) = guard
-            .as_ref()
-            .filter(|cached| cached.expires_at > Instant::now())
-        {
-            return Ok(cached.value.clone());
+    {
+        // Read license + cache consistently with login/import/logout writes.
+        // Release this synchronous lock before any network await.
+        let _auth_guard = CLOUD_AUTH_WRITE_LOCK
+            .lock()
+            .map_err(|_| "cloud_account_busy: 授权状态暂时无法更新".to_string())?;
+        let current = read_license_content(app_handle)?
+            .ok_or_else(|| "license_missing: 请先完成邮箱注册或登录".to_string())?;
+        let license_key = license_cache_key(&current);
+        let cache = CLOUD_TOKEN_CACHE.get_or_init(|| Mutex::new(None));
+        if let Ok(guard) = cache.lock() {
+            if let Some(cached) = guard
+                .as_ref()
+                .filter(|cached| cached.matches_license_at(&license_key, Instant::now()))
+            {
+                return Ok(cached.value.clone());
+            }
         }
     }
     let access_token = sync_cloud_account(app_handle).await?.access_token;
@@ -1559,13 +1949,32 @@ pub(crate) async fn cloud_access_token(app_handle: &tauri::AppHandle) -> Result<
 fn verify_and_save_cloud_license(
     app_handle: &tauri::AppHandle,
     machine_id: String,
-    license_content: String,
+    response: &EmailVerificationResponse,
+    expected_license: Option<&str>,
 ) -> Result<LicenseStatus, String> {
-    let payload = crate::license::verifier::verify_license_content(&license_content, &machine_id)
+    let payload = crate::license::verifier::verify_license_content(&response.license, &machine_id)
         .map_err(format_license_error)?;
+    let _guard = CLOUD_AUTH_WRITE_LOCK
+        .lock()
+        .map_err(|_| "cloud_account_busy: 授权状态暂时无法更新".to_string())?;
+    if let Some(expected) = expected_license {
+        if read_license_content(app_handle)?.as_deref() != Some(expected) {
+            return Err("cloud_account_changed: 账号已更改，请重新执行当前操作".to_string());
+        }
+    }
     let target = license_path(app_handle)?;
-    fs::write(&target, license_content)
+    fs::write(&target, &response.license)
         .map_err(|err| format!("io_error: 无法保存云端授权文件：{err}"))?;
+    cache_cloud_access_token(response);
+    crate::renderer_diagnostics::record(
+        app_handle,
+        "main",
+        "cloud_token_received",
+        serde_json::json!({
+            "cacheLifetimeSeconds": token_cache_lifetime(response).as_secs(),
+            "serverClockAvailable": response.server_time.is_some(),
+        }),
+    );
     Ok(LicenseStatus::from_payload(machine_id, payload))
 }
 
@@ -1642,7 +2051,7 @@ pub async fn verify_email_registration(
         },
     )
     .await?;
-    verify_and_save_cloud_license(&app_handle, machine_id, response.license)
+    verify_and_save_cloud_license(&app_handle, machine_id, &response, None)
 }
 
 #[tauri::command]
@@ -1667,10 +2076,23 @@ pub async fn sync_email_license(
                 || error.starts_with("license_expired:")
                 || error.starts_with("license_revoked:") =>
         {
+            // A revoked old account's in-flight sync must not remove a newer
+            // login that completed while the request was pending.
+            let _guard = CLOUD_AUTH_WRITE_LOCK
+                .lock()
+                .map_err(|_| "cloud_account_busy: 授权状态暂时无法更新".to_string())?;
+            if read_license_content(&app_handle)?.as_deref() != Some(current.as_str()) {
+                return Err("cloud_account_changed: 账号已更改，请重新执行当前操作".to_string());
+            }
             let path = license_path(&app_handle)?;
             if path.exists() {
                 fs::remove_file(path)
                     .map_err(|err| format!("io_error: 无法移除失效授权文件：{err}"))?;
+            }
+            if let Some(cache) = CLOUD_TOKEN_CACHE.get() {
+                if let Ok(mut guard) = cache.lock() {
+                    *guard = None;
+                }
             }
             Err(error)
         }
@@ -2039,14 +2461,25 @@ pub fn import_license(
         .map_err(format_license_error)?;
 
     let target = license_path(&app_handle)?;
+    let _guard = CLOUD_AUTH_WRITE_LOCK
+        .lock()
+        .map_err(|_| "cloud_account_busy: 授权状态暂时无法更新".to_string())?;
     fs::write(&target, license_content)
         .map_err(|err| format!("io_error: 无法保存授权文件：{err}"))?;
+    if let Some(cache) = CLOUD_TOKEN_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            *guard = None;
+        }
+    }
 
     Ok(LicenseStatus::from_payload(machine_id, payload))
 }
 
 #[tauri::command]
 pub fn remove_license(app_handle: tauri::AppHandle) -> Result<LicenseStatus, String> {
+    let _guard = CLOUD_AUTH_WRITE_LOCK
+        .lock()
+        .map_err(|_| "cloud_account_busy: 授权状态暂时无法更新".to_string())?;
     let path = license_path(&app_handle)?;
     if path.exists() {
         fs::remove_file(&path).map_err(|err| format!("io_error: 无法移除授权文件：{err}"))?;
@@ -2084,10 +2517,11 @@ pub fn require_feature(app_handle: &tauri::AppHandle, feature: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::{
-        cloud_http_fallback, email_sync_retry_delay, is_retryable_email_sync_error, normalize_cloud_image_references,
-        parse_cloud_image_reference, parse_retry_after, validate_display_name, validate_email,
-        CloudCreditUsageResult, CloudImageGenerationRequest, CloudImageModelsResponse,
-        CloudImageReference, CloudVideoGenerationRequest, EmailSyncRequestError,
+        cloud_http_fallback, email_sync_retry_delay, is_retryable_email_sync_error,
+        normalize_cloud_image_references, parse_cloud_image_reference, parse_retry_after,
+        validate_display_name, validate_email, CloudCreditUsageResult, CloudImageGenerationRequest,
+        CloudImageModelsResponse, CloudImageReference, CloudVideoGenerationRequest,
+        EmailSyncRequestError,
     };
     use base64::Engine as _;
     use std::fs;
@@ -2153,7 +2587,10 @@ mod tests {
         let serialized = serde_json::to_value(request).unwrap();
         assert!(serialized.get("provider").is_none());
         assert!(serialized.get("providerChannelId").is_none());
-        assert_eq!(serialized.get("model").and_then(|value| value.as_str()), Some("minimax-h3"));
+        assert_eq!(
+            serialized.get("model").and_then(|value| value.as_str()),
+            Some("minimax-h3")
+        );
     }
 
     #[test]

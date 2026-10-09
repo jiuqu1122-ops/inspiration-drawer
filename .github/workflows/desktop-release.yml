@@ -68,7 +68,15 @@ jobs:
           "TAURI_SIGNING_PRIVATE_KEY_PATH=$keyPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build signed updater assets
-        run: npm run updater:release -- ${{ inputs.version }}
+        shell: pwsh
+        run: |
+          $notesPath = "docs/releases/$env:RELEASE_VERSION.md"
+          if (-not (Test-Path -LiteralPath $notesPath)) {
+            throw "Release notes not found: $notesPath"
+          }
+          $env:UPDATE_NOTES = Get-Content -LiteralPath $notesPath -Raw -Encoding utf8
+          npm run updater:release -- $env:RELEASE_VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Publish GitHub Release
         shell: pwsh
@@ -84,5 +92,5 @@ jobs:
             --repo $env:GITHUB_REPOSITORY `
             --target $env:GITHUB_SHA `
             --title "Inspiration Drawer $env:RELEASE_VERSION" `
-            --notes "Fixed embedded recharge and payment redirects with dedicated in-app windows, handled webpage close requests safely, and kept the canvas open during recharge." `
+            --notes-file "docs/releases/$env:RELEASE_VERSION.md" `
             --latest

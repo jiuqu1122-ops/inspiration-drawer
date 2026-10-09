@@ -13,6 +13,8 @@ mod native_drag;
 mod native_drop;
 mod repositories;
 mod recharge;
+mod renderer_diagnostics;
+use renderer_diagnostics::{window_action, WindowAction};
 mod services;
 mod update_cache;
 mod virtual_drop;
@@ -16890,7 +16892,7 @@ async fn capture_screen_to_file(
         // and a later live capture through the overlay can return a black frame
         // on hardware-decoded video.
         if let Some(snip) = handle.get_webview_window("snip") {
-            let _ = snip.hide();
+            let _ = window_action(&snip, WindowAction::Hide, "capture_screen_to_file");
         }
         let desktop = crate::snip_desktop::capture_all_screens()?;
         store_snip_frozen_desktop(desktop);
@@ -17024,7 +17026,7 @@ async fn capture_screen_area_absolute_to_file(
         let physical_w = (width * scale).round().max(1.0) as u32;
         let physical_h = (height * scale).round().max(1.0) as u32;
 
-        window.hide().map_err(|e| e.to_string())?;
+        window_action(&window, WindowAction::Hide, "capture_screen_area_absolute_to_file").map_err(|e| e.to_string())?;
         let _ = window.set_position(LogicalPosition::new(-32000.0, -32000.0));
         std::thread::sleep(std::time::Duration::from_millis(16));
 
@@ -17062,7 +17064,7 @@ async fn capture_snip_selection_to_file(
         let physical_w = (width * scale_x).round().max(1.0) as u32;
         let physical_h = (height * scale_y).round().max(1.0) as u32;
 
-        window.hide().map_err(|e| e.to_string())?;
+        window_action(&window, WindowAction::Hide, "capture_snip_selection_to_file").map_err(|e| e.to_string())?;
         let _ = window.set_position(LogicalPosition::new(-32000.0, -32000.0));
         std::thread::sleep(std::time::Duration::from_millis(16));
 
@@ -17101,7 +17103,7 @@ async fn capture_snip_window_selection_to_file(
         let physical_w = (width * scale_x).round().max(1.0) as u32;
         let physical_h = (height * scale_y).round().max(1.0) as u32;
 
-        snip.hide().map_err(|e| e.to_string())?;
+        window_action(&snip, WindowAction::Hide, "capture_snip_window_selection_to_file").map_err(|e| e.to_string())?;
         let _ = snip.set_position(LogicalPosition::new(-32000.0, -32000.0));
         std::thread::sleep(std::time::Duration::from_millis(16));
 
@@ -17140,7 +17142,7 @@ async fn complete_snip_selection(
         .get_webview_window("snip")
         .ok_or_else(|| "snip window not found".to_string())?;
 
-    let _ = snip.hide();
+    let _ = window_action(&snip, WindowAction::Hide, "complete_snip_selection");
     let _ = snip.set_position(LogicalPosition::new(-32000.0, -32000.0));
     if let Some(main) = app_handle.get_webview_window("main") {
         let _ = main.set_ignore_cursor_events(false);
@@ -17251,7 +17253,7 @@ fn capture_screen_area_to_file_impl(
     let physical_h = (height * scale).round().max(1.0) as u32;
 
     // 先隐藏并移走全屏截图窗口，避免 DWM 还没完成 hide 时把选区框截进去。
-    window.hide().map_err(|e| e.to_string())?;
+    window_action(&window, WindowAction::Hide, "capture_screen_area_to_file_impl").map_err(|e| e.to_string())?;
     let _ = window.set_position(LogicalPosition::new(-32000.0, -32000.0));
     std::thread::sleep(std::time::Duration::from_millis(16));
 
@@ -17627,7 +17629,7 @@ fn position_side_edge(
     edge.set_position(LogicalPosition::new(edge_x, edge_y))
         .map_err(|e| e.to_string())?;
     edge.set_always_on_top(true).ok();
-    edge.show().map_err(|e| e.to_string())?;
+    window_action(&edge, WindowAction::Show, "position_side_edge").map_err(|e| e.to_string())?;
     let _ = height;
     Ok(())
 }
@@ -17676,7 +17678,7 @@ fn position_float_edge(
     edge.set_position(LogicalPosition::new(next_x, next_y))
         .map_err(|e| e.to_string())?;
     edge.set_always_on_top(true).ok();
-    edge.show().map_err(|e| e.to_string())?;
+    window_action(&edge, WindowAction::Show, "position_float_edge").map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -17694,7 +17696,7 @@ fn position_edge(
     );
     if is_anti_touch_locked() || suppress_for_drawer {
         if let Some(edge) = app_handle.get_webview_window("edge") {
-            let _ = edge.hide();
+            let _ = window_action(&edge, WindowAction::Hide, "position_edge");
         }
         return Ok(());
     }
@@ -17728,7 +17730,7 @@ fn hide_edge(app_handle: tauri::AppHandle) -> Result<(), String> {
     let edge = app_handle
         .get_webview_window("edge")
         .ok_or_else(|| "edge window not found".to_string())?;
-    edge.hide().map_err(|e| e.to_string())
+    window_action(&edge, WindowAction::Hide, "hide_edge").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -17774,7 +17776,7 @@ fn show_snip_window(
         "snip-reset",
         serde_json::json!({ "backgroundPath": background_path }),
     );
-    snip.show().map_err(|e| e.to_string())?;
+    window_action(&snip, WindowAction::Show, "show_snip_window").map_err(|e| e.to_string())?;
     let _ = snip.set_focus();
 
     #[cfg(target_os = "windows")]
@@ -17809,7 +17811,7 @@ fn show_snip_window(
 #[tauri::command]
 fn hide_snip_window(app_handle: tauri::AppHandle) -> Result<(), String> {
     if let Some(snip) = app_handle.get_webview_window("snip") {
-        let _ = snip.hide();
+        let _ = window_action(&snip, WindowAction::Hide, "hide_snip_window");
         let _ = snip.set_position(LogicalPosition::new(-32000.0, -32000.0));
     }
     if let Some(main) = app_handle.get_webview_window("main") {
@@ -17833,7 +17835,7 @@ fn recover_after_snip(
     remove_snip_background_file(&app_handle, background_path.as_deref());
     let _ = width;
     if let Some(snip) = app_handle.get_webview_window("snip") {
-        let _ = snip.hide();
+        let _ = window_action(&snip, WindowAction::Hide, "recover_after_snip");
         let _ = snip.set_position(LogicalPosition::new(-32000.0, -32000.0));
     }
     if let Some(main) = app_handle.get_webview_window("main") {
@@ -17843,7 +17845,7 @@ fn recover_after_snip(
     if restore_drawer {
         if let Some(main) = app_handle.get_webview_window("main") {
             apply_main_workbench_mode(&main);
-            let _ = main.show();
+            let _ = window_action(&main, WindowAction::Show, "recover_after_snip");
             let _ = main.emit("drawer-opened", ());
         }
     } else {
@@ -17866,10 +17868,10 @@ fn open_drawer(
 ) -> Result<(), String> {
     if POST_INSTALL_LAUNCH_PENDING.load(Ordering::Acquire) {
         if let Some(main) = app_handle.get_webview_window("main") {
-            let _ = main.hide();
+            let _ = window_action(&main, WindowAction::Hide, "open_drawer");
         }
         if let Some(edge) = app_handle.get_webview_window("edge") {
-            let _ = edge.hide();
+            let _ = window_action(&edge, WindowAction::Hide, "open_drawer");
         }
         return Ok(());
     }
@@ -17877,10 +17879,10 @@ fn open_drawer(
     if is_anti_touch_locked() && !is_startup_close_locked() {
         if let Some(main) = app_handle.get_webview_window("main") {
             let _ = main.emit("drawer-closed", ());
-            let _ = main.hide();
+            let _ = window_action(&main, WindowAction::Hide, "open_drawer");
         }
         if let Some(edge) = app_handle.get_webview_window("edge") {
-            let _ = edge.hide();
+            let _ = window_action(&edge, WindowAction::Hide, "open_drawer");
         }
         return Ok(());
     }
@@ -17892,10 +17894,10 @@ fn open_drawer(
 
     if is_main_workbench_active() {
         apply_main_workbench_mode(&main);
-        main.show().map_err(|e| e.to_string())?;
+        window_action(&main, WindowAction::Show, "open_drawer").map_err(|e| e.to_string())?;
         let _ = main.emit("drawer-opened", ());
         if let Some(edge_window) = edge {
-            let _ = edge_window.hide();
+            let _ = window_action(&edge_window, WindowAction::Hide, "open_drawer");
         }
         return Ok(());
     }
@@ -18037,12 +18039,12 @@ fn open_drawer(
     main.set_position(LogicalPosition::new(x, y))
         .map_err(|e| e.to_string())?;
     apply_main_workbench_mode(&main);
-    main.show().map_err(|e| e.to_string())?;
+    window_action(&main, WindowAction::Show, "open_drawer").map_err(|e| e.to_string())?;
     let _ = main.emit("drawer-opened", ());
 
     // 抽屉打开期间隐藏 edge，避免移动主体时经过触发器又重新展开。
     if let Some(edge_window) = edge {
-        let _ = edge_window.hide();
+        let _ = window_action(&edge_window, WindowAction::Hide, "open_drawer");
     }
 
     Ok(())
@@ -18081,13 +18083,13 @@ fn close_drawer(app_handle: tauri::AppHandle, mode: Option<String>) -> Result<()
     // 任何旧的 edge 预热、mouseleave 或定时器触发 close_drawer，都不能真的 hide 主窗口。
     if is_startup_close_locked() {
         apply_main_workbench_mode(&main);
-        main.show().map_err(|e| e.to_string())?;
+        window_action(&main, WindowAction::Show, "close_drawer").map_err(|e| e.to_string())?;
         let _ = main.emit("drawer-opened", ());
         return Ok(());
     }
 
     let _ = main.emit("drawer-closed", ());
-    main.hide().map_err(|e| e.to_string())?;
+    window_action(&main, WindowAction::Hide, "close_drawer").map_err(|e| e.to_string())?;
     position_edge(app_handle, height, mode, None, None).ok();
     Ok(())
 }
@@ -18458,7 +18460,7 @@ fn show_note_window_impl(
         }
     }
 
-    note.show().map_err(|e| e.to_string())?;
+    window_action(&note, WindowAction::Show, "show_note_window_impl").map_err(|e| e.to_string())?;
     let _ = note.set_focus();
     Ok(())
 }
@@ -18471,13 +18473,13 @@ fn hide_note_window(app_handle: tauri::AppHandle, label: String) -> Result<(), S
         return Ok(());
     };
 
-    note.hide().map_err(|e| e.to_string())?;
+    window_action(&note, WindowAction::Hide, "hide_note_window").map_err(|e| e.to_string())?;
     if can_prewarm_note_window(&label)? {
         return Ok(());
     }
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(160));
-        let _ = note.close();
+        let _ = window_action(&note, WindowAction::Close, "hide_note_window");
     });
     Ok(())
 }
@@ -18994,12 +18996,19 @@ fn current_or_default_drawer_size(app: &tauri::AppHandle) -> (f64, f64) {
         .unwrap_or((400.0, 800.0))
 }
 
-fn request_force_rescue(app: &tauri::AppHandle) {
+fn request_force_rescue(app: &tauri::AppHandle, reason: &'static str) {
+    renderer_diagnostics::record(app, "main", "main_reopen_requested", serde_json::json!({"reason": reason}));
     set_startup_close_lock(0);
     ANTI_TOUCH_LOCKED.store(0, Ordering::Relaxed);
 
     let (width, height) = current_or_default_drawer_size(app);
-    let _ = open_drawer(app.clone(), width, height, None);
+    let opened = open_drawer(app.clone(), width, height, None);
+    renderer_diagnostics::record(app, "main", "main_reopen_drawer_layout", serde_json::json!({"reason": reason, "ok": opened.is_ok()}));
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = renderer_diagnostics::restore_main_window(&main, reason);
+    } else {
+        renderer_diagnostics::record(app, "main", "main_reopen_window_missing", serde_json::json!({"reason": reason}));
+    }
     let _ = app.emit("force-rescue", ());
 }
 
@@ -19045,8 +19054,9 @@ fn schedule_startup_edge_rescue(app: tauri::AppHandle) {
 
 fn main() {
     tauri::Builder::default()
+        .manage(renderer_diagnostics::DiagnosticState::default())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            request_force_rescue(app);
+            request_force_rescue(app, "second_instance_launch");
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
@@ -19062,6 +19072,10 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
+            renderer_diagnostics::record_renderer_diagnostic,
+            renderer_diagnostics::diagnostic_minimize_window,
+            renderer_diagnostics::diagnostic_show_window,
+            renderer_diagnostics::diagnostic_hide_window,
             load_items,
             commands::assets::list_assets,
             commands::assets::get_asset_by_id,
@@ -19309,6 +19323,7 @@ fn main() {
             inspiration_space_submit,
         ])
         .setup(|app| {
+            renderer_diagnostics::init(app.handle());
             update_cache::cleanup_update_cache_on_startup(app.handle());
             POST_INSTALL_LAUNCH_PENDING.store(take_post_install_launch_marker(), Ordering::Release);
             set_startup_close_lock(16_000);
@@ -19341,7 +19356,7 @@ fn main() {
                 let _ = snip.set_shadow(false);
                 let _ = snip.set_always_on_top(true);
                 let _ = snip.set_min_size(Some(tauri::LogicalSize::new(1.0, 1.0)));
-                let _ = snip.hide();
+                let _ = window_action(&snip, WindowAction::Hide, "main");
             }
 
             if let Err(err) = native_drop::init_native_drop(app) {
@@ -19368,7 +19383,7 @@ fn main() {
                     .show_menu_on_left_click(false)
                     .on_menu_event(|app, event| match event.id().as_ref() {
                         "open_drawer" => {
-                            request_force_rescue(app);
+                            request_force_rescue(app, "tray_open_menu");
                         }
                         "toggle_trigger" => {
                             let _ = app.emit("tray-toggle-trigger-mode", ());
@@ -19389,7 +19404,7 @@ fn main() {
                         } = event
                         {
                             let app = tray.app_handle();
-                            request_force_rescue(&app);
+                            request_force_rescue(&app, "tray_left_click");
                         }
                     })
                     .build(app);

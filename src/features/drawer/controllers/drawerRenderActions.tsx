@@ -9,19 +9,27 @@ import { getDrawerFolderPathName } from '../../folderModel';
 
 type derivedUiActionContext = { getCanvasAiNodeDesignSizeForItem: (canvasItem: CanvasImageItem, promptExpanded?: boolean, outputsExpanded?: boolean) => { width: number; height: number; }; DRAWER_FOLDER_TONES: { active: string; soft: string; drag: string; label: string; badge: string; }[]; isCanvasMode: boolean; canvasFolderImportPrompt: CanvasFolderMediaPickerState | null; activeFolderId: string; dragOverFolderId: string | null; folderMoveDragOverId: string | null; folders: Folder[]; folderItemCounts: Map<string, number>; folderChildrenByParent: Map<string, Folder[]>; collapsedFolderIds: string[]; startDrawerFolderPointerDrag: (event: React.PointerEvent, folderId: string) => void; handleDrawerFolderDragStart: (event: React.DragEvent, folderId: string) => void; handleDrawerFolderDragEnd: () => void; handleFolderContextMenu: (event: React.MouseEvent, folderId: string) => void; handleDrawerFolderPointerEnter: (folderId: string) => void; handleDrawerFolderPointerLeave: (folderId: string) => void; handleDrawerFolderPointerUp: (folderId?: string, folderName?: string) => void; handleDrawerItemDragOverFolder: (e: React.DragEvent, folderId: string) => void; handleDrawerItemDragLeaveFolder: (e: React.DragEvent, folderId: string) => void; handleDrawerItemDropToFolder: (e: React.DragEvent, folderId?: string, folderName?: string) => void; suppressNextFolderClickRef: React.RefObject<boolean>; requestAddFolderMediaToCanvas: (folderId?: string, folderName?: string, anchor?: { x: number; y: number; }) => void; handleDrawerFolderSelectionClick: (folderId: string, event: React.MouseEvent) => boolean; setActiveFolderId: React.Dispatch<React.SetStateAction<string>>; drag: string; active: string; soft: string; badge: string; deleteDrawerFolders: (folderIds: string[]) => void; getFolderActionIds: (folderId?: string | null) => string[]; handleOpenFolderModal: (parentId?: string) => void; setCollapsedFolderIds: React.Dispatch<React.SetStateAction<string[]>>; editingFolderId: string | null; renameValue: string; setRenameValue: React.Dispatch<React.SetStateAction<string>>; handleRenameFolder: (id: string) => void; setEditingFolderId: React.Dispatch<React.SetStateAction<string | null>>; label: string; };
 
+const renderedBoxCache = new WeakMap<CanvasImageItem, {
+  x: number; y: number; width: number; height: number;
+  design: { width: number; height: number } | null; box: CanvasItemBox;
+}>();
+
 export const getCanvasItemRenderedBoxImpl = (ctx: Pick<derivedUiActionContext, 'getCanvasAiNodeDesignSizeForItem'>, canvasItem: CanvasImageItem): CanvasItemBox => {
   const { getCanvasAiNodeDesignSizeForItem } = ctx;
     const isCanvasAiNodeItem = isCanvasAiGeneratorType(canvasItem.ai?.type) || canvasItem.ai?.type === 'workflow';
-    if (!isCanvasAiNodeItem) {
-      return {
+    const design = isCanvasAiNodeItem ? getCanvasAiNodeDesignSizeForItem(canvasItem) : null;
+    const cached = renderedBoxCache.get(canvasItem);
+    if (cached && cached.design === design && cached.x === canvasItem.x && cached.y === canvasItem.y
+      && cached.width === canvasItem.width && cached.height === canvasItem.height) return cached.box;
+    const box = design ? fitCanvasBoxToDesign(canvasItem, design) : {
         x: canvasItem.x,
         y: canvasItem.y,
         width: canvasItem.width,
         height: canvasItem.height,
       };
-    }
-    const designSize = getCanvasAiNodeDesignSizeForItem(canvasItem);
-    return fitCanvasBoxToDesign(canvasItem, designSize);
+    renderedBoxCache.set(canvasItem, { x: canvasItem.x, y: canvasItem.y,
+      width: canvasItem.width, height: canvasItem.height, design, box });
+    return box;
 
 };
 

@@ -1,3 +1,4 @@
+use crate::renderer_diagnostics::{window_action, WindowAction};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tauri::{
@@ -53,7 +54,7 @@ fn attach_controlled_close(window: &WebviewWindow) -> Result<(), String> {
                                         let dispatcher = app.clone();
                                         let _ = dispatcher.run_on_main_thread(move || {
                                             if let Some(window) = app.get_webview_window(&label) {
-                                                let _ = window.destroy();
+                                                let _ = window_action(&window, WindowAction::Destroy, "attach_controlled_close");
                                             }
                                         });
                                     }
@@ -221,7 +222,7 @@ fn build_recharge_window(
     let window = builder.build().map_err(|error| error.to_string())?;
     #[cfg(target_os = "windows")]
     if let Err(error) = attach_controlled_close(&window) {
-        let _ = window.destroy();
+        let _ = window_action(&window, WindowAction::Destroy, "build_recharge_window");
         return Err(error);
     }
     let app_for_close = app.clone();
@@ -231,7 +232,7 @@ fn build_recharge_window(
             if is_shop {
                 for (label, payment) in app_for_close.webview_windows() {
                     if label.starts_with(PAYMENT_WINDOW_PREFIX) {
-                        let _ = payment.destroy();
+                        let _ = window_action(&payment, WindowAction::Destroy, "build_recharge_window");
                     }
                 }
                 let _ = app_for_close.emit_to("main", "credit-recharge-closed", ());
@@ -240,10 +241,10 @@ fn build_recharge_window(
     });
     if let Err(error) = window
         .center()
-        .and_then(|_| window.show())
+        .and_then(|_| window_action(&window, WindowAction::Show, "build_recharge_window"))
         .and_then(|_| window.set_focus())
     {
-        let _ = window.destroy();
+        let _ = window_action(&window, WindowAction::Destroy, "build_recharge_window");
         return Err(error.to_string());
     }
     Ok(window)
@@ -252,7 +253,7 @@ fn build_recharge_window(
 pub fn open_recharge_window(app: &AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(RECHARGE_WINDOW_LABEL) {
         window.unminimize().map_err(|error| error.to_string())?;
-        window.show().map_err(|error| error.to_string())?;
+        window_action(&window, WindowAction::Show, "open_recharge_window").map_err(|error| error.to_string())?;
         window.set_focus().map_err(|error| error.to_string())?;
         return Ok(());
     }
@@ -283,11 +284,11 @@ pub async fn close_credit_recharge_window(
     if let Some(shop) = app.get_webview_window(RECHARGE_WINDOW_LABEL) {
         // The shop's Destroyed handler closes its payments. Avoid destroying
         // a payment twice while that handler is processing the close request.
-        return shop.destroy().map_err(|error| error.to_string());
+        return window_action(&shop, WindowAction::Destroy, "close_credit_recharge_window").map_err(|error| error.to_string());
     }
     for (label, window) in app.webview_windows() {
         if is_recharge_window(&label) {
-            window.destroy().map_err(|error| error.to_string())?;
+            window_action(&window, WindowAction::Destroy, "close_credit_recharge_window").map_err(|error| error.to_string())?;
         }
     }
     Ok(())

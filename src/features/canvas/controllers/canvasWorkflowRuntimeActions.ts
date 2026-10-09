@@ -1,3 +1,4 @@
+import { beginWorkflowDiagnostic } from '../../../utils/rendererDiagnostics';
 import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import React from 'react';
 import { getAssetById } from '../../../services/assetsApi';
@@ -146,6 +147,7 @@ export const runCanvasExpandedWorkflowFromNodeImpl = async (ctx: Pick<canvasWork
 
     const failedIds = new Set<string>();
     let successCount = 0;
+    const endDiagnostic = beginWorkflowDiagnostic(createCanvasAiClientRequestId(targetId));
     runIds.forEach(nodeId => markCanvasRunNodeActive(runCanvasId, nodeId));
     try {
       for (const nodeId of runIds) {
@@ -210,6 +212,7 @@ export const runCanvasExpandedWorkflowFromNodeImpl = async (ctx: Pick<canvasWork
       }
       }
     } finally {
+      endDiagnostic();
       await waitForCanvasBackgroundPatches(runCanvasId);
       runIds.forEach(nodeId => markCanvasRunNodeSettled(runCanvasId, nodeId));
     }
@@ -251,6 +254,7 @@ export const retryCanvasExpandedWorkflowOutputImpl = async (ctx: Pick<canvasWork
       showToast('这张图片正在重新生成');
       return true;
     }
+    const endDiagnostic = beginWorkflowDiagnostic(runToken);
     markCanvasRunNodeActive(runCanvasId, targetId);
     pushCanvasUndoSnapshot('重试工作流单张输出');
 
@@ -322,6 +326,7 @@ export const retryCanvasExpandedWorkflowOutputImpl = async (ctx: Pick<canvasWork
         : '这张工作流图片重新生成失败');
       return true;
     } finally {
+      endDiagnostic();
       releaseCanvasAiRun(canvasAiRunTokensRef.current, runKey, runToken);
       await waitForCanvasBackgroundPatches(runCanvasId);
       markCanvasRunNodeSettled(runCanvasId, targetId);
@@ -397,6 +402,7 @@ export const retryCanvasCollapsedWorkflowOutputImpl = async (ctx: Pick<canvasWor
       return true;
     }
     setCanvasChatVisibility(true);
+    const endDiagnostic = beginWorkflowDiagnostic(runToken);
     markCanvasRunNodeActive(runCanvasId, moduleId);
     pushCanvasUndoSnapshot('重试工作流单张输出');
 
@@ -525,6 +531,7 @@ export const retryCanvasCollapsedWorkflowOutputImpl = async (ctx: Pick<canvasWor
         : '这张工作流图片重新生成失败');
       return true;
     } finally {
+      endDiagnostic();
       releaseCanvasAiRun(canvasAiRunTokensRef.current, runKey, runToken);
       await waitForCanvasBackgroundPatches(runCanvasId);
       markCanvasRunNodeSettled(runCanvasId, moduleId);
@@ -778,6 +785,7 @@ export const runCanvasWorkflowModuleNodeImpl = async (ctx: Pick<canvasWorkflowRu
       showToast('这个工作流正在运行，请等待完成后再重试');
       return;
     }
+    const endDiagnostic = beginWorkflowDiagnostic(runToken);
     markCanvasRunNodeActive(runCanvasId, targetId);
 
     try {
@@ -1309,6 +1317,7 @@ export const runCanvasWorkflowModuleNodeImpl = async (ctx: Pick<canvasWorkflowRu
     });
     return publishWorkflowResult('success', finalOutputs);
     } finally {
+      endDiagnostic();
       releaseCanvasAiRun(canvasAiRunTokensRef.current, runKey, runToken);
       await waitForCanvasBackgroundPatches(runCanvasId);
       markCanvasRunNodeSettled(runCanvasId, targetId);

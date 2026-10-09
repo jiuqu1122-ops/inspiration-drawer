@@ -1370,7 +1370,7 @@ export const leaveCanvasToDrawerImpl = (ctx: Pick<canvasInteractionsActionContex
 export const runCanvasWorkbenchWindowActionImpl = (ctx: Pick<canvasInteractionsActionContext, 'appWindow' | 'requestExitCanvasMode' | 'showToast'>, action: 'minimize' | 'maximize' | 'close') => {
   const { appWindow, requestExitCanvasMode, showToast } = ctx;
     if (action === 'minimize') {
-      appWindow.minimize().catch((err) => {
+      invoke('diagnostic_minimize_window').catch((err) => {
         console.warn('minimize canvas workbench failed:', err);
         showToast('最小化失败');
       });
@@ -1390,7 +1390,7 @@ export const runCanvasWorkbenchWindowActionImpl = (ctx: Pick<canvasInteractionsA
 export const runDrawerWorkbenchWindowActionImpl = (ctx: Pick<canvasInteractionsActionContext, 'appWindow' | 'isPinnedRef' | 'isPointerInsideDrawerRef' | 'setIsOpen' | 'setIsPinned' | 'showToast'>, action: 'minimize' | 'maximize' | 'close') => {
   const { appWindow, isPinnedRef, isPointerInsideDrawerRef, setIsOpen, setIsPinned, showToast } = ctx;
     if (action === 'minimize') {
-      appWindow.minimize().catch((err) => {
+      invoke('diagnostic_minimize_window').catch((err) => {
         console.warn('minimize drawer workbench failed:', err);
         showToast('最小化失败');
       });

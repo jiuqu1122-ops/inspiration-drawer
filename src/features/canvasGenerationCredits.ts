@@ -769,15 +769,17 @@ export const estimateCanvasWorkflowCredits = (
     const pricingIdentity = options.resolveImagePricingIdentity?.(node);
     const resolvedModel = options.resolveImageModel?.(node);
     const serverDriven = pricingIdentity?.serverDriven ?? options.serverDriven ?? false;
-    // Historical workflows can contain retired/unrecognised model labels. They
-    // are executed with the current provider fallback, so pricing the stale
-    // label at the generic 100-credit sentinel overstates the real run.
+    // Local/legacy pricing may fall back to the provider default. Wallet
+    // pricing must retain a saved model: findCanvasImagePrice handles known
+    // legacy ids, and unknown ids must not borrow another model's price.
     const savedModelIsPriced = !serverDriven && options.pricing
       ? hasConfiguredImageModel(savedModel, options.pricing)
       : !serverDriven
         && getCanvasImageUnitCredits(savedModel, node.ai?.resolution) !== CANVAS_DEFAULT_IMAGE_UNIT_CREDITS;
     const model = pricingIdentity?.model
-      || (savedModel && savedModelIsPriced ? savedModel : resolvedModel || savedModel);
+      || (serverDriven
+        ? savedModel || resolvedModel
+        : savedModel && savedModelIsPriced ? savedModel : resolvedModel || savedModel);
     const estimate = estimateCanvasImageGenerationCredits({
       model,
       resolution: node.ai?.resolution,

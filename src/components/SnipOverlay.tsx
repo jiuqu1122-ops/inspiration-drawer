@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { emitTo, listen } from '@tauri-apps/api/event';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getStoredDrawerSize } from '../features/drawerPrefs';
 import { getStoredTriggerMode } from '../features/triggerModel';
 import { acquireTimedLocalLock, localLockKeyPart } from '../features/localLock';
@@ -10,7 +9,6 @@ import { acquireTimedLocalLock, localLockKeyPart } from '../features/localLock';
 export const SNIP_RESTORE_DRAWER_STORAGE_KEY = 'drawer_snip_restore_drawer';
 export const SNIP_CAPTURE_LOCK_STORAGE_KEY = 'drawer_snip_capture_lock';
 
-const appWindow = getCurrentWindow();
 
 export function SnipOverlay() {
   const [selection, setSelection] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
@@ -35,7 +33,7 @@ export function SnipOverlay() {
       height: size.height,
       mode,
       backgroundPath: frozenBackgroundPath || null,
-    }).catch(() => invoke('hide_snip_window').catch(() => appWindow.hide().catch(() => {})));
+    }).catch(() => invoke('hide_snip_window').catch(() => invoke('diagnostic_hide_window').catch(() => {})));
   };
 
   const cancelSnip = async () => {

@@ -1,47 +1,25 @@
+import { useLayoutEffect, useRef } from 'react';
 import { CanvasNodeRenderGate } from '../../../components/CanvasNodeRenderGate';
-import { getCanvasAiMediaType } from '../../canvasAiRuntime';
-import { shouldMountThreeSceneRenderer } from '../../three/model/threeSceneInteraction';
+import { createCanvasNodeRenderScope, getCanvasNodeRenderDependencies } from '../canvasNodeRenderDependencies';
 import { CanvasNode } from './CanvasNode';
-import type { CanvasAiGeneratedOutput,CanvasImageItem } from '../../canvasModel';
+import type { CanvasImageItem } from '../../canvasModel';
 
 export type CanvasNodeLayerScope = Record<string, any>;
 
 export function CanvasNodeLayer({ scope, canvasItemsRef }: { scope: CanvasNodeLayerScope; canvasItemsRef: { current: any[] } }) {
-  const { activeThreeSceneId, canvasAgent, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiExpandedOutputNodeIds, canvasAiPromptEditingId, canvasAiProvider, canvasAiUnifiedImageModelOptions, canvasConnectionDraft, canvasInputMenuForId, canvasInputPickTargetId, canvasItemsById, canvasPromptOptimizingId, canvasRenderableItems, canvasRenderScale, canvasScaledNodeRadius, canvasSelectedIdsSet, canvasTextAgentRunningIds, canvasWorkflowSingleEditGroupIds, canvasWorkflowTemplates, canvasWorkingTimerTick, threeSceneAnalyzingIds } = scope;
+  const { canvasRenderableItems } = scope;
+  const latestScope = useRef(scope);
+  const actions = useRef(new Map<string, (...args: any[]) => any>());
+  // Do not expose an interrupted concurrent render's actions to the old UI.
+  useLayoutEffect(() => { latestScope.current = scope; }, [scope]);
+  const renderScope = createCanvasNodeRenderScope(scope, latestScope, actions.current);
   return (
 <>
 {canvasRenderableItems.map((canvasItem: CanvasImageItem) => (
                           <CanvasNodeRenderGate
                             key={canvasItem.id}
-                            dependencies={[
-                              canvasItem,
-                              canvasItem.item.type === 'video'
-                                || getCanvasAiMediaType(canvasItem.ai) === 'video'
-                                || canvasItem.ai?.outputs?.some((output: CanvasAiGeneratedOutput) => output.mediaType === 'video')
-                                ? canvasSelectedIdsSet.has(canvasItem.id)
-                                : null,
-                              canvasTextAgentRunningIds.includes(canvasItem.id),
-                              shouldMountThreeSceneRenderer(canvasItem.id, activeThreeSceneId),
-                              threeSceneAnalyzingIds.includes(canvasItem.id),
-                              canvasAiPromptEditingId === canvasItem.id,
-                              canvasPromptOptimizingId === canvasItem.id,
-                              canvasInputMenuForId === canvasItem.id,
-                              canvasInputPickTargetId === canvasItem.id,
-                              Boolean(canvasConnectionDraft),
-                              canvasAiExpandedOutputNodeIds.has(canvasItem.id),
-                              canvasRenderScale,
-                              canvasScaledNodeRadius,
-                              canvasAiProvider,
-                              canvasAiCredentialSource,
-                              canvasAiCloudImageModels,
-                              canvasAiUnifiedImageModelOptions,
-                              canvasAgent.settings,
-                              canvasWorkflowTemplates,
-                              canvasWorkflowSingleEditGroupIds,
-                              canvasItem.ai?.status === 'working' ? canvasWorkingTimerTick : null,
-                              ...(canvasItem.inputs || []).map((inputId: string) => canvasItemsById.get(inputId)),
-                            ]}
-                            render={() => <CanvasNode scope={scope} canvasItem={canvasItem} canvasItemsRef={canvasItemsRef} />}
+                            dependencies={getCanvasNodeRenderDependencies(scope, canvasItem)}
+                            render={() => <CanvasNode scope={renderScope} canvasItem={canvasItem} canvasItemsRef={canvasItemsRef} />}
                           />
                         ))}
 </>

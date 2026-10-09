@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW } from './canvasTemplates';
 import type { CanvasWorkflowTemplate } from './canvasTemplates';
 import { findAiCatalogModel } from './aiModelCapabilities';
+import { getCanvasAiDefaultModel, normalizeCanvasAiProvider } from '../utils/canvasAiConfig';
 import {
   describeCanvasImageCreditEstimate,
   describeCanvasVideoCreditEstimate,
@@ -389,6 +390,71 @@ describe('canvas generation credits', () => {
     expect(estimateCanvasImageGenerationCredits({
       model: 'custom-pro-2k', resolution: '2k', count: 1, serverDriven: true,
     }, pricing)).toMatchObject({ available: false, reason: 'pricing_unavailable', totalCredits: 0 });
+  });
+
+  it('preserves saved Gemini models in an old wallet workflow when the catalog has no legacy aliases', () => {
+    const pricing = {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3', canvasTextAgentCredits: '1',
+      imageDefaultCredits: '999999', videoDefaultCredits: '500', videoModels: [],
+      imageModels: [
+        { model: 'nano-banana-2', billingType: 'image_resolution' as const,
+          creditsByResolution: { '2k': '15', '4k': '18' } },
+        { model: 'nano-banana-pro', billingType: 'image_resolution' as const,
+          creditsByResolution: { '2k': '18', '4k': '20' } },
+      ],
+    };
+    const workflow = {
+      id: 'legacy-denoise-4k', label: 'Legacy denoise workflow', hint: '',
+      nodes: [
+        { id: 'render', x: 0, y: 0, width: 100, height: 100,
+          item: { id: 'render', type: 'image' as const, content: '' },
+          ai: { type: 'image-generator' as const, provider: 'new-api' as const,
+            model: 'gemini-3.1-flash-image-preview', resolution: '2k', count: 1,
+            providerCandidates: [{ source: 'wallet' as const, provider: 'new-api' as const,
+              model: 'gemini-3.1-flash-image-preview', providerChannelId: 'legacy-channel' }] } },
+        { id: 'text', x: 150, y: 0, width: 100, height: 100,
+          item: { id: 'text', type: 'text' as const, content: '' }, textMode: 'plain' as const },
+        { id: 'enhance', x: 300, y: 0, width: 100, height: 100,
+          item: { id: 'enhance', type: 'image' as const, content: '' },
+          ai: { type: 'image-generator' as const, provider: 'new-api' as const,
+            model: 'gemini-3-pro-image-preview', resolution: '4k', count: 1 } },
+      ],
+    } as CanvasWorkflowTemplate;
+    const original = JSON.stringify(workflow);
+    // Match the folded workflow view model: old candidates lack canonical ids,
+    // and the server catalog need not advertise their old provider aliases.
+    expect(estimateCanvasWorkflowCredits(workflow, {
+      pricing, serverDriven: true,
+      resolveImagePricingIdentity: () => undefined,
+      resolveImageModel: node => getCanvasAiDefaultModel(normalizeCanvasAiProvider(node.ai?.provider)),
+    })).toMatchObject({
+      imageNodeCount: 2, imageOutputCount: 2, imageCredits: 35,
+      llmNodeCount: 0, totalCredits: 35, pricingState: 'ready',
+    });
+    expect(JSON.stringify(workflow)).toBe(original);
+  });
+
+  it('does not price an unknown saved wallet model using a priced provider default', () => {
+    const pricing = {
+      agentRequestCredits: '7', inspirationAnalysisCredits: '3', canvasTextAgentCredits: '1',
+      imageDefaultCredits: '999999', videoDefaultCredits: '500', videoModels: [],
+      imageModels: [{ model: 'nano-banana-pro', billingType: 'image_resolution' as const,
+        creditsByResolution: { '2k': '18' } }],
+    };
+    const workflow = {
+      id: 'unknown-wallet-model', label: 'Unknown model', hint: '',
+      nodes: [{ id: 'render', x: 0, y: 0, width: 100, height: 100,
+        item: { id: 'render', type: 'image' as const, content: '' },
+        ai: { type: 'image-generator' as const, model: 'retired-image-model-v1', resolution: '2k', count: 1 } }],
+    } as CanvasWorkflowTemplate;
+    expect(estimateCanvasWorkflowCredits(workflow, {
+      pricing, serverDriven: true, resolveImageModel: () => 'nano-banana-pro',
+    })).toMatchObject({ imageCredits: 0, totalCredits: 0, pricingState: 'unavailable', pricingAvailable: false });
+    expect(estimateCanvasWorkflowCredits({ ...workflow,
+      nodes: [{ ...workflow.nodes[0]!, ai: { ...workflow.nodes[0]!.ai!, model: undefined } }],
+    }, {
+      pricing, serverDriven: true, resolveImageModel: () => 'nano-banana-pro',
+    })).toMatchObject({ imageCredits: 18, totalCredits: 18, pricingState: 'ready' });
   });
 
   it('keeps a legacy workflow priced when the server omits CANVAS_TEXT', () => {

@@ -7,7 +7,7 @@ import { CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH,getCanvasAiOutputTileLayout,getC
 import { getCanvasAiVisibleOutputs } from '../canvasAiOutputs';
 import { getCanvasAiMediaType,isCanvasAiGeneratedType,isCanvasAiGeneratorType } from '../canvasAiRuntime';
 import { describeCanvasImageCreditEstimate,describeCanvasVideoCreditEstimate,estimateCanvasImageGenerationCredits,estimateCanvasTextAgentCredits,estimateCanvasVideoGenerationCredits,estimateCanvasWorkflowCredits,shouldShowCanvasGenerationCredits } from '../canvasGenerationCredits';
-import type { CanvasImageItem } from '../canvasModel';
+import type { CanvasAiGeneratedOutput, CanvasImageItem } from '../canvasModel';
 import type { BufferItem } from '../../types';
 import { getCanvasWorkflowInternalSlotNodes,isReplaceableInternalImageSlot } from '../canvasWorkflowInternalSlots';
 import { normalizeCanvasWorkflowUserInput } from '../canvasWorkflowUserInput';
@@ -16,6 +16,26 @@ import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,getIm
 import { resolveCanvasWalletVideoModelContext } from '../canvasWalletVideoModelContext';
 
 export type CanvasNodeViewModelScope = Record<string, any>;
+
+const previewGalleryCache = new WeakMap<CanvasAiGeneratedOutput[], {
+  id: string; item: BufferItem; generatedAt?: number; presetLabel?: string;
+  mediaType: string; gallery: BufferItem[];
+}>();
+
+const getPreviewGallery = (canvasItem: CanvasImageItem, outputs: CanvasAiGeneratedOutput[], mediaType: string) => {
+  const cached = previewGalleryCache.get(outputs);
+  if (cached && cached.id === canvasItem.id && cached.item === canvasItem.item
+    && cached.generatedAt === canvasItem.ai?.generatedAt && cached.presetLabel === canvasItem.ai?.presetLabel
+    && cached.mediaType === mediaType) return cached.gallery;
+  const gallery = outputs.flatMap((output, index) => {
+    if ((output.mediaType || mediaType) !== 'image' || output.status === 'error' || !getCanvasAiOutputDisplaySource(output)) return [];
+    const item = createCanvasAiOutputBufferItem(canvasItem, output, index);
+    return item ? [item] : [];
+  });
+  previewGalleryCache.set(outputs, { id: canvasItem.id, item: canvasItem.item,
+    generatedAt: canvasItem.ai?.generatedAt, presetLabel: canvasItem.ai?.presetLabel, mediaType, gallery });
+  return gallery;
+};
 
 export const isCanvasCloudVideoGeneratorType = (type?: string | null) => type === 'video-generator';
 
@@ -562,12 +582,7 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             || canvasWorkflowAllowsImages
                             || canvasWorkflowAllowsFiles;
                           const canvasAiOutputs = isCanvasAiNodeItem ? getCanvasAiOutputPreviewSlots(canvasItem) : [];
-                          const canvasAiImagePreviewGallery = canvasAiOutputs.flatMap((output, outputIndex) => {
-                            const mediaType = output.mediaType || canvasAiMediaType;
-                            if (mediaType !== 'image' || output.status === 'error' || !getCanvasAiOutputDisplaySource(output)) return [];
-                            const previewItem = createCanvasAiOutputBufferItem(canvasItem, output, outputIndex);
-                            return previewItem ? [previewItem] : [];
-                          });
+                          const canvasAiImagePreviewGallery = getPreviewGallery(canvasItem, canvasAiOutputs, canvasAiMediaType);
                           const isCanvasAiOutputsExpanded = canvasAiExpandedOutputNodeIds.has(canvasItem.id);
                           const canvasAiVisibleOutputs = getCanvasAiVisibleOutputs(canvasAiOutputs, isCanvasAiOutputsExpanded);
                           const canvasAiHiddenOutputCount = Math.max(0, canvasAiOutputs.length - canvasAiVisibleOutputs.length);

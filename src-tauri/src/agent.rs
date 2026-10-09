@@ -978,6 +978,7 @@ pub async fn agent_analyze_inspiration(
     )?;
     let payload = build_inspiration_analysis_payload(&request);
     let (submission, use_direct) = submit_wallet_task(
+        &app_handle,
         &client,
         direct_client.as_ref(),
         &access_token,
@@ -1124,6 +1125,7 @@ fn openai_request_cancelled(cancellations: &Arc<Mutex<HashSet<String>>>, request
 }
 
 async fn submit_wallet_task(
+    app_handle: &tauri::AppHandle,
     client: &reqwest::Client,
     direct_client: Option<&reqwest::Client>,
     access_token: &str,
@@ -1177,10 +1179,14 @@ async fn submit_wallet_task(
         }
     };
     let mut status = response.status();
+    crate::commands::license::observe_cloud_auth_rejection(app_handle, access_token, status, "task_submit");
     let mut value = response
         .json::<Value>()
         .await
-        .map_err(|error| format!("读取后台任务提交响应失败：{error}"))?;
+        .map_err(|error| {
+            crate::commands::license::observe_cloud_response_failure(app_handle, status, "task_submit", &error);
+            format!("读取后台任务提交响应失败：{error}")
+        })?;
     if wallet_task_submission_allows_legacy_tool_choice_retry(task_type, &payload, status, &value) {
         let legacy_payload = wallet_task_payload_without_tool_choice(&payload)
             .expect("toolChoice presence checked above");
@@ -1277,6 +1283,13 @@ async fn poll_wallet_task(
 
         tokio_sleep(Duration::from_secs(2)).await;
         poll_count += 1;
+        // A task may outlive the token used for submission. Resolve the current
+        // token before each existing GET, without replaying the task POST.
+        let poll_access_token = crate::commands::license::cloud_access_token(app_handle).await
+            .map_err(|error| WalletTaskPollError::recoverable(format!("后台任务登录状态无法更新：{error}；原任务可能仍在运行")))?;
+        if !crate::commands::license::cloud_tokens_same_account(access_token, &poll_access_token) {
+            return Err(WalletTaskPollError::recoverable("当前账号已切换；原任务仍属于原账号，请切回后接管"));
+        }
         let active_client = if use_direct {
             direct_client.unwrap_or(client)
         } else {
@@ -1285,7 +1298,7 @@ async fn poll_wallet_task(
         let response = active_client
             .get(format!("https://api.unmind.art/v1/ai/tasks/{task_id}"))
             .timeout(Duration::from_secs(15))
-            .bearer_auth(access_token)
+            .bearer_auth(&poll_access_token)
             .send()
             .await;
         let response = match response {
@@ -1298,7 +1311,7 @@ async fn poll_wallet_task(
                 match direct_client
                     .get(format!("https://api.unmind.art/v1/ai/tasks/{task_id}"))
                     .timeout(Duration::from_secs(15))
-                    .bearer_auth(access_token)
+                    .bearer_auth(&poll_access_token)
                     .send()
                     .await
                 {
@@ -1341,6 +1354,10 @@ async fn poll_wallet_task(
             }
         };
         let http_status = response.status();
+        crate::commands::license::observe_cloud_auth_rejection(app_handle, &poll_access_token, http_status, "task_status");
+        if http_status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(WalletTaskPollError::recoverable("云端登录凭证失效（HTTP 401）；请重新登录后接管原任务，勿重复提交"));
+        }
         if wallet_poll_status_is_retryable(http_status) {
             consecutive_errors += 1;
             let delay = wallet_poll_backoff_seconds(consecutive_errors);
@@ -1362,6 +1379,7 @@ async fn poll_wallet_task(
         let value = match response.json::<Value>().await {
             Ok(value) => value,
             Err(error) if http_status.is_success() => {
+                crate::commands::license::observe_cloud_response_failure(app_handle, http_status, "task_status", &error);
                 consecutive_errors += 1;
                 let delay = wallet_poll_backoff_seconds(consecutive_errors);
                 let _ = app_handle.emit(
@@ -1380,7 +1398,10 @@ async fn poll_wallet_task(
                 tokio_sleep(Duration::from_secs(delay)).await;
                 continue;
             }
-            Err(error) => json!({ "message": format!("响应无法解析：{error}") }),
+            Err(error) => {
+                crate::commands::license::observe_cloud_response_failure(app_handle, http_status, "task_status", &error);
+                json!({ "message": format!("响应无法解析：{error}") })
+            },
         };
         if !http_status.is_success() {
             return Err(WalletTaskPollError::terminal(format!(
@@ -2618,6 +2639,7 @@ async fn agent_wallet_chat(
             payload["usageContext"] = Value::String(usage_context);
         }
         submit_wallet_task(
+            &app_handle,
             &client,
             direct_client.as_ref(),
             &access_token,
@@ -2824,10 +2846,14 @@ pub async fn agent_list_openai_models(app_handle: tauri::AppHandle) -> Result<Ve
             }
         };
         let status = response.status();
+        crate::commands::license::observe_cloud_auth_rejection(&app_handle, &access_token, status, "chat_models");
         let value = response
             .json::<Value>()
             .await
-            .map_err(|error| format!("读取钱包模型列表失败：{error}"))?;
+            .map_err(|error| {
+                crate::commands::license::observe_cloud_response_failure(&app_handle, status, "chat_models", &error);
+                format!("读取钱包模型列表失败：{error}")
+            })?;
         if !status.is_success() {
             return Err(format!("钱包模型列表 HTTP {status}"));
         }

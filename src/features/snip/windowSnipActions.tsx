@@ -350,7 +350,7 @@ export const startSnipImpl = async (ctx: Pick<windowSnipActionContext, 'closeTim
 };
 
 export const exitSnipImpl = async (ctx: Pick<windowSnipActionContext, 'appWindow' | 'drawerHeightRef' | 'drawerWidthRef' | 'enforceAntiTouchClosed' | 'isMouseDown' | 'setDrawerState' | 'setIsOpen' | 'setIsPinned' | 'setSelection' | 'setSnipMode' | 'snipCaptureInFlightRef' | 'snipExitInFlightRef' | 'snipModeActiveRef' | 'stateRef' | 'triggerModeRef'>, reopen: boolean = false) => {
-  const { appWindow, drawerHeightRef, drawerWidthRef, enforceAntiTouchClosed, isMouseDown, setDrawerState, setIsOpen, setIsPinned, setSelection, setSnipMode, snipCaptureInFlightRef, snipExitInFlightRef, snipModeActiveRef, stateRef, triggerModeRef } = ctx;
+  const { drawerHeightRef, drawerWidthRef, enforceAntiTouchClosed, isMouseDown, setDrawerState, setIsOpen, setIsPinned, setSelection, setSnipMode, snipCaptureInFlightRef, snipExitInFlightRef, snipModeActiveRef, stateRef, triggerModeRef } = ctx;
   snipExitInFlightRef.current = true;
   setSelection(null);
   isMouseDown.current = false;
@@ -389,7 +389,7 @@ export const exitSnipImpl = async (ctx: Pick<windowSnipActionContext, 'appWindow
       setSnipMode({ active: false, bg: '' });
     });
     snipModeActiveRef.current = false;
-    await appWindow.show().catch((err) => {
+    await invoke('diagnostic_show_window').catch((err) => {
       console.warn('show main after snip failed:', err);
     });
     snipExitInFlightRef.current = false;
@@ -404,7 +404,7 @@ export const exitSnipImpl = async (ctx: Pick<windowSnipActionContext, 'appWindow
 
     await invoke('close_drawer', { mode: triggerModeRef.current }).catch(async (err) => {
       console.warn('close_drawer after snip failed:', err);
-      await appWindow.hide().catch(() => {});
+      await invoke('diagnostic_hide_window').catch(() => {});
       await invoke('show_edge', { height: drawerHeightRef.current, mode: triggerModeRef.current }).catch((edgeErr) => {
         console.warn('show_edge after snip failed:', edgeErr);
       });

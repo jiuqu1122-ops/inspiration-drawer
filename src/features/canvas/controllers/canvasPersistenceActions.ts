@@ -10,7 +10,8 @@ import { isCanvasImageFusionAi,removeCanvasImageFusionInput,type CanvasImageFusi
 import { getCanvasInitialImageSize,readImageDisplaySize } from '../../../utils/canvasImageSize';
 import { CANVAS_IMAGE_SOURCE_UPGRADE_PREVIEW_SIZE,canUseCanvasItemAsImageEnhancementInput,createCanvasAiOutputBufferItem,getCanvasAiOutputDisplaySource,getCanvasAiOutputSize,getCanvasImageUpgradeFailureKey,getCanvasImageUpgradeLocalPath,getCanvasInitialImageSource,getCanvasItemDisplaySource,getCanvasOriginalImageSource,getCanvasWorkflowGroupIdForSelection,getCanvasWorkflowTemplateFromNode } from '../../../utils/canvasItemSelectors';
 import { cloneDrawerValue,sanitizeCanvasPersistedState,stripCanvasItemDataImageProvenance } from '../../../utils/canvasSerialization';
-import { getCanvasAiOutputPreviewSlots,getCanvasWorkflowGroup } from '../../../utils/canvasWorkflowRuntime';
+import { getCanvasAiOutputForAction,getCanvasAiOutputPreviewSlots,getCanvasWorkflowGroup } from '../../../utils/canvasWorkflowRuntime';
+import { flushCanvasZoomDiagnostic,recordCanvasZoomDiagnostic,shouldPromoteCanvasZoomLayer } from '../../../utils/rendererDiagnostics';
 import { getCanvasAiNodeAutoSize } from '../../canvasAiNodeLayout';
 import { getCanvasAiVisibleOutputs } from '../../canvasAiOutputs';
 import { getCanvasAiMediaType,getCanvasAiNodeAutoSizeType,isCanvasAiGeneratedType,isCanvasAiGeneratorType } from '../../canvasAiRuntime';
@@ -26,6 +27,7 @@ import { saveThreeSceneCapture } from '../../three/capture/captureThreeScene';
 import type { SceneAnalysisV1 } from '../../three/model/threeSceneAnalysisTypes';
 import type { SceneSpecV1,ThreeSceneCameraState } from '../../three/model/threeSceneTypes';
 import { createThreeScenePreview } from '../../three/preview/threeScenePreview';
+import { CanvasBoxIndex } from '../canvasBoxIndex';
 
 type canvasPersistenceActionContext = { canvasSurfaceRef: React.RefObject<HTMLDivElement | null>; canvasScaleRef: React.RefObject<number>; canvasImageSourceCacheRef: React.RefObject<Map<string, CanvasImageSourceCacheEntry>>; canvasSelectedIdsRef: React.RefObject<string[]>; CANVAS_IMAGE_PREVIEW_UPGRADE_ENABLED: true; canvasPreviewSourceIdsRef: React.RefObject<Set<string>>; canvasSelectionImageSourceIdsRef: React.RefObject<Set<string>>; canvasSelectionImageSourceFrameRef: React.RefObject<number | null>; canvasItemsRef: React.RefObject<CanvasImageItem[]>; applyCanvasImageSourceToElement: (id: string, source: string) => void; canvasImageUpgradeFailedRef: React.RefObject<Set<string>>; CANVAS_IMAGE_SOURCE_UPGRADE_MIN_SCALE: 1.15; CANVAS_IMAGE_SOURCE_UPGRADE_PIXEL_THRESHOLD: 480; canvasImageUpgradeTokenRef: React.RefObject<number>; isCanvasModeRef: React.RefObject<boolean>; isCanvasZoomingRef: React.RefObject<boolean>; isCanvasInteractingRef: React.RefObject<boolean>; canvasPanRef: React.RefObject<{ pointerId: number; button: number; startClientX: number; startClientY: number; startScrollLeft: number; startScrollTop: number; } | null>; canvasImageUpgradeInFlightRef: React.RefObject<Set<string>>; CANVAS_IMAGE_SOURCE_UPGRADE_CONCURRENCY: 1; canvasImageUpgradeQueueRef: React.RefObject<string[]>; shouldUpgradeCanvasImageSource: (canvasItem: CanvasImageItem, scale?: number) => boolean; canvasImageUpgradeTimerRef: React.RefObject<number | null>; runCanvasImageSourceUpgradeQueue: (token: number) => void; CANVAS_IMAGE_SOURCE_UPGRADE_DELAY_MS: 90; cancelCanvasImageSourceUpgradeQueue: () => void; canvasViewportRef: React.RefObject<CanvasViewportRect | null>; readCanvasViewportRect: (surface?: HTMLDivElement | null) => CanvasViewportRect | null; canvasHoveredItemIdRef: React.RefObject<string>; CANVAS_IMAGE_SOURCE_DOWNGRADE_SCALE: 0.65; getCanvasItemRenderedBox: (canvasItem: CanvasImageItem) => CanvasItemBox; canvasRectsIntersect: (a: CanvasItemBox, b: CanvasItemBox) => boolean; CANVAS_IMAGE_SOURCE_UPGRADE_BATCH_SIZE: 3; CANVAS_IMAGE_SOURCE_UPGRADE_MAX_ACTIVE_PREVIEWS: 3; trimCanvasPreviewSourceCache: (keepIds: Set<string>) => void; canvasAiPromptEditingId: string | null; canvasAiExpandedOutputNodeIds: Set<string>; isCanvasWorkflowGroupInSingleEdit: (groupId?: string | null) => boolean; getCanvasWorkflowGroupItemIdsForSelection: (groupId: string, sourceItems?: CanvasImageItem[]) => string[]; canvasPendingSelectionDomIdsRef: React.RefObject<Set<string>>; getCanvasItemElement: (id: string) => HTMLElement | null; canvasContentRef: React.RefObject<HTMLDivElement | null>; applyCanvasSelectionDomFeedback: (currentIds: string[], nextIds: string[]) => void; activeThreeSceneIdRef: React.RefObject<string | null>; threeSceneHistoryGestureRef: React.RefObject<string | null>; setActiveThreeSceneId: React.Dispatch<React.SetStateAction<string | null>>; scheduleCanvasSelectionImageSources: (ids: Iterable<string>) => void; setCanvasSelectedIds: React.Dispatch<React.SetStateAction<string[]>>; canvasWorkflowSingleEditGroupIdsRef: React.RefObject<Set<string>>; setCanvasWorkflowSingleEditGroupIds: React.Dispatch<React.SetStateAction<string[]>>; showToast: (message: string) => void; setCanvasSelectionWithoutWorkflowExpansion: (ids: string[]) => void; canvasSessionItemsRef: React.RefObject<Map<string, CanvasImageItem[]>>; activeCanvasIdRef: React.RefObject<string>; setCanvasItems: React.Dispatch<React.SetStateAction<CanvasImageItem[]>>; canvasDragRef: React.RefObject<{ ids: string[]; pointerId: number; startClientX: number; startClientY: number; startScrollLeft: number; startScrollTop: number; startItems: Record<string, CanvasItemBox>; latestDelta: { dx: number; dy: number; }; hasMoved: boolean; hasConnections: boolean; pendingSelectionIds: string[] | null; } | null>; hasMoved: boolean | undefined; scheduleCanvasInteractionPaint: (payload: NonNullable<{ kind: "move"; ids: string[]; dx: number; dy: number; } | { kind: "resize"; boxes: Record<string, CanvasItemBox>; } | { kind: "selection"; rect: CanvasItemBox; } | null>) => void; ids: string[]; latestDelta: { dx: number; dy: number; }; dx: number; dy: number; canvasBackgroundPatchChainsRef: React.RefObject<Map<string, Promise<void>>>; hasConnections: boolean | undefined; canvasItemsById: Map<string, CanvasImageItem>; CANVAS_CONNECTION_HANDLE_OUTSET: 0; syncCanvasSelectionFrameStyles: () => void; resetCanvasDragChrome: () => void; refreshCanvasConnectionHandleOcclusion: (options?: { renderedItems?: CanvasImageItem[]; affectedItemIds?: ReadonlySet<string>; }) => void; canvasPointerInteractionCleanupRef: React.RefObject<(() => void) | null>; canvasResizeRef: React.RefObject<{ id: string; corner: CanvasResizeCorner; startClientX: number; startClientY: number; startX: number; startY: number; startWidth: number; startHeight: number; aspect: number; latestBox: CanvasItemBox | null; hasResized: boolean; } | null>; canvasGroupResizeRef: React.RefObject<{ corner: CanvasResizeCorner; startClientX: number; startClientY: number; startBounds: CanvasItemBox; startItems: Record<string, CanvasItemBox>; aspect: number; latestBoxes: Record<string, CanvasItemBox> | null; hasResized: boolean; } | null>; canvasDragDebugRef: React.RefObject<{ startNodeCount: number; pointerMoveCount: number; lastNodeCount: number; } | null>; cancelCanvasInteractionPaint: () => void; clearCanvasItemInteractionStyles: (ids: string[], refreshOcclusion?: boolean) => void; id: string; restoreCanvasItemBoxStyles: (ids: string[]) => void; startItems: Record<string, CanvasItemBox>; canvasSelectionOverlayRef: React.RefObject<HTMLDivElement | null>; canvasInteractionFrameRef: React.RefObject<number | null>; canvasInteractionPayloadRef: React.RefObject<{ kind: "move"; ids: string[]; dx: number; dy: number; } | { kind: "resize"; boxes: Record<string, CanvasItemBox>; } | { kind: "selection"; rect: CanvasItemBox; } | null>; kind: "resize" | "selection"; paintCanvasDragChrome: (ids: string[], dx: number, dy: number) => void; boxes: Record<string, CanvasItemBox>; rect: CanvasItemBox; canvasStateLoadedRef: React.RefObject<boolean>; canvasPatchSavePendingIdsRef: React.RefObject<Set<string>>; canvasPatchSaveTimerRef: React.RefObject<number | null>; scheduleCanvasChangedNodesPatchSave: (ids: string[]) => void; canvasStateSaveDeferredDuringZoomRef: React.RefObject<boolean>; canvasPersistSaveSyncNodesRef: React.RefObject<boolean>; buildCanvasPersistedState: () => CanvasPersistedState; getCanvasNodesPersistSignature: (items: CanvasImageItem[]) => string; canvasLastSyncedNodesSignatureRef: React.RefObject<string>; canvasPersistSaveTimerRef: React.RefObject<number | null>; saveCanvasStateNow: (options?: { syncNodes?: boolean; }) => void; CANVAS_STATE_SAVE_DEBOUNCE_MS: 320; sortCanvasesNewestFirst: (items: CanvasRecord[]) => CanvasRecord[]; setCanvases: React.Dispatch<React.SetStateAction<CanvasRecord[]>>; setCanvasTrashCount: React.Dispatch<React.SetStateAction<number>>; isSwitchingCanvasRef: React.RefObject<boolean>; setActiveCanvasId: React.Dispatch<React.SetStateAction<string>>; setCanvasActionMenuId: React.Dispatch<React.SetStateAction<string | null>>; setIsCanvasTrashOpen: React.Dispatch<React.SetStateAction<boolean>>; setIsLoadingCanvasTrash: React.Dispatch<React.SetStateAction<boolean>>; refreshDeletedCanvases: () => Promise<CanvasRecord[]>; waitForCanvasBackgroundPatches: (canvasId: string) => Promise<void>; getActiveCanvasRunNodeIds: (canvasId: string) => Set<string> | undefined; canvasSizeRef: React.RefObject<{ width: number; height: number; }>; setCanvasSize: React.Dispatch<React.SetStateAction<{ width: number; height: number; }>>; applyCanvasScaleStyles: (scale?: number, size?: { width: number; height: number; }, options?: { updateViewport?: boolean; }) => void; updateCanvasSelection: (ids: string[]) => void; hideCanvasSelectionOverlay: () => void; setCanvasContextMenu: React.Dispatch<React.SetStateAction<CanvasContextMenuState | null>>; setCanvasInputMenuForId: React.Dispatch<React.SetStateAction<string | null>>; setCanvasInputPickTargetId: React.Dispatch<React.SetStateAction<string | null>>; pendingCanvasFusionRoleRef: React.RefObject<{ targetId: string; role: CanvasImageFusionRole; } | null>; setCanvasConnectionDraft: React.Dispatch<React.SetStateAction<{ fromId: string; sourceIds: string[]; fromX: number; fromY: number; toX: number; toY: number; } | null>>; setCanvasInputActionDraft: React.Dispatch<React.SetStateAction<{ targetId: string; fromX: number; fromY: number; toX: number; toY: number; } | null>>; clearCanvasUndoStack: () => void; setCanvasViewport: React.Dispatch<React.SetStateAction<CanvasViewportRect | null>>; scheduleCanvasFocusNearestContentIfViewportEmpty: (canvasId: string) => void; canvasInteractionChangedNodeIdsRef: React.RefObject<Set<string>>; enqueueCanvasBackgroundWrite: (canvasId: string, write: () => Promise<void>) => Promise<void>; setIsSwitchingCanvas: React.Dispatch<React.SetStateAction<boolean>>; saveCurrentCanvasBeforeSwitch: () => Promise<void>; loadCanvasItems: (canvasId: string, options?: { knownEmpty?: boolean; }) => Promise<CanvasImageItem[]>; enterCanvasMode: () => void; openTextInputDialog: (options: TextInputDialogOptions) => Promise<string | null>; canvases: CanvasRecord[]; refreshCanvases: () => Promise<CanvasRecord[]>; switchToCanvas: (canvasId: string) => Promise<void>; isCanvasTrashOpen: boolean; copyCanvasItemsToDrawerFolder: (snapshots: CanvasImageItem[], canvas: CanvasRecord) => { savedCount: number; folderName: string; }; setConfirmDialog: React.Dispatch<React.SetStateAction<ConfirmDialogState>>; closeConfirmDialog: () => void; moveCanvasPageToTrash: (canvas: CanvasRecord) => Promise<void>; saveCanvasPageElementsToDrawer: (canvas: CanvasRecord) => Promise<{ savedCount: number; folderName: string; }>; downgradeCanvasPreviewSources: () => void; canvasViewportFrameRef: React.RefObject<number | null>; canvasViewportDeferredDuringZoomRef: React.RefObject<boolean>; canvasScaleRenderFrameRef: React.RefObject<number | null>; setCanvasScale: React.Dispatch<React.SetStateAction<number>>; canvasZoomSettleTimerRef: React.RefObject<number | null>; canvasVisualViewportRef: React.RefObject<CanvasViewportRect | null>; scheduleCanvasScaleRenderSync: () => void; writeCanvasSurfaceScroll: (surface: HTMLDivElement, left: number, top: number, updateLock?: boolean) => void; canvasScrollLockRef: React.RefObject<{ left: number; top: number; } | null>; canvasSizeCommitDeferredRef: React.RefObject<boolean>; scheduleCanvasViewportUpdate: () => void; scheduleCanvasVisibleImageSourceUpgrades: () => void; scheduleCanvasStateSave: (options?: { syncNodes?: boolean; }) => void; canvasScaleCommitTimerRef: React.RefObject<number | null>; finishCanvasZoomInteraction: () => void; beginCanvasZoomInteraction: () => void; width: number; height: number; canvasReturnScrollRef: React.RefObject<{ left: number; top: number; } | null>; left: number; top: number; canvasUndoRestoringRef: React.RefObject<boolean>; canvasUndoStackRef: React.RefObject<CanvasUndoSnapshot[]>; takeCanvasUndoSnapshot: (label: string, options?: { layoutOnly?: boolean; shareImmutableItems?: boolean; }) => CanvasUndoSnapshot; CANVAS_UNDO_LIMIT: 6; setCanvasSizeImmediate: (nextSize: { width: number; height: number; }) => void; updateCanvasItemsImmediate: (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => CanvasImageItem[]; clampCanvasSurfaceScroll: (surface: HTMLDivElement, left: number, top: number, scale?: number, size?: { width: number; height: number; }) => { left: number; top: number; }; pushCanvasUndoSnapshot: (label: string, options?: { layoutOnly?: boolean; shareImmutableItems?: boolean; }) => void; growCanvasToFit: (right: number, bottom: number) => void; canvasItemsPatchCommitRef: React.RefObject<boolean>; updateCanvasItemsDeferred: (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => CanvasImageItem[]; scheduleCanvasFocusItemById: (id?: string | null) => void; getCanvasAiOutputCopyPosition: (sourceItem: CanvasImageItem, size: { width: number; height: number; }, outputIndex: number) => { x: number; y: number; }; createAssetId: () => `${string}-${string}-${string}-${string}-${string}`; makeCanvasNodeId: (seed: string, kind?: string) => string; x: number; y: number; appendCanvasItems: (nextItems: CanvasImageItem[], label: string, select?: boolean) => number; markCanvasNodesChanged: (ids: string[]) => void; getCanvasImageInputBufferItemsForNode: (canvasItem: CanvasImageItem, sourceItems?: CanvasImageItem[]) => BufferItem[]; threeSceneAnalyzingIdsRef: React.RefObject<Set<string>>; getThreeSceneAnalysisImages: (node: CanvasImageItem) => { id: string; source: string; name: string; }[]; setThreeSceneRunState: (nodeId: string, status: "idle" | "working" | "success" | "error", error?: string) => void; setThreeSceneAnalyzing: (id: string, analyzing: boolean) => void; agentModelRef: React.RefObject<string>; source: string; updateThreeSceneSpec: (nodeId: string, sceneSpec: SceneSpecV1, options?: { resetAnalysisCamera?: boolean; sourceImageIds?: string[]; sourceImagePaths?: string[]; sceneAnalysis?: SceneAnalysisV1; }) => boolean; activateThreeSceneInteraction: (nodeId: string) => void; getCanvasItemsBounds: (ids: string[]) => CanvasItemBox | null; getCanvasDropPosition: (index?: number, client?: { x: number; y: number; }) => { x: number; y: number; }; exitThreeSceneInteraction: () => void; getCanvasBoundsFromItems: (sourceItems: CanvasImageItem[]) => CanvasItemBox | null; fitCanvasViewToItems: (ids?: string[]) => boolean; };
 
@@ -338,15 +340,30 @@ export const scheduleCanvasVisibleImageSourceUpgradesImpl = (ctx: Pick<canvasPer
 
 };
 
-export const getCanvasAiNodeDesignSizeForItemImpl = (ctx: Record<never, never>, canvasItem: CanvasImageItem, promptExpanded: boolean, outputsExpanded: boolean) => {
-  const {  } = ctx;
+const nodeDesignSizeCache = new WeakMap<CanvasAiGeneratedOutput[], Map<string, {
+  options: NonNullable<Parameters<typeof getCanvasAiNodeAutoSize>[0]>;
+  size: { width: number; height: number };
+}>>();
+const workflowInternalSlotCountCache = new WeakMap<object, number>();
+const readWorkflowInternalSlotCount = (item: CanvasImageItem) => {
+  const workflow = getCanvasWorkflowTemplateFromNode(item);
+  if (!workflow) return 0;
+  const cached = workflowInternalSlotCountCache.get(workflow);
+  if (cached !== undefined) return cached;
+  const count = getCanvasWorkflowInternalSlotNodes(workflow).length;
+  workflowInternalSlotCountCache.set(workflow, count);
+  return count;
+};
+
+export const getCanvasAiNodeDesignSizeForItemImpl = (_ctx: Record<never, never>, canvasItem: CanvasImageItem, promptExpanded: boolean, outputsExpanded: boolean) => {
     const canvasAiOutputs = getCanvasAiOutputPreviewSlots(canvasItem);
+    const key = `${Boolean(promptExpanded)}:${Boolean(outputsExpanded)}`;
     const visibleOutputs = getCanvasAiVisibleOutputs(canvasAiOutputs, outputsExpanded);
     const canvasAiRealOutputs = canvasItem.ai?.outputs || [];
     const canvasAiOutputAspectRatio = canvasAiOutputs[0]?.width && canvasAiOutputs[0]?.height
       ? `${canvasAiOutputs[0].width}:${canvasAiOutputs[0].height}`
       : canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO;
-    return getCanvasAiNodeAutoSize({
+    const options = {
       type: getCanvasAiNodeAutoSizeType(canvasItem.ai),
       aspectRatio: canvasAiOutputAspectRatio,
       count: canvasItem.ai?.count,
@@ -361,9 +378,18 @@ export const getCanvasAiNodeDesignSizeForItemImpl = (ctx: Record<never, never>, 
       imageRulePanelExpanded: canvasItem.ai?.type === 'image-generator' && canvasItem.ai.imagePolicy?.panelExpanded !== false,
       imageFusion: isCanvasImageFusionAi(canvasItem.ai),
       internalSlotCount: canvasItem.ai?.type === 'workflow'
-        ? getCanvasWorkflowInternalSlotNodes(getCanvasWorkflowTemplateFromNode(canvasItem)).length
+        ? readWorkflowInternalSlotCount(canvasItem)
         : 0,
-    });
+    };
+    let variants = nodeDesignSizeCache.get(canvasAiOutputs);
+    const previous = variants?.get(key);
+    if (previous && Object.keys(options).every(field => (
+      previous.options[field as keyof typeof options] === options[field as keyof typeof options]
+    ))) return previous.size;
+    const size = Object.freeze(getCanvasAiNodeAutoSize(options));
+    if (!variants) { variants = new Map(); nodeDesignSizeCache.set(canvasAiOutputs, variants); }
+    variants.set(key, { options, size });
+    return size;
 
 };
 
@@ -681,6 +707,7 @@ export const refreshCanvasConnectionHandleOcclusionImpl = (ctx: Pick<canvasPersi
     const itemOrder = new Map(items.map((item, index) => [item.id, index]));
     const selectedIds = new Set(canvasSelectedIdsRef.current);
     const liveBoxes = new Map(items.map(item => [item.id, getCanvasItemRenderedBox(item)] as const));
+    const boxIndex = new CanvasBoxIndex(items.map(item => ({ item, box: liveBoxes.get(item.id)! })));
     const affectedBoxes = options.affectedItemIds
       ? Array.from(options.affectedItemIds)
         .map(id => liveBoxes.get(id))
@@ -716,15 +743,9 @@ export const refreshCanvasConnectionHandleOcclusionImpl = (ctx: Pick<canvasPersi
           && centerY <= box.y + box.height
         ))
       ) return;
-      const isCovered = items.some((candidate) => {
-        if (candidate.id === owner.id || !isAbove(candidate, owner)) return false;
-        const candidateBox = liveBoxes.get(candidate.id);
-        if (!candidateBox) return false;
-        return centerX >= candidateBox.x
-          && centerX <= candidateBox.x + candidateBox.width
-          && centerY >= candidateBox.y
-          && centerY <= candidateBox.y + candidateBox.height;
-      });
+      const isCovered = boxIndex.someAtPoint(centerX, centerY, candidate => (
+        candidate.id !== owner.id && isAbove(candidate, owner)
+      ));
       handle.style.visibility = isCovered ? 'hidden' : '';
     });
 
@@ -1356,13 +1377,15 @@ export const confirmPermanentlyDeleteCanvasPageImpl = (ctx: Pick<canvasPersisten
 };
 
 export const beginCanvasZoomInteractionImpl = (ctx: Pick<canvasPersistenceActionContext, 'cancelCanvasImageSourceUpgradeQueue' | 'canvasContentRef' | 'canvasSurfaceRef' | 'canvasViewportDeferredDuringZoomRef' | 'canvasViewportFrameRef' | 'downgradeCanvasPreviewSources' | 'isCanvasZoomingRef'>) => {
-  const { cancelCanvasImageSourceUpgradeQueue, canvasContentRef, canvasSurfaceRef, canvasViewportDeferredDuringZoomRef, canvasViewportFrameRef, downgradeCanvasPreviewSources, isCanvasZoomingRef } = ctx;
+  const { cancelCanvasImageSourceUpgradeQueue, canvasContentRef, canvasSurfaceRef, canvasViewportDeferredDuringZoomRef, canvasViewportFrameRef, isCanvasZoomingRef } = ctx;
+    recordCanvasZoomDiagnostic();
     if (isCanvasZoomingRef.current) return;
     cancelCanvasImageSourceUpgradeQueue();
-    downgradeCanvasPreviewSources();
+    // Keep already displayed sources stable. Pausing upgrades is sufficient;
+    // swapping originals to thumbs on each wheel burst causes decode churn.
     isCanvasZoomingRef.current = true;
     canvasSurfaceRef.current?.setAttribute('data-canvas-zooming', 'true');
-    if (canvasContentRef.current) canvasContentRef.current.style.willChange = 'transform';
+    if (canvasContentRef.current) canvasContentRef.current.style.willChange = shouldPromoteCanvasZoomLayer() ? 'transform' : '';
     if (canvasViewportFrameRef.current !== null) {
       window.cancelAnimationFrame(canvasViewportFrameRef.current);
       canvasViewportFrameRef.current = null;
@@ -1388,6 +1411,7 @@ export const finishCanvasZoomInteractionImpl = (ctx: Pick<canvasPersistenceActio
   const { applyCanvasScaleStyles, canvasContentRef, canvasPersistSaveSyncNodesRef, canvasScaleRef, canvasScrollLockRef, canvasSizeCommitDeferredRef, canvasSizeRef, canvasStateSaveDeferredDuringZoomRef, canvasSurfaceRef, canvasViewportDeferredDuringZoomRef, canvasVisualViewportRef, canvasZoomSettleTimerRef, isCanvasZoomingRef, scheduleCanvasScaleRenderSync, scheduleCanvasStateSave, scheduleCanvasViewportUpdate, scheduleCanvasVisibleImageSourceUpgrades, setCanvasSize, writeCanvasSurfaceScroll } = ctx;
     canvasZoomSettleTimerRef.current = null;
     if (!isCanvasZoomingRef.current) return;
+    flushCanvasZoomDiagnostic();
     isCanvasZoomingRef.current = false;
     canvasSurfaceRef.current?.removeAttribute('data-canvas-zooming');
     if (canvasContentRef.current) canvasContentRef.current.style.willChange = '';
@@ -1591,6 +1615,7 @@ export const getCanvasAiOutputCopyPositionImpl = (ctx: Pick<canvasPersistenceAct
 
 export const copyCanvasAiOutputToCanvasImpl = async (ctx: Pick<canvasPersistenceActionContext, 'appendCanvasItems' | 'createAssetId' | 'getCanvasAiOutputCopyPosition' | 'makeCanvasNodeId' | 'showToast'>, sourceCanvasItem: CanvasImageItem, output: CanvasAiGeneratedOutput, outputIndex: number) => {
   const { appendCanvasItems, createAssetId, getCanvasAiOutputCopyPosition, makeCanvasNodeId, showToast } = ctx;
+    output = getCanvasAiOutputForAction(sourceCanvasItem, output, outputIndex);
     const outputSource = getCanvasAiOutputDisplaySource(output);
     const outputMediaType = output.mediaType || getCanvasAiMediaType(sourceCanvasItem.ai);
     if (!outputSource || output.status === 'error') {

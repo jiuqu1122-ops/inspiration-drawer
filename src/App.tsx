@@ -13,6 +13,7 @@ LayoutGrid,
 Type
 } from 'lucide-react';
 import React,{ useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState } from 'react';
+import { getCanvasItemElementFromContent } from './features/canvas/canvasDomLookup';
 import type { CanvasActionMenuPlacement } from './components/CanvasListItems';
 import {
 CanvasListItem,
@@ -3144,12 +3145,7 @@ function MainApp() {
   };
 
   const getCanvasItemElement = (id: string) => {
-    const content = canvasContentRef.current;
-    if (!content) return null;
-    const selectorId = typeof CSS !== 'undefined' && CSS.escape
-      ? CSS.escape(id)
-      : id.replace(/["\\]/g, '\\$&');
-    return content.querySelector<HTMLElement>(`[data-canvas-item-id="${selectorId}"]`);
+    return getCanvasItemElementFromContent(canvasContentRef.current, id);
   };
 
   const paintCanvasDragChrome = (ids: string[], dx: number, dy: number) => { return paintCanvasDragChromeImpl({ CANVAS_CONNECTION_HANDLE_OUTSET, canvasContentRef, canvasDragRef, canvasItemsById, getCanvasItemRenderedBox }, ids, dx, dy); };

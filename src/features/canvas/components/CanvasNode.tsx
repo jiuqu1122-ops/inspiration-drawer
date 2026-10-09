@@ -1252,7 +1252,6 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                     />
                                                   ) : outputPreviewSource ? (
                                                     <img
-                                                      key={outputPreviewSource}
                                                       src={outputPreviewSource}
                                                       alt={outputLabel}
                                                       loading="lazy"
