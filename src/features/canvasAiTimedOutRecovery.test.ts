@@ -4,6 +4,9 @@ import {
   CANVAS_AI_TIMED_OUT_RECOVERY_MAX_AGE_MS,
   getCanvasAiTimedOutRecoveryCandidates,
   isCanvasAiImageLookupPending,
+  CanvasAiLookupRetrySchedule,
+  getCanvasAiLookupRetryDelay,
+  isCanvasAiLookupTerminalError,
 } from './canvasAiTimedOutRecovery';
 
 const imageNode = (overrides: Partial<CanvasImageItem> = {}): CanvasImageItem => ({
@@ -35,6 +38,32 @@ const imageNode = (overrides: Partial<CanvasImageItem> = {}): CanvasImageItem =>
 });
 
 describe('canvas AI timed-out recovery', () => {
+  it('stops permanent lookup failures while keeping transient and missing rows recoverable', () => {
+    for (const error of ['cloud_request_failed: HTTP 414: URI Too Long', 'HTTP: 431', 'invalid_request: bad ID']) {
+      expect(isCanvasAiLookupTerminalError(error)).toBe(true);
+    }
+    for (const error of ['HTTP 429', 'HTTP 401', 'HTTP 503', 'image_request_not_found: HTTP 404', 'cloud_unavailable: 请求发送失败']) {
+      expect(isCanvasAiLookupTerminalError(error)).toBe(false);
+    }
+  });
+
+  it('honors retry timing when canvas updates repeatedly rerun the recovery effect', () => {
+    const schedule = new CanvasAiLookupRetrySchedule();
+    schedule.defer('request-a', 8_000, 1_000);
+    expect(schedule.canRetry('request-a', 1_001)).toBe(false);
+    expect(schedule.canRetry('request-a', 8_999)).toBe(false);
+    expect(schedule.canRetry('request-a', 9_000)).toBe(true);
+    expect(schedule.canRetry('request-b', 1_001)).toBe(true);
+    schedule.defer('request-a', 60_000, 9_000);
+    expect(schedule.canRetry('request-a', 68_999)).toBe(false);
+  });
+
+  it('backs off for auth refreshes and rate limits', () => {
+    expect(getCanvasAiLookupRetryDelay('HTTP 429: too many requests')).toBe(60_000);
+    expect(getCanvasAiLookupRetryDelay('unauthorized: token expired')).toBe(60_000);
+    expect(getCanvasAiLookupRetryDelay('HTTP 502')).toBe(8_000);
+    expect(getCanvasAiLookupRetryDelay('HTTP 414: URI Too Long')).toBe(300_000);
+  });
   it('keeps timed-out recovery candidates for at most 30 minutes', () => {
     expect(CANVAS_AI_TIMED_OUT_RECOVERY_MAX_AGE_MS).toBe(30 * 60 * 1000);
     expect(getCanvasAiTimedOutRecoveryCandidates(

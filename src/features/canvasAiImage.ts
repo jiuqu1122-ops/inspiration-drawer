@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { getCanvasAiLookupRetryDelay, isCanvasAiLookupTerminalError } from './canvasAiTimedOutRecovery';
 import type { AiGatewayKind } from './agentModel';
 import type {
   CanvasAiCredentialSource,
@@ -710,8 +711,14 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
           if (status === 'failed' || status === 'refunded' || status === 'cancelled' || status === 'canceled') {
             return null;
           }
-        } catch (_) {
-          // The generation row may not exist yet, or the lookup may briefly fail.
+        } catch (error) {
+          if (isCanvasAiLookupTerminalError(error)) return null;
+          // A just-submitted row may not exist yet. Rate limiting and auth
+          // refreshes need a longer pause than normal pending-state polling.
+          const retryDelay = getCanvasAiLookupRetryDelay(error);
+          if (retryDelay > 8_000) {
+            await delay(Math.min(retryDelay, Math.max(0, deadline - Date.now())));
+          }
         }
         const remaining = deadline - Date.now();
         if (remaining <= 0) break;

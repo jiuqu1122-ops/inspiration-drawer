@@ -13,6 +13,7 @@ mod native_drag;
 mod native_drop;
 mod repositories;
 mod recharge;
+mod reference_upload;
 mod renderer_diagnostics;
 use renderer_diagnostics::{window_action, WindowAction};
 mod services;
@@ -525,7 +526,9 @@ fn normalize_proxy_endpoint(value: &str) -> Option<String> {
     }
 
     let mut selected = raw.to_string();
-    if raw.contains('=') {
+    if raw.split_once('=').is_some_and(|(key, _)| {
+        matches!(key.trim().to_ascii_lowercase().as_str(), "https" | "http" | "socks" | "socks5")
+    }) {
         let mut https_value = None;
         let mut http_value = None;
         let mut socks_value = None;
@@ -654,12 +657,9 @@ fn windows_system_proxy() -> Option<String> {
 }
 
 fn env_proxy() -> Option<String> {
-    std::env::var("HTTPS_PROXY")
-        .or_else(|_| std::env::var("https_proxy"))
-        .or_else(|_| std::env::var("HTTP_PROXY"))
-        .or_else(|_| std::env::var("http_proxy"))
-        .ok()
-        .and_then(|value| normalize_proxy_endpoint(&value))
+    ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"]
+        .iter()
+        .find_map(|name| std::env::var(name).ok().and_then(|value| normalize_proxy_endpoint(&value)))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -762,8 +762,10 @@ pub(crate) fn describe_reqwest_error(error: &reqwest::Error) -> String {
         "超时"
     } else if error.is_connect() {
         "连接/DNS/TLS/代理"
-    } else if error.is_request() {
+    } else if error.is_builder() {
         "构造请求"
+    } else if error.is_request() {
+        "发送请求"
     } else if error.is_body() {
         "传输响应体"
     } else if error.is_decode() {
@@ -855,15 +857,23 @@ pub(crate) fn build_async_http_client(
     explicit_proxy: Option<&str>,
     timeout_secs: u64,
 ) -> Result<reqwest::Client, String> {
+    build_async_http_client_for_route(effective_proxy_route(app_handle, explicit_proxy).as_ref(), timeout_secs)
+}
+
+fn build_async_http_client_for_route(
+    route: Option<&EffectiveProxy>,
+    timeout_secs: u64,
+) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
+        .no_proxy()
         .user_agent(APP_USER_AGENT)
         .redirect(Policy::limited(10))
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(timeout_secs));
 
-    if let Some(proxy) = effective_proxy(app_handle, explicit_proxy) {
-        let proxy = reqwest::Proxy::all(&proxy).map_err(|e| format!("代理配置无效：{e}"))?;
-        builder = builder.proxy(proxy);
+    if let Some(route) = route {
+        let proxy = reqwest::Proxy::all(&route.endpoint).map_err(|e| format!("代理配置无效：{e}"))?;
+        builder = builder.proxy(proxy.no_proxy(reqwest::NoProxy::from_env()));
     }
 
     builder
@@ -876,17 +886,42 @@ pub(crate) fn build_async_http_clients_with_direct_fallback(
     explicit_proxy: Option<&str>,
     timeout_secs: u64,
 ) -> Result<(reqwest::Client, Option<reqwest::Client>), String> {
+    struct CachedClients {
+        key: [u8; 32],
+        created_at: Instant,
+        clients: (reqwest::Client, Option<reqwest::Client>),
+    }
+    static CACHE: OnceLock<Mutex<Vec<CachedClients>>> = OnceLock::new();
     let route = effective_proxy_route(app_handle, explicit_proxy);
-    let client = build_async_http_client(app_handle, explicit_proxy, timeout_secs)?;
+    let mut hash = Sha256::new();
+    hash.update(timeout_secs.to_le_bytes());
+    if let Some(route) = &route {
+        hash.update(route.endpoint.as_bytes());
+    }
+    hash.update([0]);
+    hash.update(std::env::var("NO_PROXY").or_else(|_| std::env::var("no_proxy")).unwrap_or_default().as_bytes());
+    let key: [u8; 32] = hash.finalize().into();
+    let mut cache = CACHE.get_or_init(|| Mutex::new(Vec::new()))
+        .lock().unwrap_or_else(|error| error.into_inner());
+    cache.retain(|entry| entry.created_at.elapsed() < Duration::from_secs(300));
+    if let Some(entry) = cache.iter().find(|entry| entry.key == key) {
+        return Ok(entry.clients.clone());
+    }
+    let client = build_async_http_client_for_route(route.as_ref(), timeout_secs)?;
     let direct_client = if route
         .as_ref()
         .is_some_and(|value| value.source.allows_direct_fallback())
     {
-        build_direct_async_http_client(timeout_secs).ok()
+        Some(build_direct_async_http_client(timeout_secs)?)
     } else {
         None
     };
-    Ok((client, direct_client))
+    let clients = (client, direct_client);
+    if cache.len() >= 8 {
+        cache.remove(0);
+    }
+    cache.push(CachedClients { key, created_at: Instant::now(), clients: clients.clone() });
+    Ok(clients)
 }
 
 fn build_direct_http_client(timeout_secs: u64) -> Result<Client, String> {
@@ -913,7 +948,46 @@ fn build_direct_async_http_client(timeout_secs: u64) -> Result<reqwest::Client, 
 
 #[cfg(test)]
 mod network_compatibility_tests {
-    use super::{redact_network_error_detail, should_retry_without_proxy, ProxySource};
+    use super::{normalize_proxy_endpoint, redact_network_error_detail, should_retry_without_proxy, ProxySource};
+
+    #[test]
+    fn proxy_passwords_with_equals_are_not_protocol_lists() {
+        assert_eq!(normalize_proxy_endpoint("http://user:pass=word@127.0.0.1:7890"), Some("http://user:pass=word@127.0.0.1:7890".to_string()));
+        assert_eq!(normalize_proxy_endpoint("http=127.0.0.1:8080;https=127.0.0.1:7890"), Some("http://127.0.0.1:7890".to_string()));
+        assert_eq!(normalize_proxy_endpoint("http=http://127.0.0.1:8080;https=http://127.0.0.1:7890"), Some("http://127.0.0.1:7890".to_string()));
+    }
+
+    #[test]
+    fn repeated_cloud_client_lookups_reuse_the_same_http_connection() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let url = format!("http://{address}/reference");
+        let server = std::thread::spawn(move || {
+            // Both requests must arrive on this one connection.
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            for _ in 0..2 {
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    assert_eq!(stream.read(&mut byte).unwrap(), 1);
+                    request.push(byte[0]);
+                }
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").unwrap();
+            }
+        });
+        tauri::async_runtime::block_on(async {
+            for _ in 0..2 {
+                let (_, direct) = super::build_async_http_clients_with_direct_fallback(None, Some(&format!("http://{address}")), 2).unwrap();
+                let response = direct.unwrap().get(&url).send().await.unwrap();
+                assert_eq!(response.bytes().await.unwrap().as_ref(), b"ok");
+            }
+        });
+        server.join().unwrap();
+    }
 
     #[test]
     fn only_automatic_proxy_connect_errors_allow_direct_fallback() {
@@ -970,6 +1044,23 @@ struct ReferenceUploadTicket {
     upload_url: String,
     method: String,
     headers: HashMap<String, String>,
+    #[serde(default)]
+    expires_at: Option<String>,
+}
+
+fn reference_upload_headers(values: &HashMap<String, String>, upload_bytes: usize) -> Option<reqwest::header::HeaderMap> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    for (name, value) in values {
+        let name = reqwest::header::HeaderName::from_bytes(name.as_bytes()).ok()?;
+        let value = reqwest::header::HeaderValue::from_str(value).ok()?;
+        if name == reqwest::header::TRANSFER_ENCODING || (name == reqwest::header::CONTENT_LENGTH
+            && value.to_str().ok().and_then(|value| value.parse::<usize>().ok()) != Some(upload_bytes)) {
+            return None;
+        }
+        headers.insert(name, value);
+    }
+    headers.insert(reqwest::header::CONTENT_LENGTH, reqwest::header::HeaderValue::from(upload_bytes));
+    Some(headers)
 }
 
 fn is_valid_reference_upload_object_key(value: &str) -> bool {
@@ -1122,6 +1213,22 @@ mod reference_upload_contract_tests {
         ReferenceUploadFailureReason, ReferenceUploadOperation,
     };
     use crate::commands::license::{CloudTransportErrorCategory, CloudTransportFailure};
+
+    #[test]
+    fn signed_upload_headers_have_one_correct_content_length() {
+        let mut values = std::collections::HashMap::from([
+            ("Content-Length".to_string(), "12".to_string()),
+            ("Content-Type".to_string(), "image/png".to_string()),
+        ]);
+        let headers = super::reference_upload_headers(&values, 12).unwrap();
+        assert_eq!(headers.get_all(reqwest::header::CONTENT_LENGTH).iter().count(), 1);
+        assert_eq!(headers[reqwest::header::CONTENT_TYPE], "image/png");
+        values.insert("Content-Length".to_string(), "13".to_string());
+        assert!(super::reference_upload_headers(&values, 12).is_none());
+        values.remove("Content-Length");
+        values.insert("Transfer-Encoding".to_string(), "chunked".to_string());
+        assert!(super::reference_upload_headers(&values, 12).is_none());
+    }
 
     fn transport_failure(
         index: Option<usize>,
@@ -12662,6 +12769,8 @@ async fn upload_wallet_reference_image(
             ReferenceUploadFailureReason::HttpStatus(ticket_status.as_u16()),
         ));
     }
+    let server_time = ticket_response.headers().get(reqwest::header::DATE)
+        .and_then(|value| value.to_str().ok()).and_then(|value| chrono::DateTime::parse_from_rfc2822(value).ok());
     let ticket_response_body = ticket_response.text().await.map_err(|error| {
         ReferenceUploadFailure::transport(
             Some(index),
@@ -12692,41 +12801,85 @@ async fn upload_wallet_reference_image(
         ));
     }
 
-    // RequestBuilder, body, and headers are rebuilt for every route attempt.
-    // This is required for streaming/multipart callers as well: a consumed body
-    // must never be reused for a fallback request.
-    let upload_response = commands::license::send_cloud_request_detailed(
-        app_handle,
-        Duration::from_secs(120),
-        "PUT",
-        Some(commands::license::CloudRequestLogContext {
-            operation: ReferenceUploadOperation::SignedPut.code(),
-            upload_bytes,
-        }),
-        |client| {
-            let mut request = client
-                .put(upload_url.clone())
-                .header(reqwest::header::CONTENT_LENGTH, upload_bytes)
-                .body(object.bytes.clone());
-            for (name, value) in &ticket.headers {
-                request = request.header(name.as_str(), value.as_str());
+    let headers = reference_upload_headers(&ticket.headers, upload_bytes).ok_or_else(||
+        ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::UploadTicket, ReferenceUploadFailureReason::InvalidTicket))?;
+    // Use server time for expiry math; the user's Windows clock may be wrong.
+    let remaining_seconds = ticket.expires_at.as_deref().and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .zip(server_time).map(|(expires, now)| (expires - now).num_seconds().saturating_sub(30).max(0) as u64)
+        .unwrap_or(240).min(240);
+    let upload_deadline = Instant::now() + Duration::from_secs(remaining_seconds);
+    // Retrying PUT overwrites the same object with the exact same bytes and
+    // signature. Never acquire a new ticket or replay a generation POST here.
+    for attempt in 0..3 {
+        let remaining = upload_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(ReferenceUploadFailure::transport(Some(index), ReferenceUploadOperation::SignedPut,
+                commands::license::CloudTransportFailure { category: commands::license::CloudTransportErrorCategory::Timeout, fallback_attempted: false }));
+        }
+        let response = tokio::time::timeout(remaining, commands::license::send_cloud_request_detailed(
+            app_handle,
+            Duration::from_secs(120),
+            "PUT",
+            Some(commands::license::CloudRequestLogContext {
+                operation: ReferenceUploadOperation::SignedPut.code(), upload_bytes,
+            }),
+            |client| client.put(upload_url.clone()).headers(headers.clone()).body(object.bytes.clone()),
+        )).await.unwrap_or_else(|_| Err(commands::license::CloudTransportFailure {
+            category: commands::license::CloudTransportErrorCategory::Timeout, fallback_attempted: false,
+        }));
+        let (failure, retryable, retry_after) = match response {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() { return Ok((index, ticket.object_key)); }
+                let retry_after = response.headers().get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok()).and_then(|value| value.parse::<u64>().ok())
+                    .map(|seconds| Duration::from_secs(seconds.min(30)));
+                (ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::SignedPut,
+                    ReferenceUploadFailureReason::HttpStatus(status.as_u16())),
+                 matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504), retry_after)
             }
-            request
-        },
-    )
-    .await
-    .map_err(|failure| {
-        ReferenceUploadFailure::transport(Some(index), ReferenceUploadOperation::SignedPut, failure)
-    })?;
-    let status = upload_response.status();
-    if !status.is_success() {
-        return Err(ReferenceUploadFailure::new(
-            Some(index),
-            ReferenceUploadOperation::SignedPut,
-            ReferenceUploadFailureReason::HttpStatus(status.as_u16()),
-        ));
+            Err(failure) => (ReferenceUploadFailure::transport(Some(index), ReferenceUploadOperation::SignedPut, failure),
+                failure.category.is_retryable(), None),
+        };
+        if attempt == 2 || !retryable { return Err(failure); }
+        crate::renderer_diagnostics::record(app_handle, "main", "reference_upload_retry", serde_json::json!({
+            "operation": "signed_put", "attempt": attempt + 2, "uploadBytes": upload_bytes,
+        }));
+        tokio::time::sleep(retry_after.unwrap_or(Duration::from_millis(500 << attempt))
+            .min(upload_deadline.saturating_duration_since(Instant::now()))).await;
     }
-    Ok((index, ticket.object_key))
+    unreachable!("bounded upload attempts return a result")
+}
+
+async fn prepare_and_upload_wallet_reference(
+    app_handle: tauri::AppHandle,
+    original_token: String,
+    index: usize,
+    source: String,
+) -> Result<(usize, String), ReferenceUploadFailure> {
+    // Bound decoding, compression, memory and network work across ALL nodes.
+    let permit = reference_upload::uploads().acquire().await;
+    let object = tauri::async_runtime::spawn_blocking(move || source_to_r2_object(&source))
+        .await.map_err(|_| ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::PrepareReference, ReferenceUploadFailureReason::TaskTerminated))?
+        .map_err(|_| ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::PrepareReference, ReferenceUploadFailureReason::LocalPreparation))?;
+    if !object.content_type.starts_with("image/") {
+        return Err(ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::PrepareReference, ReferenceUploadFailureReason::UnsupportedImage));
+    }
+    // A queued upload may start after the access token expires. Refresh it,
+    // but never publish references under an account switched while waiting.
+    let token = commands::license::cloud_access_token(&app_handle).await
+        .map_err(|_| ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::UploadTicket, ReferenceUploadFailureReason::CredentialsUnavailable))?;
+    if token != original_token && !commands::license::cloud_tokens_same_account(&original_token, &token) {
+        return Err(ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::UploadTicket, ReferenceUploadFailureReason::CredentialsUnavailable));
+    }
+    let key = reference_upload::cache_key(&token, &object.content_type, &object.bytes);
+    reference_upload::uploads().run(key, || async move {
+        let _permit = permit;
+        upload_wallet_reference_image(&app_handle, &token, index, object).await.map(|(_, key)| key)
+    }).await.map(|key| (index, key)).map_err(|mut failure| {
+        failure.reference_index = Some(index);
+        failure
+    })
 }
 
 #[tauri::command]
@@ -12735,135 +12888,50 @@ async fn upload_wallet_reference_images(
     sources: Vec<String>,
 ) -> Result<Vec<String>, String> {
     let command_started_at = Instant::now();
-    if sources.is_empty() {
-        return Err("没有需要上传的参考图".to_string());
+    if sources.is_empty() || sources.len() > 32 {
+        return Err("invalid_request: 参考图数量必须为 1–32 张".to_string());
     }
-    let source_count = sources.len().min(32);
-    let access_token = commands::license::cloud_access_token(&app_handle)
-        .await
-        .map_err(|_| {
-            ReferenceUploadFailure::new(
-                None,
-                ReferenceUploadOperation::UploadTicket,
-                ReferenceUploadFailureReason::CredentialsUnavailable,
-            )
-            .message()
-        })?;
-    let token_ready_at = Instant::now();
-    let timing_app_handle = app_handle.clone();
-    let prepared_results = tauri::async_runtime::spawn_blocking(move || {
-        sources
-            .iter()
-            .take(32)
-            .enumerate()
-            .map(|(index, source)| match source_to_r2_object(source) {
-                Ok(object) if object.content_type.starts_with("image/") => Ok((index, object)),
-                Ok(_) => Err(ReferenceUploadFailure::new(
-                    Some(index),
-                    ReferenceUploadOperation::PrepareReference,
-                    ReferenceUploadFailureReason::UnsupportedImage,
-                )),
-                Err(_) => Err(ReferenceUploadFailure::new(
-                    Some(index),
-                    ReferenceUploadOperation::PrepareReference,
-                    ReferenceUploadFailureReason::LocalPreparation,
-                )),
-            })
-            .collect::<Vec<_>>()
-    })
-    .await
-    .map_err(|_| {
-        ReferenceUploadFailure::new(
-            None,
-            ReferenceUploadOperation::PrepareReference,
-            ReferenceUploadFailureReason::TaskTerminated,
-        )
-        .message()
+    let source_count = sources.len();
+    let access_token = commands::license::cloud_access_token(&app_handle).await.map_err(|_| {
+        ReferenceUploadFailure::new(None, ReferenceUploadOperation::UploadTicket, ReferenceUploadFailureReason::CredentialsUnavailable).message()
     })?;
-    let mut prepared = Vec::with_capacity(prepared_results.len());
+    let token_ready_at = Instant::now();
+    let mut indexed_object_keys = Vec::with_capacity(source_count);
     let mut failures = Vec::new();
-    for result in prepared_results {
-        match result {
-            Ok(value) => prepared.push(value),
-            Err(failure) => failures.push(failure),
-        }
-    }
-    if !failures.is_empty() {
-        return Err(format_reference_upload_failures(&failures));
-    }
-    let references_prepared_at = Instant::now();
-
-    let mut indexed_object_keys = Vec::with_capacity(prepared.len());
-    let mut pending = prepared.into_iter();
+    let mut pending = sources.into_iter().enumerate();
     loop {
-        let batch = pending.by_ref().take(4).collect::<Vec<_>>();
-        if batch.is_empty() {
-            break;
-        }
-        let handles = batch
-            .into_iter()
-            .map(|(index, object)| {
-                let upload_app_handle = app_handle.clone();
-                let upload_access_token = access_token.clone();
-                let handle = tauri::async_runtime::spawn(async move {
-                    upload_wallet_reference_image(
-                        &upload_app_handle,
-                        &upload_access_token,
-                        index,
-                        object,
-                    )
-                    .await
-                });
-                (index, handle)
-            })
-            .collect::<Vec<_>>();
+        let batch = pending.by_ref().take(reference_upload::CONCURRENCY).collect::<Vec<_>>();
+        if batch.is_empty() { break; }
+        let handles = batch.into_iter().map(|(index, source)| {
+            let app = app_handle.clone();
+            let token = access_token.clone();
+            (index, tauri::async_runtime::spawn(prepare_and_upload_wallet_reference(app, token, index, source)))
+        }).collect::<Vec<_>>();
         for (index, handle) in handles {
             match handle.await {
                 Ok(Ok(value)) => indexed_object_keys.push(value),
                 Ok(Err(failure)) => failures.push(failure),
-                Err(_) => failures.push(ReferenceUploadFailure::new(
-                    Some(index),
-                    ReferenceUploadOperation::UploadTicket,
-                    ReferenceUploadFailureReason::TaskTerminated,
-                )),
+                Err(_) => failures.push(ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::PrepareReference, ReferenceUploadFailureReason::TaskTerminated)),
             }
         }
+        // Failed references must not be silently dropped or change image order.
+        // Let the current batch finish, then stop spending bandwidth on this run.
+        if !failures.is_empty() { break; }
     }
     indexed_object_keys.sort_by_key(|(index, _)| *index);
-    eprintln!(
-        "[wallet_reference_upload_timing] count={} failed={} tokenMs={} localPreparationMs={} uploadMs={} totalMs={}",
-        indexed_object_keys.len(),
-        failures.len(),
-        token_ready_at.duration_since(command_started_at).as_millis(),
-        references_prepared_at.duration_since(token_ready_at).as_millis(),
-        references_prepared_at.elapsed().as_millis(),
-        command_started_at.elapsed().as_millis(),
-    );
-    let _ = append_ai_debug_log(
-        timing_app_handle,
-        "canvas-image-timing".to_string(),
-        serde_json::json!({
-            "at": chrono::Utc::now().to_rfc3339(),
-            "label": "walletReferenceUpload",
-            "value": {
-                "count": indexed_object_keys.len(),
-                "failed": failures.len(),
-                "requested": source_count,
-                "tokenMs": token_ready_at.duration_since(command_started_at).as_millis(),
-                "localPreparationMs": references_prepared_at.duration_since(token_ready_at).as_millis(),
-                "uploadMs": references_prepared_at.elapsed().as_millis(),
-                "totalMs": command_started_at.elapsed().as_millis(),
-            },
-        })
-        .to_string(),
-    );
-    if !failures.is_empty() {
-        return Err(format_reference_upload_failures(&failures));
-    }
-    Ok(indexed_object_keys
-        .into_iter()
-        .map(|(_, object_key)| object_key)
-        .collect())
+    crate::renderer_diagnostics::record(&app_handle, "main", "reference_upload_completed", serde_json::json!({
+        "requested": source_count, "uploaded": indexed_object_keys.len(), "failed": failures.len(),
+        "globalConcurrency": reference_upload::CONCURRENCY, "elapsedMs": command_started_at.elapsed().as_millis() as u64,
+    }));
+    let _ = append_ai_debug_log(app_handle, "canvas-image-timing".to_string(), serde_json::json!({
+        "at": chrono::Utc::now().to_rfc3339(), "label": "walletReferenceUpload", "value": {
+            "count": indexed_object_keys.len(), "failed": failures.len(), "requested": source_count,
+            "tokenMs": token_ready_at.duration_since(command_started_at).as_millis(),
+            "uploadMs": token_ready_at.elapsed().as_millis(), "totalMs": command_started_at.elapsed().as_millis(),
+        },
+    }).to_string());
+    if !failures.is_empty() { return Err(format_reference_upload_failures(&failures)); }
+    Ok(indexed_object_keys.into_iter().map(|(_, key)| key).collect())
 }
 
 #[tauri::command]

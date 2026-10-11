@@ -921,10 +921,12 @@ pub(crate) enum CloudTransportErrorCategory {
     Timeout,
     Tls,
     ConnectionReset,
+    ConnectionClosed,
     ProxyConnect,
     Dns,
     Connect,
     Request,
+    Builder,
     ResponseBody,
     Network,
     Initialization,
@@ -936,10 +938,12 @@ impl CloudTransportErrorCategory {
             Self::Timeout => "timeout",
             Self::Tls => "tls",
             Self::ConnectionReset => "connection_reset",
+            Self::ConnectionClosed => "connection_closed",
             Self::ProxyConnect => "proxy_connect",
             Self::Dns => "dns",
             Self::Connect => "connect",
             Self::Request => "request",
+            Self::Builder => "builder",
             Self::ResponseBody => "response_body",
             Self::Network => "network",
             Self::Initialization => "initialization",
@@ -951,14 +955,20 @@ impl CloudTransportErrorCategory {
             Self::Timeout => "请求超时",
             Self::Tls => "TLS 连接失败",
             Self::ConnectionReset => "连接被重置",
+            Self::ConnectionClosed => "连接提前关闭",
             Self::ProxyConnect => "代理连接失败",
             Self::Dns => "DNS 解析失败",
             Self::Connect => "无法建立连接",
-            Self::Request => "请求构造失败",
+            Self::Request => "请求发送失败",
+            Self::Builder => "请求构造失败",
             Self::ResponseBody => "响应传输失败",
             Self::Network => "网络错误",
             Self::Initialization => "网络连接初始化失败",
         }
+    }
+
+    pub(crate) fn is_retryable(self) -> bool {
+        matches!(self, Self::Timeout | Self::ConnectionReset | Self::ConnectionClosed | Self::ProxyConnect | Self::Dns | Self::Connect | Self::Request | Self::ResponseBody | Self::Network)
     }
 }
 
@@ -988,23 +998,42 @@ impl CloudTransportFailure {
     }
 }
 
+fn transport_io_error<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a std::io::Error> {
+    let mut source = Some(error);
+    while let Some(current) = source {
+        if let Some(error) = current.downcast_ref::<std::io::Error>() {
+            return Some(error);
+        }
+        source = current.source();
+    }
+    None
+}
+
 fn cloud_transport_category(
     error: &reqwest::Error,
     via_proxy: bool,
 ) -> CloudTransportErrorCategory {
     let detail = reqwest_error_detail(error);
-    if error.is_timeout() {
+    if error.is_builder() {
+        CloudTransportErrorCategory::Builder
+    } else if error.is_timeout() {
         CloudTransportErrorCategory::Timeout
+    } else if transport_io_error(error).is_some_and(|error| {
+        matches!(error.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::BrokenPipe)
+    }) || detail.contains("connection reset")
+        || detail.contains("connection was reset")
+        || detail.contains("forcibly closed")
+    {
+        CloudTransportErrorCategory::ConnectionReset
+    } else if transport_io_error(error).is_some_and(|error| error.kind() == std::io::ErrorKind::UnexpectedEof)
+        || detail.contains("connection closed") || detail.contains("incomplete message")
+    {
+        CloudTransportErrorCategory::ConnectionClosed
     } else if detail.contains("certificate")
         || detail.contains("tls")
         || detail.contains("handshake")
     {
         CloudTransportErrorCategory::Tls
-    } else if detail.contains("connection reset")
-        || detail.contains("connection was reset")
-        || detail.contains("forcibly closed")
-    {
-        CloudTransportErrorCategory::ConnectionReset
     } else if error.is_connect() {
         if via_proxy {
             CloudTransportErrorCategory::ProxyConnect
@@ -1023,7 +1052,10 @@ fn cloud_transport_category(
 }
 
 fn should_retry_cloud_transport(error: &reqwest::Error, method: &str) -> bool {
-    error.is_connect() || (method == "GET" && error.is_timeout())
+    // POST may already have been accepted. Only replay it on a connect error.
+    // GET and a signed PUT of the same bytes to the same object are idempotent.
+    !error.is_builder() && (error.is_connect()
+        || (matches!(method, "GET" | "PUT") && cloud_transport_category(error, false).is_retryable()))
 }
 
 #[derive(Clone, Copy)]
@@ -1049,11 +1081,12 @@ where
         // multipart forms and streams) are consumed by send and cannot be
         // cloned safely for a fallback attempt.
         let request = build(client).build();
-        let operation = request
+        let request_url_length = request.as_ref().ok().map(|request| request.url().as_str().len());
+        let operation = log_context.map(|context| context.operation).unwrap_or_else(|| request
             .as_ref()
             .ok()
             .map(|request| cloud_operation(request.url().path()))
-            .unwrap_or("request_build");
+            .unwrap_or("request_build"));
         let cloud_token = request
             .as_ref()
             .ok()
@@ -1083,6 +1116,8 @@ where
                             serde_json::json!({
                                 "operation": operation, "method": method, "route": route, "attempt": index + 1,
                                 "httpStatus": response.status().as_u16(), "elapsedMs": attempt_started_at.elapsed().as_millis() as u64,
+                                "requestUrlLength": request_url_length, "responseUrlLength": response.url().as_str().len(),
+                                "uploadBytes": log_context.map(|context| context.upload_bytes),
                             }),
                         );
                     }
@@ -1113,6 +1148,11 @@ where
                             "operation": operation, "method": method, "route": route, "attempt": index + 1,
                             "category": cloud_transport_category(&error, *via_proxy).code(),
                             "fallbackAttempted": fallback_attempted, "elapsedMs": attempt_started_at.elapsed().as_millis() as u64,
+                            "phase": if error.is_builder() { "build" } else { "send" },
+                            "ioErrorKind": transport_io_error(&error).map(|error| format!("{:?}", error.kind())),
+                            "osErrorCode": transport_io_error(&error).and_then(|error| error.raw_os_error()),
+                            "requestUrlLength": request_url_length,
+                            "uploadBytes": log_context.map(|context| context.upload_bytes),
                         }),
                     );
                 }
@@ -1155,6 +1195,7 @@ fn cloud_operation(path: &str) -> &'static str {
         "/v1/ai/models" => "chat_models",
         "/v1/ai/tasks" => "task_submit",
         "/v1/ai/reference-images" => "reference_images",
+        "/v1/ai/reference-images/upload-ticket" => "upload_ticket",
         _ if path.starts_with("/v1/ai/tasks/") => "task_status",
         _ if path.starts_with("/v1/ai/videos/") => "video_status",
         _ if path.starts_with("/v1/ai/images/generations/by-request/") => "image_status",
@@ -1249,7 +1290,7 @@ where
 
 #[cfg(test)]
 mod cloud_transport_tests {
-    use super::send_cloud_request_with_clients;
+    use super::{send_cloud_request_with_clients, cloud_transport_category, transport_io_error, should_retry_cloud_transport, CloudTransportErrorCategory, CloudTransportFailure};
     use reqwest::header::CONNECTION;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -1352,6 +1393,73 @@ mod cloud_transport_tests {
             .timeout(Duration::from_secs(2))
             .build()
             .expect("proxy test client")
+    }
+
+    #[test]
+    fn invalid_headers_are_builder_errors_and_do_not_expose_credentials() {
+        let client = direct_test_client(Duration::from_secs(1));
+        let error = client.post("https://example.test/?token=secret").header("Authorization", "Bearer secret\nvalue").build().unwrap_err();
+        assert_eq!(cloud_transport_category(&error, false), CloudTransportErrorCategory::Builder);
+        assert!(!should_retry_cloud_transport(&error, "POST"));
+        assert!(!should_retry_cloud_transport(&error, "PUT"));
+        let message = CloudTransportFailure::from_reqwest(&error, false, false).safe_message("POST");
+        assert!(message.contains("请求构造失败"));
+        assert!(!message.contains("secret"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_connection_resets_are_detected_by_error_kind() {
+        let error = std::io::Error::from_raw_os_error(10054);
+        assert_eq!(transport_io_error(&error).unwrap().kind(), std::io::ErrorKind::ConnectionReset);
+        assert_eq!(transport_io_error(&error).unwrap().raw_os_error(), Some(10054));
+    }
+
+    #[test]
+    fn interrupted_put_rebuilds_the_same_body_but_post_is_not_replayed() {
+        for method in ["PUT", "POST"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/upload", listener.local_addr().unwrap());
+            let expected = if method == "PUT" { 2 } else { 1 };
+            let server = thread::spawn(move || {
+                for attempt in 0..expected {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                    let mut request = Vec::new();
+                    loop {
+                        let mut buffer = [0; 4096];
+                        let read = stream.read(&mut buffer).unwrap();
+                        if read == 0 { break; }
+                        request.extend_from_slice(&buffer[..read]);
+                        if let Some(end) = header_end(&request) {
+                            if request.len() >= end + content_length(&request[..end]) { break; }
+                        }
+                    }
+                    assert!(request.ends_with(b"identical-image-bytes"));
+                    if attempt > 0 {
+                        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                    }
+                    // First connection deliberately closes without a response.
+                }
+            });
+            let client = direct_test_client(Duration::from_secs(2));
+            let clients = vec![(client.clone(), false), (client, false)];
+            let attempts = AtomicUsize::new(0);
+            let result = tauri::async_runtime::block_on(send_cloud_request_with_clients(&clients, method, None, &|client| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                client.request(reqwest::Method::from_bytes(method.as_bytes()).unwrap(), &url)
+                    .body("identical-image-bytes")
+            }));
+            assert_eq!(attempts.load(Ordering::SeqCst), expected);
+            if method == "PUT" {
+                assert_eq!(result.unwrap().status(), reqwest::StatusCode::OK);
+            } else {
+                let message = result.unwrap_err();
+                assert!(message.contains("连接提前关闭"), "{message}");
+                assert!(!message.contains("请求构造失败"));
+            }
+            server.join().unwrap();
+        }
     }
 
     #[test]
@@ -2273,6 +2381,17 @@ pub async fn get_cloud_image_generation_by_request(
     {
         return Err("invalid_request: 生图请求 ID 无效".to_string());
     }
+    static LOOKUP_PERMITS: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    static NEXT_LOOKUP: OnceLock<AsyncMutex<Instant>> = OnceLock::new();
+    let _permit = LOOKUP_PERMITS.get_or_init(|| tokio::sync::Semaphore::new(2))
+        .acquire().await.map_err(|_| "cloud_unavailable: 状态查询队列不可用".to_string())?;
+    let delay = {
+        let mut next = NEXT_LOOKUP.get_or_init(|| AsyncMutex::new(Instant::now())).lock().await;
+        let start = (*next).max(Instant::now());
+        *next = start + Duration::from_millis(750);
+        start.saturating_duration_since(Instant::now())
+    };
+    tokio::time::sleep(delay).await;
     let access_token = cloud_access_token(&app_handle).await?;
     let encoded_request_id =
         url::form_urlencoded::byte_serialize(client_request_id.as_bytes()).collect::<String>();

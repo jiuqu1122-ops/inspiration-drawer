@@ -12,7 +12,7 @@ import { getAutoRecoverableAiMediaResultSource } from '../../aiImageResultRecove
 import { getCloudWalletImageGenerationByRequest,getCloudWalletImageLookupImages,getCloudWalletVideoDeliveredResults,getCloudWalletVideoStatus } from '../../canvasAiImage';
 import { buildCanvasAiOutputRemoteResultPatch } from '../../canvasAiOutputs';
 import { getCanvasAiMediaType } from '../../canvasAiRuntime';
-import { getCanvasAiTimedOutRecoveryCandidates,isCanvasAiImageLookupPending } from '../../canvasAiTimedOutRecovery';
+import { getCanvasAiTimedOutRecoveryCandidates,isCanvasAiImageLookupPending,getCanvasAiLookupRetrySchedule,getCanvasAiLookupRetryDelay,isCanvasAiLookupTerminalError,isCanvasAiLookupGatewayLimitError } from '../../canvasAiTimedOutRecovery';
 import { type CanvasAiGeneratedOutput,type CanvasImageItem,type CanvasItemBox } from '../../canvasModel';
 import { shouldDeferLicenseGateForPostInstall,shouldInvokeLicenseGateDrawerOpen } from '../../startup';
 import { type TriggerMode } from '../../triggerModel';
@@ -32,7 +32,8 @@ export const runDerivedUiEffect01 = (ctx: Pick<derivedUiEffectContext, 'activeCa
       .filter(({ canvasItem, output, outputIndex, clientRequestId }) => {
         const recoveryKey = `${canvasItem.id}:${output.id || outputIndex}:${clientRequestId}`;
         return !canvasAiTimedOutRecoverySettledRef.current.has(recoveryKey)
-          && !canvasAiTimedOutRecoveryInFlightRef.current.has(recoveryKey);
+          && !canvasAiTimedOutRecoveryInFlightRef.current.has(recoveryKey)
+          && getCanvasAiLookupRetrySchedule(canvasAiTimedOutRecoveryInFlightRef.current).canRetry(recoveryKey);
       })
       .slice(0, availableSlots);
 
@@ -46,6 +47,7 @@ export const runDerivedUiEffect01 = (ctx: Pick<derivedUiEffectContext, 'activeCa
       const recoveryKey = `${canvasItem.id}:${output.id || outputIndex}:${clientRequestId}`;
       canvasAiTimedOutRecoveryInFlightRef.current.add(recoveryKey);
       let shouldPollAgain = false;
+      let retryDelay = 8_000;
 
       const isVideo = candidate.mediaType === 'video';
       const requestedTaskId = String(output.taskId || clientRequestId).trim();
@@ -164,19 +166,22 @@ export const runDerivedUiEffect01 = (ctx: Pick<derivedUiEffectContext, 'activeCa
         })
         .catch((error) => {
           const message = error instanceof Error ? error.message : String(error || '');
-          if (/image_request_not_found|video_task_not_found|invalid_request/i.test(message)) {
+          if (/image_request_not_found|video_task_not_found/i.test(message)
+            || (isCanvasAiLookupTerminalError(error) && !isCanvasAiLookupGatewayLimitError(error))) {
             canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
             return;
           }
           shouldPollAgain = true;
+          retryDelay = getCanvasAiLookupRetryDelay(error);
           console.warn('超时生图任务自动恢复查询失败:', getCanvasAiErrorSummary(message));
         })
         .finally(() => {
           canvasAiTimedOutRecoveryInFlightRef.current.delete(recoveryKey);
           if (shouldPollAgain) {
+            getCanvasAiLookupRetrySchedule(canvasAiTimedOutRecoveryInFlightRef.current).defer(recoveryKey, retryDelay);
             window.setTimeout(() => {
               setCanvasAiTimedOutRecoveryTick(value => value + 1);
-            }, 8_000);
+            }, retryDelay);
           } else {
             window.setTimeout(() => {
               setCanvasAiTimedOutRecoveryTick(value => value + 1);
