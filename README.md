@@ -4,12 +4,18 @@
 
 ## 下载
 
-当前版本：**6.0.23**
+当前版本：**8.0.23**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.23/Inspiration.Drawer_6.0.23_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.23)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.23/Inspiration.Drawer_8.0.23_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.23)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 8.0.23 更新
+
+- 改善带参考图及多个节点同时生成时的上传稳定性，减少相同参考图的重复上传。
+- 优化网络中断后的参考图上传恢复，生成请求不会因不确定的网络失败自动重复提交。
+- 修复生成状态查询异常时频繁重试的问题，改善任务结果恢复及网络错误提示。
 
 ## 6.0.23 更新
 

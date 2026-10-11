@@ -1500,12 +1500,12 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
                 <button data-drawer-dialog-close="true" onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v8.0.22</p>
-                <p>优化工作流运行期间的预览、尺寸计算和缩放，减少重复处理运行数据。</p>
-                <p>优化图片较多的画布，减少拖动和缩放时的重复渲染与节点查询。</p>
-                <p>修复旧工作流因模型名称被错误替换而显示“价格未配置”的问题，保留原模型和清晰度。</p>
-                <p>修复登录和长任务查询中的凭证缓存问题，改善云端模型获取和生成鉴权稳定性。</p>
-                <p>增强托盘和再次启动时的窗口恢复，新增本地异常诊断，方便排查界面消失或无响应。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v8.0.23</p>
+                <p>改善带参考图和多个节点同时生成时的上传稳定性。</p>
+                <p>修改提示词后再次使用相同参考图时，减少重复上传和等待。</p>
+                <p>优化网络中断后的参考图上传恢复，生成请求不会因不确定的网络失败自动重复提交。</p>
+                <p>修复生成状态查询异常时频繁重试的问题，改善任务结果恢复。</p>
+                <p>修正部分网络错误提示，并改善系统代理和网络连接兼容性。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>
