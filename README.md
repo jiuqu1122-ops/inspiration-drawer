@@ -4,12 +4,17 @@
 
 ## 下载
 
-当前版本：**8.0.23**
+当前版本：**8.0.24**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.23/Inspiration.Drawer_8.0.23_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.23)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.24/Inspiration.Drawer_8.0.24_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.24)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 8.0.24 更新
+
+- 修复部分历史工作流结果在拖动或缩放画布后触发循环更新、导致界面失效的问题。
+- 缓存状态未发生实际变化时，不再重复刷新画布，提高历史工作流画布的稳定性。
 
 ## 8.0.23 更新
 

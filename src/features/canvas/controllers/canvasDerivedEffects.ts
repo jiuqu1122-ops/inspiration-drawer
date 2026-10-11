@@ -366,22 +366,28 @@ export const runDerivedUiEffect03 = (ctx: Pick<derivedUiEffectContext, 'CANVAS_A
     const reconcilePendingOutputs = () => {
       const cutoff = Date.now() - CANVAS_AI_OUTPUT_CACHE_STALE_MS;
       const changedIds = new Set<string>();
-      updateCanvasItemsImmediate(prev => prev.map(canvasItem => {
-        if (!canvasItem.ai?.outputs?.length) return canvasItem;
-        let changed = false;
-        const outputs = canvasItem.ai.outputs.map((output) => {
-          if (output.cacheStatus !== 'pending') return output;
-          if (output.thumbnail) {
+      updateCanvasItemsImmediate(prev => {
+        const next = prev.map(canvasItem => {
+          if (!canvasItem.ai?.outputs?.length) return canvasItem;
+          let changed = false;
+          const outputs = canvasItem.ai.outputs.map((output) => {
+            if (output.cacheStatus !== 'pending') return output;
+            if (output.thumbnail) {
+              changed = true;
+              return { ...output, cacheStatus: 'ready' as const };
+            }
+            if (output.path || !output.generatedAt || output.generatedAt > cutoff) return output;
             changed = true;
-            return { ...output, cacheStatus: 'ready' as const };
-          }
-          if (output.path || !output.generatedAt || output.generatedAt > cutoff) return output;
-          changed = true;
-          return { ...output, cacheStatus: 'failed' as const };
+            return { ...output, cacheStatus: 'failed' as const };
+          });
+          if (changed) changedIds.add(canvasItem.id);
+          return changed ? { ...canvasItem, ai: { ...canvasItem.ai, outputs } } : canvasItem;
         });
-        if (changed) changedIds.add(canvasItem.id);
-        return changed ? { ...canvasItem, ai: { ...canvasItem.ai, outputs } } : canvasItem;
-      }));
+        // Workflow previews can expose runtime snapshot outputs rather than
+        // top-level ai.outputs. Returning a new array without changing any
+        // item would rerun this effect forever without settling the preview.
+        return changedIds.size > 0 ? next : prev;
+      });
       if (changedIds.size > 0) {
         scheduleCanvasChangedNodesPatchSave(Array.from(changedIds));
         scheduleCanvasStateSave({ syncNodes: false });
