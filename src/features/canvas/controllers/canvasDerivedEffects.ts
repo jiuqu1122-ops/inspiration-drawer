@@ -205,6 +205,7 @@ export const runDerivedUiEffect02 = (ctx: Pick<derivedUiEffectContext, 'CANVAS_A
     const drawerItemsById = new Map(itemsRef.current.map(item => [item.id, item]));
     const candidates = canvasItems.flatMap((canvasItem) => (
       getCanvasAiOutputPreviewSlots(canvasItem).map((output, outputIndex) => {
+        if (output.assetType === 'audio') return null;
         const mediaType = output.mediaType || getCanvasAiMediaType(canvasItem.ai);
         const source = output.sourceUrl || output.url || '';
         const drawerItem = output.id ? drawerItemsById.get(output.id) : undefined;
@@ -409,7 +410,7 @@ export const runDerivedUiEffect03 = (ctx: Pick<derivedUiEffectContext, 'CANVAS_A
       if (canvasItem.item.type === 'image' && !canvasItem.item.thumbnail && hasImageSourceAsset) ensureImageThumbnail(canvasItem.item);
       getCanvasAiOutputPreviewSlots(canvasItem).forEach((output, outputIndex) => {
         const mediaType = output.mediaType || getCanvasAiMediaType(canvasItem.ai);
-        if (mediaType !== 'image' || output.thumbnail || output.status !== 'success') return;
+        if (output.assetType === 'audio' || mediaType !== 'image' || output.thumbnail || output.status !== 'success') return;
         const recoveryKey = `${canvasItem.id}:${output.id || outputIndex}:${output.path || output.url || ''}`;
         if (output.cacheStatus === 'failed') {
           if (!output.path || canvasAiOutputThumbnailRecoveryAttemptedRef.current.has(recoveryKey)) return;

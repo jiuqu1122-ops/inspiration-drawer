@@ -4681,9 +4681,9 @@ function MainApp() {
     client?: { x: number; y: number },
   ) => { return addCanvasDroppedTemplateJsonSourcesImpl({ addCanvasTemplateValuesAtDrop, showToast }, sources, client); };
 
-  const addCanvasDroppedFiles = async (files: FileList | File[], client?: { x: number; y: number }) => { return addCanvasDroppedFilesImpl({ addCanvasImageItems, createCanvasImageItemFromFile, createCanvasVideoItemFromPath, lastCanvasDropAtRef, lastCanvasDroppedPathsKeyRef }, files, client); };
+  const addCanvasDroppedFiles = async (files: FileList | File[], client?: { x: number; y: number }) => { return addCanvasDroppedFilesImpl({ addCanvasImageItems, createCanvasImageItemFromFile, createCanvasVideoItemFromPath, createCanvasAudioItemFromPath, lastCanvasDropAtRef, lastCanvasDroppedPathsKeyRef }, files, client); };
 
-  const addCanvasDroppedPaths = async (paths: string[], client?: { x: number; y: number }) => { return addCanvasDroppedPathsImpl({ addCanvasDroppedTemplateJsonSources, addCanvasImageItems, createCanvasImageItemFromPath, createCanvasVideoItemFromPath, lastCanvasDropAtRef, lastCanvasDroppedPathsKeyRef, showToast }, paths, client); };
+  const addCanvasDroppedPaths = async (paths: string[], client?: { x: number; y: number }) => { return addCanvasDroppedPathsImpl({ addCanvasDroppedTemplateJsonSources, addCanvasImageItems, createCanvasImageItemFromPath, createCanvasVideoItemFromPath, createCanvasAudioItemFromPath, lastCanvasDropAtRef, lastCanvasDroppedPathsKeyRef, showToast }, paths, client); };
 
   const createDrawerMediaCanvasNode = async (
     itemId: string,

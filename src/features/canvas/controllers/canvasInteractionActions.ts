@@ -1362,7 +1362,7 @@ export const handleCanvasDropImpl = async (ctx: Pick<canvasInteractionsActionCon
       if (added) return;
     }
 
-    showToast('无限画布只接收图片或视频');
+    showToast('无限画布支持图片、视频或音频');
 
 };
 

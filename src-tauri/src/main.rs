@@ -9139,6 +9139,15 @@ fn is_supported_drop_media_path(path: &Path) -> bool {
             | "mkv"
             | "webm"
             | "m4v"
+            | "mp3"
+            | "wav"
+            | "aac"
+            | "flac"
+            | "m4a"
+            | "ogg"
+            | "opus"
+            | "aiff"
+            | "wma"
     )
 }
 
@@ -19485,4 +19494,39 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+
+#[cfg(test)]
+mod canvas_audio_drop_tests {
+    use super::{collect_drop_media_paths, is_supported_drop_media_path};
+    use std::{fs, path::Path, time::{SystemTime, UNIX_EPOCH}};
+
+    #[test]
+    fn native_drop_accepts_audio_and_keeps_existing_media_extensions() {
+        for extension in ["MP3", "wav", "aac", "flac", "m4a", "ogg", "opus", "aiff", "wma", "png", "mp4"] {
+            assert!(is_supported_drop_media_path(Path::new(&format!("song.{extension}"))));
+        }
+        assert!(!is_supported_drop_media_path(Path::new("document.pdf")));
+    }
+
+    #[test]
+    fn folder_drop_collects_audio_recursively_and_deduplicates_direct_paths() {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("inspiration-audio-drop-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(root.join("nested")).unwrap();
+        let audio = root.join("music.MP3");
+        let nested = root.join("nested").join("music.flac");
+        let image = root.join("image.png");
+        let text = root.join("ignore.txt");
+        for file in [&audio, &nested, &image, &text] { fs::write(file, b"fixture").unwrap(); }
+        let mut actual = collect_drop_media_paths(vec![root.to_string_lossy().into_owned(), audio.to_string_lossy().into_owned()]).unwrap();
+        actual.sort();
+        let mut expected = vec![audio.to_string_lossy().into_owned(), nested.to_string_lossy().into_owned(), image.to_string_lossy().into_owned()];
+        expected.sort();
+        assert_eq!(actual, expected);
+        for file in [&audio, &nested, &image, &text] { fs::remove_file(file).unwrap(); }
+        fs::remove_dir(root.join("nested")).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
 }

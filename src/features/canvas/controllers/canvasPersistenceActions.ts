@@ -1618,18 +1618,20 @@ export const copyCanvasAiOutputToCanvasImpl = async (ctx: Pick<canvasPersistence
     output = getCanvasAiOutputForAction(sourceCanvasItem, output, outputIndex);
     const outputSource = getCanvasAiOutputDisplaySource(output);
     const outputMediaType = output.mediaType || getCanvasAiMediaType(sourceCanvasItem.ai);
+    const isAudio = output.assetType === 'audio';
+    const unavailableMessage = isAudio ? '这段音乐还不能放到画布' : outputMediaType === 'video' ? '这条视频还不能复制到画布' : '这张图还不能复制到画布';
     if (!outputSource || output.status === 'error') {
-      showToast(outputMediaType === 'video' ? '这条视频还不能复制到画布' : '这张图还不能复制到画布');
+      showToast(unavailableMessage);
       return false;
     }
 
     const outputItem = createCanvasAiOutputBufferItem(sourceCanvasItem, output, outputIndex);
     if (!outputItem) {
-      showToast(outputMediaType === 'video' ? '这条视频还不能复制到画布' : '这张图还不能复制到画布');
+      showToast(unavailableMessage);
       return false;
     }
 
-    const size = output.width && output.height
+    const size = isAudio ? { width: 320, height: 112 } : output.width && output.height
       ? getCanvasInitialImageSize(output.width, output.height)
       : outputMediaType === 'image'
         ? await readImageDisplaySize(outputSource)
@@ -1641,8 +1643,8 @@ export const copyCanvasAiOutputToCanvasImpl = async (ctx: Pick<canvasPersistence
       id: makeCanvasNodeId(itemId, 'media'),
       item: {
         ...cloneDrawerValue(outputItem),
-        id: itemId,
-        type: outputMediaType,
+        id: isAudio ? outputItem.id : itemId,
+        type: isAudio ? 'file' : outputMediaType,
         url: outputItem.url || outputSource,
         path: outputItem.path,
         createdAt: now,
@@ -1652,7 +1654,7 @@ export const copyCanvasAiOutputToCanvasImpl = async (ctx: Pick<canvasPersistence
       y: pos.y,
       width: size.width,
       height: size.height,
-      ai: {
+      ai: isAudio ? undefined : {
         type: outputMediaType === 'video' ? 'generated-video' : 'generated-image',
         prompt: output.prompt || sourceCanvasItem.ai?.prompt || sourceCanvasItem.item.content || '',
         status: 'success',
@@ -1662,10 +1664,10 @@ export const copyCanvasAiOutputToCanvasImpl = async (ctx: Pick<canvasPersistence
 
     const addedCount = appendCanvasItems(
       [canvasItem],
-      outputMediaType === 'video' ? '复制输出视频到画布' : '复制输出图片到画布'
+      isAudio ? '放置音乐到画布' : outputMediaType === 'video' ? '复制输出视频到画布' : '复制输出图片到画布'
     );
     if (addedCount > 0) {
-      showToast(outputMediaType === 'video' ? '已复制这条视频到画布' : '已复制这张图到画布');
+      showToast(isAudio ? '已将这段音乐放到画布' : outputMediaType === 'video' ? '已复制这条视频到画布' : '已复制这张图到画布');
     }
     return addedCount > 0;
 

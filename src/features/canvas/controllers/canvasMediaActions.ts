@@ -511,7 +511,7 @@ export const createCanvasAudioItemFromPathImpl = async (ctx: Pick<canvasMediaAct
       x: pos.x,
       y: pos.y,
       width: 320,
-      height: 92,
+      height: 112,
     };
 
 };

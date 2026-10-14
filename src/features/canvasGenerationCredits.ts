@@ -34,6 +34,7 @@ export type CanvasAiCreditPricing = {
   canvasTextAgentCredits?: string;
   imageDefaultCredits: string;
   videoDefaultCredits: string;
+  musicModels?: Array<{ model: string; billingType: 'music_flat'; creditsPerRequest: string }>;
   imageModels: Array<{
     model: string;
     billingType?: CanvasImageBillingType;
@@ -65,6 +66,16 @@ export type CanvasAiCreditPricing = {
 export const shouldShowCanvasGenerationCredits = (
   credentialSource?: CanvasAiCredentialSource | null,
 ) => credentialSource === 'wallet';
+
+export const estimateCanvasMusicGenerationCredits = (model: string | undefined, pricing?: CanvasAiCreditPricing | null) => {
+  if (!pricing) return { available: false, reason: 'pricing_loading' as const, totalCredits: 0 };
+  const price = pricing.musicModels?.find(price => price.model === model && price.billingType === 'music_flat');
+  const credits = price?.creditsPerRequest;
+  const totalCredits = credits !== undefined && credits.trim() !== '' ? Number(credits) : NaN;
+  return Number.isFinite(totalCredits) && totalCredits >= 0
+    ? { available: true, totalCredits }
+    : { available: false, reason: 'pricing_unavailable' as const, totalCredits: 0 };
+};
 
 export const getCanvasTextAgentRequestCredits = (
   pricing?: CanvasAiCreditPricing | null,

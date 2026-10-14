@@ -198,7 +198,7 @@ export const createCanvasAiOutputBufferItem = (
     id: output.id || `${canvasItem.item.id}-output-${index + 1}`,
     type: output.assetType === 'audio' ? 'file' : mediaType,
     content: name,
-    name: output.assetType === 'audio' && !/\.(mp3|wav|ogg|m4a)$/i.test(name) ? `${name}.mp3` : name,
+    name: output.assetType === 'audio' && !isCanvasAudioFileName(name) ? `${name}.mp3` : name,
     url: rawUrl,
     path: rawPath || undefined,
     thumbnail: output.thumbnail || undefined,

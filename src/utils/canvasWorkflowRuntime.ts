@@ -39,7 +39,7 @@ import { cloneDrawerValue } from './canvasSerialization';
 // Render projections contain only primitive output fields. In particular, never
 // normalize/clone runtime items, prompts, slot assets or image payload containers
 // just to measure a node. Writers replace ai/runtime/outputs references.
-const previewOutputFields = ['id', 'mediaType', 'url', 'path', 'thumbnail', 'name',
+const previewOutputFields = ['id', 'mediaType', 'assetType', 'url', 'path', 'thumbnail', 'name',
   'status', 'cacheStatus', 'error', 'generatedAt', 'width', 'height', 'nodeId', 'nodeLabel'] as const;
 const projectPreviewOutput = (output: CanvasAiGeneratedOutput): CanvasAiGeneratedOutput => {
   const fields = previewOutputFields.flatMap(key => output[key] === undefined ? [] : [[key, output[key]]]);

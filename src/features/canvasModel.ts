@@ -207,6 +207,7 @@ export type CanvasRifeEngineProgress = {
 export type CanvasAiItemData = {
   /** Pending music receipts are recovered by GET; never submit another paid POST. */
   musicClientRequestId?: string;
+  musicChargedCredits?: string;
   quality?: string;
   type: CanvasAiItemType;
   provider?: CanvasAiProvider;

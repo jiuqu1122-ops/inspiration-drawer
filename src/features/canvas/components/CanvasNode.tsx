@@ -1,6 +1,7 @@
 import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import { Brush,ChevronLeft,Clock,Copy,Download,File as FileIcon,Film,Image as ImageIcon,Link,Music,Play,Plus,RefreshCw,RotateCw,Sparkles,Type,Upload,X } from 'lucide-react';
 import { CanvasMusicNode } from '../../canvasMusic';
+import { CanvasAudioContent } from '../../canvasAudio';
 import { CanvasAiRunButton } from '../../../components/CanvasAiRunButton';
 import { CanvasGeneratorControls } from '../../../components/CanvasGeneratorControls';
 import { CanvasHorizontalRail,shouldRenderCanvasVideoReferenceRail } from '../../../components/CanvasHorizontalRail';
@@ -14,7 +15,7 @@ import { CANVAS_AI_DEFAULT_COUNT,CANVAS_AI_DEFAULT_OUTPUT_FORMAT,CANVAS_AI_DEFAU
 import { isCanvasImageFusionAi,normalizeCanvasImageFusionConfig } from '../../../utils/canvasImageFusion';
 import { createCanvasAiOutputBufferItem,getCanvasAiOutputDisplaySource,getCanvasAiOutputThumbnailSource,getCanvasAiSuccessfulOutputs,getCanvasItemNavSource,hasCanvasAiGeneratedResults,isCanvasWorkflowReferenceBridge } from '../../../utils/canvasItemSelectors';
 import { getCanvasImageRuleState } from '../../../utils/canvasWorkflowDefinitions';
-import { isCanvasAudioFileName } from '../../../utils/localMediaPaths';
+import { isCanvasAudioBufferItem,isCanvasAudioFileName } from '../../../utils/localMediaPaths';
 import { CANVAS_AI_VIDEO_MODEL_OPTIONS,getCanvasAiImageResolutionValuesForCandidates,getCanvasAiPublicImageModelName,getCanvasAiVideoModelCandidates,getCanvasAiVideoModelOptionValue,getCanvasAiVideoProviderForModel,getCanvasAiVideoReferenceSlotDisplayLabel,isSeedance20VideoModel,normalizeCanvasAiImageResolutionForCandidates,normalizeCanvasAiImageResolutionForModel,normalizeMikotoVideoResolution,normalizeMiniMaxH3VideoResolution,normalizeNewApiVideoAspectRatio,normalizeNewApiVideoDurationForModel,normalizeNewApiVideoResolutionForModel,normalizeSeedanceVideoAspectRatio,supportsCanvasAiImageResolution } from '../../canvasAiImage';
 import { CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT } from '../../canvasAiOutputs';
 import { getCanvasAiMediaType,getCanvasAiNodeTitle,isCanvasAiGeneratorType } from '../../canvasAiRuntime';
@@ -44,6 +45,8 @@ export function CanvasNode({ scope, canvasItem, canvasItemsRef: latestCanvasItem
   };
   if (canvasItem.ai?.type === 'music-generator') return <CanvasMusicNode
     item={canvasItem} catalog={getAiCatalogModels(scope.canvasAiCloudImageModels, 'audio')}
+    pricing={scope.canvasAiCloudImageModels?.pricing}
+    onCopyOutput={(output, index) => { void copyCanvasAiOutputToCanvas(getLatestCanvasItem(), output, index); }}
     selected={scope.canvasSelectedIdsSet?.has(canvasItem.id) || false} menuScale={scope.canvasRenderScale || 1}
     update={patch => scope.updateCanvasAiGeneratorData(canvasItem.id, patch)}
     onRun={event => scope.handleCanvasAiRunClick(event, canvasItem.id)}
@@ -2252,6 +2255,8 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                   onCapture={(dataUrl) => captureThreeSceneView(canvasItem.id, dataUrl)}
                                   onReanalyze={() => analyzeCanvasThreeSceneNode(canvasItem.id)}
                                 />
+                              ) : isCanvasAudioBufferItem(canvasItem.item) ? (
+                                <CanvasAudioContent item={canvasItem.item} source={canvasImageSource} onDownload={() => { void downloadBufferItems([canvasItem.item]); }} />
                               ) : canvasItem.item.type === 'file' ? (
                                 <div className="flex h-full w-full flex-col overflow-hidden rounded-[18px] border border-violet-200/70 bg-white/92 text-stone-700 shadow-[0_10px_26px_rgba(15,23,42,0.10)] dark:border-violet-300/16 dark:bg-stone-900/92 dark:text-white/78">
                                   <div className="flex items-center gap-2 border-b border-stone-950/[0.045] bg-violet-50/72 px-3 py-2 dark:border-white/[0.06] dark:bg-violet-300/[0.08]">

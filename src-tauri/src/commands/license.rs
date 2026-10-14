@@ -612,7 +612,17 @@ pub struct CloudAiPricing {
     image_models: Vec<CloudImageModelPricing>,
     #[serde(default)]
     video_models: Vec<CloudVideoModelPricing>,
+    #[serde(default)]
+    music_models: Vec<CloudMusicModelPricing>,
     updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudMusicModelPricing {
+    model: String,
+    billing_type: String,
+    credits_per_request: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3098,7 +3108,23 @@ mod capability_upgrade_tests {
 
 #[cfg(test)]
 mod music_catalog_bridge_tests {
-    use super::CloudImageModelsResponse;
+    use super::{CloudAiPricing, CloudImageModelsResponse};
+
+    #[test]
+    fn music_price_survives_the_bridge_and_old_servers_remain_compatible() {
+        let mut input = serde_json::json!({
+            "agentRequestCredits": "1", "inspirationAnalysisCredits": "1",
+            "imageDefaultCredits": "1", "videoDefaultCredits": "1",
+            "imageModels": [], "videoModels": [], "updatedAt": null,
+            "musicModels": [{ "model": "suno", "billingType": "music_flat", "creditsPerRequest": "50.000000" }]
+        });
+        let pricing: CloudAiPricing = serde_json::from_value(input.clone()).unwrap();
+        let output = serde_json::to_value(pricing).unwrap();
+        assert_eq!(output["musicModels"], input["musicModels"]);
+        input.as_object_mut().unwrap().remove("musicModels");
+        let legacy: CloudAiPricing = serde_json::from_value(input).unwrap();
+        assert!(legacy.music_models.is_empty());
+    }
 
     #[test]
     fn audio_only_catalog_survives_the_desktop_bridge() {

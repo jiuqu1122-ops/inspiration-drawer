@@ -3,6 +3,8 @@ import type { BufferItem } from '../types';
 export const isCanvasImageFileName = (value?: string) => /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(value || '');
 export const isCanvasVideoFileName = (value?: string) => /\.(mp4|mov|avi|mkv|webm|m4v)$/i.test(value || '');
 export const isCanvasAudioFileName = (value?: string) => /\.(mp3|wav|aac|flac|m4a|ogg|opus|aiff|wma)$/i.test(value || '');
+export const isCanvasAudioBufferItem = (item: BufferItem) => item.type === 'file'
+  && [item.name, item.path, item.url, item.sourceUrl, item.originalUrl].some(value => isCanvasAudioFileName(value?.split(/[?#]/)[0]));
 export const isCanvasTemplateJsonFileName = (value?: string) => /\.json$/i.test((value || '').replace(/\0+$/g, '').trim());
 export const isCanvasWorkflowReadableTextFileName = (value?: string) => (
   /\.(txt|md|markdown|json|jsonl|csv|tsv|ya?ml|xml|html?|css|mjs|cjs|js|jsx|ts|tsx)$/i.test(value || '')
