@@ -19342,6 +19342,7 @@ fn main() {
             commands::license::get_cloud_music_generation_by_request,
             commands::license::generate_cloud_images,
             commands::license::get_cloud_image_generation_by_request,
+            commands::license::recover_cloud_image_generation,
             commands::license::get_cloud_image_models,
             commands::license::generate_cloud_videos,
             commands::license::get_cloud_video_status,

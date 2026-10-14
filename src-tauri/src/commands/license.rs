@@ -2467,6 +2467,28 @@ pub async fn get_cloud_image_generation_by_request(
 }
 
 #[tauri::command]
+pub async fn recover_cloud_image_generation(
+    app_handle: tauri::AppHandle,
+    client_request_id: String,
+) -> Result<CloudImageGenerationLookup, String> {
+    let client_request_id = client_request_id.trim();
+    if client_request_id.len() < 8 || client_request_id.len() > 128
+        || !client_request_id.chars().all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_' | '.' | ':'))
+    {
+        return Err("invalid_request: 生图请求 ID 无效".to_string());
+    }
+    let access_token = cloud_access_token(&app_handle).await?;
+    let encoded = url::form_urlencoded::byte_serialize(client_request_id.as_bytes()).collect::<String>();
+    post_cloud_with_bearer_timeout::<CloudImageGenerationLookup>(
+        &app_handle,
+        &format!("/v1/ai/images/generations/by-request/{encoded}/recover"),
+        &access_token,
+        &serde_json::json!({}),
+        Duration::from_secs(900),
+    ).await
+}
+
+#[tauri::command]
 pub async fn get_cloud_image_models(
     app_handle: tauri::AppHandle,
     provider: Option<String>,

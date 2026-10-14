@@ -38,6 +38,11 @@ const imageNode = (overrides: Partial<CanvasImageItem> = {}): CanvasImageItem =>
 });
 
 describe('canvas AI timed-out recovery', () => {
+  it('leaves held receipts to explicit recovery instead of polling them on each canvas update', () => {
+    const node = imageNode();
+    node.ai!.error = 'IMAGE_TASK_RECOVERY_REQUIRED: pending';
+    expect(getCanvasAiTimedOutRecoveryCandidates([node], 20_000)).toEqual([]);
+  });
   it('stops permanent lookup failures while keeping transient and missing rows recoverable', () => {
     for (const error of ['cloud_request_failed: HTTP 414: URI Too Long', 'HTTP: 431', 'invalid_request: bad ID']) {
       expect(isCanvasAiLookupTerminalError(error)).toBe(true);

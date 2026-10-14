@@ -52,7 +52,7 @@ export const recoverCanvasAiNodeWithUsableResults = (
   });
   const expectedOutputCount = Math.max(
     1,
-    Math.round(Number(canvasItem.ai.count) || outputs.length)
+    Math.round(Number(canvasItem.ai.imageExpectedOutputCount ?? canvasItem.ai.count) || outputs.length)
   );
   const allOutputsSucceeded = outputs.length >= expectedOutputCount && outputs.every(output => (
     output.status === 'success' && hasCanvasAiOutputUsableSource(output)

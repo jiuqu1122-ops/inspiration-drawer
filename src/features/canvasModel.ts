@@ -162,7 +162,7 @@ export type CanvasAiGeneratedOutput = {
   thumbnail?: string;
   name?: string;
   prompt?: string;
-  status?: 'working' | 'success' | 'error';
+  status?: 'working' | 'success' | 'error' | 'recovery';
   cacheStatus?: 'pending' | 'ready' | 'failed';
   error?: string;
   generatedAt?: number;
@@ -208,6 +208,9 @@ export type CanvasAiItemData = {
   /** Pending music receipts are recovered by GET; never submit another paid POST. */
   musicClientRequestId?: string;
   musicChargedCredits?: string;
+  imageClientRequestId?: string;
+  imageExpectedOutputCount?: number;
+  imageOutputMode?: 'single_asset' | 'multiple_assets';
   quality?: string;
   type: CanvasAiItemType;
   provider?: CanvasAiProvider;
@@ -273,7 +276,7 @@ export type CanvasAiItemData = {
   enhancementEstimate?: CanvasRifeInterpolationEstimate;
   enhancementEstimateKey?: string;
   enhancementProgress?: CanvasRifeEngineProgress;
-  status?: 'idle' | 'working' | 'success' | 'error';
+  status?: 'idle' | 'working' | 'success' | 'error' | 'recovery';
   error?: string;
   generatedAt?: number;
   outputs?: CanvasAiGeneratedOutput[];

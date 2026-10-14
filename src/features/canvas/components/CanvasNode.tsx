@@ -2,6 +2,7 @@ import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import { Brush,ChevronLeft,Clock,Copy,Download,File as FileIcon,Film,Image as ImageIcon,Link,Music,Play,Plus,RefreshCw,RotateCw,Sparkles,Type,Upload,X } from 'lucide-react';
 import { CanvasMusicNode } from '../../canvasMusic';
 import { CanvasAudioContent } from '../../canvasAudio';
+import { canvasImageNeedsRecovery } from '../../canvasImageOutputPlan';
 import { CanvasAiRunButton } from '../../../components/CanvasAiRunButton';
 import { CanvasGeneratorControls } from '../../../components/CanvasGeneratorControls';
 import { CanvasHorizontalRail,shouldRenderCanvasVideoReferenceRail } from '../../../components/CanvasHorizontalRail';
@@ -779,6 +780,8 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[9px] font-black ${
                                             canvasItem.ai?.status === 'working'
                                               ? 'bg-stone-900/[0.08] text-stone-700 dark:bg-white/12 dark:text-white'
+                                              : canvasImageNeedsRecovery(canvasItem.ai)
+                                                ? 'bg-amber-500/10 text-amber-700 dark:bg-amber-400/16 dark:text-amber-100'
                                               : canvasItem.ai?.status === 'error'
                                                 ? 'bg-red-500/10 text-red-600 dark:bg-red-500/18 dark:text-red-100'
                                                 : canvasItem.ai?.status === 'success'
@@ -787,6 +790,8 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                           }`}>
                                             {canvasItem.ai?.status === 'working'
                                               ? canvasAiWorkingStatusText
+                                              : canvasImageNeedsRecovery(canvasItem.ai)
+                                                ? '结果待确认'
                                               : canvasItem.ai?.status === 'error'
                                                 ? '失败'
                                                 : canvasItem.ai?.status === 'success'
@@ -1291,7 +1296,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                     <span className="flex h-full w-full flex-col items-center justify-center gap-1 px-2">
                                                       <Sparkles className={`h-4 w-4 ${isOutputWorking ? 'animate-pulse' : ''}`} />
                                                       <span className="line-clamp-2 px-2 pt-5 text-[9px] font-black leading-3">
-                                                        {isOutputError ? '生成失败' : isOutputWorking ? `生成中 ${outputWorkingElapsedText}` : outputMediaType === 'video' ? '无视频' : '无图片'}
+                                                        {output.status === 'recovery' ? '结果待确认' : isOutputError ? '生成失败' : isOutputWorking ? `生成中 ${outputWorkingElapsedText}` : outputMediaType === 'video' ? '无视频' : '无图片'}
                                                       </span>
                                                     </span>
                                                   )}
@@ -1528,7 +1533,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                       )}
                                       {canvasItem.ai?.error && (
                                         <div
-                                          className="max-h-16 overflow-y-auto rounded-[12px] bg-red-500/10 px-2.5 py-2 text-[10px] leading-4 text-red-600 dark:bg-red-500/14 dark:text-red-100"
+                                          className={`max-h-16 overflow-y-auto rounded-[12px] px-2.5 py-2 text-[10px] leading-4 ${canvasImageNeedsRecovery(canvasItem.ai) ? 'bg-amber-500/10 text-amber-700 dark:bg-amber-400/10 dark:text-amber-100' : 'bg-red-500/10 text-red-600 dark:bg-red-500/14 dark:text-red-100'}`}
                                           title={canvasItem.ai.error}
                                         >
                                           {getCanvasAiErrorSummary(canvasItem.ai.error)}
@@ -1855,6 +1860,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                           || canvasVideoResolutionRequired
                                           || canvasVideoCreditEstimate?.reason === 'resolution_required'}
                                         isWorking={canvasItem.ai?.status === 'working'}
+                                        recoveryRequired={canvasImageNeedsRecovery(canvasItem.ai)}
                                         isFrameInterpolation={isCanvasFrameInterpolationItem}
                                         isEnhancement={isCanvasEnhancementItem}
                                         isVideoEnhancement={isCanvasVideoEnhancementItem}

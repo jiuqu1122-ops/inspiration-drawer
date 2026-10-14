@@ -425,7 +425,7 @@ export const retryCanvasCollapsedWorkflowOutputImpl = async (ctx: Pick<canvasWor
       });
     };
     const syncModule = (
-      requestedStatus?: 'idle' | 'working' | 'success' | 'error',
+      requestedStatus?: 'idle' | 'working' | 'success' | 'error' | 'recovery',
       error?: string,
     ) => {
       const selectedOutputs = runtimeItems.find(item => item.id === runtimeTargetId)?.ai?.outputs || [];

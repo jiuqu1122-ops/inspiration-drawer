@@ -8,7 +8,7 @@ vi.mock('../../canvasAiImage', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../canvasAiImage')>(),
   getCloudWalletImageGenerationByRequest: lookups.image,
   getCloudWalletVideoStatus: lookups.video,
-  getCloudWalletImageLookupImages: () => [],
+  getCloudWalletImageLookupImages: (lookup: { images?: string[] }) => lookup.images || [],
   getCloudWalletVideoDeliveredResults: () => [],
 }));
 
@@ -81,6 +81,25 @@ describe('background generation recovery scheduling', () => {
     for (let update = 0; update < 10; update++) runDerivedUiEffect01(ctx);
     expect(lookups.image).toHaveBeenCalledTimes(1);
     expect(ctx.canvasAiTimedOutRecoverySettledRef.current.size).toBe(1);
+  });
+  it('places the corresponding image into each slot sharing a multiasset receipt', async () => {
+    const ctx = recoveryContext();
+    const node = ctx.canvasItems[0]!;
+    node.ai!.imageOutputMode = 'multiple_assets';
+    node.ai!.outputs = Array.from({ length: 4 }, (_, index) => ({ id: `output-${index}`, status: 'error',
+      generatedAt: Date.now(), clientRequestId: 'request-123' }));
+    ctx.updateCanvasItemsImmediate = vi.fn(updater => {
+      const next = updater(ctx.canvasItemsRef.current);
+      ctx.canvasItemsRef.current = next; ctx.canvasItems = next; return next;
+    });
+    ctx.refreshCloudAccount = vi.fn(async () => undefined as never);
+    const images = Array.from({ length: 4 }, (_, index) => `https://cdn.example/image-${index}.png`);
+    lookups.image.mockResolvedValue({ status: 'succeeded', images });
+    runDerivedUiEffect01(ctx);
+    await vi.advanceTimersByTimeAsync(0);
+    runDerivedUiEffect01(ctx);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ctx.canvasItemsRef.current[0]?.ai?.outputs?.map(output => output.url)).toEqual(images);
   });
 });
 

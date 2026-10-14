@@ -94,7 +94,8 @@ export const runDerivedUiEffect01 = (ctx: Pick<derivedUiEffectContext, 'activeCa
             }
           }
 
-          const source = recoveredSources[0]?.trim();
+          const sharedImageReceipt = !isVideo && canvasItem.ai?.imageOutputMode === 'multiple_assets';
+          const source = recoveredSources[sharedImageReceipt ? outputIndex : 0]?.trim();
           if (!source) {
             canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
             return;

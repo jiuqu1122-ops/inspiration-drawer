@@ -30,9 +30,10 @@ export const mergeCanvasAiRetryOutputSlot = (
 
 export const getCanvasAiRetryNodeStatus = (
   outputs: CanvasAiGeneratedOutput[],
-  requestedStatus?: 'idle' | 'working' | 'success' | 'error',
+  requestedStatus?: 'idle' | 'working' | 'success' | 'error' | 'recovery',
 ) => {
   if (requestedStatus === 'working') return 'working' as const;
+  if (requestedStatus === 'recovery') return 'recovery' as const;
   if (requestedStatus === 'error') return 'error' as const;
   if (requestedStatus === 'success') {
     return outputs.length > 0 && outputs.every(output => output.status === 'success')

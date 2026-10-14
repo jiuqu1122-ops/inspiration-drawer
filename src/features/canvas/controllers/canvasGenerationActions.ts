@@ -21,6 +21,8 @@ import { CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,CA
 import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,hasServerAiCatalog,normalizeVideoAspectRatioSelection,normalizeVideoDurationSelection,resolveEffectiveVideoResolution } from '../../aiModelCapabilities';
 import { buildCanvasAiOutputRemoteResultPatch,recoverCanvasAiOutputWithUsableResult } from '../../canvasAiOutputs';
 import { generateCanvasMusic } from '../../canvasMusic';
+import { canvasImageOutputPlan, canvasImageNeedsRecovery, isCanvasImageRecoveryRequired } from '../../canvasImageOutputPlan';
+import { recoverCanvasImageOutputs } from '../../canvasImageRecovery';
 import { claimCanvasAiRun,createCanvasAiClientRequestId,releaseCanvasAiRun } from '../../canvasAiRunGuard';
 import { getCanvasAiMediaType,getCanvasAiNodeTitle,isCanvasAiGeneratorType } from '../../canvasAiRuntime';
 import { enhancementEstimateCache,getCanvasRifeRateRequest,isCanvasAiEnhancementType,isRifeFixed2xMode,type QuickVideoEnhancementResult,type RealEsrganEnhancementResult,type RifeFrameInterpolationResult,type VideoCfrNormalizationResult } from '../../canvasLocalMediaTools';
@@ -613,6 +615,14 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
     const targetAi = target.ai;
     if (targetAi?.type === 'music-generator') return generateCanvasMusic(target, options);
     if (!isCanvasAiGeneratorType(targetAi?.type)) return [] as CanvasAiGeneratedOutput[];
+    if (canvasImageNeedsRecovery(targetAi)) {
+      return recoverCanvasImageOutputs(target, {
+        canvasId: options.canvasId || activeCanvasIdRef.current,
+        updateAi: options.forceUpdateAi || options.updateAi, showToast, refreshCloudAccount,
+        addGeneratedImagesToDrawer, cacheCanvasGeneratedImageSource,
+        requireLocalImageOutputs: options.requireLocalImageOutputs,
+      });
+    }
     const generatedCanvasId = options.canvasId?.trim()
       || activeCanvasIdRef.current
       || DEFAULT_CANVAS_ID;
@@ -937,6 +947,17 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         canonical: selectedCatalogModel?.capabilities,
         route: selectedRouteCapabilities,
       });
+      const imageOutputPlan = canvasImageOutputPlan(targetAi, resolvedImageCapabilities);
+      if (mediaType === 'image') {
+        const outputPlanPatch = {
+          imageClientRequestId: clientRequestId,
+          imageExpectedOutputCount: imageOutputPlan.outputCount,
+          imageOutputMode: resolvedImageCapabilities.outputMode,
+        };
+        if (resolvedImageCapabilities.outputMode === 'multiple_assets' || currentOutputs.length !== imageOutputPlan.outputCount) {
+          setCanvasAiOutputs(createCanvasAiOutputDrafts({ ...target, ai: { ...targetAi, ...outputPlanPatch } }, prompt, clientRequestId), outputPlanPatch);
+        } else options.updateAi(outputPlanPatch);
+      }
       const resolvedVideoCapabilities = walletVideoModelContext?.serverDriven
         ? walletVideoModelContext.capabilities
         : resolveCanvasAiVideoModelCapabilities({
@@ -1097,14 +1118,15 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       }
       prompt = truncatePromptToUtf8ByteLimit(prompt);
       const requestedCount = clamp(
-        currentOutputs.length || Math.round(Number(targetAi.count) || CANVAS_AI_DEFAULT_COUNT),
+        mediaType === 'image' ? imageOutputPlan.requestCount : currentOutputs.length || Math.round(Number(targetAi.count) || CANVAS_AI_DEFAULT_COUNT),
         1,
         mediaType === 'video'
           ? resolvedVideoCapabilities.maxOutputs
           : resolvedImageCapabilities.maxOutputs,
       );
-      if (currentOutputs.length > requestedCount) {
-        setCanvasAiOutputs(currentOutputs.slice(0, requestedCount), {
+      const expectedOutputCount = mediaType === 'image' ? imageOutputPlan.outputCount : requestedCount;
+      if (currentOutputs.length > expectedOutputCount) {
+        setCanvasAiOutputs(currentOutputs.slice(0, expectedOutputCount), {
           status: 'working',
           error: undefined,
         });
@@ -1728,28 +1750,34 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       }
       const finishedAt = Date.now();
       const unit = mediaType === 'video' ? '条视频' : '张图片';
-      if (generatedOutputs.length < requestedCount) {
+      const completedOutputCount = mediaType === 'image' && resolvedImageCapabilities.outputMode === 'multiple_assets'
+        ? generatedOutputs.length : expectedOutputCount;
+      if (generatedOutputs.length < completedOutputCount) {
         const partialError = lastPartialError
-          ? `已生成 ${generatedOutputs.length}/${requestedCount} ${unit}，后续失败：${getCanvasAiErrorSummary(lastPartialError instanceof Error ? lastPartialError.message : String(lastPartialError))}`
-          : `接口只返回了 ${generatedOutputs.length}/${requestedCount} ${unit}`;
+          ? `已生成 ${generatedOutputs.length}/${expectedOutputCount} ${unit}，后续失败：${getCanvasAiErrorSummary(lastPartialError instanceof Error ? lastPartialError.message : String(lastPartialError))}`
+          : `接口只返回了 ${generatedOutputs.length}/${expectedOutputCount} ${unit}`;
         setCanvasAiOutputs(currentOutputs.map(output => output.status === 'success'
           ? output
           : { ...output, status: 'error' as const, error: partialError, generatedAt: output.generatedAt || finishedAt }
-        ), { status: 'error', error: `已生成 ${generatedOutputs.length}/${requestedCount} ${unit}`, generatedAt: finishedAt });
+        ), { status: 'error', error: `已生成 ${generatedOutputs.length}/${expectedOutputCount} ${unit}`, generatedAt: finishedAt });
       } else {
-        setCanvasAiOutputs(currentOutputs, { status: 'success', error: undefined, generatedAt: finishedAt });
+        setCanvasAiOutputs(mediaType === 'image' && resolvedImageCapabilities.outputMode === 'multiple_assets'
+          ? currentOutputs.filter(output => output.status === 'success') : currentOutputs, {
+          status: 'success', error: undefined, generatedAt: finishedAt,
+          ...(mediaType === 'image' ? { imageExpectedOutputCount: generatedOutputs.length } : {}),
+        });
       }
       options.selectTarget?.();
       if (options.showResultToast !== false) {
-        showToast(generatedOutputs.length >= requestedCount
+        showToast(generatedOutputs.length >= completedOutputCount
           ? `${resultLabel}生成 ${generatedOutputs.length} ${unit}，已放入「${mediaType === 'video' ? AI_GENERATED_VIDEO_FOLDER_NAME : generatedImageFolderLabel}」`
-          : `${resultLabel}生成 ${generatedOutputs.length}/${requestedCount} ${unit}`);
+          : `${resultLabel}生成 ${generatedOutputs.length}/${expectedOutputCount} ${unit}`);
         notifyCanvasAiGenerationResult({
-          status: generatedOutputs.length >= requestedCount ? 'success' : 'partial',
+          status: generatedOutputs.length >= completedOutputCount ? 'success' : 'partial',
           label: resultLabel,
           mediaType,
           generatedCount: generatedOutputs.length,
-          requestedCount,
+          requestedCount: completedOutputCount,
           error: lastPartialError ? getCanvasAiErrorSummary(lastPartialError instanceof Error ? lastPartialError.message : String(lastPartialError)) : undefined,
         });
       }
@@ -1757,6 +1785,15 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       return generatedOutputs;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (mediaType === 'image' && useCloudWallet && isCanvasImageRecoveryRequired(err)
+        && new Set(currentOutputs.map(output => output.clientRequestId).filter(Boolean)).size <= 1) {
+        const recoveryMessage = `原任务结果待确认，积分仍预留。请求 ID：${clientRequestId}`;
+        forceCanvasAiOutputs(currentOutputs.map(output => output.status === 'success' ? output : { ...output, status: 'recovery' as const, error: recoveryMessage }), {
+          status: 'recovery', error: recoveryMessage, imageClientRequestId: clientRequestId,
+        });
+        if (options.showResultToast !== false) showToast('图片结果待确认，已保留原任务和预扣积分');
+        return [] as CanvasAiGeneratedOutput[];
+      }
       const errorSummary = getCanvasAiErrorSummary(message);
       console.warn('AI 节点生成失败:', err);
       const failedAt = Date.now();

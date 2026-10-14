@@ -1,4 +1,5 @@
 import type { CanvasAiGeneratedOutput, CanvasImageItem } from './canvasModel';
+import { canvasImageNeedsRecovery } from './canvasImageOutputPlan';
 
 export const CANVAS_AI_TIMED_OUT_RECOVERY_MAX_AGE_MS = 30 * 60 * 1000;
 export const CANVAS_AI_STALE_WORKING_RECOVERY_AGE_MS = 15 * 60 * 1000;
@@ -23,6 +24,7 @@ export const getCanvasAiTimedOutRecoveryCandidates = (
     (canvasItem.ai?.type !== 'image-generator' && canvasItem.ai?.type !== 'video-generator')
     || canvasItem.ai.credentialSource !== 'wallet'
     || !canvasItem.ai.outputs?.length
+    || canvasImageNeedsRecovery(canvasItem.ai)
   ) {
     return [];
   }

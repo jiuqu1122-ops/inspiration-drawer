@@ -1775,7 +1775,7 @@ export const enqueueCanvasAiOutputThumbnailJobImpl = (ctx: Pick<canvasMediaActio
 
 export const createCanvasAiOutputDraftsImpl = (ctx: Pick<canvasMediaActionContext, 'createAssetId'>, target: CanvasImageItem, prompt: string, clientRequestId?: string): CanvasAiGeneratedOutput[] => {
   const { createAssetId } = ctx;
-    const count = clamp(Math.round(Number(target.ai?.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
+    const count = clamp(Math.round(Number(target.ai?.imageExpectedOutputCount ?? target.ai?.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
     const size = getCanvasAiOutputSize(target.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO);
     const now = Date.now();
     const mediaType = getCanvasAiMediaType(target.ai);
@@ -1786,7 +1786,7 @@ export const createCanvasAiOutputDraftsImpl = (ctx: Pick<canvasMediaActionContex
       prompt,
       status: 'working',
       clientRequestId: clientRequestId
-        ? getCanvasAiSlotClientRequestId(clientRequestId, index, count)
+        ? target.ai?.imageOutputMode === 'multiple_assets' ? clientRequestId : getCanvasAiSlotClientRequestId(clientRequestId, index, count)
         : undefined,
       generatedAt: now + index,
       width: size.width,
