@@ -16,8 +16,8 @@ beforeEach(() => {
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-function fixture(outputMode: 'single_asset' | 'multiple_assets' = 'multiple_assets') {
-  const capabilities = { outputMode, maxOutputImages: 4, maxOutputs: 4, billingMode: 'per_request' as const,
+function fixture(outputMode: 'single_asset' | 'multiple_assets' = 'multiple_assets', maxOutputImages = 4) {
+  const capabilities = { outputMode, maxOutputImages, maxOutputs: 4, billingMode: 'per_request' as const,
     resolutions: ['2k'], aspectRatios: ['1:1'], outputFormats: ['png'] };
   const target: CanvasImageItem = { id: 'node', x: 0, y: 0, width: 600, height: 500,
     item: { id: 'asset', type: 'text', content: 'A landscape', createdAt: 0 },
@@ -61,6 +61,17 @@ it('does not turn a model maximum into a required output count when it returns f
   await runCanvasAiGeneratorTargetImpl(ctx, target, { updateAi, showResultToast: false });
   expect(target.ai?.status).toBe('success');
   expect(target.ai?.outputs).toHaveLength(1);
+});
+it.each([2, 8, 16])('uses the published maximum of %i image slots independently of request count and maxOutputs', async maxOutputImages => {
+  const { target, ctx, updateAi } = fixture('multiple_assets', maxOutputImages);
+  vi.mocked(generateCanvasAiProviderImages).mockImplementation(async options => {
+    expect(options.count).toBe(1);
+    expect(target.ai?.outputs).toHaveLength(maxOutputImages);
+    return Array.from({ length: maxOutputImages }, (_, index) => `https://cdn.example/image-${index}.png`);
+  });
+  const outputs = await runCanvasAiGeneratorTargetImpl(ctx, target, { updateAi, showResultToast: false });
+  expect(outputs).toHaveLength(maxOutputImages);
+  expect(generateCanvasAiProviderImages).toHaveBeenCalledTimes(1);
 });
 it('leaves an ordinary single-output model with one working slot and one provider request', async () => {
   const { target, ctx, updateAi } = fixture('single_asset');
