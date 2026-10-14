@@ -3095,3 +3095,28 @@ mod capability_upgrade_tests {
         assert_eq!(serde_json::to_value(request).unwrap()["quality"], "max");
     }
 }
+
+#[cfg(test)]
+mod music_catalog_bridge_tests {
+    use super::CloudImageModelsResponse;
+
+    #[test]
+    fn audio_only_catalog_survives_the_desktop_bridge() {
+        let response: CloudImageModelsResponse = serde_json::from_value(serde_json::json!({
+            "provider": "NEW_API", "defaultModel": null,
+            "defaultImageModel": null, "defaultVideoModel": null,
+            "models": [], "channels": [], "videoChannels": [],
+            "catalog": [{
+                "id": "configured-music", "displayName": "Music", "modality": "audio",
+                "aliases": ["music-alias"], "enabled": true, "visible": true, "isDefault": true,
+                "capabilities": { "billingMode": "per_request" }
+            }]
+        })).unwrap();
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["catalog"][0]["modality"], "audio");
+        assert_eq!(value["catalog"][0]["id"], "configured-music");
+        assert_eq!(value["catalog"][0]["isDefault"], true);
+        assert_eq!(value["catalog"][0]["capabilities"]["billingMode"], "per_request");
+        assert_eq!(value["models"], serde_json::json!([]));
+    }
+}

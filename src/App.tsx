@@ -1,5 +1,6 @@
 // MODEL_CATALOG_STABILITY_PATCH_V1
 // src/App.tsx
+import { needsWalletMediaCatalog, refreshWalletMediaCatalog } from './features/walletMediaCatalog';
 import {
 ArchiveRestore,
 CalendarDays,
@@ -2116,6 +2117,7 @@ function MainApp() {
   }, [canvasWorkflowTemplates]);
   const licenseAiAccess = licenseStatus?.valid ? licenseStatus.ai_access : null;
   const canvasAiUsesCloudImageModels = canvasAiCredentialSource === 'wallet' && Boolean(cloudAccount);
+  const canvasNeedsWalletMediaCatalog = needsWalletMediaCatalog(Boolean(cloudAccount), canvasAiUsesCloudImageModels, canvasItems);
   const isCanvasAiLicenseManaged = !isByokUnlocked
     && !cloudAccount
     && !canvasAiApiKey.trim()
@@ -2188,7 +2190,7 @@ function MainApp() {
 
   useEffect(() => { return runSettingsEffect02({ canvasAiApiKey, canvasAiEndpoint, canvasAiHeadersText, canvasAiModelRefreshSignatureRef, canvasAiNewApiVideoKey, canvasAiUsesCloudImageModels, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiGatewayKind, effectiveCanvasAiModel, effectiveCanvasAiProvider, isCanvasAiLicenseManaged, isCanvasMode, isDrawerAgentOpen, refreshCanvasAiOpenAiModels }); }, [isCanvasMode, isDrawerAgentOpen, effectiveCanvasAiProvider, effectiveCanvasAiGatewayKind, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiModel, canvasAiApiKey, canvasAiNewApiVideoKey, canvasAiEndpoint, canvasAiHeadersText, isCanvasAiLicenseManaged, canvasAiUsesCloudImageModels]);
 
-  useEffect(() => { return runSettingsEffect03({ canvasAiUsesCloudImageModels, effectiveCanvasAiProvider, isCanvasMode, setCanvasAiCloudImageModels, updateCanvasItemsImmediate }); }, [isCanvasMode, canvasAiUsesCloudImageModels, effectiveCanvasAiProvider]);
+  useEffect(() => { return runSettingsEffect03({ canvasAiUsesCloudImageModels: canvasNeedsWalletMediaCatalog, effectiveCanvasAiProvider, isCanvasMode, setCanvasAiCloudImageModels, updateCanvasItemsImmediate }); }, [isCanvasMode, canvasNeedsWalletMediaCatalog, effectiveCanvasAiProvider]);
 
   const getAiAnalysisConfig = (): AiAnalysisConfig => ({
     provider: aiApiProvider,
@@ -4164,9 +4166,12 @@ function MainApp() {
     const node = buildCanvasAiGeneratorNode(getCanvasDropPosition());
     node.width = 400;
     node.height = 320;
-    node.ai = { type: 'music-generator', credentialSource: 'wallet', model: getAiCatalogModels(canvasAiCloudImageModels, 'audio')[0]?.id || '', prompt: '', outputs: [], status: 'idle' };
+    node.ai = { type: 'music-generator', credentialSource: 'wallet', model: canvasAiCloudImageModels ? getDefaultAiCatalogModelId(canvasAiCloudImageModels, 'audio') : '', prompt: '', outputs: [], status: 'idle' };
     node.item = { ...node.item, name: '音乐生成' };
     appendCanvasItems([node], '新增音乐节点');
+    if (cloudAccount) {
+      void refreshWalletMediaCatalog({ provider: effectiveCanvasAiProvider, setCatalog: setCanvasAiCloudImageModels, updateItems: updateCanvasItemsImmediate }).catch(() => {});
+    }
   };
 
   const buildCanvasImageFusionNode = (

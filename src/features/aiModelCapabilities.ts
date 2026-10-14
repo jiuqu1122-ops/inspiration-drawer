@@ -654,13 +654,13 @@ export const clearCachedAiCatalogForTests = clearCachedAiCatalog;
 
 export const getDefaultAiCatalogModelId = (
   snapshot: CloudImageModelsResult,
-  modality: 'image' | 'video',
+  modality: 'image' | 'video' | 'audio',
 ) => {
   const catalog = getAiCatalogModels(snapshot, modality);
   const configured = String(
     modality === 'image'
       ? snapshot.defaultImageModel || snapshot.defaultModel || ''
-      : snapshot.defaultVideoModel || '',
+      : modality === 'video' ? snapshot.defaultVideoModel || '' : '',
   ).trim();
   const configuredModel = findAiCatalogModel(catalog, configured);
   if (configuredModel) return configuredModel.id;
@@ -685,6 +685,8 @@ export const reconcileStaleCanvasAiModels = (
 ) => {
   const imageCatalog = getAiCatalogModels(snapshot, 'image');
   const videoCatalog = getAiCatalogModels(snapshot, 'video');
+  const audioCatalog = getAiCatalogModels(snapshot, 'audio');
+  const defaultAudio = getDefaultAiCatalogModelId(snapshot, 'audio');
   const defaultImage = getDefaultAiCatalogModelId(snapshot, 'image');
   const defaultVideo = getDefaultAiCatalogModelId(snapshot, 'video');
   let changed = false;
@@ -694,16 +696,16 @@ export const reconcileStaleCanvasAiModels = (
       ? 'image'
       : ai?.type === 'video-generator'
         ? 'video'
-        : null;
+        : ai?.type === 'music-generator' ? 'audio' : null;
     if (!modality || !ai || ai.credentialSource === 'local') return item;
-    const catalog = modality === 'image' ? imageCatalog : videoCatalog;
+    const catalog = modality === 'image' ? imageCatalog : modality === 'audio' ? audioCatalog : videoCatalog;
     if (catalog.length === 0) return item;
     const requestedCanonicalModel = ai.providerCandidates
       ?.find(candidate => candidate.canonicalModelId)?.canonicalModelId
       || String(ai.model || '').trim();
     const current = findAiCatalogModel(catalog, requestedCanonicalModel)
       || findAiCatalogModel(catalog, ai.model);
-    const fallback = modality === 'image' ? defaultImage : defaultVideo;
+    const fallback = modality === 'image' ? defaultImage : modality === 'audio' ? defaultAudio : defaultVideo;
     // Catalog refreshes may be temporarily incomplete. A model explicitly
     // stored on the node is user intent and must never be replaced with the
     // server default (often Nano Banana Pro). Only an unconfigured node may
@@ -736,6 +738,8 @@ export const reconcileStaleCanvasWorkflowModels = (
 ): unknown => {
   const imageCatalog = getAiCatalogModels(snapshot, 'image');
   const videoCatalog = getAiCatalogModels(snapshot, 'video');
+  const audioCatalog = getAiCatalogModels(snapshot, 'audio');
+  const defaultAudio = getDefaultAiCatalogModelId(snapshot, 'audio');
   const defaultImage = getDefaultAiCatalogModelId(snapshot, 'image');
   const defaultVideo = getDefaultAiCatalogModelId(snapshot, 'video');
   const visit = (node: unknown): unknown => {
@@ -747,12 +751,12 @@ export const reconcileStaleCanvasWorkflowModels = (
       ? record.ai as Record<string, unknown>
       : null;
     if (ai && ai.credentialSource !== 'local') {
-      const modality = ai.type === 'image-generator' ? 'image' : ai.type === 'video-generator' ? 'video' : null;
-      const catalog = modality === 'image' ? imageCatalog : videoCatalog;
+      const modality = ai.type === 'image-generator' ? 'image' : ai.type === 'video-generator' ? 'video' : ai.type === 'music-generator' ? 'audio' : null;
+      const catalog = modality === 'image' ? imageCatalog : modality === 'audio' ? audioCatalog : videoCatalog;
       if (modality && catalog.length > 0) {
         const requested = String(ai.model || '').trim();
         const current = findAiCatalogModel(catalog, requested);
-        const nextModel = current?.id || (!requested ? (modality === 'image' ? defaultImage : defaultVideo) : '');
+        const nextModel = current?.id || (!requested ? (modality === 'image' ? defaultImage : modality === 'audio' ? defaultAudio : defaultVideo) : '');
         if (nextModel && nextModel !== ai.model) {
           next = { ...next, ai: { ...ai, model: nextModel, providerChannelId: undefined, providerCandidates: undefined } };
         }

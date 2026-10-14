@@ -83,7 +83,7 @@ const catalogSnapshot = (): CloudImageModelsResult => ({
 
 const generatorNode = (
   id: string,
-  type: 'image-generator' | 'video-generator',
+  type: 'image-generator' | 'video-generator' | 'music-generator',
   model: string,
   credentialSource: 'wallet' | 'local' = 'wallet',
 ): CanvasImageItem => ({
@@ -550,6 +550,24 @@ describe('server-driven AI model capabilities', () => {
       catalogSnapshot(),
     );
     expect(next[0].ai?.model).toBe('test-image-x');
+  });
+
+  it('selects and reconciles music independently of image and video defaults', () => {
+    const snapshot = catalogSnapshot();
+    snapshot.catalog!.push(
+      { id: 'other-music', displayName: 'Other music', modality: 'audio', aliases: [], capabilities: {} },
+      { id: 'configured-music', displayName: 'Music', modality: 'audio', aliases: ['music-alias'], isDefault: true, capabilities: {} },
+    );
+    expect(getDefaultAiCatalogModelId(snapshot, 'audio')).toBe('configured-music');
+    const next = reconcileCanvasAiModelsWithCatalog([
+      generatorNode('empty-music', 'music-generator', ''),
+      generatorNode('alias-music', 'music-generator', 'music-alias'),
+      generatorNode('saved-music', 'music-generator', 'temporarily-unavailable-music'),
+    ], snapshot);
+    expect(next.map(node => node.ai?.model)).toEqual(['configured-music', 'configured-music', 'temporarily-unavailable-music']);
+    const workflow = { nodes: [{ ai: { type: 'music-generator', model: '' } }] };
+    expect(reconcileStaleCanvasWorkflowModels(workflow, snapshot)).toMatchObject({ nodes: [{ ai: { model: 'configured-music' } }] });
+    expect(reconcileCanvasAiModelsWithCatalog(next, { ...snapshot, catalog: [] })).toBe(next);
   });
 
   it('does not reset local models during a wallet catalog refresh', () => {
