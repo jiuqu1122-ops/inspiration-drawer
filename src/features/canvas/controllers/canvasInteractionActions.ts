@@ -15,6 +15,7 @@ import { buildCanvasFolderMediaQuery,mergeCanvasFolderMediaItems } from '../../c
 import { CANVAS_GROW_CHUNK,CANVAS_MAX_IMAGE_WIDTH,CANVAS_MAX_SCALE,CANVAS_MIN_IMAGE_WIDTH,CANVAS_MIN_SCALE,type CanvasImageItem,type CanvasItemBox,type CanvasResizeCorner } from '../../canvasModel';
 import { getCanvasBoxesBounds } from '../../canvasResizeGeometry';
 import { findNearestCanvasItemIdForEmptyViewport } from '../../canvasViewportNavigation';
+import { isCanvasAiGeneratorType } from '../../canvasAiRuntime';
 import { clamp } from '../../common';
 import { getImageFileFromDataTransfer,getNameFromUrl,getWebImageFromDataTransfer,normalizeDraggedUrl,readImageFileAsDataUrl } from '../../dragData';
 
@@ -483,6 +484,13 @@ export const startCanvasItemDragImpl = (ctx: Pick<canvasInteractionsActionContex
     const pointerCaptureTarget = e.currentTarget as HTMLElement;
     pointerCaptureTarget.setPointerCapture?.(e.pointerId);
     const currentSelected = canvasSelectedIdsRef.current;
+    if (e.shiftKey && currentSelected.length === 1 && currentSelected[0] !== id && (isCanvasAiGeneratorType(current.ai?.type) || current.ai?.type === 'workflow')) {
+      pickCanvasImageForGenerator(currentSelected[0], id);
+      canvasSelectedIdsRef.current = [id];
+      setCanvasSelectedIds([id]);
+      applyCanvasSelectionDomFeedback(currentSelected, [id]);
+      return;
+    }
     const isAdditive = e.shiftKey || e.ctrlKey || e.metaKey;
     const itemSelectionIds = getCanvasSelectionIdsForItem(id);
     const isItemSelectionSelected = itemSelectionIds.every(selectionId => currentSelected.includes(selectionId));
@@ -1084,12 +1092,13 @@ export const scheduleCanvasFocusNearestContentIfViewportEmptyImpl = (ctx: Pick<c
 
 };
 
-export const startCanvasPanImpl = (ctx: Pick<canvasInteractionsActionContext, 'CANVAS_INTERACTION_BACKGROUND_SETTLE_MS' | 'canvasPanCleanupRef' | 'canvasPanRef' | 'canvasScaleRef' | 'canvasScrollLockRef' | 'canvasSurfaceRef' | 'expandCanvasBeforeViewport' | 'growCanvasNearViewportEdge' | 'growCanvasToFit' | 'isCanvasSpacePressedRef' | 'pendingCanvasFocusItemIdRef' | 'scheduleCanvasStateSave' | 'scheduleCanvasViewportUpdate' | 'setCanvasInteractionActive' | 'writeCanvasSurfaceScroll'>, e: React.PointerEvent<HTMLDivElement>) => {
-  const { CANVAS_INTERACTION_BACKGROUND_SETTLE_MS, canvasPanCleanupRef, canvasPanRef, canvasScaleRef, canvasScrollLockRef, canvasSurfaceRef, expandCanvasBeforeViewport, growCanvasNearViewportEdge, growCanvasToFit, isCanvasSpacePressedRef, pendingCanvasFocusItemIdRef, scheduleCanvasStateSave, scheduleCanvasViewportUpdate, setCanvasInteractionActive, writeCanvasSurfaceScroll } = ctx;
+export const startCanvasPanImpl = (ctx: Pick<canvasInteractionsActionContext, 'settleCanvasZoomBeforePointerInteraction' | 'CANVAS_INTERACTION_BACKGROUND_SETTLE_MS' | 'canvasPanCleanupRef' | 'canvasPanRef' | 'canvasScaleRef' | 'canvasScrollLockRef' | 'canvasSurfaceRef' | 'expandCanvasBeforeViewport' | 'growCanvasNearViewportEdge' | 'growCanvasToFit' | 'isCanvasSpacePressedRef' | 'pendingCanvasFocusItemIdRef' | 'scheduleCanvasStateSave' | 'scheduleCanvasViewportUpdate' | 'setCanvasInteractionActive' | 'writeCanvasSurfaceScroll'>, e: React.PointerEvent<HTMLDivElement>) => {
+  const { settleCanvasZoomBeforePointerInteraction, CANVAS_INTERACTION_BACKGROUND_SETTLE_MS, canvasPanCleanupRef, canvasPanRef, canvasScaleRef, canvasScrollLockRef, canvasSurfaceRef, expandCanvasBeforeViewport, growCanvasNearViewportEdge, growCanvasToFit, isCanvasSpacePressedRef, pendingCanvasFocusItemIdRef, scheduleCanvasStateSave, scheduleCanvasViewportUpdate, setCanvasInteractionActive, writeCanvasSurfaceScroll } = ctx;
     if (!isCanvasSpacePressedRef.current && e.button !== 1 && !e.shiftKey) return;
     if (e.button !== 0 && e.button !== 1) return;
     const surface = canvasSurfaceRef.current;
     if (!surface) return;
+    settleCanvasZoomBeforePointerInteraction();
     e.preventDefault();
     e.stopPropagation();
     canvasPanCleanupRef.current?.();
@@ -1116,6 +1125,7 @@ export const startCanvasPanImpl = (ctx: Pick<canvasInteractionsActionContext, 'C
     };
 
     const onMove = (event: PointerEvent) => {
+      settleCanvasZoomBeforePointerInteraction();
       const pan = canvasPanRef.current;
       const targetSurface = canvasSurfaceRef.current;
       if (!pan || !targetSurface) return;
@@ -1146,6 +1156,10 @@ export const startCanvasPanImpl = (ctx: Pick<canvasInteractionsActionContext, 'C
         (nextLeft + targetSurface.clientWidth) / scale + CANVAS_GROW_CHUNK * 0.8,
         (nextTop + targetSurface.clientHeight) / scale + CANVAS_GROW_CHUNK * 0.8
       );
+      pan.startClientX = event.clientX;
+      pan.startClientY = event.clientY;
+      pan.startScrollLeft = nextLeft;
+      pan.startScrollTop = nextTop;
       writeCanvasSurfaceScroll(targetSurface, nextLeft, nextTop);
       growCanvasNearViewportEdge(targetSurface);
     };
@@ -1202,8 +1216,8 @@ export const startCanvasPanImpl = (ctx: Pick<canvasInteractionsActionContext, 'C
 
 };
 
-export const zoomCanvasAtImpl = (ctx: Pick<canvasInteractionsActionContext, 'applyCanvasScaleStyles' | 'beginCanvasZoomInteraction' | 'canvasScaleRef' | 'canvasSizeRef' | 'canvasSurfaceRef' | 'canvasVisualViewportRef' | 'commitCanvasScaleSoon' | 'growCanvasToFit'>, clientX: number, clientY: number, deltaY: number) => {
-  const { applyCanvasScaleStyles, beginCanvasZoomInteraction, canvasScaleRef, canvasSizeRef, canvasSurfaceRef, canvasVisualViewportRef, commitCanvasScaleSoon, growCanvasToFit } = ctx;
+export const zoomCanvasAtImpl = (ctx: Pick<canvasInteractionsActionContext, 'canvasPanRef' | 'applyCanvasScaleStyles' | 'beginCanvasZoomInteraction' | 'canvasScaleRef' | 'canvasSizeRef' | 'canvasSurfaceRef' | 'canvasVisualViewportRef' | 'commitCanvasScaleSoon' | 'growCanvasToFit'>, clientX: number, clientY: number, deltaY: number) => {
+  const { canvasPanRef, applyCanvasScaleStyles, beginCanvasZoomInteraction, canvasScaleRef, canvasSizeRef, canvasSurfaceRef, canvasVisualViewportRef, commitCanvasScaleSoon, growCanvasToFit } = ctx;
     const surface = canvasSurfaceRef.current;
     if (!surface) return;
 
@@ -1225,6 +1239,10 @@ export const zoomCanvasAtImpl = (ctx: Pick<canvasInteractionsActionContext, 'app
     const visualX = Math.max(0, targetLeft / nextScale);
     const visualY = Math.max(0, targetTop / nextScale);
 
+    if (canvasPanRef.current) {
+      canvasPanRef.current.startScrollLeft = Math.max(0, targetLeft);
+      canvasPanRef.current.startScrollTop = Math.max(0, targetTop);
+    }
     canvasScaleRef.current = nextScale;
     canvasVisualViewportRef.current = {
       x: visualX,

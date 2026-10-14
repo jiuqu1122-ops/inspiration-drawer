@@ -14,6 +14,7 @@ import {
 } from '../model/chatTypes';
 import {
   deleteChatConversation,
+  deleteChatConversations,
   getChatSummary,
   listChatConversations,
   listChatMessages,
@@ -141,6 +142,7 @@ export type UseChatRuntimeOptions = {
   imageModel?: string;
   imageAspectRatio?: string;
   imageResolution?: string;
+  imageQuality?: string;
   approvalMode?: 'ask' | 'auto';
   executeTool: ChatToolExecutor;
   resolveAttachmentUrl?: (attachment: ChatAttachment) => Promise<string>;
@@ -2410,6 +2412,21 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     else await createConversation();
   }, [createConversation, loadConversation]);
 
+  const removeConversations = useCallback(async (ids: string[]) => {
+    const requested = new Set(ids);
+    const deletable = conversationsRef.current.filter(item => requested.has(item.id) && !busyConversationIdsRef.current.has(item.id) && !pendingApprovalsRef.current.has(item.id));
+    if (deletable.length !== requested.size) optionsRef.current.onNotice?.('正在运行的对话已保留。');
+    const deleted = new Set(await deleteChatConversations(deletable.map(item => item.id), (_id, error) => optionsRef.current.onNotice?.(`删除会话失败：${String(error)}`)));
+    for (const [id, message] of messageCacheRef.current) if (deleted.has(message.conversationId)) messageCacheRef.current.delete(id);
+    const next = conversationsRef.current.filter(item => !deleted.has(item.id));
+    conversationsRef.current = next;
+    setConversations(next);
+    if (deleted.has(activeConversationIdRef.current)) {
+      if (next[0]) await loadConversation(next[0].id); else await createConversation();
+    }
+    return [...deleted];
+  }, [createConversation, loadConversation]);
+
   const startNewConversation = useCallback((title?: string) => {
     return createConversation(optionsRef.current.model, title);
   }, [createConversation]);
@@ -2445,6 +2462,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     newConversation: startNewConversation,
     selectConversation,
     deleteConversation: removeConversation,
+    deleteConversations: removeConversations,
     loadOlderMessages,
     setConversationModel,
     searchConversations,

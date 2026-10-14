@@ -175,8 +175,11 @@ export const getCanvasAiLocalMediaProgress = (ai?: CanvasImageItem['ai'] | null)
 export const shouldShowCanvasAiLocalMediaProgress = (ai?: CanvasImageItem['ai'] | null) => (
   shouldShowRifeEngineProgress(getCanvasAiLocalMediaProgress(ai))
 );
+export const isCanvasWorkflowGeneratorType = (type?: string | null) => type === 'image-generator' || type === 'video-generator' || type === 'music-generator';
+
 export const isCanvasAiGeneratorType = (type?: string | null) => (
   type === 'image-generator'
+  || type === 'music-generator'
   || type === 'video-generator'
   || isCanvasAiFrameInterpolationType(type)
   || isCanvasAiEnhancementType(type)

@@ -61,8 +61,8 @@ export type CanvasWorkflowNodeTemplate = {
   contextRouting?: CanvasImageItem['contextRouting'];
   designAgentConfig?: DesignAgentConfig;
   acceptsExternalInputs?: boolean;
-  externalInputTypes?: Array<'image' | 'text' | 'video'>;
-  outputType?: 'image' | 'image[]' | 'text' | 'video' | 'video[]';
+  externalInputTypes?: Array<'image' | 'text' | 'video' | 'audio'>;
+  outputType?: 'image' | 'image[]' | 'text' | 'video' | 'video[]' | 'audio' | 'audio[]';
   bridgeType?: 'reference_image';
   internalSlot?: CanvasWorkflowInternalSlot;
   ai?: Partial<NonNullable<CanvasImageItem['ai']>>;

@@ -555,6 +555,7 @@ export type CanvasAiBaseImageOptions = {
   outputFormat?: string;
   count?: number;
   imageCapabilities?: ResolvedImageModelCapabilities;
+  quality?: string;
   videoCapabilities?: ResolvedVideoModelCapabilities;
   headers?: Record<string, string>;
 };
@@ -672,6 +673,8 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
         aspectRatio,
         resolution: options.resolution?.trim() || undefined,
         outputFormat,
+        quality: options.imageCapabilities?.supportedQualities.length
+          ? normalizeCapabilityOption(options.imageCapabilities.supportedQualities, options.quality, options.imageCapabilities.supportedQualities[0]) : undefined,
         background: outputFormat.toLowerCase() === 'png'
           && (options.imageCapabilities?.source !== 'server'
             || options.imageCapabilities.supportsTransparentBackground)

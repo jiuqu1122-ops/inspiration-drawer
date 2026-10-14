@@ -159,6 +159,7 @@ export const resolveDirectVisualTool = (
   hasRecentGeneratedMedia = false,
   imageAttachmentCount = 0,
 ): DirectVisualToolName | null => {
+  if (imageAttachmentCount > 0 && /(?:删除|去掉|移除|擦除|替换|修改|改成|换成|remove|delete|erase|replace|edit).{0,120}/i.test(text)) return 'edit_image';
   if (shouldDirectGenerateImage(text)) return 'generate_image';
   if (!isShortVisualFollowup(text) && !isVisualRevisionFollowup(text)) return null;
   if (hasRecentGeneratedMedia) return 'edit_image';

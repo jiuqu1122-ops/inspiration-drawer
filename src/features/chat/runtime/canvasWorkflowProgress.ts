@@ -3,7 +3,7 @@ import type { WorkflowResultCardData } from '../../agentModel';
 
 let workflowResult: WorkflowResultCardData | undefined;
 const listeners = new Set<() => void>();
-let conversationRequest: { id: string; title: string } | undefined;
+let conversationRequest: { id: string; title: string; canvasId: string; nodeId: string } | undefined;
 const conversationListeners = new Set<() => void>();
 let conversationSequence = 0;
 
@@ -25,10 +25,11 @@ export const useCanvasWorkflowProgress = () => useSyncExternalStore(
   getCanvasWorkflowProgress,
 );
 
-export const requestCanvasWorkflowConversation = (workflowName: string) => {
+export const requestCanvasWorkflowConversation = (workflowName: string, canvasId = 'default', nodeId = 'workflow') => {
   conversationSequence += 1;
   conversationRequest = {
     id: `workflow-conversation-${Date.now()}-${conversationSequence}`,
+    canvasId, nodeId,
     title: workflowName.trim().slice(0, 72) || '工作流运行',
   };
   conversationListeners.forEach(listener => listener());

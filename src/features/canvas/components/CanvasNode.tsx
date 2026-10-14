@@ -1,5 +1,6 @@
 import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import { Brush,ChevronLeft,Clock,Copy,Download,File as FileIcon,Film,Image as ImageIcon,Link,Music,Play,Plus,RefreshCw,RotateCw,Sparkles,Type,Upload,X } from 'lucide-react';
+import { CanvasMusicNode } from '../../canvasMusic';
 import { CanvasAiRunButton } from '../../../components/CanvasAiRunButton';
 import { CanvasGeneratorControls } from '../../../components/CanvasGeneratorControls';
 import { CanvasHorizontalRail,shouldRenderCanvasVideoReferenceRail } from '../../../components/CanvasHorizontalRail';
@@ -41,6 +42,17 @@ export function CanvasNode({ scope, canvasItem, canvasItemsRef: latestCanvasItem
     const itemsRef = latestCanvasItemsRef || (canvasItemsRef as { current?: CanvasImageItem[] } | undefined);
     return itemsRef?.current?.find(item => item.id === canvasItem.id) || canvasItem;
   };
+  if (canvasItem.ai?.type === 'music-generator') return <CanvasMusicNode
+    item={canvasItem} catalog={getAiCatalogModels(scope.canvasAiCloudImageModels, 'audio')}
+    selected={scope.canvasSelectedIdsSet?.has(canvasItem.id) || false} menuScale={scope.canvasRenderScale || 1}
+    update={patch => scope.updateCanvasAiGeneratorData(canvasItem.id, patch)}
+    onRun={event => scope.handleCanvasAiRunClick(event, canvasItem.id)}
+    onDrag={event => scope.startCanvasItemDrag(event, canvasItem.id)}
+    onConnect={event => { event.stopPropagation(); scope.startCanvasConnectionDrag(event, canvasItem.id); }}
+    onPointerEnter={() => { canvasHoveredItemIdRef.current = canvasItem.id; }}
+    onPointerLeave={() => { if (canvasHoveredItemIdRef.current === canvasItem.id) canvasHoveredItemIdRef.current = ''; }}
+    onContextMenu={event => { if (!canvasSelectedIdsRef.current.includes(canvasItem.id)) updateCanvasSelection([canvasItem.id]); openCanvasContextMenu(event, 'item', { itemId: canvasItem.id }); }}
+  />;
 const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlainMode, canvasDesignAgentConfig, isCanvasFrameInterpolationItem, isCanvasImageEnhancementItem, isCanvasVideoEnhancementItem, isQuickVideoEnhancementItem, isCanvasEnhancementItem, isCanvasSingleVideoInputItem, isCanvasWorkflowItem, isCanvasReferenceBridgeItem, isCanvasAiNodeItem, isCanvasThreeSceneItem, canvasThreeSceneReferences, canvasAiMediaType, canvasAiItemProvider, canvasAiItemModel, canvasAiItemCapabilities, canvasAiItemProviderCandidates, canvasAiCandidateImageResolutionValues, canvasAiSupportsImageResolution, canvasAiImageResolutionOptions, canvasAiItemImageResolution, isCanvasAiNewApiVideo, isCanvasAiSeedanceVideo, isCanvasAiSeedanceLikeVideo, isCanvasAiMiniMaxVideo, isCanvasAiMikotoVideo, isCanvasAiMikotoKlingVideo, canvasAiVideoResolutionOptions, canvasAiVideoResolution, canvasAiVideoDurationOptions, canvasAiVideoDuration, canvasAiVideoSupportsFirstLastFrame, canvasAiOutputFormat, canvasAiOutputFormatOptions, canvasAiAspectRatioValues, canvasAiCountOptions, canvasAiCatalogModel, canvasAiResolvedImageCapabilities, canvasAiResolvedVideoCapabilities, canvasWalletVideoModelContext, canvasVideoResolutionRequired, isCanvasWorkflowAllOutputMode, canvasWorkflow, canvasWorkflowInternalSlots, canvasExpandedWorkflowGroup, canvasExpandedInternalSlot, canvasVideoCreditEstimate, canvasRunCreditLabel, canvasRunCreditTitle, canvasWorkflowUserInput, canvasWorkflowAllowsImages, canvasWorkflowAllowsFiles, showCanvasAiAttachmentControl, canvasAiOutputs, canvasAiImagePreviewGallery, isCanvasAiOutputsExpanded, canvasAiVisibleOutputs, canvasAiHiddenOutputCount, showCanvasAiOutputPreview, canvasImageSource, hasCanvasImageBackingSource, isGeneratedMediaItem, isGeneratedVideoItem, isGeneratedMediaPending, isGeneratedMediaError, rawCanvasInputPreviewItems, canvasBridgeInputItems, canvasAiNodeDesignSize, isImageRulePanelExpanded, canvasAiOutputTileLayout, canvasAiNodeScale, canvasAiMenuScale, canvasRenderedItemWidth, canvasAiPromptHeight, canvasVideoReferenceSlots, canvasVideoInputMode, canvasVideoReferenceSlotLabels, canvasAllowsSeedanceOmniReferences, isCanvasVeoIngredientMode } = buildCanvasNodeViewModel(scope, canvasItem);
                           const canvasAiVideoCatalogModels = canvasAiCredentialSource === 'wallet'
                             ? getAiCatalogModels(canvasAiCloudImageModels, 'video')
@@ -125,8 +137,9 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                               || generatorOutput?.mediaType === 'image';
                           };
                           const isCanvasAudioReferenceItem = (inputItem: CanvasImageItem) => (
-                            inputItem.item.type === 'file'
-                            && isCanvasAudioFileName(inputItem.item.name || inputItem.item.path)
+                            (inputItem.item.type === 'file'
+                            && isCanvasAudioFileName(inputItem.item.name || inputItem.item.path))
+                            || getCanvasAiSuccessfulOutputs(inputItem).some(output => output.assetType === 'audio')
                           );
                           type CanvasInputPreviewItem = {
                             id: string;
@@ -1094,6 +1107,10 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                               const outputGalleryIndex = outputPreviewItem
                                                 ? canvasAiImagePreviewGallery.findIndex(item => item.id === outputPreviewItem.id)
                                                 : -1;
+                                              if (output.assetType === 'audio') return <div key={output.id} data-no-drag="true" className="rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-900" onPointerDown={event => event.stopPropagation()}>
+                                                <p className="mb-2 text-xs font-semibold">{output.nodeLabel || output.name || '音频输出'}</p>
+                                                {outputSource ? <><audio controls src={outputSource} className="w-full" /><a href={outputSource} download={output.name || 'music.mp3'} target="_blank" rel="noreferrer" className="text-xs underline">下载音频</a></> : <p className="text-xs">{output.error || '音乐生成中…'}</p>}
+                                              </div>;
                                               const isOutputError = output.status === 'error';
                                               const isOutputWorking = output.status === 'working';
                                               const outputMediaType = output.mediaType || canvasAiMediaType;
@@ -1783,6 +1800,9 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                   })(),
                                                 });
                                               }}
+                                              qualityValue={canvasItem.ai?.quality}
+                                              qualityOptions={canvasAiResolvedImageCapabilities.supportedQualities.map(value => ({ value, label: value }))}
+                                              onQualityChange={(quality) => updateCanvasAiGeneratorData(canvasItem.id, { quality })}
                                               outputFormatValue={canvasAiOutputFormat}
                                               outputFormatOptions={canvasAiOutputFormatOptions}
                                               outputFormatTitle={`格式：${(canvasItem.ai?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT).toUpperCase()}`}

@@ -10,6 +10,11 @@ import type { CanvasImageItem } from './canvasModel';
 type CapabilitySource = AiModelCapabilities | null | undefined;
 
 export type ResolvedImageModelCapabilities = {
+  supportedQualities: string[];
+  qualityParameter: string;
+  outputMode: 'single_asset' | 'multiple_assets';
+  maxOutputImages: number;
+  billingMode?: 'per_request' | 'per_image';
   source: 'server' | 'legacy';
   resolutions: string[];
   defaultResolution?: string;
@@ -117,6 +122,12 @@ export const normalizeAiModelCapabilities = (
 ): AiModelCapabilities | undefined => {
   if (!value || typeof value !== 'object') return undefined;
   const normalized: AiModelCapabilities = {};
+  if (value.supportsImageEdit !== undefined) normalized.supportsImageEdit = value.supportsImageEdit;
+  if (value.supportedQualities !== undefined) normalized.supportedQualities = normalizeStrings(value.supportedQualities);
+  if (value.qualityParameter !== undefined) normalized.qualityParameter = value.qualityParameter;
+  if (value.outputMode !== undefined) normalized.outputMode = value.outputMode;
+  if (value.billingMode !== undefined) normalized.billingMode = value.billingMode;
+  if (value.maxOutputImages !== undefined) normalized.maxOutputImages = Math.max(1, Math.min(16, normalizeLimit(value.maxOutputImages, 1)));
   if (value.resolutions !== undefined) normalized.resolutions = normalizeStrings(value.resolutions);
   if (value.defaultResolution !== undefined) normalized.defaultResolution = String(value.defaultResolution).trim();
   if (value.aspectRatios !== undefined) normalized.aspectRatios = normalizeStrings(value.aspectRatios);
@@ -199,7 +210,7 @@ export const mergeAiModelCapabilities = (
 export const normalizeAiCatalogModel = (value: AiCatalogModel): AiCatalogModel | null => {
   const id = String(value?.id || '').trim();
   const displayName = String(value?.displayName || id).trim();
-  if (!id || !displayName || !['chat', 'image', 'video'].includes(value?.modality)) return null;
+  if (!id || !displayName || !['chat', 'image', 'video', 'audio'].includes(value?.modality)) return null;
   return {
     id,
     displayName,
@@ -381,6 +392,11 @@ export const resolveImageModelCapabilities = (options: {
   );
   return {
     source,
+    supportedQualities: firstDefined(canonical?.supportedQualities, route?.supportedQualities, undefined, []),
+    qualityParameter: firstDefined(canonical?.qualityParameter, route?.qualityParameter, undefined, 'quality'),
+    outputMode: firstDefined(canonical?.outputMode, route?.outputMode, undefined, 'single_asset'),
+    maxOutputImages: firstDefined(canonical?.maxOutputImages, route?.maxOutputImages, undefined, 1),
+    billingMode: firstDefined(canonical?.billingMode, route?.billingMode, undefined, undefined),
     resolutions,
     ...(firstDefined(canonical?.defaultResolution, route?.defaultResolution, legacy?.defaultResolution, undefined)
       ? { defaultResolution: firstDefined(canonical?.defaultResolution, route?.defaultResolution, legacy?.defaultResolution, undefined)! }

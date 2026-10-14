@@ -1,3 +1,4 @@
+import { isCanvasWorkflowGeneratorType } from '../../canvasAiRuntime';
 import { beginWorkflowDiagnostic } from '../../../utils/rendererDiagnostics';
 import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import React from 'react';
@@ -13,7 +14,7 @@ import { validateCanvasWorkflowTemplate } from '../../../utils/canvasWorkflowDef
 import { applyCanvasWorkflowRuntimeSnapshots,createCanvasWorkflowOutputDrafts,createCanvasWorkflowRuntimeValue,getCanvasExpandedWorkflowDownstreamGeneratorIds,getCanvasWorkflowGroup,getCanvasWorkflowOutputLabel,getCanvasWorkflowOutputSlotTemplates,normalizeCanvasWorkflowRuntimeSnapshots,sortCanvasWorkflowRuntimeNodeIds } from '../../../utils/canvasWorkflowRuntime';
 import { isCanvasImageFileName,isCanvasTemplateJsonFileName,isCanvasVideoFileName,normalizeLocalDragPath } from '../../../utils/localMediaPaths';
 import { type WorkflowResultCardData,type WorkflowResultMedia,type WorkflowResultReference } from '../../agentModel';
-import { isCanvasAiImageOutputReadyForWorkflowDependency,recoverCanvasAiNodeWithUsableResults } from '../../canvasAiOutputs';
+import { isCanvasAiAssetOutputReadyForWorkflowDependency,isCanvasAiImageOutputReadyForWorkflowDependency,recoverCanvasAiNodeWithUsableResults } from '../../canvasAiOutputs';
 import { claimCanvasAiRun,createCanvasAiClientRequestId,releaseCanvasAiRun } from '../../canvasAiRunGuard';
 import { getCanvasDrawerMediaPreviewSource,getCanvasDrawerMediaSource,isCanvasDrawerMediaItem } from '../../canvasDrawerMedia';
 import { CANVAS_GROW_CHUNK,type CanvasAiGeneratedOutput,type CanvasImageItem,type CanvasWorkflowRuntime } from '../../canvasModel';
@@ -619,7 +620,7 @@ export const runCanvasWorkflowModuleNodeImpl = async (ctx: Pick<canvasWorkflowRu
         status: 'waiting',
       })),
     }));
-    requestCanvasWorkflowConversation(workflow.label);
+    requestCanvasWorkflowConversation(workflow.label, runCanvasId, targetId);
     publishWorkflowStartup('running');
     const workflowUserInput = normalizeCanvasWorkflowUserInput(workflow.userInput);
     const workflowUserRequest = String(moduleNode.item.content || '').trim().slice(0, 6_000);
@@ -874,7 +875,12 @@ export const runCanvasWorkflowModuleNodeImpl = async (ctx: Pick<canvasWorkflowRu
         nodeId: draft.nodeId,
         nodeLabel: draft.nodeLabel,
       };
-    });
+    }).concat(runtimeItems.flatMap(item => {
+      const slots = outputSlots.filter(slot => slot.runtimeId === item.id);
+      if (!slots.length) return [];
+      const covered = Math.max(...slots.map(slot => slot.index)) + 1;
+      return getCanvasAiSuccessfulOutputs(item).slice(covered).map(output => ({ ...output, nodeId: item.workflowTemplateNodeId || item.id, nodeLabel: item.item.name }));
+    }));
     const getRuntimeSnapshots = () => createCanvasWorkflowRuntimeValue(
       workflow,
       runtimeItems,
@@ -1015,6 +1021,7 @@ export const runCanvasWorkflowModuleNodeImpl = async (ctx: Pick<canvasWorkflowRu
           nodeId: output.nodeId,
           name: output.name || output.nodeLabel || `生成结果 ${index + 1}`,
           mediaType: output.mediaType === 'video' ? 'video' : 'image',
+          assetType: output.assetType,
           thumbnail: getCanvasAiOutputThumbnailSource(output),
           url: getCanvasAiOutputDisplaySource(output),
           status: 'success',
@@ -1190,13 +1197,13 @@ export const runCanvasWorkflowModuleNodeImpl = async (ctx: Pick<canvasWorkflowRu
         }
         return;
       }
-      if (current.ai?.type !== 'image-generator') {
+      if (!isCanvasWorkflowGeneratorType(current.ai?.type)) {
         runStatus.set(nodeId, 'success');
         completedCount += 1;
         publishWorkflowProgress();
         return;
       }
-      if (getCanvasAiSuccessfulOutputs(current).some(isCanvasAiImageOutputReadyForWorkflowDependency)) {
+      if (getCanvasAiSuccessfulOutputs(current).some(isCanvasAiAssetOutputReadyForWorkflowDependency)) {
         runStatus.set(nodeId, 'success');
         completedCount += 1;
         publishWorkflowProgress();
@@ -1211,7 +1218,7 @@ export const runCanvasWorkflowModuleNodeImpl = async (ctx: Pick<canvasWorkflowRu
         requireLocalImageOutputs: true,
       });
       const latest = runtimeItems.find(item => item.id === nodeId);
-      if (getCanvasAiSuccessfulOutputs(latest).some(isCanvasAiImageOutputReadyForWorkflowDependency)) {
+      if (getCanvasAiSuccessfulOutputs(latest).some(isCanvasAiAssetOutputReadyForWorkflowDependency)) {
         runStatus.set(nodeId, 'success');
         completedCount += 1;
         updateModuleAi({

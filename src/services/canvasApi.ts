@@ -35,6 +35,9 @@ export const DEFAULT_PROJECT_ID = 'default';
 export const DEFAULT_LIBRARY_ID = 'default';
 export const DEFAULT_CANVAS_ID = 'default';
 
+export const reorderCanvases = (ids: string[], projectId = DEFAULT_PROJECT_ID, libraryId = DEFAULT_LIBRARY_ID) =>
+  invoke<CanvasRecord[]>('reorder_canvases', { ids, projectId, libraryId });
+
 export const listCanvases = (projectId = DEFAULT_PROJECT_ID, libraryId = DEFAULT_LIBRARY_ID) =>
   invoke<CanvasRecord[]>('list_canvases', { projectId, project_id: projectId, libraryId, library_id: libraryId });
 

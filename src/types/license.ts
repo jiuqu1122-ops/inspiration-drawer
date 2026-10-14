@@ -98,13 +98,19 @@ export type CloudCreditUsageResult = {
   nextCursor?: string | null;
 };
 
-export type AiModelModality = 'chat' | 'image' | 'video';
+export type AiModelModality = 'chat' | 'image' | 'video' | 'audio';
 
 /**
  * Public, server-owned model behaviour. This intentionally contains no
  * provider credentials or private upstream route identifiers.
  */
 export type AiModelCapabilities = {
+  supportsImageEdit?: boolean;
+  supportedQualities?: string[];
+  qualityParameter?: string;
+  outputMode?: 'single_asset' | 'multiple_assets';
+  maxOutputImages?: number;
+  billingMode?: 'per_request' | 'per_image';
   resolutions?: string[];
   defaultResolution?: string;
   aspectRatios?: string[];

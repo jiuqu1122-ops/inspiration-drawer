@@ -4,6 +4,11 @@ use crate::repositories::asset_repository::ViewportOptions;
 use crate::repositories::canvas_repository::CanvasScope;
 
 #[tauri::command]
+pub fn reorder_canvases(app_handle: tauri::AppHandle, project_id: Option<String>, library_id: Option<String>, ids: Vec<String>) -> Result<Vec<Value>, String> {
+    crate::services::canvas_service::reorder_canvases(app_handle, CanvasScope { project_id, library_id }, ids)
+}
+
+#[tauri::command]
 pub fn list_canvases(
     app_handle: tauri::AppHandle,
     project_id: Option<String>,

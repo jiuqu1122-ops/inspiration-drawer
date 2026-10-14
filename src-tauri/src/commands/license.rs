@@ -437,6 +437,8 @@ pub struct CreditRedemptionResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloudImageGenerationRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    quality: Option<String>,
     client_request_id: String,
     model: String,
     prompt: String,
@@ -520,6 +522,18 @@ pub struct CloudAiCatalogModel {
 pub struct CloudAiModelCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolutions: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supported_qualities: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_image_edit: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    quality_parameter: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_output_images: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    billing_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     default_resolution: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -613,6 +627,8 @@ pub struct CloudImageModelPricing {
     credits_per_image: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     credits_by_resolution: Option<std::collections::HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_by_resolution_quality: Option<std::collections::HashMap<String, std::collections::HashMap<String, String>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     credits1k: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1138,7 +1154,7 @@ where
             Err(error) => {
                 let has_fallback = index + 1 < clients.len();
                 let fallback_attempted =
-                    has_fallback && should_retry_cloud_transport(&error, method);
+                    has_fallback && operation != "music_generate" && should_retry_cloud_transport(&error, method);
                 if let Some(app) = diagnostic_app {
                     crate::renderer_diagnostics::record(
                         app,
@@ -1192,6 +1208,7 @@ fn cloud_operation(path: &str) -> &'static str {
         "/v1/auth/email/sync" => "account_sync",
         "/v1/ai/images/models" => "image_models",
         "/v1/ai/images/generations" => "image_generate",
+        "/v1/ai/music/generations" => "music_generate",
         "/v1/ai/models" => "chat_models",
         "/v1/ai/tasks" => "task_submit",
         "/v1/ai/reference-images" => "reference_images",
@@ -1199,6 +1216,7 @@ fn cloud_operation(path: &str) -> &'static str {
         _ if path.starts_with("/v1/ai/tasks/") => "task_status",
         _ if path.starts_with("/v1/ai/videos/") => "video_status",
         _ if path.starts_with("/v1/ai/images/generations/by-request/") => "image_status",
+        _ if path.starts_with("/v1/ai/music/generations/by-request/") => "music_status",
         _ => "other_cloud_request",
     }
 }
@@ -1460,6 +1478,23 @@ mod cloud_transport_tests {
             }
             server.join().unwrap();
         }
+    }
+
+    #[test]
+    fn music_connect_failure_never_replays_the_paid_post() {
+        let clients = vec![
+            (unavailable_proxy_client(), true),
+            (direct_test_client(Duration::from_secs(1)), false),
+        ];
+        let attempts = AtomicUsize::new(0);
+        let result = tauri::async_runtime::block_on(send_cloud_request_with_clients(
+            &clients, "POST", None, &|client| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                client.post("https://example.test/v1/ai/music/generations").body("music")
+            },
+        ));
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -1754,7 +1789,8 @@ async fn get_cloud_with_bearer<T: for<'de> Deserialize<'de>>(
     path: &str,
     access_token: &str,
 ) -> Result<T, String> {
-    let response = send_cloud_request(app_handle, Duration::from_secs(30), "GET", None, |client| {
+    let timeout = if path.starts_with("/v1/ai/music/generations/by-request/") { Duration::from_secs(900) } else { Duration::from_secs(30) };
+    let response = send_cloud_request(app_handle, timeout, "GET", None, |client| {
         client
             .get(format!("{CLOUD_API_BASE_URL}{path}"))
             .bearer_auth(access_token)
@@ -2284,6 +2320,23 @@ pub async fn redeem_credit_code(
         redeemed_credits: redeemed.redeemed_credits,
         account,
     })
+}
+
+#[tauri::command]
+pub async fn generate_cloud_music(app_handle: tauri::AppHandle, request: serde_json::Value) -> Result<serde_json::Value, String> {
+    let access_token = cloud_access_token(&app_handle).await?;
+    post_cloud_with_bearer_timeout::<serde_json::Value>(&app_handle, "/v1/ai/music/generations", &access_token, &request, std::time::Duration::from_secs(900)).await
+}
+
+#[tauri::command]
+pub async fn get_cloud_music_generation_by_request(app_handle: tauri::AppHandle, client_request_id: String) -> Result<serde_json::Value, String> {
+    let client_request_id = client_request_id.trim();
+    if client_request_id.is_empty() || client_request_id.len() > 128 {
+        return Err("invalid_request: 音乐请求 ID 无效".to_string());
+    }
+    let access_token = cloud_access_token(&app_handle).await?;
+    let encoded = url::form_urlencoded::byte_serialize(client_request_id.as_bytes()).collect::<String>();
+    get_cloud_with_bearer(&app_handle, &format!("/v1/ai/music/generations/by-request/{encoded}"), &access_token).await
 }
 
 #[tauri::command]
@@ -3027,5 +3080,18 @@ mod tests {
             value["channels"][0]["modelCapabilities"]["route-image-v2"]["resolutions"],
             serde_json::json!(["2K"])
         );
+    }
+}
+
+#[cfg(test)]
+mod capability_upgrade_tests {
+    use super::*;
+    #[test]
+    fn quality_and_multi_asset_capabilities_survive_the_native_bridge() {
+        let input = serde_json::json!({"supportedQualities": ["high", "max"], "qualityParameter": "render_quality", "maxOutputImages": 4, "outputMode": "multiple_assets", "billingMode": "per_request", "supportsImageEdit": false});
+        let capabilities: CloudAiModelCapabilities = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(capabilities).unwrap(), input);
+        let request: CloudImageGenerationRequest = serde_json::from_value(serde_json::json!({"clientRequestId": "quality-request", "model": "arbitrary-model", "prompt": "image", "inputImages": [], "aspectRatio": "1:1", "resolution": "2k", "outputFormat": "png", "count": 1, "quality": "max"})).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap()["quality"], "max");
     }
 }

@@ -2,6 +2,7 @@ export type ChatImageGenerationSettings = {
   imageModel?: string;
   imageAspectRatio?: string;
   imageResolution?: string;
+  imageQuality?: string;
 };
 
 export const applyChatImageGenerationSettings = (
@@ -19,5 +20,6 @@ export const applyChatImageGenerationSettings = (
     ...(model ? { model } : {}),
     ...(aspectRatio ? { aspectRatio } : {}),
     ...(resolution ? { resolution } : {}),
+    ...(String(args.quality || settings.imageQuality || "").trim() ? { quality: String(args.quality || settings.imageQuality).trim() } : {}),
   };
 };

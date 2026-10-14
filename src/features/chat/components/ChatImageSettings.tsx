@@ -2,7 +2,7 @@ import { Check, ChevronDown, Image as ImageIcon } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { ChatImageModelOption } from '../model/chatTypes';
 
-type PickerName = 'model' | 'aspect-ratio' | 'resolution';
+type PickerName = 'model' | 'aspect-ratio' | 'resolution' | 'quality';
 
 function ImageSettingPicker({
   name,
@@ -77,6 +77,9 @@ export function ChatImageSettings({
   aspectRatio,
   aspectRatioOptions,
   onAspectRatioChange,
+  quality,
+  qualityOptions = [],
+  onQualityChange,
   resolution,
   resolutionOptions,
   onResolutionChange,
@@ -88,6 +91,9 @@ export function ChatImageSettings({
   aspectRatio: string;
   aspectRatioOptions: ChatImageModelOption[];
   onAspectRatioChange: (value: string) => void;
+  quality?: string;
+  qualityOptions?: ChatImageModelOption[];
+  onQualityChange?: (value: string) => void;
   resolution: string;
   resolutionOptions: ChatImageModelOption[];
   onResolutionChange: (value: string) => void;
@@ -139,6 +145,7 @@ export function ChatImageSettings({
           onChange={onAspectRatioChange}
           disabled={busy}
         />
+        {qualityOptions.length > 0 && <ImageSettingPicker name="quality" label="质量" value={quality || qualityOptions[0].value} options={qualityOptions} openPicker={openPicker} setOpenPicker={setOpenPicker} onChange={onQualityChange || (() => {})} disabled={busy} />}
         <ImageSettingPicker
           name="resolution"
           label="清晰度"

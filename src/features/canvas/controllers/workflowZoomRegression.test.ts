@@ -19,6 +19,7 @@ export const createZoomHarness = () => {
     getBoundingClientRect: () => ({ left: 0, top: 0 }), setAttribute: vi.fn(), removeAttribute: vi.fn(),
   } as unknown as HTMLDivElement;
   const state = {
+    canvasPanRef: ref(null),
     canvasContentRef: ref(layer as unknown as HTMLDivElement), canvasSurfaceRef: ref(surface),
     isCanvasZoomingRef: ref(false), canvasViewportFrameRef: ref<number | null>(null),
     canvasViewportDeferredDuringZoomRef: ref(false), canvasScaleRef: ref(1),

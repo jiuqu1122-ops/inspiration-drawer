@@ -201,7 +201,7 @@ export const pasteCanvasItemsImpl = (ctx: Pick<canvasMediaActionContext, 'CANVAS
         y: Math.max(24, sourceItem.y + offsetY + (targetPoint ? 0 : index * 6)),
         item: {
           ...cloneDrawerValue(sourceItem.item),
-          id: nextBufferId,
+          id: sourceItem.item.type === 'image' || sourceItem.item.type === 'video' || sourceItem.item.type === 'file' ? sourceItem.item.id : nextBufferId,
           createdAt: Date.now() + index,
         },
         ai: sourceItem.ai ? cloneCanvasAiForPaste(sourceItem.ai) : undefined,
@@ -218,6 +218,12 @@ export const pasteCanvasItemsImpl = (ctx: Pick<canvasMediaActionContext, 'CANVAS
       inputs: (item.inputs || [])
         .map(inputId => idMap.get(inputId))
         .filter((inputId): inputId is string => !!inputId),
+      ai: item.ai ? {
+        ...item.ai,
+        sourceImageNodeId: item.ai.sourceImageNodeId ? idMap.get(item.ai.sourceImageNodeId) || item.ai.sourceImageNodeId : item.ai.sourceImageNodeId,
+        referenceImageNodeIds: item.ai.referenceImageNodeIds?.map(id => idMap.get(id) || id),
+        referenceRoles: item.ai.referenceRoles?.map(role => ({ ...role, nodeId: idMap.get(role.nodeId) || role.nodeId })),
+      } : undefined,
       threeScene: item.threeScene
         ? {
           ...item.threeScene,
@@ -1961,7 +1967,7 @@ export const getCanvasImageInputBufferItemsForNodeImpl = (
         } else {
           pushInput(applyInputRotation(inputItem.item));
         }
-      } else if (inputItem.ai?.type === 'image-generator' || inputItem.ai?.type === 'workflow') {
+      } else if (inputItem.ai?.type === 'image-generator' || inputItem.ai?.type === 'music-generator' || inputItem.ai?.type === 'workflow') {
         getCanvasAiSuccessfulOutputs(inputItem).slice(0, isImageFusion ? 1 : undefined).forEach((output, index) => {
           const outputItem = createCanvasAiOutputBufferItem(inputItem, output, index);
           if (outputItem) pushInput(outputItem);

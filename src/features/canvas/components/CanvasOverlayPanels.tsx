@@ -1263,6 +1263,7 @@ export function CanvasOverlayPanels({ scope }: { scope: CanvasOverlayPanelsScope
                       showThreeScene={ENABLE_THREE_SCENE_CREATION}
                       onCreateThreeScene={() => addCanvasThreeSceneGeneratorNode()}
                       onAddFusion={() => addCanvasImageFusionNode()}
+                      onAddMusic={() => scope.addCanvasMusicGeneratorNode()}
                       onAddVideo={() => addCanvasAiVideoGeneratorNode()}
                       onAddFrameInterpolation={() => addCanvasFrameInterpolationNode()}
                       onAddEnhancement={mediaType => addCanvasEnhancementNode(mediaType)}

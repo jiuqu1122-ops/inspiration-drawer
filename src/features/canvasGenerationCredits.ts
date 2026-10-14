@@ -40,6 +40,7 @@ export type CanvasAiCreditPricing = {
     creditsPerRequest?: string;
     creditsPerImage?: string;
     creditsByResolution?: Record<string, string>;
+    creditsByResolutionQuality?: Record<string, Record<string, string>>;
     credits1k?: string;
     credits2k?: string;
     credits4k?: string;
@@ -266,8 +267,11 @@ const hasConfiguredImageModel = (
 
 export type CanvasImageCreditInput = Pick<
   NonNullable<CanvasImageItem['ai']>,
-  'model' | 'resolution' | 'count'
+  'model' | 'resolution' | 'count' | 'quality'
 > & {
+  billingMode?: 'per_request' | 'per_image';
+  outputMode?: 'single_asset' | 'multiple_assets';
+  maxOutputImages?: number;
   capabilities?: readonly string[] | null;
   supportedResolutions?: readonly string[] | null;
   defaultResolution?: string | null;
@@ -276,6 +280,7 @@ export type CanvasImageCreditInput = Pick<
 };
 
 export type CanvasImageCreditEstimate = {
+  billingMode?: 'per_request' | 'per_image';
   available: boolean;
   reason?: 'pricing_loading' | 'pricing_unavailable' | 'resolution_required';
   billingType?: CanvasImageBillingType;
@@ -353,7 +358,9 @@ export const estimateCanvasImageGenerationCredits = (
   ai?: CanvasImageCreditInput | null,
   pricing?: CanvasAiCreditPricing | null,
 ): CanvasImageCreditEstimate => {
-  const outputCount = normalizeCreditEstimateOutputCount(ai?.count, ai?.maxOutputs ?? 4);
+  const outputCount = ai?.outputMode === 'multiple_assets'
+    ? normalizeCreditEstimateOutputCount(ai.maxOutputImages, ai.maxOutputImages ?? 1)
+    : normalizeCreditEstimateOutputCount(ai?.count, ai?.maxOutputs ?? 4);
   const resolution = ai?.serverDriven
     ? resolveServerImageResolution(ai)
     : getPricedImageResolution(ai?.model, ai?.resolution);
@@ -372,7 +379,17 @@ export const estimateCanvasImageGenerationCredits = (
   if (ai?.serverDriven && !configuredModel?.billingType) {
     return unavailableImageEstimate(outputCount, resolution, 'pricing_unavailable');
   }
+  const qualityPrice = ai?.quality ? configuredModel?.creditsByResolutionQuality?.[resolution]?.[ai.quality] : undefined;
+  const qualityCredits = nonNegativeCredit(qualityPrice);
   const billingType = resolveImageBillingType(configuredModel);
+  if (qualityCredits !== null || ai?.billingMode !== undefined) {
+    const basePrice = billingType === 'image_flat' ? configuredModel?.creditsPerRequest
+      : billingType === 'image_count' ? configuredModel?.creditsPerImage
+        : configuredModel?.creditsByResolution?.[resolution] ?? configuredModel?.creditsByResolution?.['2k'];
+    const unitCredits = qualityCredits ?? nonNegativeCredit(basePrice);
+    if (unitCredits === null) return unavailableImageEstimate(outputCount, resolution, 'pricing_unavailable', billingType);
+    return { available: true, billingType, billingMode: ai?.billingMode, outputCount, resolution, unitCredits, totalCredits: unitCredits * (ai?.billingMode === 'per_request' || (ai?.billingMode !== 'per_image' && billingType === 'image_flat') ? 1 : outputCount) };
+  }
   if (billingType === 'image_flat') {
     const creditsPerRequest = nonNegativeCredit(configuredModel?.creditsPerRequest);
     if (creditsPerRequest === null) {
@@ -671,7 +688,7 @@ export const describeCanvasImageCreditEstimate = (estimate: CanvasImageCreditEst
   if (!estimate.available || !estimate.billingType) return '价格未配置';
   const total = displayCredits(estimate.totalCredits);
   let calculation: string;
-  if (estimate.billingType === 'image_flat') {
+  if (estimate.billingMode === 'per_request' || (estimate.billingMode !== 'per_image' && estimate.billingType === 'image_flat')) {
     calculation = `${displayCredits(estimate.creditsPerRequest ?? estimate.unitCredits ?? 0)} 积分/次`;
   } else if (estimate.billingType === 'image_count') {
     calculation = `${displayCredits(estimate.creditsPerImage ?? estimate.unitCredits ?? 0)} 积分/张 × ${estimate.outputCount} 张`;
@@ -728,6 +745,10 @@ type CanvasWorkflowCreditOptions = {
     defaultResolution?: string;
     serverDriven?: boolean;
     maxOutputs?: number;
+    quality?: string;
+    billingMode?: 'per_request' | 'per_image';
+    outputMode?: 'single_asset' | 'multiple_assets';
+    maxOutputImages?: number;
   } | undefined;
   resolveVideoPricingIdentity?: (node: CanvasWorkflowTemplate['nodes'][number]) => {
     model?: string;
@@ -783,6 +804,10 @@ export const estimateCanvasWorkflowCredits = (
     const estimate = estimateCanvasImageGenerationCredits({
       model,
       resolution: node.ai?.resolution,
+      quality: pricingIdentity?.quality ?? node.ai?.quality,
+      billingMode: pricingIdentity?.billingMode,
+      outputMode: pricingIdentity?.outputMode,
+      maxOutputImages: pricingIdentity?.maxOutputImages,
       count: node.ai?.count,
       capabilities: pricingIdentity?.capabilities,
       supportedResolutions: pricingIdentity?.supportedResolutions,

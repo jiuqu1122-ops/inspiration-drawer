@@ -1,3 +1,4 @@
+import { isCanvasWorkflowGeneratorType } from '../../canvasAiRuntime';
 import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import React from 'react';
@@ -1237,7 +1238,7 @@ export const instantiateCanvasWorkflowTemplateItemsImpl = (ctx: Pick<canvasInput
     const nextItems = cleanWorkflow.nodes.map((node, index) => {
       const nextBufferId = createAssetId();
       const nextCanvasId = idMap.get(node.id) || makeCanvasNodeId(nextBufferId, node.ai?.type === 'image-generator' ? 'ai' : 'workflow');
-      const isAiGenerator = node.ai?.type === 'image-generator';
+      const isAiGenerator = isCanvasWorkflowGeneratorType(node.ai?.type);
       const isExternalInputPort = isWorkflowExternalInputPort(node);
       const isAgentTextNode = node.item.type === 'text' && node.textMode !== 'plain' && !node.ai && !isExternalInputPort;
       const provider = normalizeCanvasAiProvider(node.ai?.provider || canvasAiProvider);
@@ -1292,7 +1293,7 @@ export const instantiateCanvasWorkflowTemplateItemsImpl = (ctx: Pick<canvasInput
         ai: isAiGenerator
           ? {
             ...cloneDrawerValue(node.ai || {}),
-            type: 'image-generator' as const,
+            type: node.ai?.type || 'image-generator',
             provider,
             model: node.ai?.model || getCanvasAiDefaultModel(provider),
             imagePolicy: createCanvasImagePolicy({

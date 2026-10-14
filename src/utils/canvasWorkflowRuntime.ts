@@ -16,6 +16,7 @@ import {
 import {
   getCanvasAiMediaType,
   isCanvasAiGeneratorType,
+  isCanvasWorkflowGeneratorType,
 } from '../features/canvasAiRuntime';
 import { recoverCanvasAiOutputWithUsableResult } from '../features/canvasAiOutputs';
 import {
@@ -204,14 +205,14 @@ export const getCanvasAiOutputForAction = (
 };
 
 export const getCanvasWorkflowGeneratorNodes = (workflow: CanvasWorkflowTemplate) => (
-  workflow.nodes.filter(node => node.ai?.type === 'image-generator')
+  workflow.nodes.filter(node => isCanvasWorkflowGeneratorType(node.ai?.type))
 );
 
 export const getCanvasWorkflowTerminalNodeTemplates = (workflow: CanvasWorkflowTemplate) => {
   const generatorIds = new Set(getCanvasWorkflowGeneratorNodes(workflow).map(node => node.id));
   const upstreamGeneratorIds = new Set<string>();
   workflow.nodes.forEach(node => {
-    if (node.ai?.type !== 'image-generator') return;
+    if (!isCanvasWorkflowGeneratorType(node.ai?.type)) return;
     (node.inputs || []).forEach(inputId => {
       if (generatorIds.has(inputId)) upstreamGeneratorIds.add(inputId);
     });
@@ -236,7 +237,7 @@ export const getCanvasWorkflowOutputSlotTemplates = (
     const count = clamp(Math.round(Number(node.ai?.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS);
     return Array.from({ length: count }, (_, index) => ({ node, index }));
   });
-  const fallbackNode = outputNodes[outputNodes.length - 1] || workflow.nodes.find(node => node.ai?.type === 'image-generator') || workflow.nodes[0];
+  const fallbackNode = outputNodes[outputNodes.length - 1] || workflow.nodes.find(node => isCanvasWorkflowGeneratorType(node.ai?.type)) || workflow.nodes[0];
   if (slots.length > 0) return slots.slice(0, CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS);
   return fallbackNode ? [{ node: fallbackNode, index: 0 }] : [];
 };
@@ -269,6 +270,7 @@ export const createCanvasWorkflowOutputDrafts = (
     return {
       id: `${canvasItem.id}_workflow_${mode}_output_${slot.node.id}_${slot.index}`,
       name: label || `输出 ${slotIndex + 1}`,
+      assetType: slot.node.ai?.type === 'music-generator' ? 'audio' : getCanvasAiMediaType(slot.node.ai as CanvasImageItem['ai']),
       nodeId: slot.node.id,
       nodeLabel: getCanvasWorkflowOutputLabel(slot.node),
       prompt: slot.node.ai?.presetPrompt || slot.node.item.content || '',
@@ -472,7 +474,7 @@ export const createCanvasWorkflowModuleOutputsFromExpandedGroup = (
 export const sortCanvasWorkflowRuntimeNodeIds = (sourceItems: CanvasImageItem[]) => {
   const itemsById = new Map(sourceItems.map(item => [item.id, item]));
   const runnableIds = sourceItems
-    .filter(item => item.ai?.type === 'image-generator' || (isCanvasAgentTextTarget(item) && (item.inputs || []).length > 0))
+    .filter(item => isCanvasWorkflowGeneratorType(item.ai?.type) || (isCanvasAgentTextTarget(item) && (item.inputs || []).length > 0))
     .map(item => item.id);
   const nodeSet = new Set(runnableIds);
   const indegree = new Map(runnableIds.map(id => [id, 0]));

@@ -97,7 +97,7 @@ export const canUseCanvasItemAsImageEnhancementInput = (canvasItem?: CanvasImage
   if (!canvasItem) return false;
   if (canvasItem.item.type === 'image') return true;
   return getCanvasAiSuccessfulOutputs(canvasItem).some(output => (
-    (output.mediaType || getCanvasAiMediaType(canvasItem.ai)) === 'image' && !!getCanvasAiOutputDisplaySource(output)
+    output.assetType !== 'audio' && (output.mediaType || getCanvasAiMediaType(canvasItem.ai)) === 'image' && !!getCanvasAiOutputDisplaySource(output)
   ));
 };
 
@@ -111,6 +111,7 @@ export const canUseCanvasItemAsWorkflowMaterial = (
 ) => {
   if (!canvasItem) return false;
   const userInput = normalizeCanvasWorkflowUserInput(configValue);
+  if (canvasItem.ai?.type === 'music-generator' || getCanvasAiSuccessfulOutputs(canvasItem).some(output => output.assetType === 'audio')) return userInput.acceptFiles === true;
   const isImageInput = canvasItem.item.type === 'image'
     || canvasItem.ai?.type === 'image-generator'
     || canvasItem.ai?.type === 'workflow'
@@ -195,9 +196,9 @@ export const createCanvasAiOutputBufferItem = (
   const remoteSource = /^https?:\/\//i.test(rawUrl) ? rawUrl : '';
   return {
     id: output.id || `${canvasItem.item.id}-output-${index + 1}`,
-    type: mediaType,
+    type: output.assetType === 'audio' ? 'file' : mediaType,
     content: name,
-    name,
+    name: output.assetType === 'audio' && !/\.(mp3|wav|ogg|m4a)$/i.test(name) ? `${name}.mp3` : name,
     url: rawUrl,
     path: rawPath || undefined,
     thumbnail: output.thumbnail || undefined,

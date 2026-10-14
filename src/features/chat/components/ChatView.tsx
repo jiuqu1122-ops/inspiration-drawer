@@ -19,6 +19,8 @@ import { ChatComposer } from './ChatComposer';
 import { ChatAgentPanel } from './ChatAgentPanel';
 import { isChatAgentCreationFollowup, isChatAgentCreationRequest } from '../tools/chatToolDefinitions';
 import { ChatMessageList } from './ChatMessageList';
+import { confirm } from '@tauri-apps/plugin-dialog';
+import { selectConversationRange } from '../model/conversationSelection';
 import './chat.css';
 
 type ChatRuntime = ReturnType<typeof useChatRuntime>;
@@ -42,6 +44,9 @@ export type ChatViewProps = {
   imageAspectRatio: string;
   imageAspectRatioOptions?: ChatImageModelOption[];
   onImageAspectRatioChange: (aspectRatio: string) => void;
+  imageQuality?: string;
+  imageQualityOptions?: ChatImageModelOption[];
+  onImageQualityChange?: (quality: string) => void;
   imageResolution: string;
   imageResolutionOptions?: ChatImageModelOption[];
   onImageResolutionChange: (resolution: string) => void;
@@ -72,6 +77,9 @@ export const ChatView = memo(function ChatView({
   imageAspectRatio,
   imageAspectRatioOptions = [],
   onImageAspectRatioChange,
+  imageQuality,
+  imageQualityOptions,
+  onImageQualityChange,
   imageResolution,
   imageResolutionOptions = [],
   onImageResolutionChange,
@@ -81,6 +89,14 @@ export const ChatView = memo(function ChatView({
   workflowAttachmentOptions = [],
 }: ChatViewProps) {
   const [input, setInput] = useState('');
+  const [selectedConversationIds, setSelectedConversationIds] = useState<string[]>([]);
+  const conversationSelectionAnchor = useRef('');
+  const deleteSelectedConversations = async (ids: string[]) => {
+    if (!ids.length || !await confirm(`确认删除 ${ids.length} 个对话？`, { title: '删除对话', kind: 'warning' })) return;
+    const deleted = await runtime.deleteConversations(ids);
+    setSelectedConversationIds(current => current.filter(id => !deleted.includes(id)));
+  };
+  useEffect(() => { setSelectedConversationIds(current => current.filter(id => runtime.conversations.some(item => item.id === id))); }, [runtime.conversations]);
   const [skills, setSkills] = useState<ChatSkill[]>(loadChatSkills);
   const [skillRevision, setSkillRevision] = useState(0);
   const [agentPanelOpen, setAgentPanelOpen] = useState(false);
@@ -306,13 +322,19 @@ export const ChatView = memo(function ChatView({
           <button type="button" className="chat-new" onClick={() => void runtime.newConversation()}><MessageSquarePlus size={14} />新对话</button>
           {variant === 'drawer' && <button type="button" className="chat-icon-button" onClick={() => setHistoryOpen(false)}><X size={14} /></button>}
         </div>
+        {selectedConversationIds.length > 0 && <button type="button" className="chat-new" onClick={() => void deleteSelectedConversations(selectedConversationIds)}>删除所选（{selectedConversationIds.length}）</button>}
         <div className="chat-history__list">
           {runtime.conversations.map(conversation => (
-            <div key={conversation.id} className={`chat-history__item ${conversation.id === runtime.activeConversationId ? 'is-active' : ''}`}>
-              <button type="button" onClick={() => { runtime.selectConversation(conversation.id); if (variant === 'drawer') setHistoryOpen(false); }}>
+            <div key={conversation.id} className={`chat-history__item ${selectedConversationIds.includes(conversation.id) || conversation.id === runtime.activeConversationId ? 'is-active' : ''}`}>
+              <button type="button" onClick={event => {
+                if (event.shiftKey) { setSelectedConversationIds(current => selectConversationRange(runtime.conversations.map(item => item.id), conversationSelectionAnchor.current, conversation.id, current)); return; }
+                conversationSelectionAnchor.current = conversation.id;
+                setSelectedConversationIds([]);
+                runtime.selectConversation(conversation.id); if (variant === 'drawer') setHistoryOpen(false);
+              }}>
                 <span>{conversation.title}</span><small>{new Date(conversation.updatedAt).toLocaleDateString()}</small>
               </button>
-              <button type="button" className="chat-history__delete" onClick={() => void runtime.deleteConversation(conversation.id)} title="删除会话"><Trash2 size={12} /></button>
+              <button type="button" className="chat-history__delete" onClick={() => void deleteSelectedConversations([conversation.id])} title="删除会话"><Trash2 size={12} /></button>
             </div>
           ))}
         </div>
@@ -394,6 +416,9 @@ export const ChatView = memo(function ChatView({
             imageAspectRatio={imageAspectRatio}
             imageAspectRatioOptions={imageAspectRatioOptions}
             onImageAspectRatioChange={onImageAspectRatioChange}
+            imageQuality={imageQuality}
+            imageQualityOptions={imageQualityOptions}
+            onImageQualityChange={onImageQualityChange}
             imageResolution={imageResolution}
             imageResolutionOptions={imageResolutionOptions}
             onImageResolutionChange={onImageResolutionChange}

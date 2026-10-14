@@ -43,6 +43,9 @@ export function ChatComposer({
   imageAspectRatio,
   imageAspectRatioOptions,
   onImageAspectRatioChange,
+  imageQuality,
+  imageQualityOptions,
+  onImageQualityChange,
   imageResolution,
   imageResolutionOptions,
   onImageResolutionChange,
@@ -69,6 +72,9 @@ export function ChatComposer({
   imageAspectRatio: string;
   imageAspectRatioOptions: ChatImageModelOption[];
   onImageAspectRatioChange: (value: string) => void;
+  imageQuality?: string;
+  imageQualityOptions?: ChatImageModelOption[];
+  onImageQualityChange?: (quality: string) => void;
   imageResolution: string;
   imageResolutionOptions: ChatImageModelOption[];
   onImageResolutionChange: (value: string) => void;
@@ -166,6 +172,9 @@ export function ChatComposer({
             aspectRatio={imageAspectRatio}
             aspectRatioOptions={imageAspectRatioOptions}
             onAspectRatioChange={onImageAspectRatioChange}
+            quality={imageQuality}
+            qualityOptions={imageQualityOptions}
+            onQualityChange={onImageQualityChange}
             resolution={imageResolution}
             resolutionOptions={imageResolutionOptions}
             onResolutionChange={onImageResolutionChange}

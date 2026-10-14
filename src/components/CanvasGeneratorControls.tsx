@@ -31,6 +31,9 @@ type CanvasGeneratorControlsProps = {
   imageResolutionValue: string;
   imageResolutionOptions: RoundedSelectOption[];
   onImageResolutionChange: (value: string) => void;
+  qualityValue?: string;
+  qualityOptions?: RoundedSelectOption[];
+  onQualityChange?: (value: string) => void;
   outputFormatValue: string;
   outputFormatOptions: RoundedSelectOption[];
   outputFormatTitle: string;
@@ -77,6 +80,9 @@ export function CanvasGeneratorControls({
   imageResolutionValue,
   imageResolutionOptions,
   onImageResolutionChange,
+  qualityValue,
+  qualityOptions = [],
+  onQualityChange,
   outputFormatValue,
   outputFormatOptions,
   outputFormatTitle,
@@ -145,6 +151,13 @@ export function CanvasGeneratorControls({
         menuMinWidth={260}
         menuScale={menuScale}
       />
+      {mediaType === 'image' && qualityOptions.length > 0 && <RoundedSelect
+        data-no-drag="true" data-canvas-edit-control="true"
+        value={qualityOptions.some(option => option.value === qualityValue) ? qualityValue! : qualityOptions[0].value}
+        options={qualityOptions} onChange={onQualityChange || (() => {})} title="质量"
+        className={CANVAS_AI_NODE_TEXT_SELECT_CLASS} menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+        optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS} menuScale={menuScale}
+      />}
       {mediaType === 'video' && !videoCapabilitiesAvailable ? (
         <span
           className="truncate text-[10px] font-semibold text-amber-700 dark:text-amber-100"

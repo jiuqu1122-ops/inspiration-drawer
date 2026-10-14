@@ -81,6 +81,7 @@ export const runChatMediaGeneration = async (input: {
         providerCandidates: selectedModel.providerCandidates,
       } : String(input.args.model || '').trim() ? { model: String(input.args.model).trim() } : {}),
       ...(String(input.args.aspectRatio || '').trim() ? { aspectRatio: String(input.args.aspectRatio).trim() } : {}),
+      ...(String(input.args.quality || '').trim() ? { quality: String(input.args.quality).trim() } : {}),
       ...(String(input.args.resolution || '').trim() ? { resolution: String(input.args.resolution).trim() } : {}),
       ...(Number(input.args.count) > 0 ? { count: Math.min(4, Math.max(1, Math.round(Number(input.args.count)))) } : {}),
       ...(mediaType === 'video' && Number(input.args.duration) > 0 ? { duration: Number(input.args.duration) } : {}),

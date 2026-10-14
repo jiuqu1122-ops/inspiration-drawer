@@ -4,6 +4,7 @@ import { findCanvasImageModelChoice,resolveCanvasImageRequestSettings } from './
 
 const image2Capabilities: ResolvedImageModelCapabilities = {
   source: 'server',
+  supportedQualities: [], qualityParameter: 'quality', outputMode: 'single_asset', maxOutputImages: 1,
   resolutions: ['1K', '2K', '4K'],
   aspectRatios: ['1:1', '3:4', '4:3', '9:16', '16:9'],
   aspectRatiosByResolution: {

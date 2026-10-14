@@ -1,0 +1,155 @@
+AI 平台能力升级交付记录
+范围：inspiration-wallet-server、inspiration-drawer、unmind-website。
+状态：代码审核和提交快照验证已完成；本次授权提交并推送 main，不部署，数据库迁移未执行。
+已有未提交改动已保留；本清单仅列本次编辑或新增的文件。
+
+1. 架构变化
+- 沿用 AI CENTER 的模型目录、能力 JSON、价格版本和路由，新增字段经后端公共目录及 Rust 桥接传到客户端。
+- 图片质量下拉框由 supportedQualities 驱动。没有配置时隐藏；请求只按配置的 qualityParameter 发送质量值。
+- 通用图片适配器按 outputMode/maxOutputImages 保留多资产。一轮请求返回的所有配置范围内图片均进入保存和展示流程，工作流结果也保留额外资产。
+- billingMode 控制按请求或按图片计费。质量价格优先匹配，未配置对应质量时沿用旧分辨率/基础价格。
+- 新增独立 music-service/music-adapter、audio 模型类型和 music_flat 计费。发送一次 POST，解析所有 choices 的音频链接，保存全部音频资产。
+- 音乐请求复用 clientRequestId 保证重复请求不重复扣费。超时、连接失败和 5xx 不重发，保留预扣等待确认；明确拒绝时释放预扣。
+- 音乐节点使用与其它入口一致的 SVG 图标，位于视频入口下方；复用模型选择器，提供提示词、生成状态、音频试听与下载，并适配深色模式和节点缩放。assetType 标识音频，音乐输出可作为视频参考。
+- 音频流式下载到临时文件，经现有存储抽象上传到 COS 的 generated-audios 命名空间；持久化 objectKey 和稳定 API 地址，每次播放/视频引用重新签名。下载单独签名为附件，支持多格式。
+- 上游成功结果先保存为请求回执，再逐个转存。COS 故障可用同一请求 ID 或认证 GET 恢复，保留原价格快照；客户端的「恢复结果」不再 POST，原生传输也禁止音乐 POST 连接失败自动回退。
+- 上传图片的删除/替换等修改意图进入编辑工具。通用适配器由 supportsImageEdit 决定编辑接口或带参考图的生成接口，不回退为纯文本。
+- 复制媒体节点沿用资产 ID、缓存路径和缩略图，画布节点 ID 重新生成；一同复制的引用节点重新映射，无需重新下载媒体。
+- 工作流会话按 canvasId + nodeId 绑定。聊天消息沿用现有 SQLite 持久化；会话绑定和结果卡存入本地持久化存储，重新进入画布可恢复。
+- 缩放会重设当前拖动基准，拖动前提交未完成缩放，避免旧滚动偏移覆盖新视口。
+- 画布列表支持长按 350ms 后拖动排序，完整顺序通过 SQLite 事务保存。
+- Shift 先选参考节点，再选 AI 节点可连接；对话列表支持 Shift 区间多选、确认删除、保留运行中/删除失败的会话并刷新状态。
+
+2. 数据结构变化
+能力 JSON 新增：
+  supportedQualities: string[]
+  qualityParameter: string（默认 quality）
+  outputMode: single_asset | multiple_assets
+  maxOutputImages: number（1..16）
+  billingMode: per_request | per_image
+  supportsImageEdit: boolean
+请求：ImageInput/原生桥接增加 quality?: string。
+售价：creditsPerImageByResolutionQuality[resolution][quality]。
+公共价格投影：creditsByResolutionQuality[resolution][quality]。
+成本：cnyPerImageByResolutionQuality 或 amountPerImageByResolutionQuality；保留原币种。
+图片结果：兼容 images[]，新增 imageAssets[{assetType:"image",url}]。
+音乐结果：{type:"audio",content:"",audioUrls:[],assets:[{assetType:"audio",url,objectKey,mime,size,name}]}。
+音乐请求恢复字段：CanvasAiItemData.musicClientRequestId；服务端 AiRequest.result 暂存 music_storage_pending 回执。
+新增访问接口：GET /v1/ai/audio-results/:key（播放/引用，download=1 下载）；认证 GET /v1/ai/music/generations/by-request/:requestId。
+节点及工作流结果：assetType?: image | video | audio；工作流端口支持 audio/audio[]。
+计费：新增 music_flat；快照保存 quality、billingMode 和预估结果数量。
+数据库：AiCapability 增加 AUDIO，迁移文件为 20261014120000_add_audio_capability/migration.sql。
+画布排序继续使用已有 sort_order 列；工作流绑定使用版本化本地存储键。
+
+3. 测试结果
+最终提交代码单独导出到 E:/idears/capability-push-check-20261014 验证，不依赖其它未提交修改。
+inspiration-wallet-server：lint 0 警告；typecheck、build 通过；64 个文件，697 个测试通过。
+inspiration-drawer：lint 通过（20 条存量警告）；typecheck、build 通过；143 个文件，999 个测试通过。
+原生客户端：Rust 1.98 隔离测试 247 通过、1 个存量忽略；隔离 build 通过。
+unmind-website：lint 通过（3 条存量警告）；typecheck、包含生产构建的 npm test 通过，35 个测试通过。
+针对性覆盖包括能力配置/传输/价格、多资产保存、质量采购成本加价、音乐解析/单次收费/不重发、COS 下载上传与恢复、签名续期和附件下载、音频视频参考、工具栏位置图标、会话持久化与交互。
+工作区中其它预先存在的回归测试也运行过；提交快照仅保留本次新增或修改的测试。
+跨端核对修复：音乐售价缺失校验、质量成本加价建议遗漏、多资产及工作流费用预估、按次计费说明、音乐参考预览分类。
+浏览器连接不可用，未完成截图视觉验收；音乐节点的组件渲染、交互入口与状态结构测试通过。
+
+4. 未解决风险与边界
+- 尚未执行 AUDIO 数据库迁移；运行新版音乐服务前需要对应迁移和 AI CENTER 中启用的音频模型、路由及已发布价格。
+- 未用真实上游账号进行收费联调。异步接口路径、任务状态和参考图序列化仍需按提供商真实协议在 AI CENTER 配置。
+- 音乐提交结果不确定时预扣保留，需要管理员确认结果并处理账务；没有后台自动重发或自动补交费用流程。
+- 本次新增音乐结果已转存 COS，不依赖上游 URL 长期有效；旧版本历史音频尚未批量迁移。转存前若上游链接已失效，需要管理员处理原请求，系统不会重新发起收费生成。
+- 历史已丢失且没有持久化的聊天内容无法重建。工作流结果卡和绑定为当前设备的本地持久化，不是云端同步。
+- 新增能力路径不通过模型名称推断。原有本地/旧协议兼容分支仍保留历史名称映射；本次没有全面改写与这些新增能力无关的模型逻辑。
+- 本机默认 Rust 1.94 在隔离净构建时出现 zlib-rs 0.6.4 的常量求值错误；使用本机已安装的 Rust 1.98 完成净构建。默认输出 EXE 被运行中的应用占用，因此使用了隔离目录，未停止应用或更改默认工具链。
+- 客户端仍有存量 lint 警告、大包体积提示、Browserslist 数据提示和原生 dead-code 警告，本次未改动相关功能。
+
+5. 修改文件清单
+inspiration-wallet-server：23 个代码/配置文件
+  prisma/migrations/20261014120000_add_audio_capability/migration.sql
+  prisma/schema.prisma
+  src/modules/ai/audio-result-store.ts
+  src/modules/ai/discovery-modality.ts
+  src/modules/ai/image-adapters/generic-openai-image.ts
+  src/modules/ai/image-adapters/registry.ts
+  src/modules/ai/image-adapters/types.ts
+  src/modules/ai/image-capabilities.ts
+  src/modules/ai/image-service.ts
+  src/modules/ai/model-admin-routes.ts
+  src/modules/ai/model-admin.ts
+  src/modules/ai/model-catalog.ts
+  src/modules/ai/music-adapter.ts
+  src/modules/ai/music-service.ts
+  src/modules/ai/pricing-center.ts
+  src/modules/ai/pricing.ts
+  src/modules/ai/routes.ts
+  src/modules/storage/service.ts
+  test/audio-result-routes.test.ts
+  test/audio-result-store.test.ts
+  test/capability-upgrade.test.ts
+  test/music-service.test.ts
+  test/music-wallet.test.ts
+
+inspiration-drawer：57 个代码/配置文件
+  eslint.config.mjs
+  package-lock.json
+  package.json
+  src-tauri/src/commands/canvas.rs
+  src-tauri/src/commands/license.rs
+  src-tauri/src/main.rs
+  src-tauri/src/repositories/canvas_repository.rs
+  src-tauri/src/repositories/sqlite_canvas_repository.rs
+  src-tauri/src/services/canvas_service.rs
+  src/App.tsx
+  src/components/CanvasGeneratorControls.tsx
+  src/components/CanvasListItems.tsx
+  src/components/CanvasToolbar.test.tsx
+  src/components/CanvasToolbar.tsx
+  src/components/WorkflowResultCard.tsx
+  src/features/agentModel.ts
+  src/features/aiModelCapabilities.ts
+  src/features/canvas/canvasImageRequestSettings.test.ts
+  src/features/canvas/canvasNodeViewModel.ts
+  src/features/canvas/components/CanvasNode.tsx
+  src/features/canvas/components/CanvasOverlayPanels.tsx
+  src/features/canvas/controllers/canvasGenerationActions.ts
+  src/features/canvas/controllers/canvasInputActions.ts
+  src/features/canvas/controllers/canvasInteractionActions.ts
+  src/features/canvas/controllers/canvasMediaActions.ts
+  src/features/canvas/controllers/canvasWorkflowRuntimeActions.ts
+  src/features/canvas/controllers/workflowZoomRegression.test.ts
+  src/features/canvasAiImage.ts
+  src/features/canvasAiOutputs.ts
+  src/features/canvasAiRuntime.ts
+  src/features/canvasGenerationCredits.ts
+  src/features/canvasInteractionUpgrade.test.ts
+  src/features/canvasModel.ts
+  src/features/canvasMusic.tsx
+  src/features/canvasTemplates.ts
+  src/features/capabilityUpgrade.test.tsx
+  src/features/chat/components/ChatComposer.tsx
+  src/features/chat/components/ChatHost.tsx
+  src/features/chat/components/ChatImageSettings.tsx
+  src/features/chat/components/ChatView.tsx
+  src/features/chat/model/conversationSelection.ts
+  src/features/chat/runtime/canvasWorkflowProgress.ts
+  src/features/chat/runtime/chatImageGenerationSettings.ts
+  src/features/chat/runtime/useChatRuntime.ts
+  src/features/chat/storage/chatStorage.ts
+  src/features/chat/storage/workflowChatStorage.ts
+  src/features/chat/tools/chatGenerationBridge.ts
+  src/features/chat/tools/chatToolDefinitions.ts
+  src/features/drawer/components/DrawerContent.tsx
+  src/features/drawer/components/DrawerInteractionOverlays.tsx
+  src/features/drawer/components/DrawerMain.tsx
+  src/features/drawer/components/DrawerShell.tsx
+  src/features/workflowResult.ts
+  src/services/canvasApi.ts
+  src/types/license.ts
+  src/utils/canvasItemSelectors.ts
+  src/utils/canvasWorkflowRuntime.ts
+
+unmind-website：3 个代码/配置文件
+  app/admin/ai-model-center-model.ts
+  app/admin/ai-model-center.tsx
+  tests/admin-ai-model-center.test.mjs
+
+另包含本交付记录 CAPABILITY_UPGRADE_REPORT.txt。部分原有修改与本次改动位于相同文件，只提交本次相关差异，其它内容保留在工作区。

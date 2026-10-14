@@ -91,6 +91,8 @@ export const buildCanvasAiOutputRemoteResultPatch = (source: string) => {
  * them. A remote preview URL is not enough because it may still require an
  * authenticated download or expire before the next provider reads it.
  */
+export const isCanvasAiAssetOutputReadyForWorkflowDependency = (output?: CanvasAiGeneratedOutput | null) => output?.status === 'success' && (output.assetType === 'audio' || output.assetType === 'video' || output.mediaType === 'video' ? !!String(output.path || output.url || '').trim() : !!String(output.path || '').trim());
+
 export const isCanvasAiImageOutputReadyForWorkflowDependency = (
   output?: CanvasAiGeneratedOutput | null,
 ) => output?.status === 'success' && !!String(output.path || '').trim();

@@ -82,8 +82,8 @@ export type CanvasImageItem = {
   workflowBridge?: {
     type: 'reference-image';
     label?: string;
-    externalInputTypes?: Array<'image' | 'text' | 'video'>;
-    outputType?: 'image' | 'image[]' | 'text' | 'video' | 'video[]';
+    externalInputTypes?: Array<'image' | 'text' | 'video' | 'audio'>;
+    outputType?: 'image' | 'image[]' | 'text' | 'video' | 'video[]' | 'audio' | 'audio[]';
   };
 };
 
@@ -140,6 +140,7 @@ export type NewApiImageProtocol =
   | 'async_task';
 
 export type CanvasAiItemType =
+  | 'music-generator'
   | 'image-generator'
   | 'video-generator'
   | 'frame-interpolation'
@@ -150,6 +151,7 @@ export type CanvasAiItemType =
   | 'workflow';
 
 export type CanvasAiGeneratedOutput = {
+  assetType?: 'image' | 'video' | 'audio';
   id: string;
   taskId?: string;
   clientRequestId?: string;
@@ -203,6 +205,9 @@ export type CanvasRifeEngineProgress = {
 };
 
 export type CanvasAiItemData = {
+  /** Pending music receipts are recovered by GET; never submit another paid POST. */
+  musicClientRequestId?: string;
+  quality?: string;
   type: CanvasAiItemType;
   provider?: CanvasAiProvider;
   providerChannelId?: string;

@@ -268,7 +268,9 @@ export function WorkflowResultCard({ result, compact = false }: WorkflowResultCa
                   <div key={output.id} className="overflow-hidden rounded-[11px] border border-stone-100 bg-white/72 dark:border-white/[0.07] dark:bg-white/[0.035]">
                     <div className="flex aspect-[4/3] items-center justify-center overflow-hidden bg-stone-100 dark:bg-white/[0.04]">
                       {source ? (
-                        output.mediaType === 'video'
+                        output.assetType === 'audio'
+                          ? <audio src={output.url} controls preload="metadata" className="w-full" />
+                          : output.mediaType === 'video'
                           ? <video src={source} muted preload="metadata" className="h-full w-full object-cover" />
                           : <img src={source} alt="" loading="lazy" className="h-full w-full object-cover" />
                       ) : (

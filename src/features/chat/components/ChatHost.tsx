@@ -15,10 +15,14 @@ import {
 import { useChatRuntime, type UseChatRuntimeOptions } from '../runtime/useChatRuntime';
 import { ChatView, type ChatViewProps } from './ChatView';
 import { useCloudAccount } from '../../cloudAccountContext';
+import { getWorkflowChatBinding, saveWorkflowChatBinding } from '../storage/workflowChatStorage';
+import type { WorkflowResultCardData } from '../../agentModel';
 import { createCanvasWorkflowSnapshot, workflowSnapshotHash } from '../attachments/chatWorkflowAttachments';
 
 export type ChatHostProps = Omit<ChatViewProps, 'runtime'> & {
   visible: boolean;
+  canvasId?: string;
+  imageQualities?: string[];
   model: string;
   serverManagedChannelFailover?: boolean;
   cloudWalletMode?: boolean;
@@ -78,6 +82,8 @@ const prepareChatAttachment = async (attachment: PendingChatAttachment) => {
 
 export function ChatHost({
   visible,
+  canvasId = 'default',
+  imageQualities = [],
   model,
   serverManagedChannelFailover,
   cloudWalletMode,
@@ -100,6 +106,8 @@ export function ChatHost({
   const canvasWorkflowResult = useCanvasWorkflowProgress();
   const workflowConversationRequest = useCanvasWorkflowConversationRequest();
   const resolvedVisible = viewProps.variant === 'canvas' ? canvasChatVisible : visible;
+  const [imageQuality, setImageQuality] = useState('');
+  const effectiveImageQuality = imageQualities.includes(imageQuality) ? imageQuality : imageQualities[0] || '';
   const runtime = useChatRuntime({
     model,
     modelOptions: viewProps.modelOptions,
@@ -107,6 +115,7 @@ export function ChatHost({
     imageModel: runtimeImageModel || imageModel,
     imageAspectRatio,
     imageResolution: imageResolution || undefined,
+    imageQuality: effectiveImageQuality,
     approvalMode,
     executeTool,
     onNotice,
@@ -121,25 +130,55 @@ export function ChatHost({
   });
   const [viewMounted, setViewMounted] = useState(resolvedVisible);
   const [workflowConversationId, setWorkflowConversationId] = useState('');
+  const [savedWorkflowResult, setSavedWorkflowResult] = useState<WorkflowResultCardData | undefined>();
+  const restoredWorkflowCanvasRef = useRef('');
+  const activeWorkflowBindingRef = useRef<{ canvasId: string; nodeId: string } | null>(null);
+  useEffect(() => {
+    if (viewProps.variant !== 'canvas' || runtime.loading || restoredWorkflowCanvasRef.current === canvasId) return;
+    restoredWorkflowCanvasRef.current = canvasId;
+    const binding = getWorkflowChatBinding(canvasId);
+    setWorkflowConversationId(binding?.conversationId || '');
+    setSavedWorkflowResult(binding?.result);
+    activeWorkflowBindingRef.current = binding || null;
+    if (binding && runtime.conversations.some(item => item.id === binding.conversationId)) runtime.selectConversation(binding.conversationId);
+  }, [canvasId, runtime.loading, viewProps.variant]);
   const handledWorkflowConversationRequestRef = useRef('');
 
   useEffect(() => {
     if (
       viewProps.variant !== 'canvas'
       || !workflowConversationRequest
+      || workflowConversationRequest.canvasId !== canvasId
       || workflowConversationRequest.id === handledWorkflowConversationRequestRef.current
     ) return;
     handledWorkflowConversationRequestRef.current = workflowConversationRequest.id;
+    const binding = getWorkflowChatBinding(canvasId, workflowConversationRequest.nodeId);
+    activeWorkflowBindingRef.current = workflowConversationRequest;
+    if (binding && runtime.conversations.some(item => item.id === binding.conversationId)) {
+      setWorkflowConversationId(binding.conversationId);
+      runtime.selectConversation(binding.conversationId);
+      return;
+    }
     setWorkflowConversationId('');
     void runtime.newConversation(workflowConversationRequest.title)
       .then(conversation => {
-        if (conversation) setWorkflowConversationId(conversation.id);
+        if (conversation) {
+          saveWorkflowChatBinding({ canvasId, nodeId: workflowConversationRequest.nodeId, conversationId: conversation.id });
+          if (activeWorkflowBindingRef.current?.canvasId === canvasId) setWorkflowConversationId(conversation.id);
+        }
       })
       .catch(error => {
         handledWorkflowConversationRequestRef.current = '';
         onNotice?.(`创建工作流会话失败：${String(error)}`);
       });
-  }, [onNotice, runtime.newConversation, viewProps.variant, workflowConversationRequest]);
+  }, [canvasId, onNotice, runtime.newConversation, viewProps.variant, workflowConversationRequest, runtime.conversations]);
+
+  useEffect(() => {
+    const binding = activeWorkflowBindingRef.current;
+    if (!binding || !workflowConversationId || !canvasWorkflowResult || canvasWorkflowResult.workflowNodeId !== binding.nodeId) return;
+    saveWorkflowChatBinding({ ...binding, conversationId: workflowConversationId, result: canvasWorkflowResult });
+    setSavedWorkflowResult(canvasWorkflowResult);
+  }, [canvasWorkflowResult, workflowConversationId]);
 
   useEffect(() => {
     if (resolvedVisible) {
@@ -180,9 +219,12 @@ export function ChatHost({
       imageModel={imageModel}
       imageAspectRatio={imageAspectRatio}
       imageResolution={imageResolution}
+      imageQuality={effectiveImageQuality}
+      imageQualityOptions={imageQualities.map(value => ({ value, label: value }))}
+      onImageQualityChange={setImageQuality}
       workflowResult={viewProps.variant === 'canvas'
         ? workflowConversationId === runtime.activeConversationId
-          ? canvasWorkflowResult
+          ? savedWorkflowResult
           : undefined
         : viewProps.workflowResult}
     />
