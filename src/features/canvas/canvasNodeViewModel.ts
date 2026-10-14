@@ -3,7 +3,7 @@ import { CANVAS_AI_DEFAULT_OUTPUT_FORMAT,CANVAS_AI_DEFAULT_VIDEO_DURATION,CANVAS
 import { createCanvasAiOutputBufferItem,getCanvasAiOutputDisplaySource,getCanvasAiSuccessfulOutputs,getCanvasItemDisplaySource,getCanvasOriginalImageSource,getCanvasWorkflowTemplateFromNode,isCanvasAgentTextTarget,isCanvasWorkflowReferenceBridge } from '../../utils/canvasItemSelectors';
 import { getCanvasAiOutputPreviewSlots,getCanvasWorkflowGroup } from '../../utils/canvasWorkflowRuntime';
 import { getCanvasAiImageResolutionValues,getCanvasAiImageResolutionValuesForCandidates,getCanvasAiVideoReferenceSlotLabels,getCanvasAiVideoReferenceSlots,getMikotoVideoDurationValues,getMikotoVideoResolutionValues,getMiniMaxH3VideoResolutionValues,getNewApiVideoDurationValues,getNewApiVideoResolutionValues,hydrateCanvasAiModelCandidateCapabilities,isMiniMaxH3VideoModel,isSeedance20VideoModel,isSeedanceLikeVideoModel,isVeo31VideoModel,normalizeCanvasAiImageResolutionForCandidates,normalizeCanvasAiImageResolutionForModel,normalizeCanvasAiOutputFormat,normalizeMikotoVideoDuration,normalizeMikotoVideoResolution,normalizeMiniMaxH3VideoResolution,normalizeNewApiVideoDurationForModel,normalizeNewApiVideoResolutionForModel,selectCanvasAiImageCandidatesForResolution,supportsCanvasAiTransparentPng } from '../canvasAiImage';
-import { CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH,getCanvasAiOutputTileLayout,getCanvasAiPromptAutoHeight } from '../canvasAiNodeLayout';
+import { getCanvasImageGeneratorMainColumnWidth,getCanvasAiOutputTileLayout,getCanvasAiPromptAutoHeight } from '../canvasAiNodeLayout';
 import { getCanvasAiVisibleOutputs } from '../canvasAiOutputs';
 import { getCanvasAiMediaType,isCanvasAiGeneratedType,isCanvasAiGeneratorType } from '../canvasAiRuntime';
 import { describeCanvasImageCreditEstimate,describeCanvasVideoCreditEstimate,estimateCanvasImageGenerationCredits,estimateCanvasTextAgentCredits,estimateCanvasVideoGenerationCredits,estimateCanvasWorkflowCredits,shouldShowCanvasGenerationCredits } from '../canvasGenerationCredits';
@@ -620,7 +620,8 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             ? getCanvasAiNodeDesignSizeForItem(canvasItem, isCanvasAiPromptExpanded, isCanvasAiOutputsExpanded)
                             : null;
                           const canvasAiMainColumnLayoutWidth = canvasItem.ai?.type === 'image-generator'
-                            ? CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
+                            ? getCanvasImageGeneratorMainColumnWidth({ imageControlsWidth: canvasItem.ai.imageControlsWidth,
+                              imageRulePanelExpanded: canvasItem.ai.imagePolicy?.panelExpanded !== false })
                             : canvasAiNodeDesignSize?.width || canvasItem.width;
                           const isImageRulePanelExpanded = canvasItem.ai?.type === 'image-generator'
                             && canvasItem.ai.imagePolicy?.panelExpanded !== false;

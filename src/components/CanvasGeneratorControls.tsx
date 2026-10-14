@@ -141,10 +141,10 @@ export function CanvasGeneratorControls({
         value={modelValue}
         options={modelOptions}
         onChange={onModelChange}
-        labelClassName={`${mediaType === 'video' ? 'max-w-[104px]' : 'max-w-[150px]'} truncate text-center leading-none`}
+        labelClassName={`${mediaType === 'video' ? 'max-w-[104px] truncate' : 'whitespace-nowrap'} text-center leading-none`}
         chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
         title={modelTitle}
-        className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} ${mediaType === 'video' ? 'max-w-[132px]' : 'max-w-[178px]'}`}
+        className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} ${mediaType === 'video' ? 'max-w-[132px]' : 'w-max shrink-0'}`}
         menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
         optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
         selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
@@ -155,7 +155,8 @@ export function CanvasGeneratorControls({
         data-no-drag="true" data-canvas-edit-control="true"
         value={qualityOptions.some(option => option.value === qualityValue) ? qualityValue! : qualityOptions[0].value}
         options={qualityOptions} onChange={onQualityChange || (() => {})} title="质量"
-        className={CANVAS_AI_NODE_TEXT_SELECT_CLASS} menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+        labelClassName="whitespace-nowrap text-center leading-none" chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+        className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} min-w-[64px] shrink-0`} menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
         optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS} menuScale={menuScale}
       />}
       {mediaType === 'video' && !videoCapabilitiesAvailable ? (

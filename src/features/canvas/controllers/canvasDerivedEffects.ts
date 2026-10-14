@@ -7,7 +7,7 @@ import type { CanvasAiOutputThumbnailJob,CanvasNavPreview,CanvasNavThumbnailCach
 import type { CloudAccountSummary,LicenseStatus } from '../../../types/license';
 import { CANVAS_AI_OUTPUT_SOURCE_RECOVERY_CONCURRENCY } from '../../../utils/canvasAiConfig';
 import { createCanvasAiOutputBufferItem,getCanvasAiOutputDisplaySource } from '../../../utils/canvasItemSelectors';
-import { getCanvasAiOutputPreviewSlots } from '../../../utils/canvasWorkflowRuntime';
+import { getCanvasAiOutputForAction,getCanvasAiOutputPreviewSlots } from '../../../utils/canvasWorkflowRuntime';
 import { getAutoRecoverableAiMediaResultSource } from '../../aiImageResultRecovery';
 import { getCloudWalletImageGenerationByRequest,getCloudWalletImageLookupImages,getCloudWalletVideoDeliveredResults,getCloudWalletVideoStatus } from '../../canvasAiImage';
 import { buildCanvasAiOutputRemoteResultPatch } from '../../canvasAiOutputs';
@@ -155,10 +155,11 @@ export const runDerivedUiEffect01 = (ctx: Pick<derivedUiEffectContext, 'activeCa
           scheduleCanvasChangedNodesPatchSave([recoveredCanvasItem.id]);
           scheduleCanvasStateSave({ syncNodes: false });
           enqueueCanvasAiOutputThumbnailJob({
-            key: `timed-out-recovered:${recoveredCanvasItem.id}:${recoveredOutput.id}:${source}`,
+            key: `timed-out-recovered:${recoveredCanvasItem.id}:${recoveredOutput.id}:${source}:${clientRequestId}`,
             canvasItemId: recoveredCanvasItem.id,
             outputIndex,
             outputId: recoveredOutput.id,
+            clientRequestId,
             source,
           });
           canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
@@ -205,13 +206,16 @@ export const runDerivedUiEffect02 = (ctx: Pick<derivedUiEffectContext, 'CANVAS_A
 
     const drawerItemsById = new Map(itemsRef.current.map(item => [item.id, item]));
     const candidates = canvasItems.flatMap((canvasItem) => (
-      getCanvasAiOutputPreviewSlots(canvasItem).map((output, outputIndex) => {
+      getCanvasAiOutputPreviewSlots(canvasItem).map((previewOutput, outputIndex) => {
+        const output = getCanvasAiOutputForAction(canvasItem, previewOutput, outputIndex);
         if (output.assetType === 'audio') return null;
         const mediaType = output.mediaType || getCanvasAiMediaType(canvasItem.ai);
         const source = output.sourceUrl || output.url || '';
         const drawerItem = output.id ? drawerItemsById.get(output.id) : undefined;
         const drawerPath = drawerItem?.type === mediaType ? String(drawerItem.path || '').trim() : '';
-        const drawerCanRepair = output.status === 'success' && !output.path && !!drawerPath;
+        const drawerSource = drawerItem?.sourceUrl || drawerItem?.originalUrl || drawerItem?.url || '';
+        const drawerCanRepair = output.status === 'success' && !output.path && !!drawerPath
+          && (!source || source === drawerSource);
         const stableSource = getAutoRecoverableAiMediaResultSource({
           mediaType,
           status: output.status,
@@ -233,7 +237,7 @@ export const runDerivedUiEffect02 = (ctx: Pick<derivedUiEffectContext, 'CANVAS_A
           && !canvasAiOutputSourceRecoveryAttemptedRef.current.has(recoveryKey)
           && !canvasAiOutputSourceRecoveryInFlightRef.current.has(recoveryKey);
         return shouldRecover
-          ? { canvasItem, output, outputIndex, stableSource, recoveryKey, drawerItem, drawerPath, mediaType }
+          ? { canvasItem, output, outputIndex, stableSource, recoveryKey, drawerItem, drawerPath, drawerCanRepair, mediaType }
           : null;
       })
     )).filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
@@ -247,20 +251,26 @@ export const runDerivedUiEffect02 = (ctx: Pick<derivedUiEffectContext, 'CANVAS_A
         recoveryKey,
         drawerItem,
         drawerPath,
+        drawerCanRepair,
         mediaType,
       } = candidate;
+      // Output IDs can survive a restored canvas or a replacement request.
+      // A download belongs to the exact request and source that scheduled it.
+      const matchesRecoveryOutput = (currentOutput: CanvasAiGeneratedOutput, currentIndex: number) => (
+        (output.id ? currentOutput.id === output.id : currentIndex === outputIndex)
+        && currentOutput.clientRequestId === output.clientRequestId
+        && (currentOutput.sourceUrl || currentOutput.url || '') === (output.sourceUrl || output.url || '')
+        && (currentOutput.path || '') === (output.path || '')
+      );
       canvasAiOutputSourceRecoveryAttemptedRef.current.add(recoveryKey);
       canvasAiOutputSourceRecoveryRetryAtRef.current.delete(recoveryKey);
-      if (drawerItem && drawerPath) {
+      if (drawerCanRepair && drawerItem && drawerPath) {
         const localUrl = convertFileSrc(drawerPath);
         updateCanvasItemsImmediate(prev => prev.map((item) => {
           if (item.id !== canvasItem.id || !item.ai?.outputs?.length) return item;
           let changed = false;
           const outputs = item.ai.outputs.map((currentOutput, currentIndex) => {
-            const matches = output.id
-              ? currentOutput.id === output.id
-              : currentIndex === outputIndex;
-            if (!matches) return currentOutput;
+            if (!matchesRecoveryOutput(currentOutput, currentIndex)) return currentOutput;
             changed = true;
             return {
               ...currentOutput,
@@ -286,15 +296,14 @@ export const runDerivedUiEffect02 = (ctx: Pick<derivedUiEffectContext, 'CANVAS_A
         output.name || output.taskId || output.id || `recovered-${outputIndex + 1}`,
       ).then((cached) => {
         if (!cached.path) throw new Error('旧节点恢复没有返回本地缓存文件');
+        let applied = false;
         updateCanvasItemsImmediate(prev => prev.map((item) => {
           if (item.id !== canvasItem.id || !item.ai?.outputs?.length) return item;
           let changed = false;
           const outputs = item.ai.outputs.map((currentOutput, currentIndex) => {
-            const matches = output.id
-              ? currentOutput.id === output.id
-              : currentIndex === outputIndex;
-            if (!matches) return currentOutput;
+            if (!matchesRecoveryOutput(currentOutput, currentIndex)) return currentOutput;
             changed = true;
+            applied = true;
             return {
               ...currentOutput,
               url: cached.url,
@@ -305,8 +314,10 @@ export const runDerivedUiEffect02 = (ctx: Pick<derivedUiEffectContext, 'CANVAS_A
           });
           return changed ? { ...item, ai: { ...item.ai, outputs } } : item;
         }));
+        if (!applied) return;
         if (output.id) {
           setItems(prev => prev.map(item => item.id === output.id
+            && (item.sourceUrl || item.originalUrl || item.url || '') === (output.sourceUrl || output.url || '')
             ? {
               ...item,
               url: cached.url,
@@ -320,10 +331,11 @@ export const runDerivedUiEffect02 = (ctx: Pick<derivedUiEffectContext, 'CANVAS_A
         scheduleCanvasStateSave({ syncNodes: false });
         if (mediaType === 'image') {
           enqueueCanvasAiOutputThumbnailJob({
-            key: `recovered:${canvasItem.id}:${output.id || outputIndex}:${cached.path}`,
+            key: `recovered:${canvasItem.id}:${output.id || outputIndex}:${cached.path}:${output.clientRequestId || ''}`,
             canvasItemId: canvasItem.id,
             outputIndex,
             outputId: output.id,
+            clientRequestId: output.clientRequestId,
             source: cached.url,
             path: cached.path,
           });
@@ -409,7 +421,8 @@ export const runDerivedUiEffect03 = (ctx: Pick<derivedUiEffectContext, 'CANVAS_A
     canvasRenderableItems.forEach((canvasItem) => {
       const hasImageSourceAsset = !!(canvasItem.item.url || canvasItem.item.path || canvasItem.item.sourceUrl || canvasItem.item.originalUrl || canvasItem.item.thumbnail);
       if (canvasItem.item.type === 'image' && !canvasItem.item.thumbnail && hasImageSourceAsset) ensureImageThumbnail(canvasItem.item);
-      getCanvasAiOutputPreviewSlots(canvasItem).forEach((output, outputIndex) => {
+      getCanvasAiOutputPreviewSlots(canvasItem).forEach((previewOutput, outputIndex) => {
+        const output = getCanvasAiOutputForAction(canvasItem, previewOutput, outputIndex);
         const mediaType = output.mediaType || getCanvasAiMediaType(canvasItem.ai);
         if (output.assetType === 'audio' || mediaType !== 'image' || output.thumbnail || output.status !== 'success') return;
         const recoveryKey = `${canvasItem.id}:${output.id || outputIndex}:${output.path || output.url || ''}`;
@@ -422,11 +435,12 @@ export const runDerivedUiEffect03 = (ctx: Pick<derivedUiEffectContext, 'CANVAS_A
         if (!source) return;
         enqueueCanvasAiOutputThumbnailJob({
           key: output.id && output.path
-            ? `output:${output.id}:${output.path}`
-            : `${canvasItem.id}:${output.id || outputIndex}:${source}`,
+            ? `output:${output.id}:${output.path}:${output.clientRequestId || ''}`
+            : `${canvasItem.id}:${output.id || outputIndex}:${source}:${output.clientRequestId || ''}`,
           canvasItemId: canvasItem.id,
           outputIndex,
           outputId: output.id,
+          clientRequestId: output.clientRequestId,
           source,
           path: output.path,
         });

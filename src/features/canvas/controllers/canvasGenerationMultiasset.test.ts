@@ -106,3 +106,34 @@ it('keeps two ordinary image jobs as separate one-image requests and preserves b
   expect(new Set(outputs.map(output => output.clientRequestId)).size).toBe(2);
   expect(outputs).toHaveLength(2); expect(target.ai?.status).toBe('success');
 });
+
+it.each(['success', 'failure'])('does not let a late initial generation %s replace a newer request', async outcome => {
+  const { target, ctx, updateAi } = fixture();
+  let completeOld!: (images: string[]) => void;
+  let rejectOld!: (reason: Error) => void;
+  let startedOld!: () => void;
+  const oldStarted = new Promise<void>(resolve => { startedOld = resolve; });
+  vi.mocked(generateCanvasAiProviderImages)
+    .mockImplementationOnce(() => { startedOld(); return new Promise((resolve, reject) => { completeOld = resolve; rejectOld = reject; }); })
+    .mockResolvedValueOnce(['https://cdn.example/new.png']);
+  const old = runCanvasAiGeneratorTargetImpl(ctx, target, { updateAi, clientRequestId: 'old-request', showResultToast: false });
+  await oldStarted;
+  await runCanvasAiGeneratorTargetImpl(ctx, target, { updateAi, clientRequestId: 'new-request', showResultToast: false });
+  if (outcome === 'success') completeOld(['https://cdn.example/old.png']);
+  else rejectOld(new Error('old provider failed'));
+  expect(await old).toEqual([]);
+  expect(target.ai?.imageClientRequestId).toBe('new-request');
+  expect(target.ai?.outputs?.map(output => output.sourceUrl)).toEqual(['https://cdn.example/new.png']);
+  expect(ctx.addGeneratedImagesToDrawer).toHaveBeenCalledTimes(1);
+});
+
+it('creates a fresh receipt and output IDs for each completed generation', async () => {
+  const { target, ctx, updateAi } = fixture();
+  vi.mocked(generateCanvasAiProviderImages).mockResolvedValue(['https://cdn.example/image.png']);
+  const first = await runCanvasAiGeneratorTargetImpl(ctx, target, { updateAi, showResultToast: false });
+  const firstRequest = target.ai?.imageClientRequestId;
+  const second = await runCanvasAiGeneratorTargetImpl(ctx, target, { updateAi, showResultToast: false });
+  expect(target.ai?.imageClientRequestId).not.toBe(firstRequest);
+  expect(second[0].id).not.toBe(first[0].id);
+  expect(vi.mocked(generateCanvasAiProviderImages).mock.calls.map(([input]) => input.clientRequestId)).toEqual([firstRequest, target.ai?.imageClientRequestId]);
+});

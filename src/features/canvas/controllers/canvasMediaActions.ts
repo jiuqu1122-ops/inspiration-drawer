@@ -1689,6 +1689,12 @@ export const settleCanvasAiOutputThumbnailJobImpl = (ctx: Pick<canvasMediaAction
     }
     const thumbnail = patch.thumbnail;
     const matchSources = new Set((job.matchSources || []).filter(Boolean));
+    matchSources.add(job.source);
+    const matchesMedia = (media: { path?: string; url?: string; sourceUrl?: string; originalUrl?: string }) => {
+      if (job.path && media.path) return job.path === media.path;
+      return [media.url, media.sourceUrl, media.originalUrl, media.path ? convertFileSrc(media.path) : '']
+        .some(source => !!source && matchSources.has(source));
+    };
     const changedCanvasIds = new Set<string>();
     updateCanvasItemsImmediate(prev => prev.map(canvasItem => {
       if ((job.canvasItemId && canvasItem.id !== job.canvasItemId) || !canvasItem.ai?.outputs?.length) return canvasItem;
@@ -1697,7 +1703,9 @@ export const settleCanvasAiOutputThumbnailJobImpl = (ctx: Pick<canvasMediaAction
         const isTarget = job.outputId
           ? output.id === job.outputId || matchSources.has(getCanvasAiOutputDisplaySource(output))
           : job.outputIndex !== undefined && index === job.outputIndex;
-        if (!isTarget || (thumbnail && output.thumbnail === thumbnail && output.cacheStatus === 'ready')) return output;
+        if (!isTarget || !matchesMedia(output)
+          || (job.clientRequestId && output.clientRequestId !== job.clientRequestId)
+          || (thumbnail && output.thumbnail === thumbnail && output.cacheStatus === 'ready')) return output;
         changed = true;
         return { ...output, ...patch };
       });
@@ -1706,7 +1714,7 @@ export const settleCanvasAiOutputThumbnailJobImpl = (ctx: Pick<canvasMediaAction
     }));
     if (job.drawerItemId) {
       generatedImageCachePendingIdsRef.current.delete(job.drawerItemId);
-      updateDrawerItemsDeferred(prev => prev.map(item => item.id === job.drawerItemId
+      updateDrawerItemsDeferred(prev => prev.map(item => item.id === job.drawerItemId && matchesMedia(item)
         ? { ...item, ...(thumbnail ? { thumbnail } : {}) }
         : item));
     }

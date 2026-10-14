@@ -377,6 +377,7 @@ export const getCanvasAiNodeDesignSizeForItemImpl = (_ctx: Record<never, never>,
       showLocalMediaProgress: shouldShowCanvasAiLocalMediaProgress(canvasItem.ai),
       imageRulePanelExpanded: canvasItem.ai?.type === 'image-generator' && canvasItem.ai.imagePolicy?.panelExpanded !== false,
       imageFusion: isCanvasImageFusionAi(canvasItem.ai),
+      imageControlsWidth: canvasItem.ai?.type === 'image-generator' ? canvasItem.ai.imageControlsWidth : undefined,
       internalSlotCount: canvasItem.ai?.type === 'workflow'
         ? readWorkflowInternalSlotCount(canvasItem)
         : 0,

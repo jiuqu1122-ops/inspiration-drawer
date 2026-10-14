@@ -618,6 +618,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
     if (canvasImageNeedsRecovery(targetAi)) {
       return recoverCanvasImageOutputs(target, {
         canvasId: options.canvasId || activeCanvasIdRef.current,
+        getLatestTarget: options.getLatestTarget || (() => canvasItemsRef.current.find(item => item.id === target.id)),
         updateAi: options.forceUpdateAi || options.updateAi, showToast, refreshCloudAccount,
         addGeneratedImagesToDrawer, cacheCanvasGeneratedImageSource,
         requireLocalImageOutputs: options.requireLocalImageOutputs,
@@ -899,7 +900,28 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       prompt: manualPrompt,
       outputs: currentOutputs,
       generatedAt: Date.now(),
+      ...(mediaType === 'image' ? { imageClientRequestId: clientRequestId } : {}),
     });
+    const isCurrentGeneration = () => {
+      if (mediaType !== 'image') return true;
+      const current = options.getLatestTarget
+        ? options.getLatestTarget()
+        : canvasItemsRef.current.find(item => item.id === target.id);
+      return current?.ai?.type === 'image-generator' && current.ai.imageClientRequestId === clientRequestId;
+    };
+    // The toolbar run token protects normal clicks. Bind the lower-level
+    // workflow/tool runner and its deferred cache callbacks to this receipt too.
+    const updateAiForRequest = options.updateAi;
+    const forceUpdateAiForRequest = options.forceUpdateAi;
+    options = {
+      ...options,
+      updateAi: (patch, content) => { if (isCurrentGeneration()) updateAiForRequest(patch, content); },
+      ...(forceUpdateAiForRequest ? {
+        forceUpdateAi: (patch: Partial<NonNullable<CanvasImageItem['ai']>>, content?: string) => {
+          if (isCurrentGeneration()) forceUpdateAiForRequest(patch, content);
+        },
+      } : {}),
+    };
     let temporaryReferenceShares: TemporaryReferenceShare[] = [];
     try {
       const hasServerCatalogRoute = selectedProviderCandidates.some(candidate => (
@@ -1415,6 +1437,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         index: number,
         outputClientRequestId = clientRequestId,
       ) => {
+        if (!isCurrentGeneration()) return;
         const source = url.trim();
         const durableOutputName = `${outputClientRequestId}${index > 0 ? `_${index + 1}` : ''}`;
         const requireLocalImage = mediaType === 'image' && options.requireLocalImageOutputs === true;
@@ -1426,6 +1449,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
             mediaType === 'video' ? `${durableOutputName}.mp4` : durableOutputName,
             { throwOnFailure: requireLocalImage },
           );
+        if (!isCurrentGeneration()) return;
         if (requireLocalImage && !cached.path) {
           throw new Error('图片已生成，但下载到本地失败，已停止后续工作流节点');
         }
@@ -1437,6 +1461,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         const thumbnail = mediaType === 'image' && !!cached.path
           ? await createCanvasImagePreviewThumbnail(displayUrl, cached.path || undefined)
           : undefined;
+        if (!isCurrentGeneration()) return;
         const generatedAt = Date.now();
         const output: CanvasAiGeneratedOutput = {
           ...(currentOutputs[index] || {
@@ -1486,7 +1511,9 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
             onOutputCachePatch: (outputId, matchSources, patch) => {
               const sourceSet = new Set(matchSources);
               const nextOutputs = currentOutputs.map((currentOutput) => (
-                currentOutput.id === outputId || sourceSet.has(getCanvasAiOutputDisplaySource(currentOutput))
+                currentOutput.id === outputId
+                  && sourceSet.has(getCanvasAiOutputDisplaySource(currentOutput))
+                  && currentOutput.clientRequestId === outputClientRequestId
                   ? recoverCanvasAiOutputWithUsableResult({ ...currentOutput, ...patch })
                   : currentOutput
               ));
@@ -1573,6 +1600,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         })), { status: 'working', error: undefined });
         try {
           while (true) {
+            if (!isCurrentGeneration()) return;
             try {
               const batch = await waitForCanvasAiProviderTask(
                 generateCanvasAiProviderImages({
@@ -1650,6 +1678,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       const runOutputSlot = async (index: number) => {
         let transientRetryCount = 0;
         while (true) {
+          if (!isCurrentGeneration()) return;
           setCanvasAiOutputs(currentOutputs.map((output, outputIndex) => outputIndex === index
             ? { ...output, status: 'working' as const, error: undefined }
             : output
@@ -1714,6 +1743,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         }
       };
 
+      if (!isCurrentGeneration()) return [] as CanvasAiGeneratedOutput[];
       if (mediaType === 'image' && resolvedImageCapabilities.outputMode === 'multiple_assets') {
         const batch = await waitForCanvasAiProviderTask(generateCanvasAiProviderImages({ ...generateOptions, count: requestedCount }));
         for (const [index, url] of [...new Set(batch)].entries()) {
@@ -1744,6 +1774,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         ));
       }
 
+      if (!isCurrentGeneration()) return [] as CanvasAiGeneratedOutput[];
       if (generatedOutputs.length === 0) {
         const firstError = slotErrors.find(Boolean);
         throw firstError || new Error(mediaType === 'video' ? '接口没有返回可用视频' : '接口没有返回可用图片');
@@ -1784,6 +1815,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       if (useCloudWallet) void refreshCloudAccount(true);
       return generatedOutputs;
     } catch (err) {
+      if (!isCurrentGeneration()) return [] as CanvasAiGeneratedOutput[];
       const message = err instanceof Error ? err.message : String(err);
       if (mediaType === 'image' && useCloudWallet && isCanvasImageRecoveryRequired(err)
         && new Set(currentOutputs.map(output => output.clientRequestId).filter(Boolean)).size <= 1) {

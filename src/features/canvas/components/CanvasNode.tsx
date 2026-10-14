@@ -5,6 +5,7 @@ import { CanvasAudioContent } from '../../canvasAudio';
 import { canvasImageNeedsRecovery } from '../../canvasImageOutputPlan';
 import { CanvasAiRunButton } from '../../../components/CanvasAiRunButton';
 import { CanvasGeneratorControls } from '../../../components/CanvasGeneratorControls';
+import { CanvasGeneratorToolbar } from '../../../components/CanvasGeneratorToolbar';
 import { CanvasHorizontalRail,shouldRenderCanvasVideoReferenceRail } from '../../../components/CanvasHorizontalRail';
 import { CanvasImageFusionControls } from '../../../components/CanvasImageFusionControls';
 import { CanvasLocalMediaControls } from '../../../components/CanvasLocalMediaControls';
@@ -1554,8 +1555,16 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                         </div>
                                       )}
                                     </div>
-                                    <div
-                                      data-canvas-edit-control="true"
+                                    <CanvasGeneratorToolbar
+                                      adaptive={canvasItem.ai?.type === 'image-generator'}
+                                      onWidthChange={(width) => {
+                                        const latest = getLatestCanvasItem();
+                                        if (latest.ai?.type === 'image-generator' && latest.ai.imageControlsWidth !== width) {
+                                          const updated = updateCanvasAiGeneratorData(latest.id, { imageControlsWidth: width });
+                                          return updated?.ai?.imageControlsWidth === width;
+                                        }
+                                        return true;
+                                      }}
                                       className={`flex h-[52px] shrink-0 items-center ${canvasAiMediaType === 'video' ? 'gap-1.5 px-3' : 'gap-2 px-4'} border-t border-stone-950/[0.045] pb-3 pt-2 text-stone-600 dark:border-white/[0.055] dark:text-white/70`}
                                     >
                                       {!isCanvasWorkflowItem && (
@@ -1874,7 +1883,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                         onPointerDown={(event) => handleCanvasAiRunPointerDown(event, canvasItem.id)}
                                         onClick={(event) => handleCanvasAiRunClick(event, canvasItem.id)}
                                       />
-                                    </div>
+                                    </CanvasGeneratorToolbar>
                                   </div>
                                 </div>
                                 </>

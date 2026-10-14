@@ -462,12 +462,19 @@ export const addGeneratedImagesToDrawerImpl = (ctx: Pick<drawerCoreActionContext
         || getStableAiVideoResultSource(getGeneratedImageCacheSource(item))
         || getGeneratedImageCacheSource(item);
       if (!source) return;
+      const matchesCachedSource = (current: BufferItem) => {
+        const raw = getGeneratedImageCacheSource(current);
+        const currentSource = getStableAiImageResultSource(raw) || getStableAiVideoResultSource(raw) || raw;
+        return current.id === item.id && currentSource === source
+          && (!current.path || current.path === item.path);
+      };
       if (!shouldCacheGeneratedImageAgain(item)) {
         if (item.thumbnail) return;
         const localPreviewSource = item.url || (item.path ? convertFileSrc(item.path) : source);
         enqueueCanvasAiOutputThumbnailJob({
-          key: `drawer-local:${item.id}:${item.path || localPreviewSource}`,
+          key: `drawer-local:${item.id}:${item.path || localPreviewSource}:${options?.canvasOutputClientRequestId || ''}`,
           outputId: item.id,
+          clientRequestId: options?.canvasOutputClientRequestId,
           drawerItemId: item.id,
           source: localPreviewSource,
           path: item.path,
@@ -485,10 +492,9 @@ export const addGeneratedImagesToDrawerImpl = (ctx: Pick<drawerCoreActionContext
               const outputSource = getCanvasAiOutputDisplaySource(output);
               const matchesOutput = output.id === item.id || sourceSet.has(outputSource);
               const matchesGeneration = !options?.canvasOutputClientRequestId
-                || output.id === item.id
                 || output.clientRequestId === options.canvasOutputClientRequestId
                 || output.taskId === options.canvasOutputClientRequestId;
-              if (!matchesOutput || !matchesGeneration) return output;
+              if (!matchesOutput || !matchesGeneration || !sourceSet.has(outputSource)) return output;
               changed = true;
               return recoverCanvasAiOutputWithUsableResult({ ...output, ...patch });
             });
@@ -532,7 +538,7 @@ export const addGeneratedImagesToDrawerImpl = (ctx: Pick<drawerCoreActionContext
         .then((cachedPath) => {
           if (!cachedPath) {
             generatedImageCachePendingIdsRef.current.delete(item.id);
-            updateDrawerItemsDeferred(prev => prev.map(existing => existing.id === item.id ? { ...existing } : existing));
+            updateDrawerItemsDeferred(prev => prev.map(existing => matchesCachedSource(existing) ? { ...existing } : existing));
             patchMatchingOutputs({ cacheStatus: 'failed' });
             return;
           }
@@ -548,19 +554,22 @@ export const addGeneratedImagesToDrawerImpl = (ctx: Pick<drawerCoreActionContext
             sourceUrl: sourceIsDataImage ? undefined : source,
             originalUrl,
           } as BufferItem;
-          updateDrawerItemsDeferred(prev => prev.map(existing => existing.id === item.id ? cachedItem : existing));
+          updateDrawerItemsDeferred(prev => prev.map(existing => matchesCachedSource(existing)
+            ? { ...existing, url: cachedItem.url, path: cachedItem.path, sourceUrl: cachedItem.sourceUrl, originalUrl: cachedItem.originalUrl }
+            : existing));
           if (!options?.onOutputCachePatch) {
             updateCanvasItemsImmediate(prev => prev.map(canvasItem => (
-              canvasItem.item.id === item.id
-                ? { ...canvasItem, item: cachedItem }
+              matchesCachedSource(canvasItem.item)
+                ? { ...canvasItem, item: { ...canvasItem.item, url: cachedItem.url, path: cachedItem.path, sourceUrl: cachedItem.sourceUrl, originalUrl: cachedItem.originalUrl } }
                 : canvasItem
             )));
           }
           const matchSources = [source, cachedUrl];
           patchMatchingOutputs(buildCanvasAiOutputLocalCachePatch(cachedPath), matchSources);
           enqueueCanvasAiOutputThumbnailJob({
-            key: `output:${item.id}:${cachedPath}`,
+            key: `output:${item.id}:${cachedPath}:${options?.canvasOutputClientRequestId || ''}`,
             outputId: item.id,
+            clientRequestId: options?.canvasOutputClientRequestId,
             matchSources,
             drawerItemId: item.id,
             source: cachedUrl,
@@ -573,7 +582,7 @@ export const addGeneratedImagesToDrawerImpl = (ctx: Pick<drawerCoreActionContext
         .catch((err) => {
           console.warn('AI 生图缓存失败:', err);
           generatedImageCachePendingIdsRef.current.delete(item.id);
-          updateDrawerItemsDeferred(prev => prev.map(existing => existing.id === item.id
+          updateDrawerItemsDeferred(prev => prev.map(existing => matchesCachedSource(existing)
             ? {
               ...existing,
               url: source,

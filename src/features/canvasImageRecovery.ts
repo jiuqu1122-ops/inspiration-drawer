@@ -10,6 +10,7 @@ type RecoveryResponse = CloudImageGenerationLookup & { error?: { message?: strin
 
 type RecoveryOptions = {
   canvasId?: string;
+  getLatestTarget?: () => CanvasImageItem | undefined;
   updateAi: (patch: Partial<CanvasAiItemData>) => void;
   showToast: (message: string) => void;
   refreshCloudAccount: (silent?: boolean) => Promise<unknown>;
@@ -24,9 +25,18 @@ export async function recoverCanvasImageOutputs(target: CanvasImageItem, options
   const clientRequestId = ai.imageClientRequestId || ai.outputs?.find(output => output.clientRequestId)?.clientRequestId;
   if (!clientRequestId) { options.showToast('原请求 ID 未保存，请在管理端按渠道任务 ID 核对'); return []; }
   const originalOutputs = ai.outputs || [];
+  const isCurrentRequest = () => {
+    if (!options.getLatestTarget) return true;
+    const current = options.getLatestTarget();
+    const currentRequestId = current?.ai?.imageClientRequestId
+      || current?.ai?.outputs?.find(output => output.clientRequestId)?.clientRequestId;
+    return current?.id === target.id && current.ai?.type === 'image-generator'
+      && currentRequestId === clientRequestId;
+  };
   options.updateAi({ status: 'working', error: undefined, imageClientRequestId: clientRequestId });
   try {
     const result = await invoke<RecoveryResponse>('recover_cloud_image_generation', { clientRequestId });
+    if (!isCurrentRequest()) return [];
     if (['failed', 'refunded'].includes(result.status)) {
       const error = result.error?.message || '渠道已确认原任务失败，预扣积分已释放';
       options.updateAi({ status: 'error', error, outputs: originalOutputs.map(output => ({ ...output, status: 'error', error })) });
@@ -48,6 +58,7 @@ export async function recoverCanvasImageOutputs(target: CanvasImageItem, options
         status: 'success', error: undefined, generatedAt: Date.now(), width: size.width, height: size.height,
       };
     }));
+    if (!isCurrentRequest()) return [];
     options.updateAi({ status: 'success', error: undefined, outputs, imageExpectedOutputCount: outputs.length, generatedAt: Date.now() });
     const items = outputs.flatMap((output, index) => {
       const item = createCanvasAiOutputBufferItem(target, output, index);
@@ -58,6 +69,7 @@ export async function recoverCanvasImageOutputs(target: CanvasImageItem, options
     void options.refreshCloudAccount(true);
     return outputs;
   } catch (error) {
+    if (!isCurrentRequest()) return [];
     const message = error instanceof Error ? error.message : String(error);
     options.updateAi({ status: 'recovery', error: `${message}。原请求 ID：${clientRequestId}`, outputs: originalOutputs });
     options.showToast('原任务尚未恢复，已保留请求 ID；可稍后再次查询');

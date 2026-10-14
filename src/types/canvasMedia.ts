@@ -41,6 +41,7 @@ export type CanvasAiOutputThumbnailJob = {
   canvasItemId?: string;
   outputIndex?: number;
   outputId?: string;
+  clientRequestId?: string;
   matchSources?: string[];
   drawerItemId?: string;
   source: string;

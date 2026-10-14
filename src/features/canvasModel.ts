@@ -211,6 +211,8 @@ export type CanvasAiItemData = {
   imageClientRequestId?: string;
   imageExpectedOutputCount?: number;
   imageOutputMode?: 'single_asset' | 'multiple_assets';
+  /** Intrinsic footer width in design pixels; independent of canvas zoom. */
+  imageControlsWidth?: number;
   quality?: string;
   type: CanvasAiItemType;
   provider?: CanvasAiProvider;

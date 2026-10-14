@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CanvasImageItem, CanvasWorkflowRuntimeNodeSnapshot } from '../../canvasModel';
-import { runDerivedUiEffect01, runDerivedUiEffect03 } from './canvasDerivedEffects';
+import { runDerivedUiEffect01, runDerivedUiEffect02, runDerivedUiEffect03 } from './canvasDerivedEffects';
 import { getCanvasAiOutputPreviewSlots } from '../../../utils/canvasWorkflowRuntime';
 
 const lookups = vi.hoisted(() => ({ image: vi.fn(), video: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(), convertFileSrc: (path: string) => `asset://${path}` }));
 vi.mock('../../canvasAiImage', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../canvasAiImage')>(),
   getCloudWalletImageGenerationByRequest: lookups.image,
@@ -103,6 +104,82 @@ describe('background generation recovery scheduling', () => {
   });
 });
 
+describe('late local image cache completion', () => {
+  beforeEach(() => { vi.stubGlobal('window', { setTimeout: vi.fn() }); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+  it.each([false, true])('applies a finished cache only to its original request (replaced: %s)', async replaced => {
+    let finish!: (value: { url: string; path: string; sourceUrl: string }) => void;
+    const oldSource = 'https://api.unmind.art/v1/ai/image-results/old.png';
+    const newSource = 'https://api.unmind.art/v1/ai/image-results/new.png';
+    let nodes: CanvasImageItem[] = [{
+      id: 'node', x: 0, y: 0, width: 320, height: 300,
+      item: { id: 'item', type: 'text', content: '', createdAt: 0 },
+      ai: { type: 'image-generator', status: 'success', imageClientRequestId: 'old-request',
+        outputs: [{ id: 'slot', clientRequestId: 'old-request', status: 'success', url: oldSource, sourceUrl: oldSource }] },
+    }];
+    let drawerItems = [{ id: 'slot', type: 'image' as const, content: '', createdAt: 0, sourceUrl: oldSource, url: oldSource }];
+    const ctx: Parameters<typeof runDerivedUiEffect02>[0] = {
+      isCanvasMode: true, canvasItems: nodes, itemsRef: { current: [] },
+      CANVAS_AI_OUTPUT_SOURCE_RECOVERY_RETRY_DELAY_MS: 8000,
+      canvasAiOutputSourceRecoveryAttemptedRef: { current: new Set() },
+      canvasAiOutputSourceRecoveryInFlightRef: { current: new Set() },
+      canvasAiOutputSourceRecoveryRetryAtRef: { current: new Map() },
+      cacheCanvasGeneratedImageSource: vi.fn(() => new Promise<{ url: string; path: string; sourceUrl: string }>(resolve => { finish = resolve; })),
+      updateCanvasItemsImmediate: updater => { nodes = updater(nodes); return nodes; },
+      setItems: updater => { drawerItems = typeof updater === 'function' ? updater(drawerItems) as typeof drawerItems : updater as typeof drawerItems; },
+      enqueueCanvasAiOutputThumbnailJob: vi.fn(), scheduleCanvasChangedNodesPatchSave: vi.fn(),
+      scheduleCanvasStateSave: vi.fn(), setCanvasAiOutputSourceRecoveryTick: vi.fn(),
+    };
+    runDerivedUiEffect02(ctx);
+    expect(ctx.cacheCanvasGeneratedImageSource).toHaveBeenCalledOnce();
+    if (replaced) {
+      nodes = [{ ...nodes[0], ai: { ...nodes[0].ai!, imageClientRequestId: 'new-request',
+        outputs: [{ id: 'slot', clientRequestId: 'new-request', status: 'success', url: newSource, sourceUrl: newSource }] } }];
+      drawerItems = [{ ...drawerItems[0], sourceUrl: newSource, url: newSource }];
+    }
+    finish({ path: 'old.png', url: 'asset://old.png', sourceUrl: oldSource });
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    if (replaced) {
+      expect(nodes[0].ai?.outputs?.[0]).toMatchObject({ clientRequestId: 'new-request', url: newSource, sourceUrl: newSource });
+      expect(nodes[0].ai?.outputs?.[0].path).toBeUndefined();
+      expect(drawerItems[0].url).toBe(newSource);
+      expect(ctx.enqueueCanvasAiOutputThumbnailJob).not.toHaveBeenCalled();
+    } else {
+      expect(nodes[0].ai?.outputs?.[0]).toMatchObject({ clientRequestId: 'old-request', path: 'old.png', url: 'asset://old.png' });
+      expect(drawerItems[0]).toMatchObject({ path: 'old.png', url: 'asset://old.png' });
+      expect(ctx.enqueueCanvasAiOutputThumbnailJob).toHaveBeenCalledOnce();
+    }
+  });
+  it('does not repair a current result from a different old drawer source sharing its ID', () => {
+    const currentSource = 'https://api.unmind.art/v1/ai/image-results/new.png';
+    let nodes: CanvasImageItem[] = [{
+      id: 'node', x: 0, y: 0, width: 320, height: 300,
+      item: { id: 'item', type: 'text', content: '', createdAt: 0 },
+      ai: { type: 'image-generator', status: 'success', outputs: [
+        { id: 'slot', clientRequestId: 'new-request', status: 'success', url: currentSource, sourceUrl: currentSource },
+      ] },
+    }];
+    const cache = vi.fn(async () => ({ path: '', url: currentSource, sourceUrl: currentSource }));
+    const ctx: Parameters<typeof runDerivedUiEffect02>[0] = {
+      isCanvasMode: true, canvasItems: nodes,
+      itemsRef: { current: [{ id: 'slot', type: 'image', content: '', createdAt: 0,
+        path: 'old.png', url: 'asset://old.png', sourceUrl: 'https://api.unmind.art/v1/ai/image-results/old.png' }] },
+      CANVAS_AI_OUTPUT_SOURCE_RECOVERY_RETRY_DELAY_MS: 8000,
+      canvasAiOutputSourceRecoveryAttemptedRef: { current: new Set() },
+      canvasAiOutputSourceRecoveryInFlightRef: { current: new Set() },
+      canvasAiOutputSourceRecoveryRetryAtRef: { current: new Map() },
+      cacheCanvasGeneratedImageSource: cache,
+      updateCanvasItemsImmediate: updater => { nodes = updater(nodes); return nodes; },
+      setItems: vi.fn(), enqueueCanvasAiOutputThumbnailJob: vi.fn(),
+      scheduleCanvasChangedNodesPatchSave: vi.fn(), scheduleCanvasStateSave: vi.fn(),
+      setCanvasAiOutputSourceRecoveryTick: vi.fn(),
+    };
+    runDerivedUiEffect02(ctx);
+    expect(nodes[0].ai?.outputs?.[0].path).toBeUndefined();
+    expect(cache).toHaveBeenCalledWith(currentSource, expect.any(String));
+  });
+});
+
 describe('visible output cache reconciliation', () => {
   const contextFor = (node: CanvasImageItem) => {
     let items = [node];
@@ -127,6 +204,22 @@ describe('visible output cache reconciliation', () => {
     };
     return { ctx, read: () => ({ items, updates }) };
   };
+
+  it('does not coalesce thumbnail jobs for different requests sharing a local media path', () => {
+    const node: CanvasImageItem = { id: 'node', x: 0, y: 0, width: 320, height: 300,
+      item: { id: 'item', type: 'text', content: '', createdAt: 0 },
+      ai: { type: 'image-generator', outputs: [{ id: 'slot', clientRequestId: 'old-request', status: 'success',
+        path: 'cached.png', url: 'asset://cached.png', cacheStatus: 'pending' }] } };
+    const { ctx } = contextFor(node);
+    runDerivedUiEffect03(ctx);
+    ctx.canvasRenderableItems = [{ ...node, ai: { ...node.ai!, outputs: [{ ...node.ai!.outputs![0], clientRequestId: 'new-request' }] } }];
+    runDerivedUiEffect03(ctx);
+    const calls = vi.mocked(ctx.enqueueCanvasAiOutputThumbnailJob).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0][0].clientRequestId).toBe('old-request');
+    expect(calls[1][0].clientRequestId).toBe('new-request');
+    expect(calls[1][0].key).not.toBe(calls[0][0].key);
+  });
 
   it.each([
     ['thumbnail', 'legacy'], ['stale', 'legacy'],

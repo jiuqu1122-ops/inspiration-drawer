@@ -859,6 +859,11 @@ export const collapseCanvasWorkflowGroupImpl = (ctx: Pick<canvasWorkflowEditorAc
 
 export const applyCanvasAiGeneratorDataPatchImpl = (ctx: Pick<canvasWorkflowEditorActionContext, 'canvasAiPromptEditingId' | 'canvasGroupResizeRef' | 'canvasResizeRef' | 'getCanvasAiNodeDesignSizeForItem'>, item: CanvasImageItem, patch: Partial<NonNullable<CanvasImageItem['ai']>>, content?: string) => {
   const { canvasAiPromptEditingId, canvasGroupResizeRef, canvasResizeRef, getCanvasAiNodeDesignSizeForItem } = ctx;
+    const isBeingManuallyResized = canvasResizeRef.current?.id === item.id
+      || !!canvasGroupResizeRef.current?.startItems[item.id];
+    // The toolbar retries this measurement after pointerup, using the final user scale.
+    if (isBeingManuallyResized && patch.imageControlsWidth !== undefined
+      && Object.keys(patch).length === 1 && content === undefined) return item;
     const nextAi = {
       ...(item.ai || {}),
       ...patch,
@@ -880,6 +885,7 @@ export const applyCanvasAiGeneratorDataPatchImpl = (ctx: Pick<canvasWorkflowEdit
       || item.ai?.type === 'workflow';
     const shouldResizeAiNode = isResizableAiNode && (
       patch.aspectRatio !== undefined
+      || patch.imageControlsWidth !== undefined
       || patch.count !== undefined
       || content !== undefined
       || patch.outputs !== undefined
@@ -894,8 +900,6 @@ export const applyCanvasAiGeneratorDataPatchImpl = (ctx: Pick<canvasWorkflowEdit
         )
       )
     );
-    const isBeingManuallyResized = canvasResizeRef.current?.id === item.id
-      || !!canvasGroupResizeRef.current?.startItems[item.id];
     if (!shouldResizeAiNode || isBeingManuallyResized) return nextCanvasItem;
     const promptExpanded = canvasAiPromptEditingId === item.id;
     const oldSize = getCanvasAiNodeDesignSizeForItem(item, promptExpanded);
