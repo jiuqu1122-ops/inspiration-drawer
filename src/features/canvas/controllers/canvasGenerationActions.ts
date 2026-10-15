@@ -2300,6 +2300,10 @@ export const generateCanvasAiGeneratorNodeImpl = async (ctx: Pick<canvasGenerati
         await runCanvasExpandedWorkflowFromNode(targetId);
         return;
       }
+      if (target.ai?.type === 'music-generator' && target.ai.musicClientRequestId) {
+        await runCanvasAiGeneratorNode(targetId);
+        return;
+      }
       if (!hasCanvasAiGeneratedResults(target)) {
         await runCanvasAiGeneratorNode(targetId);
         return;

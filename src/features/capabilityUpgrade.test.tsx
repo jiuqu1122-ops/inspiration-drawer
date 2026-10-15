@@ -34,7 +34,7 @@ describe('capability upgrade client flows', () => {
     expect(invoke).toHaveBeenCalledTimes(1);
     expect(invoke).toHaveBeenCalledWith('generate_cloud_music', { request: { clientRequestId: 'music-request', model: 'audio-model', prompt: 'Ambient' } });
     const item = { ...music, ai: { ...music.ai!, outputs, status: 'success' as const } };
-    const html = renderToStaticMarkup(<CanvasMusicNode item={item} catalog={[{ id: 'audio-model', displayName: 'Music', modality: 'audio' }]} update={() => {}} onRun={() => {}} onDrag={() => {}} onConnect={() => {}} />);
+    const html = renderToStaticMarkup(<CanvasMusicNode item={item} catalog={[{ id: 'audio-model', displayName: 'Music', modality: 'audio' }]} update={() => {}} onRun={() => {}} onDrag={() => {}} />);
     expect((html.match(/<audio /g) || []).length).toBe(2);
     expect((html.match(/download=/g) || []).length).toBe(2);
     expect(createCanvasAiOutputBufferItem(item, outputs[0], 0)).toMatchObject({ type: 'file', name: '音乐 1.mp3', url: 'https://cdn.example.com/a.mp3' });
@@ -66,7 +66,7 @@ describe('capability upgrade client flows', () => {
     updateAi.mockImplementation(patch => Object.assign(pending.ai!, patch));
     await generateCanvasMusic(pending, { updateAi, clientRequestId: 'pending-storage' });
     expect(pending.ai!.musicClientRequestId).toBe('pending-storage');
-    const html = renderToStaticMarkup(<CanvasMusicNode item={pending} catalog={[]} update={() => {}} onRun={() => {}} onDrag={() => {}} onConnect={() => {}} />);
+    const html = renderToStaticMarkup(<CanvasMusicNode item={pending} catalog={[]} update={() => {}} onRun={() => {}} onDrag={() => {}} />);
     expect(html).toContain('恢复结果');
     vi.mocked(invoke).mockResolvedValueOnce({ status: 'processing' });
     await generateCanvasMusic(pending, { updateAi });

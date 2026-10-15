@@ -45,7 +45,7 @@ describe('wallet music catalog loading', () => {
     items[0].ai!.prompt = 'Ambient piano';
     const html = renderToStaticMarkup(React.createElement(CanvasMusicNode, {
       item: items[0], catalog: getAiCatalogModels(snapshot, 'audio'),
-      update: () => {}, onRun: () => {}, onDrag: () => {}, onConnect: () => {},
+      update: () => {}, onRun: () => {}, onDrag: () => {},
     }));
     expect(html).toContain('Music');
     expect(html).not.toContain('暂无音乐模型');

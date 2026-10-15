@@ -4,12 +4,18 @@
 
 ## 下载
 
-当前版本：**8.0.25**
+当前版本：**8.0.26**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.25/Inspiration.Drawer_8.0.25_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.25)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.26/Inspiration.Drawer_8.0.26_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.26)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 8.0.26 更新
+
+- 改善音乐与钱包文字节点的连接稳定性；文字请求遇到暂时连接错误时，自动使用同一请求编号接管一次。
+- 音乐结果未确认时显示“结果待确认”，恢复时直接更新原节点并保留已有曲目，避免误判失败或重复提交。
+- 统一音乐节点圆角，将积分提示放入生成按钮，并移除多余的连接箭头。
 
 ## 8.0.25 更新
 

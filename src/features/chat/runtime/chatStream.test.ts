@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 
-import { isChatRequestIdCurrent, isChatStreamEventForRequest, isRecoverableChatRequestError, isUpstreamUnavailableChatError, normalizeChatStreamEvent, requestChatCompletion } from './chatStream';
+import { acknowledgeChatCompletion, isChatRequestIdCurrent, isChatStreamEventForRequest, isRecoverableChatRequestError, isUpstreamUnavailableChatError, normalizeChatStreamEvent, requestChatCompletion } from './chatStream';
+import { MAX_INLINE_VISION_BYTES } from '../context/chatRequestSize';
 
 describe('normalized Chat stream events', () => {
   it('keeps new content and reasoning events while accepting the legacy delta kind', () => {
@@ -71,6 +72,37 @@ describe('Chat request recovery', () => {
       tools: [],
     })).rejects.toThrow('401');
     expect(invoke).toHaveBeenCalledOnce();
+  });
+
+  it('retains ordinary Chat inline image protection by default', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const source = `data:image/png;base64,${'A'.repeat(Math.ceil((MAX_INLINE_VISION_BYTES + 1) * 4 / 3) + 8)}`;
+      invoke.mockResolvedValueOnce({ requestId: 'ordinary-chat', content: '回复', toolCalls: [] });
+      await requestChatCompletion({ requestId: 'ordinary-chat', tools: [],
+        messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: source } }] }] });
+      const request = invoke.mock.calls.find(([command]) => command === 'agent_openai_chat')![1].request;
+      expect(request.messages).toEqual([{ role: 'user', content: [{ type: 'text', text: '一张图片附件因内联数据过大而未加入本次视觉请求。' }] }]);
+      expect(request.stream).toBe(true);
+      expect(invoke).toHaveBeenLastCalledWith('agent_ack_wallet_task', { requestId: 'ordinary-chat' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('leaves a canvas result resumable until its consumer explicitly acknowledges it', async () => {
+    invoke.mockResolvedValueOnce({ requestId: 'canvas-request', content: '已恢复', toolCalls: [] });
+    const result = await requestChatCompletion({
+      requestId: 'canvas-request', messages: [{ role: 'user', content: '继续' }], tools: [],
+      usageContext: 'canvas_text_agent', stream: false, acknowledgeResult: false,
+    });
+    expect(result.content).toBe('已恢复');
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('agent_openai_chat', {
+      request: { requestId: 'canvas-request', messages: [{ role: 'user', content: '继续' }], tools: [],
+        model: undefined, toolChoice: undefined, stream: false, usageContext: 'canvas_text_agent' },
+    });
+    await acknowledgeChatCompletion('canvas-request');
+    expect(invoke).toHaveBeenLastCalledWith('agent_ack_wallet_task', { requestId: 'canvas-request' });
   });
 
   it('does not silently replace a model rejected by ordinary Chat', async () => {

@@ -53,7 +53,6 @@ export function CanvasNode({ scope, canvasItem, canvasItemsRef: latestCanvasItem
     update={patch => scope.updateCanvasAiGeneratorData(canvasItem.id, patch)}
     onRun={event => scope.handleCanvasAiRunClick(event, canvasItem.id)}
     onDrag={event => scope.startCanvasItemDrag(event, canvasItem.id)}
-    onConnect={event => { event.stopPropagation(); scope.startCanvasConnectionDrag(event, canvasItem.id); }}
     onPointerEnter={() => { canvasHoveredItemIdRef.current = canvasItem.id; }}
     onPointerLeave={() => { if (canvasHoveredItemIdRef.current === canvasItem.id) canvasHoveredItemIdRef.current = ''; }}
     onContextMenu={event => { if (!canvasSelectedIdsRef.current.includes(canvasItem.id)) updateCanvasSelection([canvasItem.id]); openCanvasContextMenu(event, 'item', { itemId: canvasItem.id }); }}

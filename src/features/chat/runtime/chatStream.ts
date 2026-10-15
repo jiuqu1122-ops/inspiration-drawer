@@ -116,6 +116,14 @@ export const isRecoverableChatRequestError = (error: unknown) => {
   return /timed?\s*out|timeout|network|connection|connect|socket|dns|reset|closed|broken pipe|\b(?:429|500|502|503|504|524)\b|后台任务查询|响应.*解析|网络|连接|超时|断开|暂时无法/i.test(text);
 };
 
+export const acknowledgeChatCompletion = async (requestId: string) => {
+  try {
+    await invoke('agent_ack_wallet_task', { requestId });
+  } catch (error) {
+    console.warn('确认 Chat 后台任务结果失败，将保留任务用于恢复:', error);
+  }
+};
+
 export const requestChatCompletion = (input: {
   requestId: string;
   messages: Array<Record<string, unknown>>;
@@ -124,16 +132,20 @@ export const requestChatCompletion = (input: {
   model?: string;
   stream?: boolean;
   usageContext?: AgentModelUsageContext;
+  /** Canvas consumers acknowledge only after the usable result is written back. */
+  acknowledgeResult?: boolean;
+  /** Preserve references already prepared by a dedicated canvas input pipeline. */
+  preservePreparedMessages?: boolean;
 }) => {
-  const protectedRequest = protectChatProviderRequest({
+  const messages = input.preservePreparedMessages ? input.messages : protectChatProviderRequest({
     messages: input.messages,
     tools: input.tools,
     model: input.model,
-  });
+  }).messages;
   const invokeRequest = () => invoke<ChatProviderResult>('agent_openai_chat', {
     request: {
       requestId: input.requestId,
-      messages: protectedRequest.messages,
+      messages,
       tools: input.tools,
       toolChoice: input.toolChoice,
       model: input.model,
@@ -156,11 +168,7 @@ export const requestChatCompletion = (input: {
     // Keep a completed wallet task resumable until its result crossed the IPC
     // boundary successfully. Acknowledgement is intentionally best-effort for
     // non-wallet providers and must never hide an already received answer.
-    try {
-      await invoke('agent_ack_wallet_task', { requestId: input.requestId });
-    } catch (error) {
-      console.warn('确认 Chat 后台任务结果失败，将保留任务用于恢复:', error);
-    }
+    if (input.acknowledgeResult !== false) await acknowledgeChatCompletion(input.requestId);
     return result;
   });
 };

@@ -1500,9 +1500,10 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
                 <button data-drawer-dialog-close="true" onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v8.0.25</p>
-                <p>画布支持拖入音频；音乐结果可逐首放入画布或下载，并显示积分价格。</p>
-                <p>图片生成占位跟随管理端配置，参数栏宽度适配模型质量、尺寸等选项。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v8.0.26</p>
+                <p>改善音乐与钱包文字节点的连接稳定性；文字请求可在暂时连接错误后自动接管一次。</p>
+                <p>音乐结果待确认时保留原请求与已有曲目，恢复结果直接更新原节点。</p>
+                <p>统一音乐节点圆角，将积分提示放入生成按钮，移除多余的连接箭头。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

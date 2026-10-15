@@ -1002,6 +1002,7 @@ impl CloudTransportErrorCategory {
 pub(crate) struct CloudTransportFailure {
     pub category: CloudTransportErrorCategory,
     pub fallback_attempted: bool,
+    pub request_not_sent: bool,
 }
 
 impl CloudTransportFailure {
@@ -1013,12 +1014,14 @@ impl CloudTransportFailure {
         Self {
             category: cloud_transport_category(error, via_proxy),
             fallback_attempted,
+            request_not_sent: false,
         }
     }
 
     fn safe_message(self, method: &str) -> String {
         format!(
-            "cloud_unavailable: {method} {}；凭证和请求地址已隐藏",
+            "{}: {method} {}；凭证和请求地址已隐藏",
+            if self.request_not_sent { "music_not_submitted" } else { "cloud_unavailable" },
             self.category.label()
         )
     }
@@ -1090,16 +1093,24 @@ pub(crate) struct CloudRequestLogContext {
     pub upload_bytes: usize,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CloudTransportPolicy {
+    Standard,
+    MusicPostNoRedirect,
+}
+
 async fn send_cloud_request_with_clients_detailed<F>(
     clients: &[(reqwest::Client, bool)],
     method: &'static str,
     log_context: Option<CloudRequestLogContext>,
     build: &F,
     diagnostic_app: Option<&tauri::AppHandle>,
+    policy: CloudTransportPolicy,
 ) -> Result<reqwest::Response, CloudTransportFailure>
 where
     F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
 {
+    let mut all_music_attempts_unsent = policy == CloudTransportPolicy::MusicPostNoRedirect;
     for (index, (client, via_proxy)) in clients.iter().enumerate() {
         let route = if *via_proxy { "proxy" } else { "direct" };
         let attempt_started_at = std::time::Instant::now();
@@ -1108,11 +1119,14 @@ where
         // cloned safely for a fallback attempt.
         let request = build(client).build();
         let request_url_length = request.as_ref().ok().map(|request| request.url().as_str().len());
-        let operation = log_context.map(|context| context.operation).unwrap_or_else(|| request
+        let request_operation = request
             .as_ref()
             .ok()
             .map(|request| cloud_operation(request.url().path()))
-            .unwrap_or("request_build"));
+            .unwrap_or("request_build");
+        let operation = log_context.map(|context| context.operation).unwrap_or(request_operation);
+        let music_post = method == "POST" && request_operation == "music_generate"
+            && request.as_ref().is_ok_and(|request| request.method() == reqwest::Method::POST);
         let cloud_token = request
             .as_ref()
             .ok()
@@ -1163,8 +1177,19 @@ where
             }
             Err(error) => {
                 let has_fallback = index + 1 < clients.len();
-                let fallback_attempted =
-                    has_fallback && operation != "music_generate" && should_retry_cloud_transport(&error, method);
+                // The ordinary clients may have followed a redirect after the
+                // original paid POST arrived. Only the dedicated music factory
+                // supplies the no-redirect/no-retry policy that makes a connect
+                // error proof that this submission never reached the server.
+                let music_submission_unsent = music_post
+                    && policy == CloudTransportPolicy::MusicPostNoRedirect
+                    && !error.is_builder() && !error.is_timeout() && error.is_connect();
+                all_music_attempts_unsent &= music_submission_unsent;
+                let fallback_attempted = has_fallback && if music_post {
+                    index == 0 && music_submission_unsent
+                } else {
+                    should_retry_cloud_transport(&error, method)
+                };
                 if let Some(app) = diagnostic_app {
                     crate::renderer_diagnostics::record(
                         app,
@@ -1175,6 +1200,8 @@ where
                             "category": cloud_transport_category(&error, *via_proxy).code(),
                             "fallbackAttempted": fallback_attempted, "elapsedMs": attempt_started_at.elapsed().as_millis() as u64,
                             "phase": if error.is_builder() { "build" } else { "send" },
+                            "isConnect": error.is_connect(), "isTimeout": error.is_timeout(),
+                            "musicSubmissionUnsent": music_submission_unsent,
                             "ioErrorKind": transport_io_error(&error).map(|error| format!("{:?}", error.kind())),
                             "osErrorCode": transport_io_error(&error).and_then(|error| error.raw_os_error()),
                             "requestUrlLength": request_url_length,
@@ -1197,17 +1224,20 @@ where
                 if fallback_attempted {
                     continue;
                 }
-                return Err(CloudTransportFailure::from_reqwest(
+                let mut failure = CloudTransportFailure::from_reqwest(
                     &error,
                     *via_proxy,
                     index > 0,
-                ));
+                );
+                failure.request_not_sent = all_music_attempts_unsent;
+                return Err(failure);
             }
         }
     }
     Err(CloudTransportFailure {
         category: CloudTransportErrorCategory::Network,
         fallback_attempted: clients.len() > 1,
+        request_not_sent: all_music_attempts_unsent,
     })
 }
 
@@ -1241,7 +1271,7 @@ async fn send_cloud_request_with_clients<F>(
 where
     F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
 {
-    send_cloud_request_with_clients_detailed(clients, method, log_context, build, None)
+    send_cloud_request_with_clients_detailed(clients, method, log_context, build, None, CloudTransportPolicy::Standard)
         .await
         .map_err(|failure| failure.safe_message(method))
 }
@@ -1256,11 +1286,19 @@ pub(crate) async fn send_cloud_request_detailed<F>(
 where
     F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
 {
-    let (configured, direct) = crate::build_async_http_clients_with_direct_fallback(
-        Some(app_handle),
-        None,
-        timeout.as_secs().max(1),
-    )
+    let policy = if method == "POST"
+        && log_context.is_some_and(|context| context.operation == "music_generate")
+    {
+        CloudTransportPolicy::MusicPostNoRedirect
+    } else {
+        CloudTransportPolicy::Standard
+    };
+    let client_result = if policy == CloudTransportPolicy::MusicPostNoRedirect {
+        crate::build_music_post_http_clients_with_direct_fallback(Some(app_handle), None, timeout.as_secs().max(1))
+    } else {
+        crate::build_async_http_clients_with_direct_fallback(Some(app_handle), None, timeout.as_secs().max(1))
+    };
+    let (configured, direct) = client_result
     .map_err(|_| {
         crate::renderer_diagnostics::record(
             app_handle,
@@ -1273,6 +1311,7 @@ where
         CloudTransportFailure {
             category: CloudTransportErrorCategory::Initialization,
             fallback_attempted: false,
+            request_not_sent: policy == CloudTransportPolicy::MusicPostNoRedirect,
         }
     })?;
     let app_proxy_configured = !crate::read_network_proxy(app_handle).trim().is_empty();
@@ -1297,6 +1336,7 @@ where
         log_context,
         &build,
         Some(app_handle),
+        policy,
     )
     .await
 }
@@ -1318,7 +1358,9 @@ where
 
 #[cfg(test)]
 mod cloud_transport_tests {
-    use super::{send_cloud_request_with_clients, cloud_transport_category, transport_io_error, should_retry_cloud_transport, CloudTransportErrorCategory, CloudTransportFailure};
+    use super::{send_cloud_request_with_clients, send_cloud_request_with_clients_detailed, cloud_transport_category,
+        transport_io_error, should_retry_cloud_transport, music_not_submitted_before_request,
+        CloudTransportErrorCategory, CloudTransportFailure, CloudTransportPolicy};
     use reqwest::header::CONNECTION;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -1423,6 +1465,73 @@ mod cloud_transport_tests {
             .expect("proxy test client")
     }
 
+    fn music_test_client(timeout: Duration) -> reqwest::Client {
+        reqwest::Client::builder().no_proxy()
+            .redirect(reqwest::redirect::Policy::none()).retry(reqwest::retry::never())
+            .connect_timeout(Duration::from_millis(200)).timeout(timeout)
+            .build().expect("music test client")
+    }
+
+    fn unavailable_music_proxy_client() -> reqwest::Client {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(format!("http://{address}")).unwrap())
+            .redirect(reqwest::redirect::Policy::none()).retry(reqwest::retry::never())
+            // Windows can take just over two seconds to report loopback
+            // connection refusal. This fixture needs that explicit refusal,
+            // rather than accidentally exercising the excluded timeout case.
+            .connect_timeout(Duration::from_secs(5)).timeout(Duration::from_secs(7))
+            .build().unwrap()
+    }
+
+    fn music_url(url: &str) -> String {
+        let mut url = url::Url::parse(url).unwrap();
+        url.set_path("/v1/ai/music/generations");
+        url.into()
+    }
+
+    fn send_music_with_clients<F>(clients: &[(reqwest::Client, bool)], build: &F)
+        -> Result<reqwest::Response, String>
+    where F: Fn(&reqwest::Client) -> reqwest::RequestBuilder {
+        tauri::async_runtime::block_on(send_cloud_request_with_clients_detailed(
+            clients, "POST", None, build, None, CloudTransportPolicy::MusicPostNoRedirect,
+        )).map_err(|failure| failure.safe_message("POST"))
+    }
+
+    fn capture_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut request = Vec::new();
+        loop {
+            let mut buffer = [0; 4096];
+            let read = stream.read(&mut buffer).unwrap();
+            if read == 0 { break; }
+            request.extend_from_slice(&buffer[..read]);
+            if let Some(end) = header_end(&request) {
+                if request.len() >= end + content_length(&request[..end]) { break; }
+            }
+        }
+        request
+    }
+
+    fn spawn_redirect_server() -> (String, Arc<Mutex<Vec<u8>>>, thread::JoinHandle<()>) {
+        let unavailable = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = format!("http://{}/v1/ai/music/generations", unavailable.local_addr().unwrap());
+        drop(unavailable);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/ai/music/generations", listener.local_addr().unwrap());
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let captured_request = captured.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            *captured_request.lock().unwrap() = capture_request(&mut stream);
+            let response = format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        (url, captured, server)
+    }
+
     #[test]
     fn invalid_headers_are_builder_errors_and_do_not_expose_credentials() {
         let client = direct_test_client(Duration::from_secs(1));
@@ -1491,7 +1600,7 @@ mod cloud_transport_tests {
     }
 
     #[test]
-    fn music_connect_failure_never_replays_the_paid_post() {
+    fn ordinary_clients_do_not_opt_music_into_connect_fallback() {
         let clients = vec![
             (unavailable_proxy_client(), true),
             (direct_test_client(Duration::from_secs(1)), false),
@@ -1505,6 +1614,205 @@ mod cloud_transport_tests {
         ));
         assert!(result.is_err());
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn music_connect_failure_uses_the_other_route_before_one_paid_post() {
+        let (url, captured, server) = spawn_test_server("200 OK", br#"{"audioUrls":[]}"#, Duration::ZERO);
+        let url = music_url(&url);
+        let clients = vec![(unavailable_music_proxy_client(), true), (music_test_client(Duration::from_secs(2)), false)];
+        let attempts = AtomicUsize::new(0);
+        let body = serde_json::json!({ "clientRequestId": "same-music-receipt", "model": "fixture", "prompt": "fixture" });
+        let response = send_music_with_clients(&clients, &|client| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            client.post(&url).json(&body)
+        }).unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        server.join().unwrap();
+        let request = captured.lock().unwrap();
+        let end = header_end(&request).unwrap();
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&request[end..]).unwrap(), body);
+        assert!(String::from_utf8_lossy(&request).starts_with("POST /v1/ai/music/generations "));
+    }
+
+    #[test]
+    fn music_marks_unsent_failures_after_at_most_one_backup_as_not_submitted() {
+        let clients = vec![(unavailable_music_proxy_client(), true), (unavailable_music_proxy_client(), true),
+            (unavailable_music_proxy_client(), true)];
+        let attempts = AtomicUsize::new(0);
+        let error = send_music_with_clients(&clients, &|client| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            client.post("http://127.0.0.1:1/v1/ai/music/generations?token=fixture-secret").body("fixture")
+        }).unwrap_err();
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(error.starts_with("music_not_submitted:"), "{error}");
+        assert!(!error.contains("fixture-secret"));
+        assert!(!error.contains("127.0.0.1"));
+    }
+
+    #[test]
+    fn music_upload_completion_then_eof_never_replays_or_claims_unsent() {
+        for failed_first_route in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/ai/music/generations", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = capture_request(&mut stream);
+            assert!(request.ends_with(b"complete-music-body"));
+        });
+        let mut clients = vec![(music_test_client(Duration::from_secs(2)), false), (music_test_client(Duration::from_secs(2)), false)];
+        if failed_first_route { clients.insert(0, (unavailable_music_proxy_client(), true)); }
+        let attempts = AtomicUsize::new(0);
+        let error = send_music_with_clients(&clients, &|client| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            client.post(&url).body("complete-music-body")
+        }).unwrap_err();
+        assert_eq!(attempts.load(Ordering::SeqCst), if failed_first_route { 2 } else { 1 });
+        assert!(error.starts_with("cloud_unavailable:"), "{error}");
+        assert!(!error.contains("music_not_submitted"));
+        server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn music_uploaded_post_timeout_never_replays_or_claims_unsent() {
+        for failed_first_route in [false, true] {
+        let (url, captured, server) = spawn_test_server("200 OK", b"{}", Duration::from_millis(250));
+        let url = music_url(&url);
+        let mut clients = vec![(music_test_client(Duration::from_millis(50)), false), (music_test_client(Duration::from_secs(2)), false)];
+        if failed_first_route { clients.insert(0, (unavailable_music_proxy_client(), true)); }
+        let attempts = AtomicUsize::new(0);
+        let error = send_music_with_clients(&clients, &|client| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            client.post(&url).body("complete-music-body")
+        }).unwrap_err();
+        assert_eq!(attempts.load(Ordering::SeqCst), if failed_first_route { 2 } else { 1 });
+        assert!(error.starts_with("cloud_unavailable:"), "{error}");
+        assert!(error.contains("请求超时"));
+        server.join().unwrap();
+        assert!(captured.lock().unwrap().ends_with(b"complete-music-body"));
+        }
+    }
+
+    #[test]
+    fn music_connect_timeout_is_not_an_unsent_retry_signal() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert!(String::from_utf8_lossy(&capture_request(&mut stream)).starts_with("CONNECT "));
+            thread::sleep(Duration::from_millis(200));
+        });
+        let client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(format!("http://{address}")).unwrap())
+            .redirect(reqwest::redirect::Policy::none()).retry(reqwest::retry::never())
+            .connect_timeout(Duration::from_millis(50)).timeout(Duration::from_secs(1))
+            .build().unwrap();
+        let clients = vec![(client, true), (music_test_client(Duration::from_secs(2)), false)];
+        let attempts = AtomicUsize::new(0);
+        let error = send_music_with_clients(&clients, &|client| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            client.post("https://example.test/v1/ai/music/generations").body("same-music-receipt")
+        }).unwrap_err();
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(error.starts_with("cloud_unavailable:"), "{error}");
+        assert!(error.contains("请求超时"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn music_response_body_interruption_does_not_replay_the_post() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/ai/music/generations", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert!(capture_request(&mut stream).ends_with(b"same-music-receipt"));
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{}").unwrap();
+        });
+        let clients = vec![(music_test_client(Duration::from_secs(2)), false), (music_test_client(Duration::from_secs(2)), false)];
+        let attempts = AtomicUsize::new(0);
+        let response = send_music_with_clients(&clients, &|client| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            client.post(&url).body("same-music-receipt")
+        }).unwrap();
+        assert!(tauri::async_runtime::block_on(response.text()).is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn music_http_responses_never_replay_the_post() {
+        for (status, expected) in [("400 Bad Request", 400), ("401 Unauthorized", 401),
+            ("429 Too Many Requests", 429), ("500 Internal Server Error", 500)] {
+            let (url, captured, server) = spawn_test_server(status, b"{}", Duration::ZERO);
+            let url = music_url(&url);
+            let clients = vec![(music_test_client(Duration::from_secs(2)), false), (music_test_client(Duration::from_secs(2)), false)];
+            let attempts = AtomicUsize::new(0);
+            let response = send_music_with_clients(&clients, &|client| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                client.post(&url).body("same-music-receipt")
+            }).unwrap();
+            assert_eq!(response.status().as_u16(), expected);
+            assert_eq!(attempts.load(Ordering::SeqCst), 1);
+            server.join().unwrap();
+            assert!(captured.lock().unwrap().ends_with(b"same-music-receipt"));
+        }
+    }
+
+    #[test]
+    fn music_factory_cache_does_not_reuse_redirect_following_clients() {
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+        drop(proxy);
+        let _standard = crate::build_async_http_clients_with_direct_fallback(None, Some(&proxy_url), 3).unwrap();
+        let (_, direct) = crate::build_music_post_http_clients_with_direct_fallback(None, Some(&proxy_url), 3).unwrap();
+        let clients = vec![(direct.unwrap(), false), (music_test_client(Duration::from_secs(2)), false)];
+        let (url, captured, server) = spawn_redirect_server();
+        let attempts = AtomicUsize::new(0);
+        let response = send_music_with_clients(&clients, &|client| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            client.post(&url).body("same-music-receipt")
+        }).unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        server.join().unwrap();
+        assert!(captured.lock().unwrap().ends_with(b"same-music-receipt"));
+    }
+
+    #[test]
+    fn ordinary_redirect_following_music_clients_never_gain_connect_replay_permission() {
+        let (url, captured, server) = spawn_redirect_server();
+        let client = direct_test_client(Duration::from_secs(2));
+        let clients = vec![(client.clone(), false), (client, false)];
+        let attempts = AtomicUsize::new(0);
+        let result = tauri::async_runtime::block_on(send_cloud_request_with_clients(
+            &clients, "POST", None, &|client| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                client.post(&url).body("already-sent")
+            },
+        ));
+        assert!(result.unwrap_err().starts_with("cloud_unavailable:"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        server.join().unwrap();
+        assert!(captured.lock().unwrap().ends_with(b"already-sent"));
+    }
+
+    #[test]
+    fn music_auth_failure_marker_does_not_include_untrusted_error_details() {
+        let safe = music_not_submitted_before_request("cloud_unavailable: https://fixture.test/?token=secret");
+        assert!(safe.starts_with("music_not_submitted:"));
+        assert!(safe.contains("cloud_unavailable"));
+        assert!(!safe.contains("fixture.test"));
+        assert!(!safe.contains("secret"));
+        assert!(!music_not_submitted_before_request("secret-without-code").contains("secret"));
+        assert!(!music_not_submitted_before_request("secret: unsafe detail").contains("secret"));
+        assert!(!music_not_submitted_before_request("pureAlnumCanary").contains("pureAlnumCanary"));
+        let initialization = CloudTransportFailure {
+            category: CloudTransportErrorCategory::Initialization,
+            fallback_attempted: false, request_not_sent: true,
+        }.safe_message("POST");
+        assert!(initialization.starts_with("music_not_submitted:"));
     }
 
     #[test]
@@ -1752,7 +2060,11 @@ async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
     let request_started_at = Instant::now();
     let body = serde_json::to_value(request_body)
         .map_err(|_| "cloud_invalid_request: 请求内容格式无效".to_string())?;
-    let response = send_cloud_request(app_handle, timeout, "POST", None, |client| {
+    let log_context = (path == "/v1/ai/music/generations").then(|| CloudRequestLogContext {
+        operation: "music_generate",
+        upload_bytes: serde_json::to_vec(&body).map_or(0, |bytes| bytes.len()),
+    });
+    let response = send_cloud_request(app_handle, timeout, "POST", log_context, |client| {
         client
             .post(format!("{CLOUD_API_BASE_URL}{path}"))
             .bearer_auth(access_token)
@@ -2334,8 +2646,18 @@ pub async fn redeem_credit_code(
 
 #[tauri::command]
 pub async fn generate_cloud_music(app_handle: tauri::AppHandle, request: serde_json::Value) -> Result<serde_json::Value, String> {
-    let access_token = cloud_access_token(&app_handle).await?;
+    let access_token = cloud_access_token(&app_handle).await.map_err(|error| music_not_submitted_before_request(&error))?;
     post_cloud_with_bearer_timeout::<serde_json::Value>(&app_handle, "/v1/ai/music/generations", &access_token, &request, std::time::Duration::from_secs(900)).await
+}
+
+fn music_not_submitted_before_request(error: &str) -> String {
+    let code = error.split_once(':').map(|(code, _)| code).filter(|code| matches!(*code,
+        "cloud_unavailable" | "license_missing" | "cloud_account_required" | "cloud_account_busy"
+        | "cloud_account_changed" | "cloud_invalid_response" | "cloud_invalid_request"
+        | "cloud_request_failed" | "account_disabled" | "license_disabled" | "invalid_license"
+        | "unauthorized" | "forbidden"))
+        .unwrap_or("cloud_unavailable");
+    format!("music_not_submitted: 音乐请求尚未发送（{code}），请检查网络或账号状态后重试")
 }
 
 #[tauri::command]

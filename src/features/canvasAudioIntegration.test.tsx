@@ -93,14 +93,14 @@ describe('canvas audio import, price and individual outputs', () => {
   });
 
   it('shows the flat price and one insertion button for each of two tracks', () => {
-    const html = renderToStaticMarkup(<CanvasMusicNode item={musicNode()} catalog={catalog} pricing={pricing} onCopyOutput={() => {}} update={() => {}} onRun={() => {}} onDrag={() => {}} onConnect={() => {}} />);
-    expect(html).toContain('50 积分/次');
+    const html = renderToStaticMarkup(<CanvasMusicNode item={musicNode()} catalog={catalog} pricing={pricing} onCopyOutput={() => {}} update={() => {}} onRun={() => {}} onDrag={() => {}} />);
+    expect(html).toContain('50积分');
     expect(html).not.toContain('100 积分');
     expect(html).toContain('将音乐 1 放到画布');
     expect(html).toContain('将音乐 2 放到画布');
     expect(html.match(/<audio /g)).toHaveLength(2);
     const oldPricing = { ...pricing, musicModels: undefined };
-    const missingPrice = renderToStaticMarkup(<CanvasMusicNode item={musicNode()} catalog={catalog} pricing={oldPricing} update={() => {}} onRun={() => {}} onDrag={() => {}} onConnect={() => {}} />);
+    const missingPrice = renderToStaticMarkup(<CanvasMusicNode item={musicNode()} catalog={catalog} pricing={oldPricing} update={() => {}} onRun={() => {}} onDrag={() => {}} />);
     expect(missingPrice).toContain('价格待同步');
     expect(missingPrice).not.toContain('价格未配置');
     expect(estimateCanvasMusicGenerationCredits('unknown', pricing)).toMatchObject({ available: false, reason: 'pricing_unavailable' });

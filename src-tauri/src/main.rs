@@ -864,12 +864,24 @@ fn build_async_http_client_for_route(
     route: Option<&EffectiveProxy>,
     timeout_secs: u64,
 ) -> Result<reqwest::Client, String> {
+    build_async_http_client_for_route_with_redirects(route, timeout_secs, true)
+}
+
+fn build_async_http_client_for_route_with_redirects(
+    route: Option<&EffectiveProxy>,
+    timeout_secs: u64,
+    follow_redirects: bool,
+) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .no_proxy()
         .user_agent(APP_USER_AGENT)
-        .redirect(Policy::limited(10))
+        .redirect(if follow_redirects { Policy::limited(10) } else { Policy::none() })
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(timeout_secs));
+
+    if !follow_redirects {
+        builder = builder.retry(reqwest::retry::never());
+    }
 
     if let Some(route) = route {
         let proxy = reqwest::Proxy::all(&route.endpoint).map_err(|e| format!("代理配置无效：{e}"))?;
@@ -886,6 +898,38 @@ pub(crate) fn build_async_http_clients_with_direct_fallback(
     explicit_proxy: Option<&str>,
     timeout_secs: u64,
 ) -> Result<(reqwest::Client, Option<reqwest::Client>), String> {
+    build_async_http_clients_with_direct_fallback_policy(app_handle, explicit_proxy, timeout_secs, true)
+}
+
+/// A connect error on these clients cannot follow an already-delivered POST:
+/// redirects and reqwest's internal protocol retries are both disabled.
+pub(crate) fn build_music_post_http_clients_with_direct_fallback(
+    app_handle: Option<&tauri::AppHandle>,
+    explicit_proxy: Option<&str>,
+    timeout_secs: u64,
+) -> Result<(reqwest::Client, Option<reqwest::Client>), String> {
+    build_async_http_clients_with_direct_fallback_policy(app_handle, explicit_proxy, timeout_secs, false)
+}
+
+pub(crate) fn build_wallet_task_submit_http_clients_with_direct_fallback(
+    app_handle: Option<&tauri::AppHandle>,
+    explicit_proxy: Option<&str>,
+    timeout_secs: u64,
+) -> Result<(reqwest::Client, Option<reqwest::Client>), String> {
+    build_async_http_clients_with_direct_fallback_policy(
+        app_handle,
+        explicit_proxy,
+        timeout_secs,
+        false,
+    )
+}
+
+fn build_async_http_clients_with_direct_fallback_policy(
+    app_handle: Option<&tauri::AppHandle>,
+    explicit_proxy: Option<&str>,
+    timeout_secs: u64,
+    follow_redirects: bool,
+) -> Result<(reqwest::Client, Option<reqwest::Client>), String> {
     struct CachedClients {
         key: [u8; 32],
         created_at: Instant,
@@ -895,6 +939,7 @@ pub(crate) fn build_async_http_clients_with_direct_fallback(
     let route = effective_proxy_route(app_handle, explicit_proxy);
     let mut hash = Sha256::new();
     hash.update(timeout_secs.to_le_bytes());
+    hash.update([u8::from(follow_redirects)]);
     if let Some(route) = &route {
         hash.update(route.endpoint.as_bytes());
     }
@@ -907,12 +952,12 @@ pub(crate) fn build_async_http_clients_with_direct_fallback(
     if let Some(entry) = cache.iter().find(|entry| entry.key == key) {
         return Ok(entry.clients.clone());
     }
-    let client = build_async_http_client_for_route(route.as_ref(), timeout_secs)?;
+    let client = build_async_http_client_for_route_with_redirects(route.as_ref(), timeout_secs, follow_redirects)?;
     let direct_client = if route
         .as_ref()
         .is_some_and(|value| value.source.allows_direct_fallback())
     {
-        Some(build_direct_async_http_client(timeout_secs)?)
+        Some(build_direct_async_http_client_with_redirects(timeout_secs, follow_redirects)?)
     } else {
         None
     };
@@ -935,14 +980,17 @@ fn build_direct_http_client(timeout_secs: u64) -> Result<Client, String> {
         .map_err(|e| format!("初始化直连网络客户端失败：{}", e))
 }
 
-fn build_direct_async_http_client(timeout_secs: u64) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+fn build_direct_async_http_client_with_redirects(timeout_secs: u64, follow_redirects: bool) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
         .user_agent(APP_USER_AGENT)
-        .redirect(Policy::limited(10))
+        .redirect(if follow_redirects { Policy::limited(10) } else { Policy::none() })
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(timeout_secs))
-        .no_proxy()
-        .build()
+        .no_proxy();
+    if !follow_redirects {
+        builder = builder.retry(reqwest::retry::never());
+    }
+    builder.build()
         .map_err(|e| format!("初始化异步直连网络客户端失败：{e}"))
 }
 
@@ -1241,6 +1289,7 @@ mod reference_upload_contract_tests {
             CloudTransportFailure {
                 category,
                 fallback_attempted: false,
+                request_not_sent: false,
             },
         )
     }
@@ -12823,7 +12872,7 @@ async fn upload_wallet_reference_image(
         let remaining = upload_deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err(ReferenceUploadFailure::transport(Some(index), ReferenceUploadOperation::SignedPut,
-                commands::license::CloudTransportFailure { category: commands::license::CloudTransportErrorCategory::Timeout, fallback_attempted: false }));
+                commands::license::CloudTransportFailure { category: commands::license::CloudTransportErrorCategory::Timeout, fallback_attempted: false, request_not_sent: false }));
         }
         let response = tokio::time::timeout(remaining, commands::license::send_cloud_request_detailed(
             app_handle,
@@ -12835,6 +12884,7 @@ async fn upload_wallet_reference_image(
             |client| client.put(upload_url.clone()).headers(headers.clone()).body(object.bytes.clone()),
         )).await.unwrap_or_else(|_| Err(commands::license::CloudTransportFailure {
             category: commands::license::CloudTransportErrorCategory::Timeout, fallback_attempted: false,
+            request_not_sent: false,
         }));
         let (failure, retryable, retry_after) = match response {
             Ok(response) => {

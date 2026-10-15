@@ -13,6 +13,7 @@ import { buildDesignAgentSystemPrompt,normalizeDesignAgentConfig } from '../../d
 import { scheduleCloudAccountQuotaRefresh } from '../../cloudAccountQuotaRefresh';
 import type { ChatGeneratedMedia } from '../model/chatTypes';
 import { runInternalAgentModelRequest } from './agentModelResolution';
+import { acknowledgeChatCompletion, requestChatCompletion } from './chatStream';
 import { createChatBatchCanvasLayout,getChatBatchCanvasSlotSize } from './chatBatchCanvasLayout';
 import type { ChatBatchCompletedPayload,ChatBatchMediaReadyPayload,ChatBatchStartedPayload } from './useChatRuntime';
 
@@ -438,19 +439,26 @@ export const runCanvasTextAgentTargetImpl = async (ctx: Pick<chatAgentActionCont
       usageContext: 'canvas_text_agent',
       requestId,
       createRequestId: () => 'canvas_text_agent_fallback_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8),
-      request: requestModel => invoke<AgentOpenAiChatResult>('agent_openai_chat', {
-        request: {
-          requestId: requestModel.requestId,
-          model: requestModel.model,
-          usageContext: requestModel.usageContext,
-          messages,
-        },
-      }),
+      request: requestModel => usesCloudWallet
+        ? requestChatCompletion({
+          requestId: requestModel.requestId, model: requestModel.model, usageContext: requestModel.usageContext,
+          messages, tools: [], stream: false, acknowledgeResult: false, preservePreparedMessages: true,
+        })
+        : invoke<AgentOpenAiChatResult>('agent_openai_chat', {
+          request: {
+            requestId: requestModel.requestId,
+            model: requestModel.model,
+            usageContext: requestModel.usageContext,
+            messages,
+          },
+        }),
     });
     if (usesCloudWallet) scheduleCloudAccountQuotaRefresh();
     const output = String(result.content || '').trim();
     if (!output) throw new Error('Agent API 没有返回可写入的文字结果');
+    if (usesCloudWallet && options.getLatestTarget && !options.getLatestTarget()) throw new Error('原文字节点已不在当前画布，结果尚未写回');
     options.updateTextOutput(output);
+    if (usesCloudWallet) await acknowledgeChatCompletion(requestId);
     if (options.showResultToast !== false) {
       showToast('文字节点已由 Agent 生成结果');
     }
