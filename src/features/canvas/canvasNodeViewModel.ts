@@ -14,6 +14,7 @@ import { normalizeCanvasWorkflowUserInput } from '../canvasWorkflowUserInput';
 import { normalizeDesignAgentConfig } from '../designAgentNode';
 import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,getImageAspectRatioOptionsForResolution,getVideoAspectRatioOptions,hasServerAiCatalog,normalizeCapabilityOption,normalizeVideoDurationSelection,resolveEffectiveVideoResolution,resolveImageModelCapabilities,resolveVideoModelCapabilities } from '../aiModelCapabilities';
 import { resolveCanvasWalletVideoModelContext } from '../canvasWalletVideoModelContext';
+import { canvasImageReferencesDisabled } from '../canvasImageReferencePolicy';
 
 export type CanvasNodeViewModelScope = Record<string, any>;
 
@@ -586,9 +587,10 @@ const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                             : null;
                           const canvasWorkflowAllowsImages = canvasWorkflowUserInput?.acceptImages !== false;
                           const canvasWorkflowAllowsFiles = canvasWorkflowUserInput?.acceptFiles === true;
-                          const showCanvasAiAttachmentControl = !isCanvasWorkflowItem
-                            || canvasWorkflowAllowsImages
-                            || canvasWorkflowAllowsFiles;
+                          const showCanvasAiAttachmentControl = canvasItem.ai?.type === 'image-generator'
+                            && canvasImageReferencesDisabled(canvasItem, scope)
+                            ? Boolean(canvasItem.inputs?.length)
+                            : !isCanvasWorkflowItem || canvasWorkflowAllowsImages || canvasWorkflowAllowsFiles;
                           const canvasAiOutputs = isCanvasAiNodeItem ? getCanvasAiOutputPreviewSlots(canvasItem) : [];
                           const canvasAiImagePreviewGallery = getPreviewGallery(canvasItem, canvasAiOutputs, canvasAiMediaType);
                           const isCanvasAiOutputsExpanded = canvasAiExpandedOutputNodeIds.has(canvasItem.id);

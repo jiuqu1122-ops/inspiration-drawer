@@ -4160,7 +4160,7 @@ function MainApp() {
     preset?: CanvasAiPromptPreset,
     inputIds: string[] = [],
     mediaType: 'image' | 'video' = 'image'
-  ): CanvasImageItem => { return buildCanvasAiGeneratorNodeImpl({ canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiProvider, canvasAiUnifiedImageModelOptions, canvasAiUnifiedVideoModelOptions, createAssetId, getCanvasAiResolvedModel, makeCanvasNodeId }, pos, preset, inputIds, mediaType); };
+  ): CanvasImageItem => { return buildCanvasAiGeneratorNodeImpl({ canvasItemsRef, showToast, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiProvider, canvasAiUnifiedImageModelOptions, canvasAiUnifiedVideoModelOptions, createAssetId, getCanvasAiResolvedModel, makeCanvasNodeId }, pos, preset, inputIds, mediaType); };
 
   const addCanvasMusicGeneratorNode = () => {
     const node = buildCanvasAiGeneratorNode(getCanvasDropPosition());
@@ -4467,15 +4467,15 @@ function MainApp() {
     replacement: CanvasReferenceReplaceTarget,
     nextInputId: string,
     options: { pushUndo?: boolean } = {},
-  ) => { return replaceCanvasGeneratorReferenceImpl({ canReplaceCanvasImageReferenceForTarget, canvasItemsRef, pushCanvasUndoSnapshot, setCanvasInputMenuForId, setCanvasReferenceReplacement, showToast, updateCanvasItemsImmediate, updateCanvasSelection }, replacement, nextInputId, options); };
+  ) => { return replaceCanvasGeneratorReferenceImpl({ canvasAiCloudImageModels, canvasAiCredentialSource, canReplaceCanvasImageReferenceForTarget, canvasItemsRef, pushCanvasUndoSnapshot, setCanvasInputMenuForId, setCanvasReferenceReplacement, showToast, updateCanvasItemsImmediate, updateCanvasSelection }, replacement, nextInputId, options); };
 
   const rotateCanvasImageClockwise = (id: string) => { return rotateCanvasImageClockwiseImpl({ canvasItemsRef, growCanvasToFit, pushCanvasUndoSnapshot, updateCanvasItemsImmediate, updateCanvasSelection }, id); };
 
-  const connectSelectedCanvasItemsToGenerator = (targetId: string) => { return connectSelectedCanvasItemsToGeneratorImpl({ applyCanvasImageFusionConnectionPatch, canReplaceCanvasImageReferenceForTarget, canvasItemsRef, canvasReferenceReplaceTargetRef, canvasSelectedIdsRef, getCanvasImageFusionPreferredRole, pendingCanvasFusionRoleRef, pushCanvasUndoSnapshot, replaceCanvasGeneratorReference, showToast, updateCanvasItemsImmediate, updateCanvasSelection }, targetId); };
+  const connectSelectedCanvasItemsToGenerator = (targetId: string) => { return connectSelectedCanvasItemsToGeneratorImpl({ canvasAiCloudImageModels, canvasAiCredentialSource, applyCanvasImageFusionConnectionPatch, canReplaceCanvasImageReferenceForTarget, canvasItemsRef, canvasReferenceReplaceTargetRef, canvasSelectedIdsRef, getCanvasImageFusionPreferredRole, pendingCanvasFusionRoleRef, pushCanvasUndoSnapshot, replaceCanvasGeneratorReference, showToast, updateCanvasItemsImmediate, updateCanvasSelection }, targetId); };
 
-  const connectCanvasItems = (sourceId: string, targetId: string) => { return connectCanvasItemsImpl({ applyCanvasImageFusionConnectionPatch, canvasItemsRef, getCanvasImageFusionPreferredRole, pendingCanvasFusionRoleRef, pushCanvasUndoSnapshot, showToast, updateCanvasItemsImmediate, updateCanvasSelection }, sourceId, targetId); };
+  const connectCanvasItems = (sourceId: string, targetId: string) => { return connectCanvasItemsImpl({ canvasAiCloudImageModels, canvasAiCredentialSource, applyCanvasImageFusionConnectionPatch, canvasItemsRef, getCanvasImageFusionPreferredRole, pendingCanvasFusionRoleRef, pushCanvasUndoSnapshot, showToast, updateCanvasItemsImmediate, updateCanvasSelection }, sourceId, targetId); };
 
-  const connectCanvasItemsToGenerator = (sourceIds: string[], targetId: string) => { return connectCanvasItemsToGeneratorImpl({ applyCanvasImageFusionConnectionPatch, canvasItemsRef, getCanvasImageFusionPreferredRole, pendingCanvasFusionRoleRef, pushCanvasUndoSnapshot, showToast, updateCanvasItemsImmediate, updateCanvasSelection }, sourceIds, targetId); };
+  const connectCanvasItemsToGenerator = (sourceIds: string[], targetId: string) => { return connectCanvasItemsToGeneratorImpl({ canvasAiCloudImageModels, canvasAiCredentialSource, applyCanvasImageFusionConnectionPatch, canvasItemsRef, getCanvasImageFusionPreferredRole, pendingCanvasFusionRoleRef, pushCanvasUndoSnapshot, showToast, updateCanvasItemsImmediate, updateCanvasSelection }, sourceIds, targetId); };
 
   const addCanvasAiGeneratorNodeForSources = (sourceIds: string[], world: { x: number; y: number }) => { return addCanvasAiGeneratorNodeForSourcesImpl({ appendCanvasItems, buildCanvasAiGeneratorNode, canvasItemsRef, showToast, updateCanvasSelection }, sourceIds, world); };
 
@@ -4557,9 +4557,9 @@ function MainApp() {
     expandedNodeId?: string,
   ) => { return handleCanvasWorkflowSlotDropImpl({ canvasItemsRef, clearDrawerItemDragState, createCanvasImageItemFromFile, findCanvasWorkflowSlot, getDraggedDrawerItemId, itemsRef, replaceCanvasWorkflowSlotAssets, showToast }, event, moduleId, slotId, expandedNodeId); };
 
-  const chooseLocalImagesForCanvasGenerator = (targetId: string) => { return chooseLocalImagesForCanvasGeneratorImpl({ canReplaceCanvasImageReferenceForTarget, canvasItemsRef, canvasReferenceReplaceTargetRef, canvasUploadInputRef, chooseLocalVideosForCanvasGenerator, pendingCanvasFusionRoleRef, pendingCanvasFusionUploadRoleRef, pendingCanvasReferenceUploadReplaceRef, pendingCanvasUploadTargetIdRef, setCanvasInputMenuForId }, targetId); };
+  const chooseLocalImagesForCanvasGenerator = (targetId: string) => { return chooseLocalImagesForCanvasGeneratorImpl({ canvasAiCloudImageModels, canvasAiCredentialSource, showToast, canReplaceCanvasImageReferenceForTarget, canvasItemsRef, canvasReferenceReplaceTargetRef, canvasUploadInputRef, chooseLocalVideosForCanvasGenerator, pendingCanvasFusionRoleRef, pendingCanvasFusionUploadRoleRef, pendingCanvasReferenceUploadReplaceRef, pendingCanvasUploadTargetIdRef, setCanvasInputMenuForId }, targetId); };
 
-  const handleCanvasGeneratorUpload = async (event: React.ChangeEvent<HTMLInputElement>) => { return handleCanvasGeneratorUploadImpl({ appendCanvasItems, canvasItemsRef, connectCanvasItemsToGenerator, createCanvasImageItemFromFile, findCanvasWorkflowSlot, pendingCanvasFusionRoleRef, pendingCanvasFusionUploadRoleRef, pendingCanvasReferenceUploadReplaceRef, pendingCanvasUploadTargetIdRef, pendingCanvasWorkflowSlotUploadRef, replaceCanvasGeneratorReference, replaceCanvasWorkflowSlotAssets, showToast }, event); };
+  const handleCanvasGeneratorUpload = async (event: React.ChangeEvent<HTMLInputElement>) => { return handleCanvasGeneratorUploadImpl({ canvasAiCloudImageModels, canvasAiCredentialSource, appendCanvasItems, canvasItemsRef, connectCanvasItemsToGenerator, createCanvasImageItemFromFile, findCanvasWorkflowSlot, pendingCanvasFusionRoleRef, pendingCanvasFusionUploadRoleRef, pendingCanvasReferenceUploadReplaceRef, pendingCanvasUploadTargetIdRef, pendingCanvasWorkflowSlotUploadRef, replaceCanvasGeneratorReference, replaceCanvasWorkflowSlotAssets, showToast }, event); };
 
   const chooseLocalFilesForCanvasWorkflow = (targetId: string) => { return chooseLocalFilesForCanvasWorkflowImpl({ canvasItemsRef, canvasWorkflowFileInputRef, pendingCanvasWorkflowFileTargetIdRef, setCanvasInputMenuForId, showToast }, targetId); };
 

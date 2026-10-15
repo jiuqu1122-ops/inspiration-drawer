@@ -91,6 +91,38 @@ function realControlScenario() {
   return { target, ref, tokens, pending, control, event };
 }
 
+it.each(['recovery', 'error'] as const)('keeps a partially completed image on the original %s request through its real control', async status => {
+  const scenario = realControlScenario();
+  const receipt = 'partial-image-receipt';
+  const originalOutputs = [
+    { id: 'completed-image', status: 'success' as const, clientRequestId: receipt, url: 'https://cdn.example/completed.png' },
+    { id: 'pending-image', status: 'recovery' as const, clientRequestId: receipt },
+  ];
+  scenario.target.ai = { ...scenario.target.ai!, status, imageClientRequestId: receipt,
+    error: status === 'error' ? 'IMAGE_TASK_RECOVERY_REQUIRED: original result is uncertain' : undefined,
+    outputs: originalOutputs };
+  vi.mocked(invoke).mockResolvedValueOnce({ status: 'processing' });
+  handleCanvasAiRunClickImpl(scenario.control,
+    scenario.event as unknown as Parameters<typeof handleCanvasAiRunClickImpl>[1], scenario.target.id);
+  await Promise.all(scenario.pending);
+  expect(scenario.ref.current).toEqual([scenario.target]);
+  expect(scenario.target.ai).toMatchObject({ status: 'recovery', imageClientRequestId: receipt, outputs: originalOutputs });
+  expect(generateCanvasAiProviderImages).not.toHaveBeenCalled();
+  vi.mocked(invoke).mockResolvedValueOnce({ status: 'succeeded', images: ['https://cdn.example/completed.png', 'https://cdn.example/recovered.png'] });
+  handleCanvasAiRunClickImpl(scenario.control,
+    scenario.event as unknown as Parameters<typeof handleCanvasAiRunClickImpl>[1], scenario.target.id);
+  await Promise.all(scenario.pending);
+  expect(scenario.ref.current).toEqual([scenario.target]);
+  expect(scenario.target.ai).toMatchObject({ status: 'success', imageClientRequestId: receipt });
+  expect(scenario.target.ai?.outputs?.map(output => output.url)).toEqual(['https://cdn.example/completed.png', 'https://cdn.example/recovered.png']);
+  expect(generateCanvasAiProviderImages).not.toHaveBeenCalled();
+  expect(vi.mocked(invoke).mock.calls).toEqual([
+    ['recover_cloud_image_generation', { clientRequestId: receipt }],
+    ['recover_cloud_image_generation', { clientRequestId: receipt }],
+  ]);
+  expect(scenario.tokens.current.size).toBe(0);
+});
+
 it.each(['click', 'pointer and click'] as const)('starts fresh jobs through the real %s control chain after a completed result', async action => {
   const scenario = realControlScenario();
   scenario.target.ai = { ...scenario.target.ai!, status: 'success', imageClientRequestId: 'old-receipt',

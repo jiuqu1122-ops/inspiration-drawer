@@ -31,6 +31,7 @@ import { resolveCanvasWalletVideoModelContext } from '../../canvasWalletVideoMod
 import { reorderCanvasInputs } from '../../canvasReferenceInputs';
 import { clamp } from '../../common';
 import { findCanvasImageModelChoice,resolveCanvasImageRequestSettings } from '../canvasImageRequestSettings';
+import { CANVAS_IMAGE_REFERENCE_DISABLED_MESSAGE, canvasImageReferencesDisabled, getCanvasImageReferenceCapabilities, hasCanvasImageReferenceInputs } from '../../canvasImageReferencePolicy';
 
 type canvasGenerationActionContext = { canvasItemsRef: React.RefObject<CanvasImageItem[]>; createCanvasAudioItemFromPath: (originalPath: string, index?: number, client?: { x: number; y: number; }) => Promise<CanvasImageItem | null>; showToast: (message: string) => void; appendCanvasItems: (nextItems: CanvasImageItem[], label: string, select?: boolean) => number; connectCanvasItemsToGenerator: (sourceIds: string[], targetId: string) => boolean; setCanvasInputMenuForId: React.Dispatch<React.SetStateAction<string | null>>; setCanvasContextMenu: React.Dispatch<React.SetStateAction<CanvasContextMenuState | null>>; setCanvasInputPickTargetId: React.Dispatch<React.SetStateAction<string | null>>; updateCanvasSelection: (ids: string[]) => void; canvasReferenceReplaceTargetRef: React.RefObject<CanvasReferenceReplaceTarget | null>; targetId: string | undefined; canReplaceCanvasImageReferenceForTarget: (target?: CanvasImageItem) => boolean; replaceCanvasGeneratorReference: (replacement: CanvasReferenceReplaceTarget, nextInputId: string, options?: { pushUndo?: boolean; }) => boolean; connectCanvasItems: (sourceId: string, targetId: string) => boolean; setCanvasInteractionActive: (active: boolean, releaseDelay?: number, _options?: { preserveImageSources?: boolean; }) => void; getCanvasItemRenderedBox: (canvasItem: CanvasImageItem) => CanvasItemBox; CANVAS_CONNECTION_HANDLE_OUTSET: 0; canvasSelectedIdsRef: React.RefObject<string[]>; canvasConnectionDragRef: React.RefObject<{ fromId: string; sourceIds: string[]; pointerId: number; fromX: number; fromY: number; } | null>; setCanvasConnectionDraft: React.Dispatch<React.SetStateAction<{ fromId: string; sourceIds: string[]; fromX: number; fromY: number; toX: number; toY: number; } | null>>; autoScrollCanvasNearEdge: (event: { clientX: number; clientY: number; }) => void; getCanvasPointFromClient: (clientX: number, clientY: number) => { x: number; y: number; }; fromId: string; sourceIds: string[]; fromX: number; fromY: number; x: number; y: number; canvasConnectionDraft: { fromId: string; sourceIds: string[]; fromX: number; fromY: number; toX: number; toY: number; } | null; canvasInputActionDragRef: React.RefObject<{ targetId: string; pointerId: number; fromX: number; fromY: number; } | null>; setCanvasInputActionDraft: React.Dispatch<React.SetStateAction<{ targetId: string; fromX: number; fromY: number; toX: number; toY: number; } | null>>; removeCanvasConnection: (targetId: string, sourceId: string, label?: string) => boolean; pushCanvasUndoSnapshot: (label: string, options?: { layoutOnly?: boolean; shareImmutableItems?: boolean; }) => void; updateCanvasItemsImmediate: (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => CanvasImageItem[]; canvasReferenceLongPressRef: React.RefObject<{ targetId: string; inputId: string; overInputId: string; pointerId: number; startClientX: number; startClientY: number; clientX: number; clientY: number; previewSource: string; inputIndex: number; rotation: 0 | 90 | 180 | 270; activated: boolean; timer: number | null; previousBodyCursor: string; cleanup: () => void; } | null>; cleanup: (() => void) | undefined; setCanvasReferenceDragState: React.Dispatch<React.SetStateAction<CanvasReferenceDragState | null>>; canvasReferenceSuppressClickRef: React.RefObject<{ targetId: string; } | null>; setCanvasReferenceReplacement: (next: CanvasReferenceReplaceTarget | null) => void; canvasRectsIntersect: (a: CanvasItemBox, b: CanvasItemBox) => boolean; createAssetId: () => `${string}-${string}-${string}-${string}-${string}`; makeCanvasNodeId: (seed: string, kind?: string) => string; getCanvasAiRerunNodePosition: (source: CanvasImageItem) => { x: number; y: number; }; activeCanvasIdRef: React.RefObject<string>; canvasesRef: React.RefObject<CanvasRecord[]>; canvasAiCredentialSource: CanvasAiCredentialSource; canvasAiUnifiedImageModelOptions: RoundedSelectOption[]; canvasAiCloudImageModels: CloudImageModelsResult | null; canvasAiProvider: CanvasAiProvider; isCanvasAiLicenseManaged: boolean; effectiveCanvasAiProvider: CanvasAiProvider; canvasAiApiKey: string; canvasAiNewApiVideoKey: string; getCanvasImageInputBufferItemsForNode: (canvasItem: CanvasImageItem, sourceItems?: CanvasImageItem[]) => BufferItem[]; getCanvasTextInputsForNode: (canvasItem: CanvasImageItem, sourceItems?: CanvasImageItem[]) => string[]; notifyCanvasAiGenerationResult: (options: { status: "success" | "partial" | "error"; label: string; mediaType: "image" | "video"; generatedCount?: number; requestedCount?: number; error?: string; }) => void; createCanvasAiOutputDrafts: (target: CanvasImageItem, prompt: string, clientRequestId?: string) => CanvasAiGeneratedOutput[]; effectiveCanvasAiModel: string; getCanvasAiResolvedModel: (provider: CanvasAiProvider, model?: string | null, mediaType?: "image" | "video") => string; getCanvasImageInputsForNode: (canvasItem: CanvasImageItem, mode?: "stable" | "remote-first", delivery?: "auto" | "direct" | "remote-only", sourceItems?: CanvasImageItem[], referenceFormat?: "any" | "jpeg", publicationPreference?: "cloudflared-first" | "hosted-first", portableWalletReferences?: boolean, runtimeProvider?: CanvasAiProvider) => Promise<{ images: string[]; videos: string[]; audios: string[]; temporaryShareIds: TemporaryReferenceShare[]; usedRemoteFirst: boolean; }>; images: string[]; usedRemoteFirst: boolean; videos: string[]; audios: string[]; temporaryShareIds: TemporaryReferenceShare[]; canvasAiEndpoint: string; canvasAiHeadersText: string; canvasAiApiProvider: string; effectiveCanvasAiGatewayKind: AiGatewayKind; effectiveCanvasAiApiProvider: string; effectiveCanvasAiEndpoint: string; getCanvasAiErrorSummary: (error?: string | null) => string; cacheCanvasGeneratedImageSource: (source: string, name: string, options?: { throwOnFailure?: boolean; }) => Promise<{ url: string; path: string; sourceUrl: string; }>; path: string; url: string; createCanvasImagePreviewThumbnail: (source: string, path?: string, allowWebviewFallback?: boolean) => Promise<string>; sourceUrl: string; pushDrawerUndoSnapshot: (label: string, options?: { shareImmutableItems?: boolean; }) => void; addGeneratedVideosToDrawer: (generatedItems: BufferItem[]) => void; addGeneratedImagesToDrawer: (generatedItems: BufferItem[], options?: { canvasId?: string; onOutputCachePatch?: (outputId: string, matchSources: string[], patch: Partial<CanvasAiGeneratedOutput>) => void; canvasOutputClientRequestId?: string; }) => void; updateDrawerItemsDeferred: (updater: (previous: BufferItem[]) => BufferItem[]) => void; setCanvasAiOutputSourceRecoveryTick: React.Dispatch<React.SetStateAction<number>>; AI_GENERATED_VIDEO_FOLDER_NAME: "AI视频"; refreshCloudAccount: (silent?: boolean) => Promise<CloudAccountSummary>; stopTemporaryReferenceShares: (shares: TemporaryReferenceShare[]) => Promise<void>; getFrameInterpolationVideoInput: (target: CanvasImageItem) => { source: string; item: CanvasImageItem; output?: undefined; } | { source: string; item: CanvasImageItem; output: CanvasAiGeneratedOutput; } | null; updateCanvasAiGeneratorData: (nodeId: string, patch: Partial<NonNullable<CanvasImageItem["ai"]>>, content?: string) => CanvasImageItem | undefined; source: string; output: CanvasAiGeneratedOutput | undefined; item: CanvasImageItem; getCanvasEnhancementInput: (target: CanvasImageItem) => { source: string; item: CanvasImageItem; output?: undefined; } | { source: string; item: CanvasImageItem; output: CanvasAiGeneratedOutput; } | null; commitCanvasAiPromptDraft: (canvasId: string, content?: string, sync?: boolean) => void; canvasSessionItemsRef: React.RefObject<Map<string, CanvasImageItem[]>>; getCanvasSessionItems: (canvasId: string) => CanvasImageItem[]; canvasAiRunTokensRef: React.RefObject<Map<string, string>>; markCanvasRunNodeActive: (canvasId: string, nodeId: string) => void; updateCanvasAiGeneratorDataForCanvas: (targetCanvasId: string, nodeId: string, patch: Partial<NonNullable<CanvasImageItem["ai"]>>, content?: string) => CanvasImageItem | undefined; runCanvasAiGeneratorTarget: (target: CanvasImageItem, options: { canvasId?: string; sourceItems?: () => CanvasImageItem[]; updateAi: (patch: Partial<NonNullable<CanvasImageItem["ai"]>>, content?: string) => void; forceUpdateAi?: (patch: Partial<NonNullable<CanvasImageItem["ai"]>>, content?: string) => void; getLatestTarget?: () => CanvasImageItem | undefined; selectTarget?: () => void; showResultToast?: boolean; toastLabel?: string; clientRequestId?: string; requireLocalImageOutputs?: boolean; }) => Promise<CanvasAiGeneratedOutput[]>; isCanvasModeRef: React.RefObject<boolean>; markCanvasRunNodeSettled: (canvasId: string, nodeId: string) => void; waitForCanvasBackgroundPatches: (canvasId: string) => Promise<void>; runCanvasTextAgentNode: (targetId: string) => Promise<void>; runCanvasFrameInterpolationNode: (targetId: string) => Promise<void>; runCanvasEnhancementNode: (targetId: string) => Promise<void>; runCanvasExpandedWorkflowFromNode: (targetId: string) => Promise<boolean>; runCanvasAiGeneratorNode: (targetId: string) => Promise<void>; cloneCanvasAiGeneratorForRerun: (source: CanvasImageItem) => CanvasImageItem | null; };
 
@@ -135,9 +136,14 @@ export const startPickCanvasImageForGeneratorImpl = (ctx: Pick<canvasGenerationA
   const { canvasItemsRef, setCanvasContextMenu, setCanvasInputMenuForId, setCanvasInputPickTargetId, showToast, updateCanvasSelection } = ctx;
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !canUseCanvasItemAsAiTarget(target)) return;
+    if (canvasImageReferencesDisabled(target, ctx)) {
+      showToast(CANVAS_IMAGE_REFERENCE_DISABLED_MESSAGE);
+      return;
+    }
     const serverCapabilities = getServerDrivenVideoCapabilities(ctx, target);
     const structuredVideoCapabilities = getActiveStructuredCapabilities(target);
-    const allowImageReference = serverCapabilities?.supportsReferenceImages ?? supportsStructuredReference(
+    const allowImageReference = getCanvasImageReferenceCapabilities(target, ctx)?.supportsReferenceImages
+      ?? serverCapabilities?.supportsReferenceImages ?? supportsStructuredReference(
       structuredVideoCapabilities,
       'supportsReferenceImages',
       'maxReferenceImages',
@@ -186,9 +192,14 @@ export const pickCanvasImageForGeneratorImpl = (ctx: Pick<canvasGenerationAction
   const { canReplaceCanvasImageReferenceForTarget, canvasItemsRef, canvasReferenceReplaceTargetRef, connectCanvasItems, replaceCanvasGeneratorReference, setCanvasInputPickTargetId, showToast } = ctx;
     const source = canvasItemsRef.current.find(item => item.id === sourceId);
     const target = canvasItemsRef.current.find(item => item.id === targetId);
+    if (canvasImageReferencesDisabled(target, ctx)) {
+      showToast(CANVAS_IMAGE_REFERENCE_DISABLED_MESSAGE);
+      return false;
+    }
     const serverCapabilities = getServerDrivenVideoCapabilities(ctx, target);
     const structuredVideoCapabilities = getActiveStructuredCapabilities(target);
-    const allowImageReference = serverCapabilities?.supportsReferenceImages ?? supportsStructuredReference(
+    const allowImageReference = getCanvasImageReferenceCapabilities(target, ctx)?.supportsReferenceImages
+      ?? serverCapabilities?.supportsReferenceImages ?? supportsStructuredReference(
       structuredVideoCapabilities,
       'supportsReferenceImages',
       'maxReferenceImages',
@@ -797,6 +808,14 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
     };
     const manualPrompt = (target.item.content || (targetAi.presetPrompt ? '' : targetAi.prompt || '')).trim();
     const resultLabel = options.toastLabel || 'AI 节点';
+    if (useCloudWallet && canvasImageReferencesDisabled(target, ctx) && hasCanvasImageReferenceInputs(target, getSourceItems())) {
+      (options.forceUpdateAi || options.updateAi)({ status: 'error', error: CANVAS_IMAGE_REFERENCE_DISABLED_MESSAGE });
+      if (options.showResultToast !== false) {
+        showToast(`${resultLabel}生成失败：${CANVAS_IMAGE_REFERENCE_DISABLED_MESSAGE}`);
+        notifyCanvasAiGenerationResult({ status: 'error', label: resultLabel, mediaType, error: CANVAS_IMAGE_REFERENCE_DISABLED_MESSAGE });
+      }
+      return [] as CanvasAiGeneratedOutput[];
+    }
     if (walletVideoModelContext?.serverDriven
       && walletVideoModelContext.capabilityStatus === 'unresolved') {
       const errorSummary = '模型能力尚未加载，请刷新模型';
@@ -1041,6 +1060,10 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         usePortableWalletReferences,
         provider,
       );
+      temporaryReferenceShares = preparedInputs.temporaryShareIds;
+      if (useCloudWallet && mediaType === 'image' && preparedInputs.images.length > 0 && canvasImageReferencesDisabled(target, ctx)) {
+        throw new Error(CANVAS_IMAGE_REFERENCE_DISABLED_MESSAGE);
+      }
       const referencePreparationCompletedAt = Date.now();
       if (mediaType === 'image') {
         console.info('[canvas_image_reference_timing]', {
@@ -2301,6 +2324,10 @@ export const generateCanvasAiGeneratorNodeImpl = async (ctx: Pick<canvasGenerati
         return;
       }
       if (target.ai?.type === 'music-generator' && target.ai.musicClientRequestId) {
+        await runCanvasAiGeneratorNode(targetId);
+        return;
+      }
+      if (target.ai?.type === 'image-generator' && canvasImageNeedsRecovery(target.ai)) {
         await runCanvasAiGeneratorNode(targetId);
         return;
       }

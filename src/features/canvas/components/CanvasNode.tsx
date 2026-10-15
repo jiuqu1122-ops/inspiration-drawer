@@ -3,6 +3,7 @@ import { Brush,ChevronLeft,Clock,Copy,Download,File as FileIcon,Film,Image as Im
 import { CanvasMusicNode } from '../../canvasMusic';
 import { CanvasAudioContent } from '../../canvasAudio';
 import { canvasImageNeedsRecovery } from '../../canvasImageOutputPlan';
+import { canvasImageReferencesDisabled } from '../../canvasImageReferencePolicy';
 import { CanvasAiRunButton } from '../../../components/CanvasAiRunButton';
 import { CanvasGeneratorControls } from '../../../components/CanvasGeneratorControls';
 import { CanvasGeneratorToolbar } from '../../../components/CanvasGeneratorToolbar';
@@ -210,6 +211,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                               || (isCanvasWorkflowItem && isCanvasFileReferencePreviewItem(item))
                             ))
                             : expandedCanvasInputPreviewItems;
+                          const canvasImageReferencesAllowed = !canvasImageReferencesDisabled(canvasItem, scope);
                           const isCanvasImageFusionItem = isCanvasImageFusionAi(canvasItem.ai);
                           const canvasImageFusionConfig = isCanvasImageFusionItem
                             ? normalizeCanvasImageFusionConfig(canvasItem.ai?.imageFusion, canvasItem.inputs || [])
@@ -373,7 +375,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                         {showCanvasAiAttachmentControl
                                         && (canvasAiMediaType !== 'video'
                                           || shouldRenderCanvasVideoReferenceRail(canvasVideoReferenceSlotCount)) && (
-                                        isCanvasImageFusionItem && canvasImageFusionConfig ? (
+                                        isCanvasImageFusionItem && canvasImageFusionConfig && canvasImageReferencesAllowed ? (
                                           <CanvasImageFusionControls
                                             basePreviewSource={canvasImageFusionBasePreview ? getCanvasReferencePreviewSource(canvasImageFusionBasePreview) : undefined}
                                             stylePreviewSource={canvasImageFusionStylePreview ? getCanvasReferencePreviewSource(canvasImageFusionStylePreview) : undefined}
@@ -422,7 +424,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                             setCanvasInputMenuForId((prev: string | null) => prev === canvasItem.id ? null : canvasItem.id);
                                           }}
                                           className={`group/reference relative flex h-[58px] min-w-0 ${canvasAiMediaType === 'video' ? 'w-fit max-w-full shrink overflow-hidden' : 'max-w-[330px] shrink-0 overflow-visible'} items-center justify-start rounded-[12px] text-stone-400 transition-colors hover:text-stone-600 dark:text-white/38 dark:hover:text-white/64`}
-                                          title={isCanvasWorkflowItem ? '添加或管理工作流素材' : '添加或管理参考图'}
+                                          title={isCanvasWorkflowItem ? '添加或管理工作流素材' : canvasImageReferencesAllowed ? '添加或管理参考图' : '已连接输入'}
                                         >
                                           {canvasAiMediaType === 'video' ? (
                                             <CanvasHorizontalRail fitContent>
@@ -553,7 +555,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                 const inputSourceNode = inputItem.node;
                                                 const actualInputIndex = Math.max(0, (canvasItem.inputs || []).indexOf(inputItem.disconnectId));
                                                 const isImageReference = isCanvasImageReferencePreviewItem(inputItem);
-                                                const canSortReference = isImageReference && !inputItem.bufferItem;
+                                                const canSortReference = canvasImageReferencesAllowed && isImageReference && !inputItem.bufferItem;
                                                 const isDraggingReference = canvasReferenceDragState?.targetId === canvasItem.id
                                                   && canvasReferenceDragState.inputId === inputItem.disconnectId;
                                                 const isReferenceDropTarget = canvasReferenceDragState?.targetId === canvasItem.id
@@ -561,8 +563,8 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                 return (
                                                   <span
                                                     key={inputItem.id}
-                                                    data-canvas-reference-target-id={canvasItem.id}
-                                                    data-canvas-reference-input-id={inputItem.disconnectId}
+                                                    data-canvas-reference-target-id={canvasImageReferencesAllowed ? canvasItem.id : undefined}
+                                                    data-canvas-reference-input-id={canvasImageReferencesAllowed ? inputItem.disconnectId : undefined}
                                                     className={`group/reference-thumbnail relative flex h-[49px] w-[49px] shrink-0 items-center justify-center rounded-[14px] text-stone-400 transition-[transform,opacity,box-shadow] dark:text-white/60 ${
                                                       isDraggingReference ? 'z-20 scale-[0.94] opacity-25' : 'hover:z-10 hover:scale-[1.03]'
                                                     } ${isReferenceDropTarget && !isDraggingReference ? 'ring-2 ring-blue-500/75 ring-offset-1 ring-offset-white dark:ring-blue-300/75 dark:ring-offset-stone-900' : ''}`}
@@ -570,11 +572,12 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                     <button
                                                       data-no-drag="true"
                                                       type="button"
+                                                      disabled={!canvasImageReferencesAllowed}
                                                       className={`relative isolate flex h-full w-full touch-none items-center justify-center overflow-hidden rounded-[14px] bg-stone-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/80 dark:bg-stone-900 ${
                                                         canSortReference ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'
                                                       }`}
-                                                      aria-label={isImageReference ? `替换参考图 ${inputIndex + 1}` : `管理输入 ${inputIndex + 1}`}
-                                                      title={canSortReference ? '点击替换图片；长按后拖动调整顺序' : isImageReference ? '点击替换图片' : '点击管理输入'}
+                                                      aria-label={isImageReference ? `${canvasImageReferencesAllowed ? '替换参考图' : '已连接参考图'} ${inputIndex + 1}` : `管理输入 ${inputIndex + 1}`}
+                                                      title={!canvasImageReferencesAllowed ? '当前模型不支持参考图，可移除已有输入' : canSortReference ? '点击替换图片；长按后拖动调整顺序' : isImageReference ? '点击替换图片' : '点击管理输入'}
                                                       onPointerDown={(event) => {
                                                         if (!canSortReference) {
                                                           event.stopPropagation();
@@ -592,6 +595,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                       onClick={(event) => {
                                                         event.preventDefault();
                                                         event.stopPropagation();
+                                                        if (!canvasImageReferencesAllowed) return;
                                                         const suppressed = canvasReferenceSuppressClickRef.current;
                                                         if (suppressed?.targetId === canvasItem.id) {
                                                           canvasReferenceSuppressClickRef.current = null;
@@ -660,7 +664,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                                   </span>
                                                 );
                                               })}
-                                              <button
+                                              {canvasImageReferencesAllowed && <button
                                                 data-no-drag="true"
                                                 type="button"
                                                 className="group/add-reference flex h-[49px] w-[49px] shrink-0 flex-col items-center justify-center gap-0.5 overflow-hidden rounded-[14px] border border-dashed border-stone-300/65 bg-white/42 text-[8px] font-black text-stone-400 transition-[border-color,color,background-color,transform] hover:scale-[1.03] hover:border-blue-400/75 hover:bg-blue-50/70 hover:text-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 dark:border-white/[0.16] dark:bg-white/[0.025] dark:text-white/42 dark:hover:border-blue-300/60 dark:hover:bg-blue-400/10 dark:hover:text-blue-200"
@@ -675,7 +679,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                               >
                                                 <Plus className="h-3.5 w-3.5" strokeWidth={2.25} />
                                                 <span>参考图</span>
-                                              </button>
+                                              </button>}
                                             </CanvasHorizontalRail>
                                           ) : canvasInputPreviewItems.length > 0 ? (
                                             <span className="flex h-[58px] max-w-full items-center gap-1.5 overflow-hidden">

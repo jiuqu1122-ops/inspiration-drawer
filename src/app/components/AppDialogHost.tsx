@@ -1504,6 +1504,8 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
                 <p>改善音乐与钱包文字节点的连接稳定性；文字请求可在暂时连接错误后自动接管一次。</p>
                 <p>音乐结果待确认时保留原请求与已有曲目，恢复结果直接更新原节点。</p>
                 <p>统一音乐节点圆角，将积分提示放入生成按钮，移除多余的连接箭头。</p>
+                <p>钱包图片节点遵守管理端参考图开关：关闭后禁止新增参考图和图片连接，已有输入仍可移除，重新启用后可正常添加。</p>
+                <p>图片已有部分结果时，恢复操作继续查询原任务，避免误创建新生成任务。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

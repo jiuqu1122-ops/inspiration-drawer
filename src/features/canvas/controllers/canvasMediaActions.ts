@@ -25,6 +25,7 @@ import { createDefaultCanvasGroupName,getCanvasGroupId,getCommonCanvasGroup,rema
 import { CANVAS_EDGE_AUTOSCROLL_MARGIN,CANVAS_EDGE_AUTOSCROLL_SPEED,CANVAS_GROW_CHUNK,type CanvasAiGeneratedOutput,type CanvasImageItem,type CanvasItemBox,type CanvasResizeCorner,type DesignAgentConfig } from '../../canvasModel';
 import type { CanvasAiCredentialSource } from '../../canvasModel';
 import { resolveCanvasWalletVideoModelContext } from '../../canvasWalletVideoModelContext';
+import { getCanvasImageReferenceCapabilities } from '../../canvasImageReferencePolicy';
 import { clamp } from '../../common';
 import { normalizeDesignAgentConfig } from '../../designAgentNode';
 import { writeImageSourceToClipboard,writeLocalImageFileToClipboard } from '../../imageClipboard';
@@ -1884,6 +1885,7 @@ export const getCanvasImageInputBufferItemsForNodeImpl = (
       && (candidate.providerChannelId || '') === (canvasItem.ai?.providerChannelId || '')
     )) || canvasItem.ai?.providerCandidates?.[0];
     const structuredCapabilities = selectedCandidate?.modelCapabilities;
+    const walletImageCapabilities = getCanvasImageReferenceCapabilities(canvasItem, ctx);
     const resolvedImageCapabilities = structuredCapabilities && !isVideoGenerator
       ? resolveCanvasAiImageModelCapabilities({
         provider: selectedCandidate?.provider || canvasItem.ai?.provider,
@@ -1915,11 +1917,13 @@ export const getCanvasImageInputBufferItemsForNodeImpl = (
         resolvedVideoCapabilities,
       )
       : null;
-    const maxImageInputs = isImageFusion
-      ? 2
-      : isVideoGenerator
-        ? canvasVideoReferenceSlots?.imageSlots ?? 9
-        : resolvedImageCapabilities?.referenceImageLimit ?? 8;
+    const maxImageInputs = walletImageCapabilities
+      ? Math.min(walletImageCapabilities.referenceImageLimit, isImageFusion ? 2 : Infinity)
+      : isImageFusion
+        ? 2
+        : isVideoGenerator
+          ? canvasVideoReferenceSlots?.imageSlots ?? 9
+          : resolvedImageCapabilities?.referenceImageLimit ?? 8;
     const maxVideoInputs = isVideoGenerator ? canvasVideoReferenceSlots?.videoSlots ?? 0 : 0;
     const maxAudioInputs = isVideoGenerator ? canvasVideoReferenceSlots?.audioSlots ?? 0 : 0;
     let imageInputCount = 0;
