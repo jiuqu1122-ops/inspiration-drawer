@@ -4,12 +4,20 @@
 
 ## 下载
 
-当前版本：**8.0.24**
+当前版本：**8.0.25**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.24/Inspiration.Drawer_8.0.24_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.24)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.25/Inspiration.Drawer_8.0.25_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.25)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 8.0.25 更新
+
+- 无限画布支持从外部拖入音频文件，并在独立音频节点中试听。
+- 音乐生成支持显示积分价格，多首结果可分别下载或放入画布，修复音频节点操作按钮重叠的问题。
+- 图片节点根据管理端配置的结果模式和最大结果数展示生成占位，完善多图结果展示。
+- 生图参数栏可随模型参数调整宽度，改善模型名称、质量、尺寸等选项的显示。
+- 完善模型能力、质量和参考图参数的同步，改进任务查询隔离及旧图片缓存失效的处理。
 
 ## 8.0.24 更新
 
