@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { generateCanvasAiProviderImages } from '../../canvasAiImage';
 import { cloneCanvasAiGeneratorForRerunImpl, generateCanvasAiGeneratorNodeImpl, runCanvasAiGeneratorNodeImpl, runCanvasAiGeneratorTargetImpl } from './canvasGenerationActions';
 import { createCanvasAiOutputDraftsImpl } from './canvasMediaActions';
+import { getCanvasImageInputsForNodeImpl, uploadWalletReferenceInputsImpl } from './canvasInputActions';
 import type { CanvasImageItem } from '../../canvasModel';
 import { handleCanvasAiRunClickImpl, handleCanvasAiRunPointerDownImpl, runCanvasAiNodeFromControlImpl } from '../../snip/windowSnipActions';
 
@@ -146,6 +147,45 @@ it('passes a new receipt to the native cloud POST for each completed-node UI rer
   expect(scenario.ref.current.slice(1).map(node => node.ai?.outputs?.[0].url)).toEqual([
     'https://cdn.example/native-1-0.png', 'https://cdn.example/native-2-0.png',
   ]);
+});
+
+it.each([
+  ['gpt-image-2-5', 'max', true], ['gpt-image-2-5', 'max', false],
+  ['gpt-image-2-5-sunburst', undefined, true], ['gpt-image-2-5-sunburst', undefined, false],
+] as const)('preserves the canonical SKU, quality and staged references for %s (quality %s, reference %s)', async (model, quality, withReference) => {
+  const actual = await vi.importActual<typeof import('../../canvasAiImage')>('../../canvasAiImage');
+  vi.mocked(generateCanvasAiProviderImages).mockImplementation(actual.generateCanvasAiProviderImages);
+  const { target, ctx, updateAi } = fixture('single_asset');
+  const capabilities = { supportedQualities: quality ? ['high', 'xhigh', 'max'] : [], qualityParameter: 'quality',
+    minReferenceImages: 0, maxReferenceImages: 9, supportsReferenceImages: true,
+    resolutions: ['2k'], aspectRatios: ['16:9'], supportedOutputFormats: ['jpg'], maxOutputs: 4 };
+  target.ai = { ...target.ai!, model, quality, resolution: '2k', aspectRatio: '16:9', outputFormat: 'jpg',
+    providerCandidates: [{ source: 'wallet', provider: 'new-api', model: 'image2', canonicalModelId: model, modelCapabilities: capabilities }] };
+  const references = withReference ? [{ id: 'reference', type: 'image' as const, content: '', createdAt: 0, path: 'reference.png' }] : [];
+  target.inputs = references.map(item => item.id);
+  ctx.canvasAiCloudImageModels = { provider: 'new-api', models: [model], catalog: [{ id: model, displayName: model, modality: 'image', capabilities }] };
+  ctx.getCanvasImageInputBufferItemsForNode = () => references;
+  ctx.getCanvasImageInputsForNode = (node, mode = 'stable', delivery = 'auto', sources = [], format = 'any', preference = 'cloudflared-first', portable = false, provider) => (
+    getCanvasImageInputsForNodeImpl({
+      canvasAiProvider: 'new-api', getCanvasAiErrorSummary: String,
+      getCanvasImageInputBufferItemsForNode: () => references,
+      prepareCanvasAiInputSource: async () => ({ source: 'data:image/png;base64,fixture', remoteFallback: undefined, usedRemoteFirst: false }),
+      uploadWalletReferenceInputs: sources => uploadWalletReferenceInputsImpl({}, sources),
+      uploadXaisReferenceInputs: vi.fn(), publishLocalAiInputs: vi.fn(), stopTemporaryReferenceShares: vi.fn(),
+    }, node, mode, delivery, sources, format, preference, portable, provider)
+  );
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === 'upload_wallet_reference_images') return ['reference-images/fixture.png'];
+    if (command === 'generate_cloud_images') {
+      expect(args).toMatchObject({ request: { model, quality, inputImages: withReference ? ['reference-images/fixture.png'] : [] } });
+      return { images: ['https://cdn.example/result.png'], chargedCredits: '20', provider: 'test', model };
+    }
+    throw new Error(`Unexpected native command: ${command}`);
+  });
+  const output = await runCanvasAiGeneratorTargetImpl(ctx, target, { updateAi, showResultToast: false });
+  expect(output).toHaveLength(1);
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'generate_cloud_images')).toHaveLength(1);
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'upload_wallet_reference_images')).toHaveLength(withReference ? 1 : 0);
 });
 
 it('renders four working slots before one provider call while keeping its requested count at one', async () => {
