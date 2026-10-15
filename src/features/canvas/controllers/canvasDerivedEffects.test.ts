@@ -107,6 +107,44 @@ describe('background generation recovery scheduling', () => {
 describe('late local image cache completion', () => {
   beforeEach(() => { vi.stubGlobal('window', { setTimeout: vi.fn() }); });
   afterEach(() => { vi.unstubAllGlobals(); });
+  it.each(['same', 'new-request', 'new-source', 'new-path'] as const)(
+    'does not let a failed old cache download change the current %s', async change => {
+      const oldSource = 'https://api.unmind.art/v1/ai/image-results/old.png';
+      const newSource = 'https://api.unmind.art/v1/ai/image-results/new.png';
+      let nodes: CanvasImageItem[] = [{ id: 'node', x: 0, y: 0, width: 320, height: 300,
+        item: { id: 'item', type: 'text', content: '', createdAt: 0 },
+        ai: { type: 'image-generator', outputs: [{ id: 'slot', clientRequestId: 'old-request', status: 'success',
+          url: oldSource, sourceUrl: oldSource }] } }];
+      let reject!: (reason: Error) => void;
+      const ctx: Parameters<typeof runDerivedUiEffect02>[0] = {
+        isCanvasMode: true, canvasItems: nodes, itemsRef: { current: [] },
+        CANVAS_AI_OUTPUT_SOURCE_RECOVERY_RETRY_DELAY_MS: 8000,
+        canvasAiOutputSourceRecoveryAttemptedRef: { current: new Set() },
+        canvasAiOutputSourceRecoveryInFlightRef: { current: new Set() },
+        canvasAiOutputSourceRecoveryRetryAtRef: { current: new Map() },
+        cacheCanvasGeneratedImageSource: () => new Promise((_resolve, fail) => { reject = fail; }),
+        updateCanvasItemsImmediate: updater => { nodes = updater(nodes); return nodes; },
+        setItems: vi.fn(), enqueueCanvasAiOutputThumbnailJob: vi.fn(),
+        scheduleCanvasChangedNodesPatchSave: vi.fn(), scheduleCanvasStateSave: vi.fn(),
+        setCanvasAiOutputSourceRecoveryTick: vi.fn(),
+      };
+      runDerivedUiEffect02(ctx);
+      const replacement = { ...nodes[0].ai!.outputs![0], cacheStatus: 'pending' as const,
+        ...(change === 'new-request' ? { clientRequestId: 'new-request' } : {}),
+        ...(change === 'new-source' ? { sourceUrl: newSource, url: newSource } : {}),
+        ...(change === 'new-path' ? { path: 'new.png' } : {}),
+      };
+      nodes = [{ ...nodes[0], ai: { ...nodes[0].ai!, outputs: [replacement] } }];
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      reject(new Error('old cache failed'));
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      expect(nodes[0].ai?.outputs?.[0]).toEqual(change === 'same'
+        ? { ...replacement, cacheStatus: 'failed' } : replacement);
+      expect(ctx.setItems).not.toHaveBeenCalled();
+      expect(ctx.enqueueCanvasAiOutputThumbnailJob).not.toHaveBeenCalled();
+      warning.mockRestore();
+    },
+  );
   it.each([false, true])('applies a finished cache only to its original request (replaced: %s)', async replaced => {
     let finish!: (value: { url: string; path: string; sourceUrl: string }) => void;
     const oldSource = 'https://api.unmind.art/v1/ai/image-results/old.png';

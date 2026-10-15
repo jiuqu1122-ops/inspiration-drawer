@@ -1,15 +1,21 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
 import { generateCanvasAiProviderImages } from '../../canvasAiImage';
-import { runCanvasAiGeneratorTargetImpl } from './canvasGenerationActions';
+import { cloneCanvasAiGeneratorForRerunImpl, generateCanvasAiGeneratorNodeImpl, runCanvasAiGeneratorNodeImpl, runCanvasAiGeneratorTargetImpl } from './canvasGenerationActions';
 import { createCanvasAiOutputDraftsImpl } from './canvasMediaActions';
 import type { CanvasImageItem } from '../../canvasModel';
+import { handleCanvasAiRunClickImpl, handleCanvasAiRunPointerDownImpl, runCanvasAiNodeFromControlImpl } from '../../snip/windowSnipActions';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => undefined), convertFileSrc: (path: string) => `asset://${path}` }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
+vi.mock('../../drawerPrefs', () => ({
+  MIN_DRAWER_WIDTH: 880, MAX_DRAWER_WIDTH: 1920, MIN_DRAWER_HEIGHT: 560, MAX_DRAWER_HEIGHT: 1080,
+}));
 vi.mock('../../canvasAiImage', async original => ({ ...await original<object>(), generateCanvasAiProviderImages: vi.fn() }));
 beforeEach(() => {
   vi.mocked(generateCanvasAiProviderImages).mockReset();
-  vi.stubGlobal('window', { setTimeout, clearTimeout });
+  vi.mocked(invoke).mockClear();
+  vi.stubGlobal('window', { setTimeout, clearTimeout, performance: { now: () => 0 } });
   vi.stubGlobal('localStorage', { getItem: () => null });
   vi.spyOn(console, 'info').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -40,6 +46,107 @@ function fixture(outputMode: 'single_asset' | 'multiple_assets' = 'multiple_asse
   const updateAi = vi.fn(patch => { Object.assign(target.ai!, patch); });
   return { target, ctx, updateAi };
 }
+
+function realControlScenario() {
+  const { target, ctx } = fixture();
+  const ref = ctx.canvasItemsRef;
+  const tokens = { current: new Map<string, string>() };
+  const sessions = { current: new Map<string, CanvasImageItem[]>() };
+  const pending: Promise<void>[] = [];
+  let cloneSequence = 0;
+  const update = (_canvas: string, id: string, patch: Partial<NonNullable<CanvasImageItem['ai']>>) => {
+    const node = ref.current.find(item => item.id === id);
+    if (node?.ai) node.ai = { ...node.ai, ...patch };
+    return node;
+  };
+  const runNode = (id: string) => runCanvasAiGeneratorNodeImpl({
+    activeCanvasIdRef: ctx.activeCanvasIdRef, canvasItemsRef: ref, canvasAiRunTokensRef: tokens,
+    canvasSessionItemsRef: sessions, getCanvasSessionItems: () => ref.current,
+    isCanvasModeRef: { current: true }, commitCanvasAiPromptDraft: vi.fn(),
+    markCanvasRunNodeActive: vi.fn(), markCanvasRunNodeSettled: vi.fn(),
+    updateCanvasAiGeneratorDataForCanvas: update, updateCanvasSelection: vi.fn(),
+    waitForCanvasBackgroundPatches: async () => {}, showToast: vi.fn(),
+    runCanvasAiGeneratorTarget: (node, options) => runCanvasAiGeneratorTargetImpl(ctx, node, options),
+  }, id);
+  const generate = (id: string) => generateCanvasAiGeneratorNodeImpl({
+    activeCanvasIdRef: ctx.activeCanvasIdRef, canvasItemsRef: ref, canvasAiRunTokensRef: tokens,
+    appendCanvasItems: items => { ref.current = [...ref.current, ...items]; return items.length; },
+    cloneCanvasAiGeneratorForRerun: source => cloneCanvasAiGeneratorForRerunImpl({
+      createAssetId: () => `${++cloneSequence}-0-0-0-0`, makeCanvasNodeId: seed => `clone-${seed}`,
+      getCanvasAiRerunNodePosition: source => ({ x: source.x + source.width + 64, y: source.y }),
+    }, source),
+    commitCanvasAiPromptDraft: vi.fn(), runCanvasAiGeneratorNode: runNode,
+    runCanvasEnhancementNode: vi.fn(), runCanvasExpandedWorkflowFromNode: vi.fn(),
+    runCanvasFrameInterpolationNode: vi.fn(), runCanvasTextAgentNode: vi.fn(), showToast: vi.fn(),
+  }, id);
+  const control = {
+    canvasRunButtonPointerRef: { current: null as { targetId: string; at: number } | null },
+    runCanvasAiNodeFromControl: (id: string) => runCanvasAiNodeFromControlImpl({
+      canvasItemsRef: ref, generateCanvasWorkflowModuleNode: vi.fn(),
+      generateCanvasAiGeneratorNode: id => { const promise = generate(id); pending.push(promise); return promise; },
+    }, id),
+  };
+  const event = { preventDefault: vi.fn(), stopPropagation: vi.fn(), currentTarget: { disabled: false } };
+  return { target, ref, tokens, pending, control, event };
+}
+
+it.each(['click', 'pointer and click'] as const)('starts fresh jobs through the real %s control chain after a completed result', async action => {
+  const scenario = realControlScenario();
+  scenario.target.ai = { ...scenario.target.ai!, status: 'success', imageClientRequestId: 'old-receipt',
+    outputs: Array.from({ length: 4 }, (_, index) => ({ id: `old-${index}`, status: 'success',
+      clientRequestId: 'old-receipt', url: `https://cdn.example/old-${index}.png` })) };
+  let calls = 0;
+  vi.mocked(generateCanvasAiProviderImages).mockImplementation(async () => {
+    const call = ++calls;
+    return Array.from({ length: 4 }, (_, index) => `https://cdn.example/request-${call}-${index}.png`);
+  });
+  for (let click = 0; click < 2; click++) {
+    if (action === 'pointer and click') handleCanvasAiRunPointerDownImpl(scenario.control,
+      scenario.event as unknown as Parameters<typeof handleCanvasAiRunPointerDownImpl>[1], scenario.target.id);
+    handleCanvasAiRunClickImpl(scenario.control,
+      scenario.event as unknown as Parameters<typeof handleCanvasAiRunClickImpl>[1], scenario.target.id);
+    await Promise.all(scenario.pending);
+  }
+  expect(generateCanvasAiProviderImages).toHaveBeenCalledTimes(2);
+  const receipts = vi.mocked(generateCanvasAiProviderImages).mock.calls.map(([input]) => input.clientRequestId);
+  expect(new Set(receipts).size).toBe(2);
+  expect(receipts).not.toContain('old-receipt');
+  expect(scenario.ref.current).toHaveLength(3);
+  expect(scenario.ref.current.slice(1).map(node => node.ai?.outputs?.[0].url)).toEqual([
+    'https://cdn.example/request-1-0.png', 'https://cdn.example/request-2-0.png',
+  ]);
+  expect(scenario.tokens.current.size).toBe(0);
+});
+
+it('passes a new receipt to the native cloud POST for each completed-node UI rerun', async () => {
+  const actual = await vi.importActual<typeof import('../../canvasAiImage')>('../../canvasAiImage');
+  vi.mocked(generateCanvasAiProviderImages).mockImplementation(actual.generateCanvasAiProviderImages);
+  const scenario = realControlScenario();
+  scenario.target.ai = { ...scenario.target.ai!, status: 'success', imageClientRequestId: 'old-receipt',
+    outputs: [{ id: 'old-output', status: 'success', clientRequestId: 'old-receipt', url: 'https://cdn.example/old.png' }] };
+  const requests: { clientRequestId: string }[] = [];
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === 'generate_cloud_images') {
+      const request = (args as { request: { clientRequestId: string } }).request;
+      requests.push(request);
+      return { images: Array.from({ length: 4 }, (_, index) => `https://cdn.example/native-${requests.length}-${index}.png`),
+        provider: 'test', model: 'arbitrary-image', chargedCredits: '20' };
+    }
+    throw new Error(`Unexpected native command: ${command}`);
+  });
+  for (let click = 0; click < 2; click++) {
+    handleCanvasAiRunClickImpl(scenario.control,
+      scenario.event as unknown as Parameters<typeof handleCanvasAiRunClickImpl>[1], scenario.target.id);
+    await Promise.all(scenario.pending);
+  }
+  expect(requests).toHaveLength(2);
+  expect(new Set(requests.map(request => request.clientRequestId)).size).toBe(2);
+  expect(requests.map(request => request.clientRequestId)).not.toContain('old-receipt');
+  expect(vi.mocked(invoke).mock.calls.every(([command]) => command === 'generate_cloud_images')).toBe(true);
+  expect(scenario.ref.current.slice(1).map(node => node.ai?.outputs?.[0].url)).toEqual([
+    'https://cdn.example/native-1-0.png', 'https://cdn.example/native-2-0.png',
+  ]);
+});
 
 it('renders four working slots before one provider call while keeping its requested count at one', async () => {
   const { target, ctx, updateAi } = fixture();

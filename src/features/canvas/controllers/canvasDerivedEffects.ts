@@ -352,15 +352,13 @@ export const runDerivedUiEffect02 = (ctx: Pick<derivedUiEffectContext, 'CANVAS_A
         canvasAiOutputSourceRecoveryAttemptedRef.current.delete(recoveryKey);
         updateCanvasItemsImmediate(prev => prev.map((item) => {
           if (item.id !== canvasItem.id || !item.ai?.outputs?.length) return item;
+          let changed = false;
           const outputs = item.ai.outputs.map((currentOutput, currentIndex) => {
-            const matches = output.id
-              ? currentOutput.id === output.id
-              : currentIndex === outputIndex;
-            return matches && currentOutput.cacheStatus !== 'ready'
-              ? { ...currentOutput, sourceUrl: stableSource, cacheStatus: 'failed' as const }
-              : currentOutput;
+            if (!matchesRecoveryOutput(currentOutput, currentIndex) || currentOutput.cacheStatus === 'ready') return currentOutput;
+            changed = true;
+            return { ...currentOutput, sourceUrl: stableSource, cacheStatus: 'failed' as const };
           });
-          return { ...item, ai: { ...item.ai, outputs } };
+          return changed ? { ...item, ai: { ...item.ai, outputs } } : item;
         }));
         console.warn('AI output source recovery failed; will retry from the stable API URL:', error);
       }).finally(() => {
