@@ -578,6 +578,7 @@ export type CloudImageGenerationLookup = {
   providerChannelName?: string;
   model?: string;
   chargedCredits?: string;
+  error?: { code?: string; message?: string; httpStatus?: number | null } | null;
 };
 
 const CLOUD_WALLET_IMAGE_RECOVERY_POLL_INTERVAL_MS = 2_500;
@@ -599,8 +600,17 @@ const shouldReconcileCloudWalletImageError = (error: unknown) => {
   if (/(?:duplicate_request|request already submitted|already been submitted|璇ョ敓鍥捐姹傚凡缁忔彁浜よ繃)/i.test(message)) {
     return true;
   }
-  return !/(?:invalid_request|license_missing|cloud_account_required|unauthorized|invalid api key|invalid token|insufficient_credits|HTTP\s*4\d\d)/i.test(message);
+  if (/AMBIGUOUS_SUBMIT|IMAGE_TASK_RECOVERY_REQUIRED|IMAGE_RESULT_PERSISTENCE_FAILED/i.test(message)) return true;
+  return !/(?:invalid_request|license_missing|cloud_account_required|unauthorized|invalid api key|invalid token|insufficient_credits|HTTP\s*4\d\d|upstream\s+error\s*:\s*(?:400|401|403|422)\b|图片\s*URL\s*不符合安全策略|Image URL is blocked|IMAGE_TASK_FAILED)/i.test(message);
 };
+
+class CloudWalletImageTerminalError extends Error {
+  readonly code = 'CLOUD_IMAGE_TERMINAL_FAILURE';
+}
+
+class CloudWalletImageConfirmationError extends Error {
+  readonly code = 'IMAGE_TASK_RECOVERY_REQUIRED';
+}
 
 export const getCloudWalletImageLookupImages = (
   lookup?: Pick<CloudImageGenerationLookup, 'status' | 'images'> | null,
@@ -641,6 +651,7 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
   const clientRequestId = options.clientRequestId?.trim()
     || `canvas-image-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const model = String(options.model || '').trim();
+  let finished = false;
   try {
     const outputFormat = options.imageCapabilities?.outputFormats.length
       ? normalizeCapabilityOption(
@@ -685,6 +696,7 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
     });
     let requestError: unknown = null;
     let requestReturnedUsableImages = false;
+    let terminalError: CloudWalletImageTerminalError | null = null;
     const requestImagesPromise = requestPromise
       .then(result => {
         const images = Array.from(new Set((result.images || [])
@@ -703,18 +715,24 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
       recoveryPromise = (async () => {
       const deadline = Date.now() + CLOUD_WALLET_IMAGE_RECOVERY_WINDOW_MS;
       await delay(Math.min(1_200, CLOUD_WALLET_IMAGE_RECOVERY_WINDOW_MS));
-      while (!requestReturnedUsableImages && Date.now() <= deadline) {
+      while (!finished && !requestReturnedUsableImages && Date.now() <= deadline) {
+        if (terminalError) throw terminalError;
         if (requestError && !shouldReconcileCloudWalletImageError(requestError)) return null;
         try {
           const lookup = await getCloudWalletImageGenerationByRequest(clientRequestId);
           const images = getCloudWalletImageLookupImages(lookup);
           if (images.length > 0) return images;
-          if (lookup.confirmationRequired && lookup.recoveryStatus === 'manual_confirmation_required') return null;
+          if (lookup.confirmationRequired && lookup.recoveryStatus === 'manual_confirmation_required') {
+            throw new CloudWalletImageConfirmationError('IMAGE_TASK_RECOVERY_REQUIRED: 图片结果待确认，已停止自动重发。请保留请求 ID 联系管理员恢复原任务。');
+          }
           const status = String(lookup.status || '').trim().toLowerCase();
           if (status === 'failed' || status === 'refunded' || status === 'cancelled' || status === 'canceled') {
-            return null;
+            terminalError = new CloudWalletImageTerminalError(lookup.error?.message?.trim()
+              || (requestError ? getErrorMessage(requestError) : `云端生图任务已${status === 'cancelled' || status === 'canceled' ? '取消' : '失败'}`));
+            throw terminalError;
           }
         } catch (error) {
+          if (error instanceof CloudWalletImageTerminalError || error instanceof CloudWalletImageConfirmationError) throw error;
           if (isCanvasAiLookupTerminalError(error)) return null;
           // A just-submitted row may not exist yet. Rate limiting and auth
           // refreshes need a longer pause than normal pending-state polling.
@@ -737,6 +755,8 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
     const recoveredImagesPromise = startRecovery();
     let lateRecoveryPromise: Promise<string[] | null> | null = null;
     const startLateRecovery = () => {
+      if (terminalError) return Promise.reject(terminalError);
+      if (finished || (requestError && !shouldReconcileCloudWalletImageError(requestError))) return Promise.resolve(null);
       lateRecoveryPromise ||= startRecovery(true);
       return lateRecoveryPromise;
     };
@@ -769,6 +789,8 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
     return images;
   } catch (error) {
     throw new Error(getErrorMessage(error));
+  } finally {
+    finished = true;
   }
 };
 
@@ -1937,15 +1959,13 @@ export const shouldUseCanvasAiNativeImageBatchRequest = (
 ) => requestedCount <= 1 && (provider === 'new-api' || cloudWallet);
 
 export const getCanvasAiImageOutputConcurrency = (
-  provider: CanvasAiImageProvider,
-  model: string | null | undefined,
+  _provider: CanvasAiImageProvider,
+  _model: string | null | undefined,
   requestedCount: number,
 ) => {
-  const count = Math.max(1, Math.round(Number(requestedCount) || 1));
-  const family = getCanvasAiImageModelFamily(provider, model);
-  return family === 'gpt-image-2' || family === 'gpt-image-2-h'
-    ? Math.min(3, count)
-    : count;
+  // The caller already resolves the requested job count against model capabilities.
+  // Jobs are independent count: 1 requests, not the provider's per-request n.
+  return Math.max(1, Math.round(Number(requestedCount) || 1));
 };
 
 export const getCanvasAiSlotClientRequestId = (
@@ -2404,20 +2424,30 @@ const refreshWalletImageCandidatePriority = async (candidates: CanvasAiModelCand
   }
 };
 
+/** Rate limits are user-visible; do not amplify them with more paid submissions. */
+export const isCanvasAiImageRateLimitError = (error: unknown) => {
+  const message = getErrorMessage(error).trim();
+  const statusMatch = message.match(/(?:status[_ ]?code\s*[=:]\s*|HTTP\s+|\()(\d{3})(?:\)|\b)/i);
+  if (statusMatch && Number(statusMatch[1]) === 429) return true;
+  return /rate[_\s-]*limit(?:ed| exceeded)?|too many (?:requests|concurrent)|concurrenc(?:y|ies)[^\n]{0,80}(?:limit|exceed|full)/i.test(message);
+};
+
 export const shouldTryNextCanvasAiImageCandidate = (error: unknown) => {
+  if (isCanvasAiImageRateLimitError(error)) return false;
   const message = getErrorMessage(error).trim();
   const statusMatch = message.match(/(?:status[_ ]?code\s*[=:]\s*|HTTP\s+|\()(\d{3})(?:\)|\b)/i);
   const status = statusMatch ? Number(statusMatch[1]) : 0;
-  if ([400, 401, 402, 403, 404, 408, 422, 429, 500, 502, 503, 504, 529].includes(status)) return true;
+  if ([400, 401, 402, 403, 404, 408, 422, 500, 502, 503, 504, 529].includes(status)) return true;
   return /(?:provider_model_family_mismatch|insufficient[_\s-]*(?:credits?|balance)|quota[_\s-]*(?:exceeded|insufficient)|provider_(?:unavailable|auth_failed)|invalid[_\s-]*api[_\s-]*key|authentication failed|unauthorized|forbidden|model[^\n]{0,80}(?:not found|unsupported|unavailable)|(?:not found|unsupported)[^\n]{0,80}model|(?:provided|reference|input) image is not valid|invalid (?:provided|reference|input) image|(?:compute|server|system|service|resource)[_\s-]*(?:busy|overloaded|exhausted|unavailable)|(?:capacity|resources?)[^\n]{0,80}(?:full|busy|exhausted|unavailable|insufficient)|temporarily unavailable|no available (?:worker|resource|capacity)|operation copy failed|copy operation failed|source path does not exist|no such file|file (?:does not exist|not found)|余额不足|额度不足|渠道不可用|渠道鉴权失败|算力(?:紧张|不足|已满)|(?:系统|服务|服务器|资源|渠道)(?:繁忙|拥堵|过载)|暂无可用算力|资源不足|排队已满|源文件不存在|文件(?:复制失败|不存在|未找到))/i.test(message);
 };
 
 export const shouldRetrySameCanvasAiImageCandidate = (error: unknown) => {
+  if (isCanvasAiImageRateLimitError(error)) return false;
   const message = getErrorMessage(error).trim();
   if (/AMBIGUOUS_SUBMIT|IMAGE_TASK_RECOVERY_REQUIRED|IMAGE_RESULT_PERSISTENCE_FAILED|duplicate_request|结果待确认/i.test(message)) return false;
   const statusMatch = message.match(/(?:status[_ ]?code\s*[=:]\s*|HTTP\s+|\()(\d{3})(?:\)|\b)/i);
   const status = statusMatch ? Number(statusMatch[1]) : 0;
-  if ([429, 503, 529].includes(status)) return true;
+  if ([503, 529].includes(status)) return true;
   return /(?:rate[_\s-]*limit(?:ed| exceeded)?|too many (?:requests|concurrent)|concurrenc(?:y|ies)[^\n]{0,80}(?:limit|exceed|full)|(?:compute|server|system|service|resource)[_\s-]*(?:busy|overloaded|exhausted|unavailable)|(?:capacity|resources?)[^\n]{0,80}(?:full|busy|exhausted|unavailable|insufficient)|temporarily unavailable|no available (?:worker|resource|capacity)|请求过于频繁|并发(?:数|量|请求)?[^\n]{0,40}(?:上限|超限|超过|已满|限制)|算力(?:紧张|不足|已满)|(?:系统|服务|服务器|资源|渠道)(?:繁忙|拥堵|过载)|暂无可用算力|资源不足|排队已满)/i.test(message);
 };
 

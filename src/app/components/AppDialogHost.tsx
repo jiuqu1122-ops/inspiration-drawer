@@ -1500,6 +1500,11 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
                 <button data-drawer-dialog-close="true" onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
+                <p className="font-bold text-stone-800 dark:text-stone-100">v8.0.27</p>
+                <p>优化大画布的可视区域渲染、快照和状态保存，改善缩放、拖动、节点更新与恢复时的流畅度。</p>
+                <p>改进 Chat 搜索后的续接、文件工具调用和错误恢复；新增可编辑 PPTX 生成、来源整理与多种视觉方向。</p>
+                <p>新增可按相关性检索的本地设计记忆，帮助跨会话延续设计上下文，并明确区分本轮用户要求与历史参考。</p>
+                <p>改进图片模型参数适配及截图选区调整，模型比例、清晰度和交互状态更稳定。</p>
                 <p className="font-bold text-stone-800 dark:text-stone-100">v8.0.26</p>
                 <p>改善音乐与钱包文字节点的连接稳定性；文字请求可在暂时连接错误后自动接管一次。</p>
                 <p>音乐结果待确认时保留原请求与已有曲目，恢复结果直接更新原节点。</p>

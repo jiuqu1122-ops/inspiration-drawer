@@ -185,6 +185,8 @@ export const executeBatchImageOperation = async (input: {
         false,
       ));
       try {
+        // Progress persistence can yield while the user cancels; do not submit after it.
+        input.signal?.throwIfAborted();
         const perImageInstruction = perImageInstructions.get(index + 1);
         const itemInstruction = perImageInstruction
           ? [

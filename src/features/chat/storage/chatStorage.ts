@@ -39,11 +39,12 @@ export const deleteChatConversations = async (ids: string[], onFailure?: (id: st
 
 export const listChatMessages = (
   conversationId: string,
-  options: { beforeCreatedAt?: number; limit?: number } = {},
+  options: { beforeCreatedAt?: number; beforeId?: string; limit?: number } = {},
 ) => invoke<ChatMessagePage>('chat_list_messages', {
   options: {
     conversationId,
     beforeCreatedAt: options.beforeCreatedAt,
+    beforeId: options.beforeId,
     limit: options.limit || 50,
   },
 });

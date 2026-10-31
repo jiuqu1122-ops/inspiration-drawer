@@ -5,6 +5,7 @@ import { useState } from 'react';
 import type { ChatGeneratedFile } from '../model/chatTypes';
 
 const FORMAT_LABELS: Record<string, string> = {
+  pptx: 'PowerPoint 演示文稿',
   txt: 'TXT',
   md: 'Markdown',
   csv: 'CSV',
@@ -60,7 +61,8 @@ export function ChatGeneratedFileCard({ file }: { file: ChatGeneratedFile }) {
       <div className={`chat-generated-file__icon is-${format}`}><FileText size={18} /></div>
       <div className="chat-generated-file__info">
         <strong title={file.name}>{file.name}</strong>
-        <span>{FORMAT_LABELS[format] || format.toUpperCase()}{file.size ? ` · ${formatBytes(file.size)}` : ''}</span>
+        <span>{FORMAT_LABELS[format] || format.toUpperCase()}{file.slideCount ? ` · ${file.slideCount} 页` : ''}{file.size ? ` · ${formatBytes(file.size)}` : ''}</span>
+        {file.warnings?.length ? <small title={file.warnings.join('；')}>{file.warnings.join('；')}</small> : null}
         {error && <small title={error}>{error}</small>}
       </div>
       <div className="chat-generated-file__actions">

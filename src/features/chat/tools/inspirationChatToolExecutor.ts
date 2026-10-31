@@ -4,6 +4,7 @@ import { getGeneratedMediaFromToolCall, type ChatGeneratedMedia, type ChatToolEx
 import { executeBatchImageOperation } from './batchImageOperation';
 import { executeImageVariantOperation } from './imageVariantOperation';
 import { normalizeChatToolName } from './chatToolNames';
+import { preparePresentationFileRequest } from '../presentations/preparePresentationRequest';
 import { createChatSkill, importChatSkillMarkdown, loadChatSkills, saveChatSkill, selectChatSkill } from '../skills/chatSkills';
 
 type WorkflowDescriptor = { id: string; label: string; hint?: string };
@@ -100,7 +101,7 @@ export const createInspirationChatToolExecutor = (input: {
   }
   if (name === 'create_file') {
     return input.createFile({
-      ...args,
+      ...preparePresentationFileRequest(args, context),
       conversationId: context.conversationId,
     });
   }

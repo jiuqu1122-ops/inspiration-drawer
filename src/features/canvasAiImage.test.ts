@@ -385,11 +385,13 @@ describe('unified wallet image model families', () => {
     expect(getCanvasAiSlotClientRequestId('request-1', 0, 1)).toBe('request-1');
   });
 
-  it('queues the fourth GPT Image 2/2.5 output behind a three-request concurrency limit', () => {
-    expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-2', 4)).toBe(3);
-    expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-2.5', 4)).toBe(3);
-    expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-medium', 4)).toBe(3);
-    expect(getCanvasAiImageOutputConcurrency('xais-chat', 'Image2_4K', 4)).toBe(3);
+  it('does not impose a GPT Image-specific concurrency cap on independent jobs', () => {
+    expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-2', 4)).toBe(4);
+    expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-2.5', 4)).toBe(4);
+    expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-medium', 4)).toBe(4);
+    expect(getCanvasAiImageOutputConcurrency('xais-chat', 'Image2_4K', 4)).toBe(4);
+    expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-2.5', 6)).toBe(6);
+    expect(getCanvasAiImageOutputConcurrency('xais-chat', 'Image2_4K_H', 12)).toBe(12);
     expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-2.5', 2)).toBe(2);
     expect(getCanvasAiImageOutputConcurrency('new-api', 'gemini-3.1-flash-image', 4)).toBe(4);
   });
@@ -742,6 +744,8 @@ describe('unified wallet image model families', () => {
   });
 
   it('only fails over after an explicit rejection', () => {
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('HTTP 429: rate limit exceeded'))).toBe(false);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('cloud_rate_limited: too many requests'))).toBe(false);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=400, invalid reference image'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('HTTP 402: insufficient_credits'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('provider_unavailable'))).toBe(true);
@@ -757,8 +761,8 @@ describe('unified wallet image model families', () => {
   });
 
   it('retries a temporarily busy preferred channel before falling back', () => {
-    expect(shouldRetrySameCanvasAiImageCandidate(new Error('HTTP 429: rate limit exceeded'))).toBe(true);
-    expect(shouldRetrySameCanvasAiImageCandidate(new Error('provider_request_failed: Upstream request failed (429): concurrency exceeded'))).toBe(true);
+    expect(shouldRetrySameCanvasAiImageCandidate(new Error('HTTP 429: rate limit exceeded'))).toBe(false);
+    expect(shouldRetrySameCanvasAiImageCandidate(new Error('provider_request_failed: Upstream request failed (429): concurrency exceeded'))).toBe(false);
     expect(shouldRetrySameCanvasAiImageCandidate(new Error('status_code=503, service unavailable'))).toBe(true);
     expect(shouldRetrySameCanvasAiImageCandidate(new Error('上游算力紧张，请稍后再试'))).toBe(true);
     expect(shouldRetrySameCanvasAiImageCandidate(new Error('上游并发数超过限制，请稍后再试'))).toBe(true);

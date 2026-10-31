@@ -1,3 +1,5 @@
+import { CanvasStandaloneImageNode } from './CanvasStandaloneImageNode';
+import { isStandaloneCanvasImage } from '../canvasNodeRenderDependencies';
 import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import { Brush,ChevronLeft,Clock,Copy,Download,File as FileIcon,Film,Image as ImageIcon,Link,Music,Play,Plus,RefreshCw,RotateCw,Sparkles,Type,Upload,X } from 'lucide-react';
 import { CanvasMusicNode } from '../../canvasMusic';
@@ -30,6 +32,8 @@ import { shouldMountThreeSceneRenderer } from '../../three/model/threeSceneInter
 import { buildCanvasNodeViewModel, shouldShowCanvasWalletVideoCapabilityWarning } from '../canvasNodeViewModel';
 import { findAiCatalogModel,getAiCatalogModels,getDefaultAiCatalogModelId,getImageAspectRatioOptionsForResolution,hasServerAiCatalog,normalizeCapabilityOption,normalizeImageAspectRatioOption,normalizeVideoAspectRatioSelection,normalizeVideoDurationSelection,resolveEffectiveVideoResolution,resolveImageModelCapabilities,resolveVideoModelCapabilities } from '../../aiModelCapabilities';
 import { ImageRuleSwitchPanel } from './ImageRuleSwitchPanel';
+import { CanvasStableImage } from './CanvasStableImage';
+import { isCanvasAiPromptResizeHandleTarget } from '../canvasAiPromptResize';
 import type { BufferItem } from '../../../types';
 import type { DesignAgentConfig,CanvasImageItem } from '../../canvasModel';
 import type { RealEsrganEnhancementEstimate,RifeEngineProgress,RifeFrameInterpolationEstimate } from '../../canvasLocalMediaTools';
@@ -38,7 +42,8 @@ import type { CanvasWorkflowInternalSlot } from '../../canvasTemplates';
 export type CanvasNodeScope = Record<string, any>;
 
 export function CanvasNode({ scope, canvasItem, canvasItemsRef: latestCanvasItemsRef }: { scope: CanvasNodeScope; canvasItem: CanvasImageItem; canvasItemsRef: { current: CanvasImageItem[] } }) {
-  const { activeThreeSceneId, activeThreeSceneIdRef, analyzeCanvasThreeSceneNode, assignSelectedImagesToCanvasWorkflowSlot, beginThreeSceneInteraction, cancelCanvasEnhancementEstimate, CANVAS_TEXT_CONTEXT_ROUTING_OPTIONS, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiPromptTextAreaRefs, canvasAiUnifiedImageModelOptions, canvasConnectionDraft, canvasHoveredItemIdRef, canvasItems, canvasItemsRef, canvasPromptOptimizingId, canvasReferenceDragState, canvasReferenceSuppressClickRef, canvasScaledNodeRadius, canvasSelectedIdsRef, canvasTextAreaRefs, canvasTextOutputAreaRefs, canvasWorkingTimerTick, captureThreeSceneView, chooseLocalImagesForCanvasWorkflowSlot, commitCanvasAiPromptDraft, commitCanvasTextDraft, commitCanvasTextOutputDraft, copyCanvasAiOutputToCanvas, copyCanvasImageToSystemClipboard, copyCanvasTextOutput, DESIGN_AGENT_ARTIFACT_OPTIONS, DESIGN_AGENT_ROLE_OPTIONS, DESIGN_AGENT_THINKING_MODE_OPTIONS, disconnectCanvasInput, downloadBufferItems, enableCanvasWorkflowSingleEditForItem, endThreeSceneInteraction, exitThreeSceneInteraction, getCanvasAiErrorSummary, getCanvasAiUnifiedImageModelValue, getCanvasImageInputBufferItemsForNode, handleCanvasAiRunClick, handleCanvasAiRunPointerDown, handleCanvasWorkflowSlotDrop, openCanvasBrushEditor, openCanvasBrushEditorFromSource, openCanvasContextMenu, openCanvasReferenceAddMenu, openCanvasReferenceReplaceMenu, openSelectedImagePreview, openSelectedVideoPreview, optimizeCanvasPrompt, pendingCanvasFusionRoleRef, preventCanvasNativeDrag, removeCanvasItemsByIds, replaceCanvasWorkflowSlotAssets, resizeCanvasAiPromptEditor, retryCanvasWorkflowOutput, rotateCanvasImageClockwise, runCanvasTextAgentNode, scheduleCanvasAiPromptDraftCommit, scheduleCanvasTextDraftCommit, scheduleCanvasTextOutputDraftCommit, setCanvasAiPromptEditingId, setCanvasDesignAgentConfig, setCanvasInputMenuForId, setCanvasReferenceReplacement, setCanvasTextContextRouting, setCanvasTextNodeMode, setCanvasWorkflowOutputMode, showToast, startCanvasItemDrag, startCanvasReferenceLongPress, threeSceneAnalyzingIds, toggleCanvasAiOutputsExpanded, toggleCanvasImageRule, toggleCanvasImageRulePanel, updateCanvasAiGeneratorData, updateCanvasSelection, updateCollapsedCanvasWorkflowSlot, updateThreeScenePreview, updateThreeSceneReferenceOverlay, updateThreeSceneSpec, WORKFLOW_SLOT_ASSET_DRAG_MIME } = scope;
+  if (isStandaloneCanvasImage(canvasItem)) return <CanvasStandaloneImageNode scope={scope} canvasItem={canvasItem} />;
+  const { activeThreeSceneId, activeThreeSceneIdRef, analyzeCanvasThreeSceneNode, assignSelectedImagesToCanvasWorkflowSlot, beginThreeSceneInteraction, cancelCanvasEnhancementEstimate, CANVAS_TEXT_CONTEXT_ROUTING_OPTIONS, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiPromptTextAreaRefs, canvasAiUnifiedImageModelOptions, canvasConnectionDraft, canvasHoveredItemIdRef, canvasItems, canvasItemsRef, canvasPromptOptimizingId, canvasReferenceDragState, canvasReferenceSuppressClickRef, canvasScaledNodeRadius, canvasSelectedIdsRef, canvasTextAreaRefs, canvasTextOutputAreaRefs, canvasWorkingTimerTick, captureThreeSceneView, chooseLocalImagesForCanvasWorkflowSlot, commitCanvasAiPromptDraft, commitCanvasTextDraft, commitCanvasTextOutputDraft, copyCanvasAiOutputToCanvas, copyCanvasImageToSystemClipboard, copyCanvasTextOutput, DESIGN_AGENT_ARTIFACT_OPTIONS, DESIGN_AGENT_ROLE_OPTIONS, DESIGN_AGENT_THINKING_MODE_OPTIONS, disconnectCanvasInput, downloadBufferItems, enableCanvasWorkflowSingleEditForItem, endThreeSceneInteraction, exitThreeSceneInteraction, getCanvasAiErrorSummary, getCanvasAiUnifiedImageModelValue, getCanvasImageInputBufferItemsForNode, handleCanvasAiRunClick, handleCanvasAiRunPointerDown, handleCanvasWorkflowSlotDrop, openCanvasBrushEditor, openCanvasBrushEditorFromSource, openCanvasContextMenu, openCanvasReferenceAddMenu, openCanvasReferenceReplaceMenu, openSelectedImagePreview, openSelectedVideoPreview, optimizeCanvasPrompt, pendingCanvasFusionRoleRef, preventCanvasNativeDrag, removeCanvasItemsByIds, replaceCanvasWorkflowSlotAssets, resizeCanvasAiPromptEditor, retryCanvasWorkflowOutput, rotateCanvasImageClockwise, runCanvasTextAgentNode, scheduleCanvasAiPromptDraftCommit, scheduleCanvasTextDraftCommit, scheduleCanvasTextOutputDraftCommit, setCanvasAiPromptEditingId, setCanvasDesignAgentConfig, setCanvasInputMenuForId, setCanvasReferenceReplacement, setCanvasTextContextRouting, setCanvasTextNodeMode, setCanvasWorkflowOutputMode, showToast, startCanvasAiPromptResize, startCanvasItemDrag, startCanvasReferenceLongPress, threeSceneAnalyzingIds, toggleCanvasAiOutputsExpanded, toggleCanvasImageRule, toggleCanvasImageRulePanel, updateCanvasAiGeneratorData, updateCanvasSelection, updateCollapsedCanvasWorkflowSlot, updateThreeScenePreview, updateThreeSceneReferenceOverlay, updateThreeSceneSpec, WORKFLOW_SLOT_ASSET_DRAG_MIME } = scope;
   // Controls use a deferred React transition. Read the imperative canvas ref
   // inside callbacks so a fast model/resolution/ratio change cannot apply a
   // patch based on the previous render and overwrite the user's selection.
@@ -58,7 +63,7 @@ export function CanvasNode({ scope, canvasItem, canvasItemsRef: latestCanvasItem
     onPointerLeave={() => { if (canvasHoveredItemIdRef.current === canvasItem.id) canvasHoveredItemIdRef.current = ''; }}
     onContextMenu={event => { if (!canvasSelectedIdsRef.current.includes(canvasItem.id)) updateCanvasSelection([canvasItem.id]); openCanvasContextMenu(event, 'item', { itemId: canvasItem.id }); }}
   />;
-const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlainMode, canvasDesignAgentConfig, isCanvasFrameInterpolationItem, isCanvasImageEnhancementItem, isCanvasVideoEnhancementItem, isQuickVideoEnhancementItem, isCanvasEnhancementItem, isCanvasSingleVideoInputItem, isCanvasWorkflowItem, isCanvasReferenceBridgeItem, isCanvasAiNodeItem, isCanvasThreeSceneItem, canvasThreeSceneReferences, canvasAiMediaType, canvasAiItemProvider, canvasAiItemModel, canvasAiItemCapabilities, canvasAiItemProviderCandidates, canvasAiCandidateImageResolutionValues, canvasAiSupportsImageResolution, canvasAiImageResolutionOptions, canvasAiItemImageResolution, isCanvasAiNewApiVideo, isCanvasAiSeedanceVideo, isCanvasAiSeedanceLikeVideo, isCanvasAiMiniMaxVideo, isCanvasAiMikotoVideo, isCanvasAiMikotoKlingVideo, canvasAiVideoResolutionOptions, canvasAiVideoResolution, canvasAiVideoDurationOptions, canvasAiVideoDuration, canvasAiVideoSupportsFirstLastFrame, canvasAiOutputFormat, canvasAiOutputFormatOptions, canvasAiAspectRatioValues, canvasAiCountOptions, canvasAiCatalogModel, canvasAiResolvedImageCapabilities, canvasAiResolvedVideoCapabilities, canvasWalletVideoModelContext, canvasVideoResolutionRequired, isCanvasWorkflowAllOutputMode, canvasWorkflow, canvasWorkflowInternalSlots, canvasExpandedWorkflowGroup, canvasExpandedInternalSlot, canvasVideoCreditEstimate, canvasRunCreditLabel, canvasRunCreditTitle, canvasWorkflowUserInput, canvasWorkflowAllowsImages, canvasWorkflowAllowsFiles, showCanvasAiAttachmentControl, canvasAiOutputs, canvasAiImagePreviewGallery, isCanvasAiOutputsExpanded, canvasAiVisibleOutputs, canvasAiHiddenOutputCount, showCanvasAiOutputPreview, canvasImageSource, hasCanvasImageBackingSource, isGeneratedMediaItem, isGeneratedVideoItem, isGeneratedMediaPending, isGeneratedMediaError, rawCanvasInputPreviewItems, canvasBridgeInputItems, canvasAiNodeDesignSize, isImageRulePanelExpanded, canvasAiOutputTileLayout, canvasAiNodeScale, canvasAiMenuScale, canvasRenderedItemWidth, canvasAiPromptHeight, canvasVideoReferenceSlots, canvasVideoInputMode, canvasVideoReferenceSlotLabels, canvasAllowsSeedanceOmniReferences, isCanvasVeoIngredientMode } = buildCanvasNodeViewModel(scope, canvasItem);
+const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlainMode, canvasDesignAgentConfig, isCanvasFrameInterpolationItem, isCanvasImageEnhancementItem, isCanvasVideoEnhancementItem, isQuickVideoEnhancementItem, isCanvasEnhancementItem, isCanvasSingleVideoInputItem, isCanvasWorkflowItem, isCanvasReferenceBridgeItem, isCanvasAiNodeItem, isCanvasThreeSceneItem, canvasThreeSceneReferences, canvasAiMediaType, canvasAiItemProvider, canvasAiItemModel, canvasAiItemCapabilities, canvasAiItemProviderCandidates, canvasAiCandidateImageResolutionValues, canvasAiSupportsImageResolution, canvasAiImageResolutionOptions, canvasAiItemImageResolution, isCanvasAiNewApiVideo, isCanvasAiSeedanceVideo, isCanvasAiSeedanceLikeVideo, isCanvasAiMiniMaxVideo, isCanvasAiMikotoVideo, isCanvasAiMikotoKlingVideo, canvasAiVideoResolutionOptions, canvasAiVideoResolution, canvasAiVideoDurationOptions, canvasAiVideoDuration, canvasAiVideoSupportsFirstLastFrame, canvasAiOutputFormat, canvasAiOutputFormatOptions, canvasAiAspectRatioValues, canvasAiCountOptions, canvasAiCatalogModel, canvasAiResolvedImageCapabilities, canvasAiResolvedVideoCapabilities, canvasWalletVideoModelContext, canvasVideoResolutionRequired, isCanvasWorkflowAllOutputMode, canvasWorkflow, canvasWorkflowInternalSlots, canvasExpandedWorkflowGroup, canvasExpandedInternalSlot, canvasVideoCreditEstimate, canvasRunCreditLabel, canvasRunCreditTitle, canvasWorkflowUserInput, canvasWorkflowAllowsImages, canvasWorkflowAllowsFiles, showCanvasAiAttachmentControl, canvasAiOutputs, canvasAiImagePreviewGallery, isCanvasAiOutputsExpanded, canvasAiVisibleOutputs, canvasAiHiddenOutputCount, showCanvasAiOutputPreview, canvasImageSource, hasCanvasImageBackingSource, isGeneratedMediaItem, isGeneratedVideoItem, isGeneratedMediaPending, isGeneratedMediaError, rawCanvasInputPreviewItems, canvasBridgeInputItems, canvasAiNodeDesignSize, canvasAiPromptEditorLayout, isImageRulePanelExpanded, canvasAiOutputTileLayout, canvasAiNodeScale, canvasAiMenuScale, canvasRenderedItemWidth, canvasAiPromptHeight, canvasVideoReferenceSlots, canvasVideoInputMode, canvasVideoReferenceSlotLabels, canvasAllowsSeedanceOmniReferences, isCanvasVeoIngredientMode } = buildCanvasNodeViewModel(scope, canvasItem);
                           const canvasAiVideoCatalogModels = canvasAiCredentialSource === 'wallet'
                             ? getAiCatalogModels(canvasAiCloudImageModels, 'video')
                             : [];
@@ -310,8 +315,8 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                             style={{
                               left: canvasItem.x,
                               top: canvasItem.y,
-                              width: canvasItem.width,
-                              height: canvasItem.height,
+                              width: canvasAiPromptEditorLayout?.box.width ?? canvasItem.width,
+                              height: canvasAiPromptEditorLayout?.box.height ?? canvasItem.height,
                               zIndex: isSelected ? 2 : 0,
                               touchAction: 'none',
                             }}
@@ -340,6 +345,36 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                               e.stopPropagation();
                             }}
                             >
+                              {canvasAiPromptEditorLayout && typeof startCanvasAiPromptResize === 'function' && (
+                                <button
+                                  data-no-drag="true"
+                                  data-canvas-edit-control="true"
+                                  data-canvas-ai-prompt-resize={canvasItem.id}
+                                  type="button"
+                                  tabIndex={-1}
+                                  aria-label="调整提示词输入框高度"
+                                  title="上下拖动调整输入框高度，退出编辑后恢复"
+                                  className="absolute -bottom-2.5 left-1/2 z-[70] flex h-5 w-14 cursor-ns-resize items-center justify-center rounded-full border border-stone-300 bg-white/95 shadow-sm dark:border-white/20 dark:bg-stone-800"
+                                  style={{
+                                    transform: `translateX(-50%) scale(${1 / Math.max(0.25, scope.canvasRenderScale || 1)})`,
+                                    transformOrigin: 'center',
+                                    touchAction: 'none',
+                                  }}
+                                  onPointerDown={(event) => {
+                                    // Prevent the browser from moving focus off the textarea (and
+                                    // committing an IME composition) before the gesture starts.
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    startCanvasAiPromptResize(event, canvasItem.id);
+                                  }}
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                  }}
+                                >
+                                  <span aria-hidden="true" className="h-1 w-6 rounded-full bg-stone-500 dark:bg-stone-300" />
+                                </button>
+                              )}
                               {isCanvasAiNodeItem ? (
                                 <>
                                  <div
@@ -1492,6 +1527,10 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                             updateCanvasSelection([canvasItem.id]);
                                           }}
                                           onBlur={(event) => {
+                                            if (isCanvasAiPromptResizeHandleTarget(event.relatedTarget, canvasItem.id)) {
+                                              event.currentTarget.focus({ preventScroll: true });
+                                              return;
+                                            }
                                             commitCanvasAiPromptDraft(canvasItem.id, event.currentTarget.value, true);
                                             setCanvasAiPromptEditingId((prev: string | null) => prev === canvasItem.id ? null : prev);
                                             resizeCanvasAiPromptEditor(canvasItem.id, false, true);
@@ -2327,7 +2366,7 @@ const { isSelected, isTextCanvasItem, isCanvasTextAgentRunning, isCanvasTextPlai
                                       onDragStart={preventCanvasNativeDrag}
                                     />
                                   ) : canvasImageSource ? (
-                                    <img
+                                    <CanvasStableImage
                                       data-canvas-main-media="true"
                                       src={canvasImageSource}
                                       alt={canvasItem.item.name || '画布图片'}

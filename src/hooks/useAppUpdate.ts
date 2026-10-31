@@ -12,6 +12,10 @@ const APP_UPDATE_PROMPT_SHOWN_DATE_STORAGE_KEY = 'drawer_app_update_prompt_shown
 const APP_UPDATE_LAST_AUTOMATIC_CHECK_STORAGE_KEY = 'drawer_app_update_last_automatic_check';
 const APP_UPDATE_AUTOMATIC_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 
+// Opt-in, build-time only: internal performance installers must not silently
+// replace themselves with a public release. Ordinary builds keep existing behavior.
+export const isAppUpdateEnabled = () => import.meta.env.VITE_DISABLE_APP_UPDATES !== 'true';
+
 type UseAppUpdateOptions = {
   isMainDrawerWindow: boolean;
   showToast: (message: string) => void;
@@ -73,8 +77,9 @@ export const formatAppUpdateErrorMessage = (err: unknown) => {
 };
 
 export const useAppUpdate = ({ isMainDrawerWindow, showToast }: UseAppUpdateOptions) => {
+  const updatesEnabled = isAppUpdateEnabled();
   const shouldShowDailyAppUpdatePrompt = () => {
-    if (!isMainDrawerWindow) return false;
+    if (!isMainDrawerWindow || !updatesEnabled) return false;
     const todayKey = getLocalDateKey(Date.now());
     if (localStorage.getItem(APP_UPDATE_PROMPT_SHOWN_DATE_STORAGE_KEY) === todayKey) return false;
     localStorage.setItem(APP_UPDATE_PROMPT_SHOWN_DATE_STORAGE_KEY, todayKey);
@@ -98,6 +103,10 @@ export const useAppUpdate = ({ isMainDrawerWindow, showToast }: UseAppUpdateOpti
 
   const checkAndInstallAppUpdate = async (options: { silent?: boolean; hidePromptWhenUpToDate?: boolean } = {}) => {
     if (!isMainDrawerWindow) return;
+    if (!updatesEnabled) {
+      if (!options.silent) showToast('当前为内部测试包，已关闭在线更新');
+      return;
+    }
     if (isCheckingAppUpdateRef.current) {
       if (!options.silent) showToast('正在检查更新...');
       return;
@@ -232,7 +241,7 @@ export const useAppUpdate = ({ isMainDrawerWindow, showToast }: UseAppUpdateOpti
   };
 
   useEffect(() => {
-    if (!isMainDrawerWindow) return;
+    if (!isMainDrawerWindow || !updatesEnabled) return;
     let disposed = false;
     let timer: number | null = null;
 

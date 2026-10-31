@@ -112,3 +112,16 @@ describe('visible Chat tool completion', () => {
     expect(repaired.content).toContain('上次生成意外中断');
   });
 });
+
+
+describe('interrupted PPT generation', () => {
+  it('preserves illustration results but does not label image-only output as a completed deck after restart', () => {
+    const message = { id: 'ppt-assistant', conversationId: 'c', role: 'assistant', status: 'streaming', content: '', createdAt: 1,
+      attachments: [], toolCalls: [call('generate_image', 'completed', { media: [{ id: 'ai-illustration', type: 'image', path: 'C:/fixture/image.png' }] })] } as ChatMessage;
+    const restored = finalizeOrphanedStreamingChatMessage(message, 100, '制作产品展示PPT');
+    expect(restored.status).toBe('error'); expect(restored.content).toContain('PPT 尚未生成可下载文件');
+    expect(restored.toolCalls).toBe(message.toolCalls);
+    const file = call('create_file', 'completed', { files: [{ id: 'file', path: 'C:/fixture/deck.pptx', format: 'pptx' }] });
+    expect(finalizeOrphanedStreamingChatMessage({ ...message, toolCalls: [...message.toolCalls, file] }, 100, '制作PPT').status).toBe('completed');
+  });
+});

@@ -1,3 +1,4 @@
+import { refreshCanvasConnectionHandleOcclusionImpl } from './controllers/canvasPersistenceActions';
 import { describe, expect, it, vi } from 'vitest';
 import { CanvasBoxIndex } from './canvasBoxIndex';
 import { getCanvasItemElementFromContent } from './canvasDomLookup';
@@ -114,5 +115,21 @@ describe('canvas world box index', () => {
     expect(next.someAtPoint(50, 50, item => item.selected)).toBe(false);
     expect(next.someAtPoint(700, 50, item => item.selected)).toBe(true);
     expect(next.someAtPoint(700, 50, item => !item.selected)).toBe(false);
+  });
+});
+
+
+describe('unconnected canvas occlusion fast path', () => {
+  it('builds no geometry/index and scans no node IDs when no handles exist', () => {
+    const query = vi.fn(() => []);
+    const getBox = vi.fn(() => { throw new Error('Unnecessary world geometry'); });
+    const sourceItems = { [Symbol.iterator]: () => { throw new Error('Unnecessary full canvas traversal'); } };
+    refreshCanvasConnectionHandleOcclusionImpl({
+      canvasContentRef: { current: { querySelectorAll: query } },
+      canvasItemsRef: { current: sourceItems }, canvasSelectedIdsRef: { current: [] },
+      CANVAS_CONNECTION_HANDLE_OUTSET: 0, getCanvasItemRenderedBox: getBox,
+    } as any);
+    expect(query).toHaveBeenCalledExactlyOnceWith('[data-canvas-connection-handle-id]');
+    expect(getBox).not.toHaveBeenCalled();
   });
 });

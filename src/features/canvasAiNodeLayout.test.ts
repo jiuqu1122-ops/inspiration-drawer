@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getCanvasAiNodeAutoSize, getCanvasImageGeneratorMainColumnWidth } from './canvasAiNodeLayout';
+import { getCanvasAiNodeAutoSize, getCanvasAiPromptAutoHeight, getCanvasAiPromptEditLayout, getCanvasImageGeneratorMainColumnWidth } from './canvasAiNodeLayout';
 import { applyCanvasAiGeneratorDataPatchImpl } from './canvas/controllers/canvasWorkflowEditorActions';
 import type { CanvasImageItem } from './canvasModel';
 
@@ -50,5 +50,29 @@ describe('image node intrinsic control width', () => {
       expect(getCanvasAiNodeAutoSize({ type, imageControlsWidth: 1400 }))
         .toEqual(getCanvasAiNodeAutoSize({ type }));
     }
+  });
+});
+
+
+describe('editing-only prompt height', () => {
+  it('keeps collapsed height independent of long text and bounds automatic entry height', () => {
+    const longText = '设计需求与材质工艺\n'.repeat(20_000);
+    expect(getCanvasAiPromptAutoHeight(longText, 560, false)).toBe(108);
+    expect(getCanvasAiPromptAutoHeight('', 560, true)).toBe(180);
+    expect(getCanvasAiPromptAutoHeight(longText, 560, true)).toBe(320);
+  });
+
+  it('allows manual height beyond the automatic limit without changing width or other sections', () => {
+    const collapsed = getCanvasAiNodeAutoSize({ type: 'image-generator', imageRulePanelExpanded: false });
+    const layout = getCanvasAiPromptEditLayout(collapsed, 1_200.5);
+    expect(layout.promptHeight).toBe(1_200.5);
+    expect(layout.width).toBe(collapsed.width);
+    expect(layout.height - collapsed.height).toBe(1_200.5 - 108);
+    expect(layout.height - layout.promptHeight).toBe(collapsed.height - 108);
+  });
+
+  it.each([-100, 0, 107, 179, NaN, Infinity])('enforces a finite minimum for requested height %s', height => {
+    expect(getCanvasAiPromptEditLayout({ width: 600, height: 500 }, height))
+      .toEqual({ promptHeight: 180, extraHeight: 72, width: 600, height: 572 });
   });
 });

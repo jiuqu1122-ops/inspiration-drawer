@@ -17,7 +17,7 @@ import { getCanvasWorkflowGroup } from '../../../utils/canvasWorkflowRuntime';
 import { isCanvasAudioFileName } from '../../../utils/localMediaPaths';
 import { buildFinalImagePrompt,truncatePromptToUtf8ByteLimit } from '../../appAgent/imageQuality/imageRulePromptBuilder';
 import type { AiGatewayKind } from '../../agentModel';
-import { CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES,CANVAS_AI_VIDEO_TASK_TIMEOUT_MS,debugXaisImage2,filterCanvasAiVideoModelCandidates,generateCanvasAiProviderImages,generateCanvasAiProviderVideos,getCanvasAiImageOutputConcurrency,getCanvasAiPublicImageModelName,getCanvasAiSlotClientRequestId,getCanvasAiVideoModelCandidates,getDefaultNewApiImageProtocol,hydrateCanvasAiModelCandidateCapabilities,isMiniMaxH3VideoModel,isOpenAiLikeCanvasAiProvider,isSeedanceLikeVideoModel,mergeCanvasAiReferenceSourceItems,resolveCanvasAiImageModelCapabilities,resolveCanvasAiVideoModelCapabilities,shouldRetrySameCanvasAiImageCandidate,shouldUseCanvasAiNativeImageBatchRequest,shouldUsePortableWalletImageReferences } from '../../canvasAiImage';
+import { CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES,CANVAS_AI_VIDEO_TASK_TIMEOUT_MS,debugXaisImage2,filterCanvasAiVideoModelCandidates,generateCanvasAiProviderImages,generateCanvasAiProviderVideos,getCanvasAiImageOutputConcurrency,getCanvasAiPublicImageModelName,getCanvasAiSlotClientRequestId,getCanvasAiVideoModelCandidates,getDefaultNewApiImageProtocol,hydrateCanvasAiModelCandidateCapabilities,isCanvasAiImageRateLimitError,isMiniMaxH3VideoModel,isOpenAiLikeCanvasAiProvider,isSeedanceLikeVideoModel,mergeCanvasAiReferenceSourceItems,resolveCanvasAiImageModelCapabilities,resolveCanvasAiVideoModelCapabilities,shouldRetrySameCanvasAiImageCandidate,shouldUseCanvasAiNativeImageBatchRequest,shouldUsePortableWalletImageReferences } from '../../canvasAiImage';
 import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,hasServerAiCatalog,normalizeVideoAspectRatioSelection,normalizeVideoDurationSelection,resolveEffectiveVideoResolution } from '../../aiModelCapabilities';
 import { buildCanvasAiOutputRemoteResultPatch,recoverCanvasAiOutputWithUsableResult } from '../../canvasAiOutputs';
 import { generateCanvasMusic } from '../../canvasMusic';
@@ -25,7 +25,7 @@ import { canvasImageOutputPlan, canvasImageNeedsRecovery, isCanvasImageRecoveryR
 import { recoverCanvasImageOutputs } from '../../canvasImageRecovery';
 import { claimCanvasAiRun,createCanvasAiClientRequestId,releaseCanvasAiRun } from '../../canvasAiRunGuard';
 import { getCanvasAiMediaType,getCanvasAiNodeTitle,isCanvasAiGeneratorType } from '../../canvasAiRuntime';
-import { enhancementEstimateCache,getCanvasRifeRateRequest,isCanvasAiEnhancementType,isRifeFixed2xMode,type QuickVideoEnhancementResult,type RealEsrganEnhancementResult,type RifeFrameInterpolationResult,type VideoCfrNormalizationResult } from '../../canvasLocalMediaTools';
+import { enhancementEstimateCache,getEnhancementOutputDimensions,prepareEnhancementImageInput,getCanvasRifeRateRequest,isCanvasAiEnhancementType,isRifeFixed2xMode,type QuickVideoEnhancementResult,type RealEsrganEnhancementResult,type RifeFrameInterpolationResult,type VideoCfrNormalizationResult } from '../../canvasLocalMediaTools';
 import { type CanvasAiCredentialSource,type CanvasAiGeneratedOutput,type CanvasAiModelCandidate,type CanvasAiProvider,type CanvasImageItem,type CanvasItemBox } from '../../canvasModel';
 import { resolveCanvasWalletVideoModelContext } from '../../canvasWalletVideoModelContext';
 import { reorderCanvasInputs } from '../../canvasReferenceInputs';
@@ -1367,6 +1367,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       let xaisReferenceRetryCount = 0;
 
       const retryWithStableInputs = async (cause: unknown) => {
+        if (mediaType === 'image' && isCanvasAiImageRateLimitError(cause)) return false;
         // An accepted/uncertain task needs read-side recovery, never changed references + another POST.
         const outcome = cause instanceof Error ? cause.message : String(cause || '');
         if (/AMBIGUOUS_SUBMIT|IMAGE_TASK_RECOVERY_REQUIRED|IMAGE_RESULT_PERSISTENCE_FAILED|duplicate_request|结果待确认/i.test(outcome)) return false;
@@ -1409,6 +1410,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       };
 
       const retryWithFreshRemoteInputs = async (cause: unknown) => {
+        if (mediaType === 'image' && isCanvasAiImageRateLimitError(cause)) return false;
         // An accepted/uncertain task needs read-side recovery, never changed references + another POST.
         const outcome = cause instanceof Error ? cause.message : String(cause || '');
         if (/AMBIGUOUS_SUBMIT|IMAGE_TASK_RECOVERY_REQUIRED|IMAGE_RESULT_PERSISTENCE_FAILED|duplicate_request|结果待确认/i.test(outcome)) return false;
@@ -2084,8 +2086,8 @@ export const cancelCanvasEnhancementEstimateImpl = async (ctx: Pick<canvasGenera
 
 };
 
-export const runCanvasEnhancementNodeImpl = async (ctx: Pick<canvasGenerationActionContext, 'activeCanvasIdRef' | 'addGeneratedImagesToDrawer' | 'addGeneratedVideosToDrawer' | 'canvasItemsRef' | 'createCanvasImagePreviewThumbnail' | 'getCanvasAiErrorSummary' | 'getCanvasEnhancementInput' | 'showToast' | 'updateCanvasAiGeneratorData' | 'updateCanvasSelection'>, targetId: string) => {
-  const { activeCanvasIdRef, addGeneratedImagesToDrawer, addGeneratedVideosToDrawer, canvasItemsRef, createCanvasImagePreviewThumbnail, getCanvasAiErrorSummary, getCanvasEnhancementInput, showToast, updateCanvasAiGeneratorData, updateCanvasSelection } = ctx;
+export const runCanvasEnhancementNodeImpl = async (ctx: Pick<canvasGenerationActionContext, 'activeCanvasIdRef' | 'addGeneratedImagesToDrawer' | 'addGeneratedVideosToDrawer' | 'canvasItemsRef' | 'createCanvasImagePreviewThumbnail' | 'getCanvasAiErrorSummary' | 'getCanvasEnhancementInput' | 'showToast' | 'updateCanvasAiGeneratorData' | 'updateCanvasSelection'> & Partial<Pick<canvasGenerationActionContext, 'cacheCanvasGeneratedImageSource'>>, targetId: string) => {
+  const { activeCanvasIdRef, addGeneratedImagesToDrawer, addGeneratedVideosToDrawer, cacheCanvasGeneratedImageSource, canvasItemsRef, createCanvasImagePreviewThumbnail, getCanvasAiErrorSummary, getCanvasEnhancementInput, showToast, updateCanvasAiGeneratorData, updateCanvasSelection } = ctx;
     const runCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !isCanvasAiEnhancementType(target.ai?.type)) return;
@@ -2140,9 +2142,12 @@ export const runCanvasEnhancementNodeImpl = async (ctx: Pick<canvasGenerationAct
       : mediaType === 'video' ? '完整视频增强已转入后台；可以继续使用画布' : '开始增强图片');
 
     try {
+      const inputPath = mediaType === 'image'
+        ? await prepareEnhancementImageInput(input.source, `enhancement_input_${targetId}_${startedAt}.png`, cacheCanvasGeneratedImageSource)
+        : input.source;
       const result = isQuickVideoEnhancement
         ? await invoke<QuickVideoEnhancementResult>('run_ffmpeg_quick_video_enhancement', {
-          inputPath: input.source,
+          inputPath,
           scale,
           keepAudio: target.ai?.enhancementKeepAudio !== false,
           outputFormat: target.ai?.outputFormat || 'mp4',
@@ -2151,7 +2156,7 @@ export const runCanvasEnhancementNodeImpl = async (ctx: Pick<canvasGenerationAct
         : await invoke<RealEsrganEnhancementResult>(
           mediaType === 'video' ? 'run_realesrgan_video_enhancement' : 'run_realesrgan_image_enhancement',
           {
-            inputPath: input.source,
+            inputPath,
             scale,
             mode: target.ai?.enhancementMode || 'general',
             resizeMode: target.ai?.enhancementResizeMode || 'upscale',
@@ -2168,6 +2173,7 @@ export const runCanvasEnhancementNodeImpl = async (ctx: Pick<canvasGenerationAct
       const thumbnail = mediaType === 'image'
         ? await createCanvasImagePreviewThumbnail(outputUrl, outputPath)
         : undefined;
+      const pixelDimensions = getEnhancementOutputDimensions(result);
       const output: CanvasAiGeneratedOutput = {
         ...draft,
         mediaType,
@@ -2181,8 +2187,9 @@ export const runCanvasEnhancementNodeImpl = async (ctx: Pick<canvasGenerationAct
         status: 'success',
         error: undefined,
         generatedAt: finishedAt,
-        width: target.width,
-        height: Math.max(1, Math.round(target.width / parseCanvasAspectRatioValue(target.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO))),
+        // Pixel metadata comes from the actual file, never the node's geometry.
+        width: pixelDimensions?.width,
+        height: pixelDimensions?.height,
       };
       updateCanvasAiGeneratorData(targetId, {
         status: 'success',
@@ -2201,6 +2208,7 @@ export const runCanvasEnhancementNodeImpl = async (ctx: Pick<canvasGenerationAct
       } as CanvasImageItem;
       const drawerItem = createCanvasAiOutputBufferItem(latestTarget, output, 0);
       if (drawerItem) {
+        if (pixelDimensions) Object.assign(drawerItem, pixelDimensions);
         if (mediaType === 'video') addGeneratedVideosToDrawer([drawerItem]);
         else addGeneratedImagesToDrawer([drawerItem], { canvasId: runCanvasId });
       }

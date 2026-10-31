@@ -73,12 +73,32 @@ export const getCanvasAiOutputTileLayout = (options?: {
   };
 };
 
+export const CANVAS_AI_PROMPT_COLLAPSED_HEIGHT = 108;
+export const CANVAS_AI_PROMPT_EDIT_MIN_HEIGHT = 180;
+
+/** One source of truth for both the editor and its surrounding node. */
+export const getCanvasAiPromptEditLayout = (
+  collapsedDesignSize: { width: number; height: number },
+  requestedPromptHeight: number,
+) => {
+  const promptHeight = Number.isFinite(requestedPromptHeight)
+    ? Math.max(CANVAS_AI_PROMPT_EDIT_MIN_HEIGHT, requestedPromptHeight)
+    : CANVAS_AI_PROMPT_EDIT_MIN_HEIGHT;
+  const extraHeight = promptHeight - CANVAS_AI_PROMPT_COLLAPSED_HEIGHT;
+  return {
+    promptHeight,
+    extraHeight,
+    width: collapsedDesignSize.width,
+    height: collapsedDesignSize.height + extraHeight,
+  };
+};
+
 export const getCanvasAiPromptAutoHeight = (
   promptText = '',
   width = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH,
   expanded = false
 ) => {
-  if (!expanded) return 108;
+  if (!expanded) return CANVAS_AI_PROMPT_COLLAPSED_HEIGHT;
   const text = promptText.trim();
   const charsPerLine = Math.max(26, Math.floor((width - 44) / 14));
   const visualLines = text
@@ -87,7 +107,7 @@ export const getCanvasAiPromptAutoHeight = (
       0
     ))
     : 3;
-  return clamp(visualLines * 28 + 24, 180, 320);
+  return clamp(visualLines * 28 + 24, CANVAS_AI_PROMPT_EDIT_MIN_HEIGHT, 320);
 };
 
 export const getCanvasAiNodeAutoSize = (options?: {

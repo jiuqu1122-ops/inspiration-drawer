@@ -4,12 +4,20 @@
 
 ## 下载
 
-当前版本：**8.0.26**
+当前版本：**8.0.27**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.26/Inspiration.Drawer_8.0.26_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.26)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.27/Inspiration.Drawer_8.0.27_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.27)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 8.0.27 更新
+
+- 改进大画布的可视区域渲染、快照缓存、节点增量更新和状态保存，降低缩放、拖动与恢复时的渲染负担。
+- 优化画布滚轮与触控板缩放路由、节点选择与图片显示状态，减少交互抖动和重复重绘。
+- 改进 Chat 搜索后的资料续接、文件工具调用与失败恢复，并增强可编辑 PPTX 制作、信息检索提炼和视觉方向选择。
+- 新增本地设计记忆，可按相关性回顾已有设计上下文；当前用户要求优先，跨会话历史不作为默认限制。
+- 改进生图设置对模型比例、清晰度与质量能力的适配，并改善截图选区的尺寸调整交互。
 
 ## 8.0.26 更新
 

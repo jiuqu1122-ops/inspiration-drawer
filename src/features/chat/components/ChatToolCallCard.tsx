@@ -13,6 +13,51 @@ const STATUS_LABELS: Record<string, string> = {
   error: '失败',
 };
 
+const asRecord = (value: unknown): Record<string, unknown> => (
+  value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+);
+
+const readJsonRecord = (json?: string | null) => {
+  try { return asRecord(JSON.parse(json || '')); } catch { return {}; }
+};
+
+const receiptText = (value: unknown, limit: number) => (
+  typeof value === 'string' ? value.trim().slice(0, limit) : ''
+);
+
+const readWebSearchReceipt = (call: ChatToolCall) => {
+  if (call.toolName !== 'web_search') return null;
+  const result = readJsonRecord(call.resultJson);
+  const results = Array.isArray(result.results) ? result.results : null;
+  const outcome = call.status === 'error' || (call.status === 'completed' && Boolean(result.error))
+    ? 'error'
+    : call.status !== 'completed'
+      ? null
+      : !results ? 'unavailable' : results.length > 0 ? 'success' : 'empty';
+  const sources = (results || []).flatMap((value: unknown) => {
+    const item = asRecord(value);
+    if (typeof item.url !== 'string') return [];
+    try {
+      const url = new URL(item.url);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return [];
+      return [{ url: url.href, host: url.hostname, title: receiptText(item.title, 160) || url.hostname }];
+    } catch { return []; }
+  });
+  return {
+    outcome,
+    label: outcome === 'success' ? `已找到 ${results!.length} 条结果`
+      : outcome === 'error' ? '搜索出错'
+        : outcome === 'empty' ? '未找到结果'
+          : outcome === 'unavailable' ? '搜索结果不可用' : STATUS_LABELS[call.status],
+    count: results?.length,
+    provider: receiptText(result.provider, 80) || '未提供',
+    query: receiptText(result.query, 240) || receiptText(readJsonRecord(call.argumentsJson).query, 240),
+    error: receiptText(result.error, 240) || receiptText(asRecord(result.error).message, 240),
+    sources,
+    sourceCount: new Set(sources.map(source => source.host)).size,
+  };
+};
+
 type BatchStage = 'analyzing' | 'confirming' | 'revision' | 'preparing' | 'generating' | 'completed' | 'cancelled' | 'error';
 
 const readBatchProgress = (call: ChatToolCall) => {
@@ -99,9 +144,11 @@ export function ChatToolCallCard({ call, onResolve }: {
     } catch { return ''; }
   })();
   const active = call.status === 'pending' || call.status === 'running';
+  const searchReceipt = readWebSearchReceipt(call);
+  const searchWarning = searchReceipt?.outcome != null && searchReceipt.outcome !== 'success';
   const batchProgress = readBatchProgress(call);
   const batchRevisionRequested = batchProgress?.phase === 'revision';
-  const error = call.status === 'error' || (call.status === 'declined' && !batchRevisionRequested);
+  const error = call.status === 'error' || (call.status === 'declined' && !batchRevisionRequested) || searchReceipt?.outcome === 'error';
   const currentBatchStage = batchProgress ? batchStageIndex(batchProgress.phase) : -1;
   const batchStages = batchProgress ? [
     { label: '分析需求' },
@@ -116,12 +163,15 @@ export function ChatToolCallCard({ call, onResolve }: {
   ] : [];
   return (
     <div className={`chat-tool ${error ? 'chat-tool--error' : ''}`}>
-      <button type="button" className="chat-tool__summary" onClick={() => setExpanded(value => !value)}>
-        <span className="chat-tool__icon">
-          {active ? <LoaderCircle size={13} className="chat-spin" /> : call.status === 'completed' || batchProgress?.phase === 'confirming' || batchRevisionRequested ? <Check size={13} /> : <ShieldAlert size={13} />}
+      <button type="button" className="chat-tool__summary" aria-expanded={searchReceipt ? expanded : undefined} onClick={() => setExpanded(value => !value)}>
+        <span className="chat-tool__icon" style={searchWarning ? {
+          color: searchReceipt?.outcome === 'error' ? '#dc2626' : 'var(--chat-muted)',
+          background: 'var(--chat-soft)',
+        } : undefined}>
+          {active ? <LoaderCircle size={13} className="chat-spin" /> : (call.status === 'completed' && !searchWarning) || batchProgress?.phase === 'confirming' || batchRevisionRequested ? <Check size={13} /> : <ShieldAlert size={13} />}
         </span>
         <span className="chat-tool__label">{createdAgentName ? `智能体：${createdAgentName}` : getChatToolLabel(call.toolName)}</span>
-        <span className="chat-tool__status">{batchProgress ? batchStatusLabel(batchProgress) : STATUS_LABELS[call.status] || call.status}</span>
+        <span className="chat-tool__status">{searchReceipt ? searchReceipt.label : batchProgress ? batchStatusLabel(batchProgress) : STATUS_LABELS[call.status] || call.status}</span>
         <ChevronDown size={12} className={expanded ? 'chat-tool__chevron is-open' : 'chat-tool__chevron'} />
       </button>
       {batchProgress && (
@@ -170,9 +220,32 @@ export function ChatToolCallCard({ call, onResolve }: {
       )}
       {expanded && (
         <div className="chat-tool__details">
-          <div><span>工具</span>{call.toolName}</div>
-          <div><span>参数</span><pre>{call.argumentsJson}</pre></div>
-          {call.resultJson && <div><span>结果</span><pre>{call.resultJson}</pre></div>}
+          {searchReceipt ? (
+            <>
+              {searchReceipt.query && <div><span>搜索词</span>{searchReceipt.query}</div>}
+              <div><span>搜索服务</span>{searchReceipt.provider}</div>
+              <div><span>搜索结果</span>{searchReceipt.count == null ? searchReceipt.label
+                : `${searchReceipt.count} 条结果 · ${searchReceipt.sourceCount} 个来源网站`}</div>
+              {searchReceipt.outcome === 'error' && <div><span>搜索错误</span>{searchReceipt.error || '搜索工具未能完成请求。'}</div>}
+              {searchReceipt.outcome === 'success' && <div>以上为搜索工具结果，模型回答状态单独显示。</div>}
+              {searchReceipt.sources.slice(0, 8).map((source, index) => (
+                <div key={`${source.url}-${index}`}>
+                  <a href={source.url} target="_blank" rel="noopener noreferrer">{source.title}</a>
+                  <span>{source.host}</span>
+                </div>
+              ))}
+              {searchReceipt.sources.length > 8 && <div>仅展示前 8 条 HTTP(S) 来源链接。</div>}
+              {searchReceipt.count != null && searchReceipt.count > 0 && searchReceipt.sources.length === 0 && (
+                <div>未提供有效的 HTTP(S) 来源链接。</div>
+              )}
+            </>
+          ) : (
+            <>
+              <div><span>工具</span>{call.toolName}</div>
+              <div><span>参数</span><pre>{call.argumentsJson}</pre></div>
+              {call.resultJson && <div><span>结果</span><pre>{call.resultJson}</pre></div>}
+            </>
+          )}
         </div>
       )}
     </div>

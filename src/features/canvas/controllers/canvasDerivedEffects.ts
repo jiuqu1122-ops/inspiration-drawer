@@ -1,3 +1,4 @@
+import { createCanvasBackgroundQueue } from '../canvasBackgroundQueue';
 import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import React from 'react';
 import { DEFAULT_CANVAS_ID } from '../../../services/canvasApi';
@@ -451,6 +452,8 @@ export const runDerivedUiEffect03 = (ctx: Pick<derivedUiEffectContext, 'CANVAS_A
 
 };
 
+const queueNavigatorThumbnail = createCanvasBackgroundQueue(2);
+
 export const runDerivedUiEffect04 = (ctx: Pick<derivedUiEffectContext, 'canvasNavItems' | 'canvasNavThumbnailCacheRef' | 'canvasPanRef' | 'getCanvasItemNavPreview' | 'getCanvasNavThumbnailSignature' | 'isCanvasInteractingRef' | 'isCanvasMode' | 'isCanvasNavigatorVisible' | 'isCanvasZoomingRef' | 'setCanvasNavThumbnailRevision'>) => {
   const { canvasNavItems, canvasNavThumbnailCacheRef, canvasPanRef, getCanvasItemNavPreview, getCanvasNavThumbnailSignature, isCanvasInteractingRef, isCanvasMode, isCanvasNavigatorVisible, isCanvasZoomingRef, setCanvasNavThumbnailRevision } = ctx;
     if (!isCanvasMode) return;
@@ -461,55 +464,42 @@ export const runDerivedUiEffect04 = (ctx: Pick<derivedUiEffectContext, 'canvasNa
       }
     }
     if (!isCanvasNavigatorVisible) return;
-    if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) return;
 
-    canvasNavItems.forEach(({ item }) => {
+    let cancelled = false;
+    let changed = false;
+    const owned = new Map<string, CanvasNavThumbnailCacheEntry>();
+    const idle = () => new Promise<void>(resolve => window.setTimeout(resolve, 120));
+    for (const { item } of canvasNavItems) {
       const preview = getCanvasItemNavPreview(item);
       const signature = getCanvasNavThumbnailSignature(item, preview);
       const current = canvasNavThumbnailCacheRef.current.get(item.id);
-      if (current?.signature === signature) return;
-      if (!preview?.source) {
-        canvasNavThumbnailCacheRef.current.set(item.id, {
-          signature,
-          thumbnail: '',
-          status: 'empty',
-        });
+      if (current?.signature === signature) continue;
+      const entry: CanvasNavThumbnailCacheEntry = { signature, thumbnail: '', status: preview?.source ? 'loading' : 'empty' };
+      canvasNavThumbnailCacheRef.current.set(item.id, entry);
+      changed = true;
+      if (!preview?.source) continue;
+      owned.set(item.id, entry);
+      const loader = preview.mediaType === 'video' ? createCanvasNavVideoThumbnailInWebview : createCanvasNavImageThumbnailInWebview;
+      const isCurrent = () => !cancelled && canvasNavThumbnailCacheRef.current.get(item.id) === entry;
+      void queueNavigatorThumbnail(async () => {
+        while (isCurrent() && (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current)) await idle();
+        if (!isCurrent()) return;
+        let thumbnail = '';
+        try { thumbnail = await loader(preview.source); }
+        catch { /* A failed preview never interrupts canvas interaction. */ }
+        while (isCurrent() && (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current)) await idle();
+        if (!isCurrent()) return;
+        canvasNavThumbnailCacheRef.current.set(item.id, { signature, thumbnail, status: thumbnail ? 'ready' : 'error' });
         setCanvasNavThumbnailRevision(value => value + 1);
-        return;
+      });
+    }
+    if (changed) setCanvasNavThumbnailRevision(value => value + 1);
+    return () => {
+      cancelled = true;
+      for (const [id, entry] of owned) {
+        if (canvasNavThumbnailCacheRef.current.get(id) === entry) canvasNavThumbnailCacheRef.current.delete(id);
       }
-
-      canvasNavThumbnailCacheRef.current.set(item.id, {
-        signature,
-        thumbnail: '',
-        status: 'loading',
-      });
-      setCanvasNavThumbnailRevision(value => value + 1);
-      const loader = preview.mediaType === 'video'
-        ? createCanvasNavVideoThumbnailInWebview
-        : createCanvasNavImageThumbnailInWebview;
-      void loader(preview.source)
-        .then((thumbnail) => {
-          const latest = canvasNavThumbnailCacheRef.current.get(item.id);
-          if (!latest || latest.signature !== signature) return;
-          canvasNavThumbnailCacheRef.current.set(item.id, {
-            signature,
-            thumbnail,
-            status: thumbnail ? 'ready' : 'error',
-          });
-          setCanvasNavThumbnailRevision(value => value + 1);
-        })
-        .catch((err) => {
-          console.warn('画布导航缩略图缓存失败:', err);
-          const latest = canvasNavThumbnailCacheRef.current.get(item.id);
-          if (!latest || latest.signature !== signature) return;
-          canvasNavThumbnailCacheRef.current.set(item.id, {
-            signature,
-            thumbnail: '',
-            status: 'error',
-          });
-          setCanvasNavThumbnailRevision(value => value + 1);
-      });
-    });
+    };
 
 };
 

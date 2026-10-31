@@ -469,12 +469,24 @@ pub struct CloudImageGenerationLookup {
     status: String,
     completed_at: Option<i64>,
     #[serde(default)]
+    confirmation_required: bool,
+    recovery_status: Option<String>,
+    error: Option<CloudImageFailure>,
+    #[serde(default)]
     images: Vec<String>,
     provider: Option<String>,
     provider_channel_id: Option<String>,
     provider_channel_name: Option<String>,
     model: Option<String>,
     charged_credits: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudImageFailure {
+    code: String,
+    message: String,
+    http_status: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3046,11 +3058,39 @@ mod tests {
         cloud_http_fallback, email_sync_retry_delay, is_retryable_email_sync_error,
         normalize_cloud_image_references, parse_cloud_image_reference, parse_retry_after,
         validate_display_name, validate_email, CloudCreditUsageResult, CloudImageGenerationRequest,
-        CloudImageModelsResponse, CloudImageReference, CloudVideoGenerationRequest,
+        CloudImageModelsResponse, CloudImageReference, CloudVideoGenerationRequest, CloudImageGenerationLookup,
         EmailSyncRequestError,
     };
     use base64::Engine as _;
     use std::fs;
+
+    #[test]
+    fn cloud_image_lookup_preserves_terminal_failure_for_the_renderer() {
+        let lookup: CloudImageGenerationLookup = serde_json::from_value(serde_json::json!({
+            "status": "failed", "error": {
+                "code": "PROVIDER_IMAGE_URL_BLOCKED", "message": "参考图片被渠道安全策略拒绝", "httpStatus": 400
+            }
+        })).unwrap();
+        let value = serde_json::to_value(lookup).unwrap();
+        assert_eq!(value["error"]["code"], "PROVIDER_IMAGE_URL_BLOCKED");
+        assert_eq!(value["error"]["httpStatus"], 400);
+        assert_eq!(value["images"], serde_json::json!([]));
+        assert_eq!(value["confirmationRequired"], false);
+    }
+
+    #[test]
+    fn cloud_image_lookup_preserves_manual_confirmation_and_old_server_compatibility() {
+        let lookup: CloudImageGenerationLookup = serde_json::from_value(serde_json::json!({
+            "status": "processing", "confirmationRequired": true,
+            "recoveryStatus": "manual_confirmation_required"
+        })).unwrap();
+        let value = serde_json::to_value(lookup).unwrap();
+        assert_eq!(value["confirmationRequired"], true);
+        assert_eq!(value["recoveryStatus"], "manual_confirmation_required");
+        let old: CloudImageGenerationLookup = serde_json::from_value(serde_json::json!({ "status": "processing" })).unwrap();
+        assert!(!old.confirmation_required);
+        assert!(old.error.is_none());
+    }
 
     #[test]
     fn validates_trial_display_names() {

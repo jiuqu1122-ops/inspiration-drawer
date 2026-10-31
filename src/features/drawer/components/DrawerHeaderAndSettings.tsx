@@ -1,3 +1,5 @@
+import { DesignMemorySettingsPanel } from '../../designMemory';
+import { indexExistingDesignMemory } from '../indexExistingDesignMemory';
 import { invoke } from '@tauri-apps/api/core';
 import { AnimatePresence,motion } from 'framer-motion';
 import { ArrowUp,CalendarDays,Check,CheckSquare,ChevronDown,ChevronRight,Copy,Download,FolderOpen,History,Image as ImageIcon,Info,Keyboard,LayoutGrid,Lightbulb,Link,LogOut,Minus,Monitor,Move,Palette,Pin,Power,RefreshCw,RotateCcw,Search,Settings,Smartphone,Sparkles,Square,StickyNote,Sun,Trash2,Type,Wallet,X } from 'lucide-react';
@@ -983,6 +985,18 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                           )}
                         </div>
                         )}
+
+                        <div data-settings-section="true" data-active={activeSettingCategory === 'design-memory' ? 'true' : 'false'} className="overflow-hidden rounded-[18px] border border-stone-200/80 bg-white dark:border-stone-700/70 dark:bg-stone-800">
+                          <button type="button" data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'design-memory' ? '' : 'design-memory')} className="flex w-full items-center justify-between px-4 py-3.5 text-left transition-colors hover:bg-stone-50 dark:hover:bg-stone-700/50">
+                            <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><History className="h-4 w-4 text-stone-500" /> 设计记忆</span>
+                            <ChevronDown className={`h-4 w-4 text-stone-400 transition-transform ${activeSettingCategory === 'design-memory' ? 'rotate-180' : ''}`} />
+                          </button>
+                          {activeSettingCategory === 'design-memory' && (
+                            <div data-settings-section-content="true" className="border-t border-stone-100 px-3 py-3 dark:border-stone-700/50">
+                              <DesignMemorySettingsPanel onIndexExisting={indexExistingDesignMemory} onOpenSource={scope.openDesignMemorySource} />
+                            </div>
+                          )}
+                        </div>
 
                         <div data-settings-section="true" data-active={activeSettingCategory === 'license' ? 'true' : 'false'} className="overflow-hidden rounded-[18px] border border-stone-200/80 bg-white dark:border-stone-700/70 dark:bg-stone-800">
                           <button data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'license' ? '' : 'license')} className="flex w-full items-center justify-between px-4 py-3.5 transition-colors hover:bg-stone-50 dark:hover:bg-stone-700/50">

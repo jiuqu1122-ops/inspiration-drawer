@@ -1,3 +1,4 @@
+import { useDesignMemoryConversationRequest } from '../../designMemory/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { blobToDataUrl } from '../../../utils/canvasImageData';
@@ -27,6 +28,9 @@ export type ChatHostProps = Omit<ChatViewProps, 'runtime'> & {
   serverManagedChannelFailover?: boolean;
   cloudWalletMode?: boolean;
   runtimeImageModel?: string;
+  runtimeImageModelOptions?: UseChatRuntimeOptions['imageModelOptions'];
+  runtimeImageAspectRatioOptions?: string[];
+  runtimeImageResolutionOptions?: string[];
   approvalMode?: UseChatRuntimeOptions['approvalMode'];
   executeTool: UseChatRuntimeOptions['executeTool'];
   onNotice?: UseChatRuntimeOptions['onNotice'];
@@ -88,6 +92,9 @@ export function ChatHost({
   serverManagedChannelFailover,
   cloudWalletMode,
   runtimeImageModel,
+  runtimeImageModelOptions,
+  runtimeImageAspectRatioOptions,
+  runtimeImageResolutionOptions,
   approvalMode,
   executeTool,
   onNotice,
@@ -115,6 +122,9 @@ export function ChatHost({
     imageModel: runtimeImageModel || imageModel,
     imageAspectRatio,
     imageResolution: imageResolution || undefined,
+    imageModelOptions: runtimeImageModelOptions,
+    imageAspectRatioOptions: runtimeImageAspectRatioOptions,
+    imageResolutionOptions: runtimeImageResolutionOptions,
     imageQuality: effectiveImageQuality,
     approvalMode,
     executeTool,
@@ -128,6 +138,14 @@ export function ChatHost({
     prepareAttachment: prepareChatAttachment,
     createVisionAttachmentResolver: createChatVisionAttachmentResolver,
   });
+  const memoryConversationRequest = useDesignMemoryConversationRequest();
+  const handledMemoryRequestRef = useRef(0);
+  useEffect(() => {
+    if (!memoryConversationRequest || runtime.loading || memoryConversationRequest.variant !== viewProps.variant
+      || handledMemoryRequestRef.current === memoryConversationRequest.sequence) return;
+    handledMemoryRequestRef.current = memoryConversationRequest.sequence;
+    runtime.selectConversation(memoryConversationRequest.conversationId);
+  }, [memoryConversationRequest, runtime.loading, runtime.selectConversation, viewProps.variant]);
   const [viewMounted, setViewMounted] = useState(resolvedVisible);
   const [workflowConversationId, setWorkflowConversationId] = useState('');
   const [savedWorkflowResult, setSavedWorkflowResult] = useState<WorkflowResultCardData | undefined>();

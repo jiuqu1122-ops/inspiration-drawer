@@ -1,0 +1,12 @@
+/* Resting inspection keeps the original; navigation only composites a bounded
+   cached bitmap. Readiness guards ensure a failed/unpainted canvas never hides it.
+   No wheel listener or React zoom subscription is installed on individual nodes. */
+[data-canvas-snapshot-media][data-canvas-original-at-rest="true"] > canvas[data-canvas-snapshot-preview] {
+  visibility: hidden;
+}
+[data-canvas-surface][data-canvas-zooming="true"] [data-canvas-snapshot-media][data-canvas-snapshot-ready="true"] > [data-canvas-snapshot-original] {
+  display: none;
+}
+[data-canvas-surface][data-canvas-zooming="true"] [data-canvas-snapshot-media][data-canvas-snapshot-ready="true"] > canvas[data-canvas-snapshot-preview] {
+  visibility: visible;
+}

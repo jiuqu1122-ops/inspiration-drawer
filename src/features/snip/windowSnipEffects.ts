@@ -1,3 +1,4 @@
+import { cancelDrawerResize, isDrawerResizeActive } from './windowSnipActions';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { cursorPosition } from '@tauri-apps/api/window';
@@ -56,6 +57,11 @@ export const runWindowSnipEffect02 = (ctx: Pick<windowSnipEffectContext, 'closeT
 
   const run = async () => {
     if (snipMode.active || isSnipSessionActive || snipExitInFlightRef.current) return;
+    if (isDrawerResizeActive()) {
+      if (isDrawerActive) return;
+      await cancelDrawerResize();
+      if (cancelled) return;
+    }
 
     if (closeTimerRef.current) {
       clearTimeout(closeTimerRef.current);
@@ -94,6 +100,8 @@ export const runWindowSnipEffect02 = (ctx: Pick<windowSnipEffectContext, 'closeT
 
       timer = setTimeout(async () => {
         if (cancelled) return;
+        if (isDrawerResizeActive()) await cancelDrawerResize();
+        if (cancelled) return;
         await invoke('close_drawer', { mode: triggerModeRef.current }).catch(() => {});
 
         if (cancelled) return;
@@ -125,6 +133,7 @@ export const runWindowSnipEffect03 = (ctx: Pick<windowSnipEffectContext, 'drawer
     ) return;
 
     const timers = [120, 700].map(delay => window.setTimeout(() => {
+      if (isDrawerResizeActive()) return;
       invoke('show_edge', {
         height: drawerHeightRef.current,
         mode: triggerModeRef.current,

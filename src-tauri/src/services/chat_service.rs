@@ -2,7 +2,7 @@ use crate::db::connection::open_connection;
 use crate::repositories::chat_repository::*;
 
 fn repository(app_handle: &tauri::AppHandle) -> Result<ChatRepository, String> {
-    Ok(ChatRepository::new(open_connection(app_handle)?))
+    Ok(ChatRepository::new(open_connection(app_handle)?).with_memory_notifier(app_handle.clone()))
 }
 
 pub fn conversation_count(app_handle: tauri::AppHandle) -> Result<i64, String> {

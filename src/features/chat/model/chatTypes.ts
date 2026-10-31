@@ -68,6 +68,8 @@ export type ChatGeneratedFile = {
   format: string;
   mimeType?: string;
   size?: number;
+  slideCount?: number;
+  warnings?: string[];
 };
 
 export type ChatImageModelOption = {
@@ -116,6 +118,7 @@ export type ChatMessagePage = {
   messages: ChatMessage[];
   hasMore: boolean;
   nextBeforeCreatedAt?: number | null;
+  nextBeforeId?: string | null;
 };
 
 export type ChatUsage = {
@@ -210,6 +213,10 @@ export const getGeneratedFilesFromToolCall = (call: ChatToolCall): ChatGenerated
       format: String(file.format || '').trim().toLowerCase(),
       mimeType: String(file.mimeType || '').trim() || undefined,
       size: Number.isFinite(Number(file.size)) ? Number(file.size) : undefined,
+      slideCount: Number.isSafeInteger(file.slideCount) && Number(file.slideCount) > 0 ? Number(file.slideCount) : undefined,
+      warnings: Array.isArray((parsed as Record<string, unknown>).warnings)
+        ? ((parsed as Record<string, unknown>).warnings as unknown[]).filter((value): value is string => typeof value === 'string').slice(0, 8)
+        : undefined,
     } satisfies ChatGeneratedFile];
   });
 };

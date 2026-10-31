@@ -220,3 +220,37 @@ describe('batch_image_operation', () => {
     expect(JSON.stringify(result).length).toBeLessThan(5_000);
   });
 });
+
+
+describe('batch image cancellation boundaries', () => {
+  it('cancels six active jobs and leaves the next six queued jobs unsubmitted', async () => {
+    const controller = new AbortController();
+    const generate = vi.fn((_args: Record<string, unknown>, _attachment: ChatAttachment) => new Promise((_, reject) => {
+      controller.signal.addEventListener('abort', () => reject(new Error('cancelled active image')), { once: true });
+    }));
+    const pending = executeBatchImageOperation({
+      args: { instruction: 'Generate each independently', model: 'gpt-image-2.5', outputCountPerImage: 1 },
+      attachments: attachments(12), signal: controller.signal, generate,
+    });
+    await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(6));
+    controller.abort();
+    const result = await pending;
+    expect(generate).toHaveBeenCalledTimes(6);
+    expect(result).toMatchObject({ total: 12, cancelled: true, active: 0, succeeded: 0, failed: 0 });
+    expect(result.results).toHaveLength(12);
+    expect(result.results.every(item => item.status === 'cancelled')).toBe(true);
+  });
+
+  it('does not start a paid request if cancellation arrives during the progress handoff', async () => {
+    const controller = new AbortController();
+    const generate = vi.fn(async (_args: Record<string, unknown>, attachment: ChatAttachment) => outputFor(attachment));
+    const result = await executeBatchImageOperation({
+      args: { instruction: 'Generate each independently', model: 'gpt-image-2.5' },
+      attachments: attachments(6), signal: controller.signal, generate,
+      onProgress: progress => { if (progress.phase === 'generating') controller.abort(); },
+    });
+    expect(generate).not.toHaveBeenCalled();
+    expect(result.cancelled).toBe(true);
+    expect(result.results.every(item => item.status === 'cancelled')).toBe(true);
+  });
+});

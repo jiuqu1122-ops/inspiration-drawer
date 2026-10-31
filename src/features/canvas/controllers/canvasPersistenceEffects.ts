@@ -10,7 +10,8 @@ export const runCanvasPersistenceEffect01 = (ctx: Pick<canvasPersistenceEffectCo
     updateCanvasItemsImmediate(previous => {
       let changed = false;
       const next = previous.map(item => {
-        if (canvasAiExpandedOutputNodeIds.has(item.id)
+        if ((item.ai?.type === 'image-generator' && canvasAiPromptEditingId === item.id)
+          || canvasAiExpandedOutputNodeIds.has(item.id)
           || (!isCanvasAiGeneratorType(item.ai?.type) && item.ai?.type !== 'workflow')
           || (item.ai?.outputs?.length || 0) <= CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT) return item;
         const promptExpanded = canvasAiPromptEditingId === item.id;

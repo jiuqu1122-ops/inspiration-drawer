@@ -181,3 +181,49 @@ export const getCanvasAiLocalMediaProgress = (ai?: CanvasImageItem['ai'] | null)
 export const shouldShowCanvasAiLocalMediaProgress = (ai?: CanvasImageItem['ai'] | null) => (
   shouldShowRifeEngineProgress(getCanvasAiLocalMediaProgress(ai))
 );
+
+// Enhancement engines consume local files, not URLs or thumbnail previews.
+export type EnhancementImageCache = (
+  source: string,
+  name: string,
+  options?: { throwOnFailure?: boolean },
+) => Promise<{ path: string; url?: string; sourceUrl?: string }>;
+
+const isEnhancementLocalSource = (source: string) => (
+  /^(?:file|asset):/i.test(source)
+  || /^https?:\/\/asset\.localhost(?:[/:]|$)/i.test(source)
+  || /^[a-z]:[\\/]/i.test(source)
+  || !/^[a-z][a-z0-9+.-]*:/i.test(source)
+);
+
+export const prepareEnhancementImageInput = async (
+  source: string,
+  name: string,
+  cache?: EnhancementImageCache,
+): Promise<string> => {
+  const trimmed = source.trim();
+  if (!trimmed) throw new Error('图片增强[准备输入]：没有可用原图，请重新接入图片');
+  if (isEnhancementLocalSource(trimmed)) return trimmed;
+  if (!/^https?:\/\//i.test(trimmed) && !/^data:image\//i.test(trimmed)) {
+    throw new Error('图片增强[准备输入]：图片源不可直接读取，请先保存原图并重新接入');
+  }
+  if (!cache) throw new Error('图片增强[准备输入]：本地缓存服务不可用，请重新打开画布后重试');
+  try {
+    const cached = await cache(trimmed, name, { throwOnFailure: true });
+    const path = (cached.path || '').trim();
+    if (path && isEnhancementLocalSource(path)) return path;
+  } catch {
+    // Cache errors can include private URLs, query tokens, and filesystem paths.
+    throw new Error('图片增强[准备输入]：原图下载或本地缓存失败，请检查网络、文件权限及剩余空间后重试');
+  }
+  throw new Error('图片增强[准备输入]：原图缓存未返回本地文件，请重新接入图片后重试');
+};
+
+export const getEnhancementOutputDimensions = (
+  result: Pick<RealEsrganEnhancementResult, 'width' | 'height'>,
+): { width: number; height: number } | undefined => (
+  typeof result.width === 'number' && Number.isSafeInteger(result.width) && result.width > 0
+  && typeof result.height === 'number' && Number.isSafeInteger(result.height) && result.height > 0
+    ? { width: result.width, height: result.height }
+    : undefined
+);

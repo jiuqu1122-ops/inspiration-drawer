@@ -109,3 +109,91 @@ describe('canvas paste pointer placement', () => {
     cleanup?.();
   });
 });
+
+class ClipboardTestElement {
+  constructor(readonly kind = 'canvas') {}
+  closest(selector: string) {
+    if (selector.includes('input')) return this.kind === 'editor' ? this : null;
+    return this.kind === 'chat' ? this : null;
+  }
+}
+
+const clipboardHarness = () => {
+  const listeners = new Map<string, (event: any) => void>();
+  const canvas = new ClipboardTestElement();
+  const chat = new ClipboardTestElement('chat');
+  const body = new ClipboardTestElement('body');
+  const editor = new ClipboardTestElement('editor');
+  let selectedText = '';
+  vi.stubGlobal('Element', ClipboardTestElement);
+  vi.stubGlobal('HTMLElement', ClipboardTestElement);
+  vi.stubGlobal('window', {
+    addEventListener: (name: string, cb: any) => listeners.set(name, cb),
+    removeEventListener: vi.fn(),
+    getSelection: () => ({ rangeCount: selectedText ? 1 : 0, isCollapsed: !selectedText, toString: () => selectedText }),
+  });
+  vi.stubGlobal('document', {
+    body, documentElement: body, activeElement: body,
+    addEventListener: (name: string, cb: any) => listeners.set(name, cb), removeEventListener: vi.fn(),
+  });
+  const copy = vi.fn();
+  const prefer = { current: true };
+  const cleanup = runCanvasInteractionsEffect03({
+    canvasSurfaceRef: { current: { contains: (target: any) => target === canvas || target === chat || target === editor } },
+    isCanvasModeRef: { current: true }, isTextEntryActive: () => false,
+    shouldRouteShortcutToDoodle: () => false,
+    canvasSelectedIdsRef: { current: ['selected-image'] },
+    copyCanvasItemsToAvailableClipboards: copy, preferCanvasClipboardRef: prefer,
+  } as any);
+  const key = (target: ClipboardTestElement) => {
+    const e = { key: 'c', ctrlKey: true, metaKey: false, altKey: false, isComposing: false,
+      defaultPrevented: false, target, preventDefault: vi.fn(), stopPropagation: vi.fn(), stopImmediatePropagation: vi.fn() };
+    listeners.get('keydown')?.(e);
+    return e;
+  };
+  return { listeners, canvas, chat, body, editor, copy, prefer, cleanup, key, select: (text: string) => { selectedText = text; } };
+};
+
+describe('canvas Ctrl+C integration', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('does not consume selected Chat text even while a canvas image is selected', () => {
+    const h = clipboardHarness();
+    h.select('已确认的设计要求');
+    const e = h.key(h.chat);
+    expect(h.copy).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    expect(e.stopImmediatePropagation).not.toHaveBeenCalled();
+    expect(h.prefer.current).toBe(false);
+    h.cleanup?.();
+  });
+  it('preserves text outputs and editors, including a read-only input without selected text', () => {
+    const h = clipboardHarness();
+    h.select('const design = "CMF";');
+    expect(h.key(h.canvas).preventDefault).not.toHaveBeenCalled();
+    h.select('');
+    expect(h.key(h.editor).preventDefault).not.toHaveBeenCalled();
+    expect(h.copy).not.toHaveBeenCalled();
+    h.cleanup?.();
+  });
+  it('copies nodes on the canvas and only uses body fallback for the last canvas interaction', () => {
+    const h = clipboardHarness();
+    expect(h.key(h.canvas).preventDefault).toHaveBeenCalledOnce();
+    expect(h.copy).toHaveBeenLastCalledWith(['selected-image']);
+    h.listeners.get('pointerdown')?.({ target: h.canvas });
+    h.key(h.body);
+    expect(h.copy).toHaveBeenCalledTimes(2);
+    h.listeners.get('pointerdown')?.({ target: h.chat });
+    expect(h.key(h.body).preventDefault).not.toHaveBeenCalled();
+    expect(h.key(h.chat).preventDefault).not.toHaveBeenCalled();
+    expect(h.copy).toHaveBeenCalledTimes(2);
+    h.cleanup?.();
+  });
+  it('resets internal clipboard priority after native copy without clearing the node selection', () => {
+    const h = clipboardHarness();
+    h.listeners.get('copy')?.({ target: h.chat });
+    expect(h.prefer.current).toBe(false);
+    h.key(h.canvas);
+    expect(h.copy).toHaveBeenCalledWith(['selected-image']);
+    h.cleanup?.();
+  });
+});

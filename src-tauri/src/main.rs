@@ -2,8 +2,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent;
+mod canvas_background;
+mod canvas_view_state;
 mod ai_credentials;
 mod ai_gateway;
+mod image_input;
+mod drawer_bounds;
 mod browser_extension;
 mod commands;
 mod db;
@@ -5512,22 +5516,6 @@ fn realesrgan_safe_input_dimensions(width: u32, height: u32) -> (u32, u32, bool)
     (next_width, next_height, true)
 }
 
-fn save_dynamic_image_with_format(
-    image: &screenshots::image::DynamicImage,
-    output: &Path,
-    output_format: &str,
-) -> Result<(), String> {
-    let file = File::create(output).map_err(|e| e.to_string())?;
-    let mut writer = BufWriter::new(file);
-    let format = match output_format {
-        "jpg" => screenshots::image::ImageFormat::Jpeg,
-        _ => screenshots::image::ImageFormat::Png,
-    };
-    image
-        .write_to(&mut writer, format)
-        .map_err(|e| e.to_string())
-}
-
 fn run_local_image_resize(
     input: &Path,
     output: &Path,
@@ -5535,13 +5523,7 @@ fn run_local_image_resize(
     target_height: u32,
     output_format: &str,
 ) -> Result<(), String> {
-    let image = screenshots::image::open(input).map_err(|e| e.to_string())?;
-    let resized = image.resize_exact(
-        target_width.max(1),
-        target_height.max(1),
-        screenshots::image::imageops::FilterType::Lanczos3,
-    );
-    save_dynamic_image_with_format(&resized, output, output_format)
+    image_input::resize_image(input, output, target_width, target_height, output_format)
 }
 
 #[tauri::command]
@@ -6729,36 +6711,34 @@ fn run_realesrgan_image_enhancement_impl(
     let resize_mode = normalize_realesrgan_resize_mode(resize_mode);
     let output_format = normalize_realesrgan_image_format(output_format);
     let progress_id_ref = progress_id.as_deref();
-    let status = ensure_realesrgan_engine_installed(&app_handle, progress_id_ref)?;
-    let engine_dir = PathBuf::from(&status.engine_dir);
-    let exe_path = PathBuf::from(&status.exe_path);
-    if !exe_path.is_file() {
-        return Err("Real-ESRGAN 引擎不可用，请先安装引擎".to_string());
-    }
-
     let source =
         local_path_from_url_like(&input_path).unwrap_or_else(|| PathBuf::from(&input_path));
-    if !source.is_file() {
-        return Err(format!(
-            "找不到要增强的图片: {}",
-            display_local_path(&source)
-        ));
-    }
 
-    let base_dir = realesrgan_engine_base_dir()?;
+    // Validate by content before downloading/installing an engine. Cached images
+    // may have no suffix, or a suffix that disagrees with their actual encoding.
+    let (source_width, source_height) = image_input::dimensions(&source)?;
+    let base_dir = realesrgan_engine_base_dir()
+        .map_err(|_| "图片增强[准备目录]：无法访问本地引擎目录".to_string())?;
     let work_root = base_dir.join("_work");
     let outputs_dir = base_dir.join("outputs");
-    fs::create_dir_all(&work_root).map_err(|e| format!("创建 Real-ESRGAN 工作目录失败: {}", e))?;
+    fs::create_dir_all(&work_root)
+        .map_err(|_| "图片增强[准备目录]：无法创建工作目录，请检查写入权限".to_string())?;
     fs::create_dir_all(&outputs_dir)
-        .map_err(|e| format!("创建 Real-ESRGAN 输出目录失败: {}", e))?;
+        .map_err(|_| "图片增强[准备目录]：无法创建输出目录，请检查写入权限".to_string())?;
 
-    let run_id = format!("{}_{}", now_millis_u64(), std::process::id());
+    static NEXT_IMAGE_RUN_ID: AtomicU64 = AtomicU64::new(0);
+    let run_id = format!(
+        "{}_{}_{}",
+        now_millis_u64(),
+        std::process::id(),
+        NEXT_IMAGE_RUN_ID.fetch_add(1, Ordering::Relaxed)
+    );
     let work_dir = work_root.join(run_id);
-    fs::create_dir_all(&work_dir).map_err(|e| format!("创建图片增强临时目录失败: {}", e))?;
+    fs::create_dir_all(&work_dir)
+        .map_err(|_| "图片增强[准备目录]：无法创建临时目录，请检查写入权限".to_string())?;
+    let mut pending_output = None;
 
     let result = (|| -> Result<RealEsrganEnhancementResult, String> {
-        let (source_width, source_height) =
-            screenshots::image::image_dimensions(&source).map_err(|e| e.to_string())?;
         let requested_target_width = if resize_mode == "keep" {
             source_width
         } else {
@@ -6769,15 +6749,43 @@ fn run_realesrgan_image_enhancement_impl(
         } else {
             checked_image_scale_dimension(source_height, scale)?
         };
-        let (target_width, target_height, clamped_final_size) = realesrgan_fit_dimensions_to_limit(
+        let (target_width, target_height, _) = realesrgan_fit_dimensions_to_limit(
             requested_target_width,
             requested_target_height,
             REALESRGAN_SAFE_FINAL_MAX_EDGE,
             REALESRGAN_SAFE_FINAL_MAX_PIXELS,
         );
-
-        let (safe_input_width, safe_input_height, needs_pre_resize) =
+        let (safe_input_width, safe_input_height, _) =
             realesrgan_safe_input_dimensions(source_width, source_height);
+        let realesrgan_input_path = work_dir.join("source_input.png");
+        emit_rife_engine_progress(
+            &app_handle,
+            progress_id_ref,
+            "preparing-image-input",
+            "识别并准备原图",
+            0,
+            0,
+        );
+        // Always decode and normalize to an 8-bit RGB/RGBA PNG, including small
+        // inputs. Do this before engine installation to reject corrupt inputs.
+        image_input::prepare_png(
+            &source,
+            &realesrgan_input_path,
+            safe_input_width,
+            safe_input_height,
+        )?;
+
+        let status = ensure_realesrgan_engine_installed(&app_handle, progress_id_ref).map_err(
+            |_| {
+                "图片增强[引擎准备]：无法安装或读取 Real-ESRGAN 引擎，请检查网络和写入权限后重试"
+                    .to_string()
+            },
+        )?;
+        let engine_dir = PathBuf::from(&status.engine_dir);
+        let exe_path = PathBuf::from(&status.exe_path);
+        if !exe_path.is_file() {
+            return Err("图片增强[引擎准备]：Real-ESRGAN 引擎不可用，请重新安装引擎".to_string());
+        }
         let source_stem = source
             .file_stem()
             .and_then(|value| value.to_str())
@@ -6787,32 +6795,10 @@ fn run_realesrgan_image_enhancement_impl(
             "{}_realesrgan_{}x_{}.{}",
             source_stem, scale, resize_mode, output_format
         )));
-        let needs_post_resize = resize_mode == "keep"
-            || scale < REALESRGAN_NATIVE_SCALE
-            || needs_pre_resize
-            || clamped_final_size;
-        let realesrgan_input_path = if needs_pre_resize {
-            let prepared_path = work_dir.join("source_safe_input.png");
-            run_local_image_resize(
-                &source,
-                &prepared_path,
-                safe_input_width,
-                safe_input_height,
-                "png",
-            )?;
-            prepared_path
-        } else {
-            source.clone()
-        };
-        let enhanced_path = if needs_post_resize {
-            work_dir.join(format!(
-                "enhanced_{}x.{}",
-                REALESRGAN_NATIVE_SCALE, output_format
-            ))
-        } else {
-            output_path.clone()
-        };
-
+        pending_output = Some(output_path.clone());
+        // Keep alpha throughout engine execution. Convert to the requested
+        // format only after resizing; JPEG cannot represent transparency.
+        let enhanced_path = work_dir.join("enhanced_4x.png");
         emit_rife_engine_progress(
             &app_handle,
             progress_id_ref,
@@ -6827,22 +6813,28 @@ fn run_realesrgan_image_enhancement_impl(
             &realesrgan_input_path,
             &enhanced_path,
             &mode,
+            "png",
+        )
+        .map_err(|error| image_input::engine_error(&error))?;
+        if !enhanced_path.is_file() {
+            return Err("图片增强[引擎输出]：引擎未生成有效图片，请重试或检查显卡驱动".to_string());
+        }
+        run_local_image_resize(
+            &enhanced_path,
+            &output_path,
+            target_width,
+            target_height,
             &output_format,
-        )?;
-
-        if needs_post_resize {
-            run_local_image_resize(
-                &enhanced_path,
-                &output_path,
-                target_width,
-                target_height,
-                &output_format,
-            )?;
-        }
-
-        if !output_path.is_file() {
-            return Err("图片增强完成，但没有生成输出图片".to_string());
-        }
+        )
+        .map_err(|error| {
+            if error.contains("[保存结果]") {
+                error
+            } else {
+                "图片增强[引擎输出]：无法解码引擎输出，请重试或重新安装引擎".to_string()
+            }
+        })?;
+        let (output_width, output_height) = image_input::dimensions(&output_path)
+            .map_err(|_| "图片增强[校验结果]：输出图片无效，请重新增强".to_string())?;
         emit_rife_engine_progress(
             &app_handle,
             progress_id_ref,
@@ -6859,13 +6851,18 @@ fn run_realesrgan_image_enhancement_impl(
             resize_mode,
             output_format,
             fps: None,
-            width: None,
-            height: None,
+            width: Some(output_width),
+            height: Some(output_height),
             preview: false,
             processed_duration_sec: None,
         })
     })();
 
+    if result.is_err() {
+        if let Some(path) = pending_output {
+            let _ = fs::remove_file(path);
+        }
+    }
     let _ = fs::remove_dir_all(&work_dir);
     result
 }
@@ -6892,7 +6889,7 @@ async fn run_realesrgan_image_enhancement(
         )
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|_| "图片增强[后台任务]：处理任务异常中断，请重试".to_string())?
 }
 
 #[tauri::command]
@@ -10865,6 +10862,9 @@ fn load_canvas_state(app_handle: tauri::AppHandle) -> Result<serde_json::Value, 
         let mut value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
         compact_items_payload(&mut value);
         if canvas_state_item_count(&value) > 0 {
+            if let Ok(view) = fs::read_to_string(get_user_data_dir(&app_handle).join("drawer_canvas_view.json")) {
+                if let Ok(view) = serde_json::from_str::<serde_json::Value>(&view) { canvas_view_state::merge_view(&mut value, &view); }
+            }
             return Ok(value);
         }
         if let Some(recovered) = recover_canvas_state_from_sqlite_or_backup(&app_handle)? {
@@ -11096,15 +11096,27 @@ fn ensure_recovered_canvas_size(state: &mut serde_json::Value) {
     });
 }
 
-#[tauri::command]
-fn save_canvas_state(
-    app_handle: tauri::AppHandle,
+// Full snapshots remain authoritative; no viewport-only merge can erase items.
+// Preserve command order while moving compaction, serialization and disk IO off
+// the native window loop (drag/minimize/maximize must not wait for a canvas save).
+fn canvas_state_writer() -> &'static canvas_background::CanvasTaskQueue {
+    static WRITER: canvas_background::CanvasTaskQueue = canvas_background::CanvasTaskQueue::new();
+    &WRITER
+}
+
+fn saved_canvas_identity() -> &'static std::sync::Mutex<Option<String>> {
+    static IDENTITY: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    &IDENTITY
+}
+
+fn write_full_canvas_state_locked(
+    app_handle: &tauri::AppHandle,
     mut state: serde_json::Value,
 ) -> Result<(), String> {
-    let path = get_user_data_dir(&app_handle).join("drawer_canvas.json");
+    let path = get_user_data_dir(app_handle).join("drawer_canvas.json");
     compact_items_payload(&mut state);
     if canvas_state_item_count(&state) == 0
-        && has_recoverable_canvas_state(&app_handle).unwrap_or(false)
+        && has_recoverable_canvas_state(app_handle).unwrap_or(false)
     {
         let backup_path = path.with_file_name(format!(
             "drawer_canvas.empty-save-blocked.{}.json",
@@ -11115,7 +11127,38 @@ fn save_canvas_state(
         return Ok(());
     }
     let content = serde_json::to_string(&state).map_err(|e| e.to_string())?;
-    fs::write(path, content).map_err(|e| e.to_string())
+    fs::write(path, content).map_err(|e| e.to_string())?;
+    *saved_canvas_identity().lock().map_err(|error| error.to_string())? = state.get("activeCanvasId").and_then(serde_json::Value::as_str).map(str::to_owned);
+    Ok(())
+}
+
+#[tauri::command]
+async fn save_canvas_state(
+    app_handle: tauri::AppHandle,
+    state: serde_json::Value,
+) -> Result<(), String> {
+    let writer = canvas_state_writer();
+    let ticket = writer.issue();
+    tauri::async_runtime::spawn_blocking(move || writer.run(ticket, || write_full_canvas_state_locked(&app_handle, state)))
+    .await
+    .map_err(|error| format!("画布状态后台保存失败: {error}"))?
+}
+
+#[tauri::command]
+async fn save_canvas_view_state(app_handle: tauri::AppHandle, view: serde_json::Value) -> Result<bool, String> {
+    if !canvas_view_state::valid_view(&view) { return Err("无效的画布视图参数".to_string()); }
+    let writer = canvas_state_writer();
+    let ticket = writer.issue();
+    tauri::async_runtime::spawn_blocking(move || writer.run(ticket, || {
+        let identity = saved_canvas_identity().lock().map_err(|error| error.to_string())?;
+        if identity.as_deref() != view.get("activeCanvasId").and_then(serde_json::Value::as_str) { return Ok(false); }
+        let path = get_user_data_dir(&app_handle).join("drawer_canvas_view.json");
+        let encoded = serde_json::to_vec(&view).map_err(|error| error.to_string())?;
+        fs::write(path, encoded).map_err(|error| error.to_string())?;
+        Ok(true)
+    }))
+    .await
+    .map_err(|error| format!("画布视图后台保存失败: {error}"))?
 }
 
 fn has_recoverable_canvas_state(app_handle: &tauri::AppHandle) -> Result<bool, String> {
@@ -18265,6 +18308,19 @@ fn get_drawer_right_edge(app_handle: tauri::AppHandle) -> Result<f64, String> {
 }
 
 #[tauri::command]
+fn resize_drawer_anchored(
+    app_handle: tauri::AppHandle,
+    right_anchor_px: i32,
+    top_anchor_px: i32,
+    width_px: i32,
+    height_px: i32,
+) -> Result<(), String> {
+    let window = app_handle.get_webview_window("main").ok_or("main window not found")?;
+    let bounds = drawer_bounds::anchored_rect(right_anchor_px, top_anchor_px, width_px, height_px)?;
+    drawer_bounds::apply(&window, bounds)
+}
+
+#[tauri::command]
 fn resize_drawer(app_handle: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
     let main = app_handle
         .get_webview_window("main")
@@ -19297,6 +19353,7 @@ fn main() {
             save_folders,
             load_canvas_state,
             save_canvas_state,
+            save_canvas_view_state,
             append_ai_debug_log,
             load_ai_analysis_config,
             save_ai_analysis_config,
@@ -19431,6 +19488,18 @@ fn main() {
             get_drawer_right_edge,
             resize_drawer,
             resize_drawer_at_right,
+            resize_drawer_anchored,
+            commands::design_memory::design_memory_get_settings,
+            commands::design_memory::design_memory_set_enabled,
+            commands::design_memory::design_memory_acquire_lease,
+            commands::design_memory::design_memory_upsert,
+            commands::design_memory::design_memory_recall,
+            commands::design_memory::design_memory_list,
+            commands::design_memory::design_memory_correct,
+            commands::design_memory::design_memory_delete,
+            commands::design_memory::design_memory_clear,
+            commands::design_memory::design_memory_delete_source,
+
             resize_drawer_from_right,
             position_edge,
             show_edge,

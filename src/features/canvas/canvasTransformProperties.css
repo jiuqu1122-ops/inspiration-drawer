@@ -1,0 +1,23 @@
+/* These are local coordinates of ONE transform layer. Inheriting changing
+   wheel values through every node forces unnecessary descendant style work.
+   Universal syntax without an initial value preserves the var() fallback on
+   the initial render; the offsets and render scale have explicit defaults. */
+@property --canvas-live-scale {
+  syntax: "*";
+  inherits: false;
+}
+@property --canvas-render-scale {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
+@property --canvas-offset-x {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --canvas-offset-y {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}

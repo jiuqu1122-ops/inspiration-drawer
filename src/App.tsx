@@ -1,3 +1,13 @@
+import { createCanvasPersistedItemsCache, createCanvasStatePersistence } from './features/canvas/canvasStatePersistence';
+import { createCanvasViewportScheduler, readCanvasVisualViewport } from './features/canvas/canvasViewportScheduler';
+import { haveSameCanvasConnectionEndpoints, reuseCanvasRenderArray } from './features/canvas/canvasRenderArrayIdentity';
+import { beginDrawerImageMemory, syncAnalyzedDrawerProfile, type DesignMemoryRecord } from './features/designMemory';
+import { requestDesignMemoryConversation } from './features/designMemory/navigation';
+import { getAssetById as getDesignMemorySourceAsset } from './services/assetsApi';
+import { createCanvasAiPromptEditorState, disposeCanvasAiPromptEditorState, getCanvasAiPromptEditingBox, type CanvasAiPromptEditorSessions } from './features/canvas/canvasAiPromptResize';
+import { startCanvasAiPromptResizeImpl } from './features/canvas/controllers/canvasWorkflowEditorActions';
+import { cancelDrawerResize, isDrawerResizeActive } from './features/snip/windowSnipActions';
+import { applyCanvasContentTransform, applyCanvasMediaSourceToNode } from './features/canvas/canvasImagePresentation';
 // MODEL_CATALOG_STABILITY_PATCH_V1
 // src/App.tsx
 import { needsWalletMediaCatalog, refreshWalletMediaCatalog } from './features/walletMediaCatalog';
@@ -53,6 +63,7 @@ ChatBatchMediaReadyPayload,
 ChatBatchStartedPayload,
 } from './features/chat/runtime/useChatRuntime';
 import { runChatMediaGeneration } from './features/chat/tools/chatGenerationBridge';
+import { CHAT_AUTO_IMAGE_SETTING } from './features/chat/runtime/chatImageGenerationSettings';
 import { createInspirationChatToolExecutor } from './features/chat/tools/inspirationChatToolExecutor';
 import {
 readCachedCloudAccount
@@ -147,7 +158,6 @@ normalizeCanvasAiAspectRatioForModel
 } from './utils/canvasAiAspectRatio';
 import {
 CANVAS_AI_CREDENTIAL_SOURCE_STORAGE_KEY,
-CANVAS_AI_DEFAULT_IMAGE_RESOLUTION,
 CANVAS_AI_ENDPOINT_STORAGE_KEY,
 CANVAS_AI_NEW_API_VIDEO_KEY_STORAGE_KEY,
 CANVAS_AI_PROVIDER_DEFAULT_VERSION,
@@ -790,9 +800,16 @@ function MainApp() {
   }, [isCanvasWorkbenchActive]);
   useEffect(() => {
     isMainWorkbenchActiveRef.current = isMainWorkbenchActive;
-    invoke('set_main_workbench_active', { active: isMainWorkbenchActive }).catch((err) => {
-      console.warn('set main workbench mode failed:', err);
-    });
+    let cancelled = false;
+    const syncMode = async () => {
+      if (isDrawerResizeActive()) await cancelDrawerResize();
+      if (cancelled) return;
+      await invoke('set_main_workbench_active', { active: isMainWorkbenchActive }).catch((err) => {
+        console.warn('set main workbench mode failed:', err);
+      });
+    };
+    void syncMode();
+    return () => { cancelled = true; };
   }, [isMainWorkbenchActive]);
   const [canvasItems, setCanvasItems] = useState<CanvasImageItem[]>([]);
   const [activeThreeSceneId, setActiveThreeSceneId] = useState<string | null>(null);
@@ -844,6 +861,11 @@ function MainApp() {
   const [canvasReferenceReplaceTarget, setCanvasReferenceReplaceTarget] = useState<CanvasReferenceReplaceTarget | null>(null);
   const [canvasReferenceDragState, setCanvasReferenceDragState] = useState<CanvasReferenceDragState | null>(null);
   const [canvasAiPromptEditingId, setCanvasAiPromptEditingId] = useState<string | null>(null);
+  const canvasAiPromptEditorStateRef = useRef(createCanvasAiPromptEditorState());
+  const [canvasAiPromptEditorSessions, setCanvasAiPromptEditorSessions] = useState<CanvasAiPromptEditorSessions>({});
+  const onCanvasAiPromptEditorChange = (sessions: CanvasAiPromptEditorSessions) => setCanvasAiPromptEditorSessions(sessions);
+  useEffect(() => () => disposeCanvasAiPromptEditorState(canvasAiPromptEditorStateRef.current), []);
+
   const [canvasPromptOptimizingId, setCanvasPromptOptimizingId] = useState<string | null>(null);
   const [canvasAiExpandedOutputNodeIds, setCanvasAiExpandedOutputNodeIds] = useState<Set<string>>(() => new Set());
   const [canvasInputPickTargetId, setCanvasInputPickTargetId] = useState<string | null>(null);
@@ -987,6 +1009,9 @@ function MainApp() {
   const canvasToolbarRef = useRef<HTMLDivElement | null>(null);
   const canvasNavigatorPanelRef = useRef<HTMLDivElement | null>(null);
   const canvasViewportRef = useRef<CanvasViewportRect | null>(null);
+  const canvasLiveViewportSchedulerRef = useRef(createCanvasViewportScheduler());
+  useEffect(() => () => canvasLiveViewportSchedulerRef.current.cancel(), [activeCanvasId, isCanvasMode]);
+
   const canvasViewportFrameRef = useRef<number | null>(null);
   const canvasChatViewportTimerRef = useRef<number | null>(null);
   const canvasInteractionFrameRef = useRef<number | null>(null);
@@ -2988,9 +3013,7 @@ function MainApp() {
   const getStableCanvasImageSource = (canvasItem: CanvasImageItem) => { return getStableCanvasImageSourceImpl({ CANVAS_IMAGE_PREVIEW_UPGRADE_ENABLED, canvasImageSourceCacheRef, canvasPreviewSourceIdsRef, canvasSelectedIdsRef }, canvasItem); };
 
   const applyCanvasImageSourceToElement = (id: string, source: string) => {
-    const element = getCanvasItemElement(id)?.querySelector<HTMLImageElement | HTMLVideoElement>('[data-canvas-main-media="true"]');
-    if (!element || element.getAttribute('src') === source) return;
-    element.setAttribute('src', source);
+    applyCanvasMediaSourceToNode(getCanvasItemElement(id), source);
   };
 
   const scheduleCanvasSelectionImageSources = (ids: Iterable<string>) => { return scheduleCanvasSelectionImageSourcesImpl({ applyCanvasImageSourceToElement, canvasImageSourceCacheRef, canvasItemsRef, canvasPreviewSourceIdsRef, canvasSelectedIdsRef, canvasSelectionImageSourceFrameRef, canvasSelectionImageSourceIdsRef }, ids); };
@@ -3009,9 +3032,9 @@ function MainApp() {
     canvasItem: CanvasImageItem,
     promptExpanded = canvasAiPromptEditingId === canvasItem.id,
     outputsExpanded = canvasAiExpandedOutputNodeIds.has(canvasItem.id),
-  ) => { return getCanvasAiNodeDesignSizeForItemImpl({}, canvasItem, promptExpanded, outputsExpanded); };
+  ) => { return getCanvasAiNodeDesignSizeForItemImpl({}, canvasItem, canvasItem.ai?.type === 'image-generator' ? false : promptExpanded, outputsExpanded); };
 
-  const canvasAiCompactOutputNodeSignature = canvasItems
+  const canvasAiCompactOutputNodeSignature = useMemo(() => canvasItems
     .filter(item => (
       (isCanvasAiGeneratorType(item.ai?.type) || item.ai?.type === 'workflow')
       && (item.ai?.outputs?.length || 0) > CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT
@@ -3023,12 +3046,13 @@ function MainApp() {
       Math.round(item.height),
       canvasAiExpandedOutputNodeIds.has(item.id) ? 1 : 0,
     ].join(':'))
-    .join('|');
+    .join('|'), [canvasItems, canvasAiExpandedOutputNodeIds]);
 
   useEffect(() => { return runCanvasPersistenceEffect01({ canvasAiCompactOutputNodeSignature, canvasAiExpandedOutputNodeIds, canvasAiPromptEditingId, getCanvasAiNodeDesignSizeForItem, isCanvasMode, updateCanvasItemsImmediate }); }, [
     canvasAiCompactOutputNodeSignature,
     canvasAiExpandedOutputNodeIds,
     canvasAiPromptEditingId,
+    canvasAiPromptEditorSessions,
     isCanvasMode,
   ]);
   const makeCanvasItemBoxMap = (ids: string[]) => (
@@ -3208,8 +3232,13 @@ function MainApp() {
     scheduleCanvasChangedNodesPatchSave(changedIds);
   };
 
-  const buildCanvasPersistedState = (): CanvasPersistedState => ({
-    items: canvasItemsRef.current.map(stripCanvasItemDataImageProvenance),
+  const [getSanitizedCanvasItems] = useState(createCanvasPersistedItemsCache);
+  const [persistCanvasState] = useState(() => createCanvasStatePersistence((command, args) => invoke(command, args)));
+  const buildCanvasPersistedState = (): CanvasPersistedState => {
+    const items = getSanitizedCanvasItems(canvasItemsRef.current);
+    return {
+    activeCanvasId: activeCanvasIdRef.current || DEFAULT_CANVAS_ID,
+    items,
     size: cloneDrawerValue(canvasSizeRef.current),
     scale: clamp(canvasScaleRef.current || 1, CANVAS_MIN_SCALE, CANVAS_MAX_SCALE),
     scroll: cloneDrawerValue(
@@ -3226,11 +3255,11 @@ function MainApp() {
       }
     ),
     updatedAt: Date.now(),
-  });
+  }; };
 
   const getCanvasNodesPersistSignature = (items: CanvasImageItem[]) => JSON.stringify(items);
 
-  const saveCanvasStateNow = (options: { syncNodes?: boolean } = {}) => { return saveCanvasStateNowImpl({ activeCanvasIdRef, buildCanvasPersistedState, canvasLastSyncedNodesSignatureRef, canvasPanRef, canvasPersistSaveSyncNodesRef, canvasStateLoadedRef, canvasStateSaveDeferredDuringZoomRef, getCanvasNodesPersistSignature, isCanvasInteractingRef, isCanvasZoomingRef }, options); };
+  const saveCanvasStateNow = (options: { syncNodes?: boolean } = {}) => { return saveCanvasStateNowImpl({ persistCanvasState, activeCanvasIdRef, buildCanvasPersistedState, canvasLastSyncedNodesSignatureRef, canvasPanRef, canvasPersistSaveSyncNodesRef, canvasStateLoadedRef, canvasStateSaveDeferredDuringZoomRef, getCanvasNodesPersistSignature, isCanvasInteractingRef, isCanvasZoomingRef }, options); };
 
   const scheduleCanvasStateSave = (options: { syncNodes?: boolean } = {}) => { return scheduleCanvasStateSaveImpl({ CANVAS_STATE_SAVE_DEBOUNCE_MS, canvasPanRef, canvasPersistSaveSyncNodesRef, canvasPersistSaveTimerRef, canvasStateLoadedRef, canvasStateSaveDeferredDuringZoomRef, isCanvasInteractingRef, isCanvasZoomingRef, saveCanvasStateNow }, options); };
 
@@ -3245,9 +3274,9 @@ function MainApp() {
 
   const openCanvasTrash = async () => { return openCanvasTrashImpl({ refreshDeletedCanvases, setCanvasActionMenuId, setIsCanvasTrashOpen, setIsLoadingCanvasTrash, showToast }); };
 
-  const loadCanvasItems = async (canvasId: string, options: { knownEmpty?: boolean } = {}) => { return loadCanvasItemsImpl({ applyCanvasScaleStyles, cancelCanvasImageSourceUpgradeQueue, canvasImageSourceCacheRef, canvasImageUpgradeFailedRef, canvasItemsRef, canvasLastSyncedNodesSignatureRef, canvasPreviewSourceIdsRef, canvasScaleRef, canvasSelectionImageSourceFrameRef, canvasSelectionImageSourceIdsRef, canvasSessionItemsRef, canvasSizeRef, canvasViewportRef, clearCanvasUndoStack, getActiveCanvasRunNodeIds, getCanvasNodesPersistSignature, hideCanvasSelectionOverlay, isCanvasModeRef, pendingCanvasFusionRoleRef, scheduleCanvasFocusNearestContentIfViewportEmpty, setCanvasConnectionDraft, setCanvasContextMenu, setCanvasInputActionDraft, setCanvasInputMenuForId, setCanvasInputPickTargetId, setCanvasItems, setCanvasSize, setCanvasViewport, updateCanvasSelection, waitForCanvasBackgroundPatches }, canvasId, options); };
+  const loadCanvasItems = async (canvasId: string, options: { knownEmpty?: boolean } = {}) => { finishCanvasPromptEditing(); return loadCanvasItemsImpl({ applyCanvasScaleStyles, cancelCanvasImageSourceUpgradeQueue, canvasImageSourceCacheRef, canvasImageUpgradeFailedRef, canvasItemsRef, canvasLastSyncedNodesSignatureRef, canvasPreviewSourceIdsRef, canvasScaleRef, canvasSelectionImageSourceFrameRef, canvasSelectionImageSourceIdsRef, canvasSessionItemsRef, canvasSizeRef, canvasViewportRef, clearCanvasUndoStack, getActiveCanvasRunNodeIds, getCanvasNodesPersistSignature, hideCanvasSelectionOverlay, isCanvasModeRef, pendingCanvasFusionRoleRef, scheduleCanvasFocusNearestContentIfViewportEmpty, setCanvasConnectionDraft, setCanvasContextMenu, setCanvasInputActionDraft, setCanvasInputMenuForId, setCanvasInputPickTargetId, setCanvasItems, setCanvasSize, setCanvasViewport, updateCanvasSelection, waitForCanvasBackgroundPatches }, canvasId, options); };
 
-  const saveCurrentCanvasBeforeSwitch = async () => { return saveCurrentCanvasBeforeSwitchImpl({ activeCanvasIdRef, buildCanvasPersistedState, canvasInteractionChangedNodeIdsRef, canvasLastSyncedNodesSignatureRef, canvasPatchSavePendingIdsRef, canvasPatchSaveTimerRef, canvasPersistSaveTimerRef, canvasSessionItemsRef, enqueueCanvasBackgroundWrite, getCanvasNodesPersistSignature, waitForCanvasBackgroundPatches }); };
+  const saveCurrentCanvasBeforeSwitch = async () => { finishCanvasPromptEditing(); return saveCurrentCanvasBeforeSwitchImpl({ activeCanvasIdRef, buildCanvasPersistedState, canvasInteractionChangedNodeIdsRef, canvasLastSyncedNodesSignatureRef, canvasPatchSavePendingIdsRef, canvasPatchSaveTimerRef, canvasPersistSaveTimerRef, canvasSessionItemsRef, enqueueCanvasBackgroundWrite, getCanvasNodesPersistSignature, waitForCanvasBackgroundPatches }); };
 
   const makeCanvasNodeId = (seed: string, kind = 'node') => {
     const scope = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
@@ -3315,26 +3344,25 @@ function MainApp() {
       if (visualViewport && canvasSurfaceRef.current) {
         const translateX = canvasSurfaceRef.current.scrollLeft - visualViewport.x * scale;
         const translateY = canvasSurfaceRef.current.scrollTop - visualViewport.y * scale;
-        content.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${scale})`;
+        applyCanvasContentTransform(content, scale, translateX, translateY);
       } else {
-        content.style.transform = `scale(${scale})`;
+        applyCanvasContentTransform(content, scale);
       }
     }
-    if (options.updateViewport !== false) scheduleCanvasViewportUpdate();
+    if (isCanvasZoomingRef.current) {
+      canvasLiveViewportSchedulerRef.current.request(() => {
+        if (isCanvasModeRef.current) updateCanvasViewportNow();
+      });
+    } else if (options.updateViewport !== false) scheduleCanvasViewportUpdate();
   }
 
   function readCanvasViewportRect(surface = canvasSurfaceRef.current): CanvasViewportRect | null {
     if (!surface) return null;
     const scale = clamp(canvasScaleRef.current || 1, CANVAS_MIN_SCALE, CANVAS_MAX_SCALE);
-    const chatOccludedWidth = isAgentChatOpenRef.current
-      ? Math.min(Math.max(0, surface.clientWidth - 1), canvasAgentSidebarWidthRef.current)
-      : 0;
-    return {
-      x: surface.scrollLeft / scale,
-      y: surface.scrollTop / scale,
-      width: Math.max(1, surface.clientWidth - chatOccludedWidth) / scale,
-      height: surface.clientHeight / scale,
-    };
+    return readCanvasVisualViewport(surface, scale,
+      isCanvasZoomingRef.current ? canvasVisualViewportRef.current : null,
+      isAgentChatOpenRef.current ? canvasAgentSidebarWidthRef.current : 0);
+
   }
 
   function updateCanvasViewportNow() {
@@ -4369,7 +4397,7 @@ function MainApp() {
     item: CanvasImageItem,
     patch: Partial<NonNullable<CanvasImageItem['ai']>>,
     content?: string,
-  ) => { return applyCanvasAiGeneratorDataPatchImpl({ canvasAiPromptEditingId, canvasGroupResizeRef, canvasResizeRef, getCanvasAiNodeDesignSizeForItem }, item, patch, content); };
+  ) => { return applyCanvasAiGeneratorDataPatchImpl({ canvasAiPromptEditorStateRef, canvasAiPromptEditingId, canvasGroupResizeRef, canvasResizeRef, getCanvasAiNodeDesignSizeForItem }, item, patch, content); };
 
   const updateCanvasAiGeneratorDataForCanvas = (
     targetCanvasId: string,
@@ -4419,7 +4447,28 @@ function MainApp() {
 
   const optimizeCanvasPrompt = async (canvasId: string) => { return optimizeCanvasPromptImpl({ canvasAgent, canvasAiPromptDraftValuesRef, canvasAiPromptTextAreaRefs, canvasItemsRef, canvasPromptOptimizingId, commitCanvasAiPromptDraft, setCanvasPromptOptimizingId, showToast, updateCanvasSelection }, canvasId); };
 
-  const resizeCanvasAiPromptEditor = (canvasId: string, expanded: boolean, previousExpanded?: boolean) => { return resizeCanvasAiPromptEditorImpl({ canvasAiPromptEditingId, getCanvasAiNodeDesignSizeForItem, updateCanvasItemsImmediate }, canvasId, expanded, previousExpanded); };
+  const resizeCanvasAiPromptEditor = (canvasId: string, expanded: boolean, previousExpanded?: boolean) => { return resizeCanvasAiPromptEditorImpl({ canvasAiPromptEditorStateRef, onCanvasAiPromptEditorChange, canvasItemsRef, canvasAiPromptTextAreaRefs, canvasAiPromptEditingId, getCanvasAiNodeDesignSizeForItem, updateCanvasItemsImmediate }, canvasId, expanded, previousExpanded); };
+  const startCanvasAiPromptResize = (event: React.PointerEvent<HTMLElement>, canvasId: string) => startCanvasAiPromptResizeImpl({
+    canvasAiPromptEditorStateRef, onCanvasAiPromptEditorChange, getCanvasPointFromClient,
+  }, event, canvasId);
+  function finishCanvasPromptEditing() {
+    for (const id of Object.keys(canvasAiPromptEditorStateRef.current.sessions)) {
+      const editor = canvasAiPromptTextAreaRefs.current[id];
+      commitCanvasAiPromptDraft(id, editor?.value, true);
+      resizeCanvasAiPromptEditor(id, false, true);
+    }
+    setCanvasAiPromptEditingId(null);
+  }
+  useEffect(() => {
+    const sessions = canvasAiPromptEditorStateRef.current.sessions;
+    const remaining = Object.fromEntries(Object.entries(sessions).filter(([id]) => isCanvasMode && canvasItems.some(item => item.id === id)));
+    if (Object.keys(remaining).length === Object.keys(sessions).length) return;
+    canvasAiPromptEditorStateRef.current.cancelResize?.();
+    canvasAiPromptEditorStateRef.current.sessions = remaining;
+    setCanvasAiPromptEditorSessions(remaining);
+    if (!isCanvasMode || (canvasAiPromptEditingId && !remaining[canvasAiPromptEditingId])) setCanvasAiPromptEditingId(null);
+  }, [canvasItems, isCanvasMode, activeCanvasId]);
+
 
   const toggleCanvasAiOutputsExpanded = (canvasId: string) => { return toggleCanvasAiOutputsExpandedImpl({ canvasAiExpandedOutputNodeIds, canvasAiPromptEditingId, getCanvasAiNodeDesignSizeForItem, setCanvasAiExpandedOutputNodeIds, updateCanvasItemsImmediate }, canvasId); };
 
@@ -4635,7 +4684,7 @@ function MainApp() {
 
   useEffect(() => { return runCanvasGenerationEffect02({ canvasItems, canvasItemsRef, getCanvasAiErrorSummary, getCanvasEnhancementInput, getEnhancementEstimateKey, isCanvasMode, updateCanvasAiGeneratorData }); }, [canvasItems, isCanvasMode]);
 
-  const runCanvasEnhancementNode = async (targetId: string) => { return runCanvasEnhancementNodeImpl({ activeCanvasIdRef, addGeneratedImagesToDrawer, addGeneratedVideosToDrawer, canvasItemsRef, createCanvasImagePreviewThumbnail, getCanvasAiErrorSummary, getCanvasEnhancementInput, showToast, updateCanvasAiGeneratorData, updateCanvasSelection }, targetId); };
+  const runCanvasEnhancementNode = async (targetId: string) => { return runCanvasEnhancementNodeImpl({ activeCanvasIdRef, addGeneratedImagesToDrawer, addGeneratedVideosToDrawer, cacheCanvasGeneratedImageSource, canvasItemsRef, createCanvasImagePreviewThumbnail, getCanvasAiErrorSummary, getCanvasEnhancementInput, showToast, updateCanvasAiGeneratorData, updateCanvasSelection }, targetId); };
 
   const runCanvasAiGeneratorNode = async (targetId: string) => { return runCanvasAiGeneratorNodeImpl({ activeCanvasIdRef, canvasAiRunTokensRef, canvasItemsRef, canvasSessionItemsRef, commitCanvasAiPromptDraft, getCanvasSessionItems, isCanvasModeRef, markCanvasRunNodeActive, markCanvasRunNodeSettled, runCanvasAiGeneratorTarget, showToast, updateCanvasAiGeneratorDataForCanvas, updateCanvasSelection, waitForCanvasBackgroundPatches }, targetId); };
 
@@ -4966,6 +5015,7 @@ function MainApp() {
   const leaveCanvasToDrawer = () => { return leaveCanvasToDrawerImpl({ canvasItemsRef, canvasReturnScrollRef, canvasScrollLockRef, canvasSurfaceRef, isCanvasModeRef, isPinnedRef, keepCanvasSessionOnLeaveRef, saveCanvasStateNow, setCanvasSpacePressed, setIsCanvasMode, setIsPinned, showToast, updateCanvasSelection }); };
 
   const requestExitCanvasMode = () => {
+    finishCanvasPromptEditing();
     leaveCanvasToDrawer();
   };
 
@@ -4973,7 +5023,8 @@ function MainApp() {
 
   const runDrawerWorkbenchWindowAction = (action: 'minimize' | 'maximize' | 'close') => { return runDrawerWorkbenchWindowActionImpl({ appWindow, isPinnedRef, isPointerInsideDrawerRef, setIsOpen, setIsPinned, showToast }, action); };
 
-  const toggleCanvasMode = () => {
+  const toggleCanvasMode = async () => {
+    await cancelDrawerResize();
     if (isCanvasModeRef.current) requestExitCanvasMode();
     else enterCanvasMode();
   };
@@ -5212,6 +5263,7 @@ function MainApp() {
   });
 
   const isResizingState = useRef(false);
+  useEffect(() => () => { void cancelDrawerResize(); }, []);
 
   useEffect(() => { localStorage.setItem('drawer_width', drawerWidth.toString()); }, [drawerWidth]);
   useEffect(() => { localStorage.setItem('drawer_height', drawerHeight.toString()); }, [drawerHeight]);
@@ -5242,6 +5294,23 @@ function MainApp() {
     sourceOrItem: string | BufferItem,
     options: { fromCanvas?: boolean; galleryItems?: BufferItem[]; galleryIndex?: number } = {}
   ) => { return openSelectedImagePreviewImpl({ selectedImageOriginalCacheRef, selectedImageReturnToCanvasRef, setSelectedImage, setSelectedImageGallery }, sourceOrItem, options); };
+
+  const openDesignMemorySource = async (record: DesignMemoryRecord) => {
+    if (record.kind === 'drawer-image') {
+      try {
+        const item = itemsRef.current.find(item => item.id === record.sourceId)
+          || await getDesignMemorySourceAsset(record.sourceId);
+        if (!item || item.type !== 'image') { showToast('来源图片已不存在'); return; }
+        setShowSettings(false);
+        openSelectedImagePreview(item, { fromCanvas: isCanvasModeRef.current });
+      } catch { showToast('无法打开来源图片'); }
+      return;
+    }
+    setShowSettings(false);
+    if (isCanvasModeRef.current) setCanvasChatVisibility(true);
+    else setIsDrawerAgentOpen(true);
+    requestDesignMemoryConversation(record.sourceId, isCanvasModeRef.current ? 'canvas' : 'drawer');
+  };
 
   const stepSelectedImageGallery = (direction: -1 | 1) => { return stepSelectedImageGalleryImpl({ isCanvasModeRef, openSelectedImagePreview, selectedImageGallery, selectedImageReturnToCanvasRef }, direction); };
 
@@ -5300,7 +5369,7 @@ function MainApp() {
     };
   }, []);
 
-const startSnip = async () => { return startSnipImpl({ closeTimerRef, drawerHeightRef, drawerState, drawerWidthRef, enforceAntiTouchClosed, idleAutoCloseTimerRef, isCanvasMode, isDraggingTitleRef, isGlobalMouseDown, isOpen, isPinned, isPinnedRef, isResizingState, setIsDraggingTitle, setIsSnipSessionActive, setSelection, setSnipMode, showToast, snipCaptureInFlightRef, snipModeActiveRef, snipRestoreDrawerRef, stateRef, triggerModeRef }); };
+const startSnip = async () => { await cancelDrawerResize(); return startSnipImpl({ closeTimerRef, drawerHeightRef, drawerState, drawerWidthRef, enforceAntiTouchClosed, idleAutoCloseTimerRef, isCanvasMode, isDraggingTitleRef, isGlobalMouseDown, isOpen, isPinned, isPinnedRef, isResizingState, setIsDraggingTitle, setIsSnipSessionActive, setSelection, setSnipMode, showToast, snipCaptureInFlightRef, snipModeActiveRef, snipRestoreDrawerRef, stateRef, triggerModeRef }); };
 
   // 开合动画只响应“激活/关闭”变化，尺寸变化不再重新触发 pre_open -> open，避免缩放闪烁。
 useEffect(() => { return runWindowSnipEffect02({ closeTimerRef, drawerHeightRef, drawerWidthRef, isDrawerActive, isSnipSessionActive, isStartupOverlayActive, setDrawerState, snipExitInFlightRef, snipMode, startupOverlayWasActiveRef, triggerModeRef }); }, [isDrawerActive, isStartupOverlayActive, snipMode.active, isSnipSessionActive]);
@@ -5308,7 +5377,7 @@ useEffect(() => { return runWindowSnipEffect02({ closeTimerRef, drawerHeightRef,
   // 兜底：只要前端状态已经是 closed，就再次把真实 Tauri 窗口压回 20px。
   // 这样即使上一轮动画/异步 resize 被打断，也不会留下一个透明的大命中框。
   useEffect(() => {
-    if (snipMode.active || isSnipSessionActive || snipExitInFlightRef.current || isDrawerActive || drawerState !== 'closed') return;
+    if (snipMode.active || isSnipSessionActive || snipExitInFlightRef.current || isDrawerActive || isDrawerResizeActive() || drawerState !== 'closed') return;
     invoke('close_drawer', { mode: triggerModeRef.current }).catch(() => {});
   }, [drawerState, isDrawerActive, snipMode.active, isSnipSessionActive]);
 
@@ -5324,7 +5393,7 @@ useEffect(() => { return runWindowSnipEffect02({ closeTimerRef, drawerHeightRef,
 
   // 尺寸变化只同步系统窗口大小，不重置抽屉动画状态。
 useEffect(() => {
-  if (snipMode.active || isSnipSessionActive || isResizingState.current || !isDrawerActive || drawerState === 'closed' || drawerState === 'closing') return;
+  if (snipMode.active || isSnipSessionActive || isResizingState.current || isDrawerResizeActive() || !isDrawerActive || drawerState === 'closed' || drawerState === 'closing') return;
   applyWindowBounds(drawerWidth + EDGE_WIDTH, drawerHeight, drawerResizeAnchorRef.current);
 }, [drawerWidth, drawerHeight, isDrawerActive, drawerState, snipMode.active, isSnipSessionActive]);
 
@@ -5761,7 +5830,13 @@ useEffect(() => {
     userTags?: string[];
     userNotes?: string[];
     forceRefresh?: boolean;
-  }): Promise<InspirationProfile> => { return analyzeDrawerInspirationWithLlmImpl({ assetStorageMode, imageSourceToDataUrl, inspirationRetrievalCacheRef, itemsRef, setItems, updateAssetsFromQuery }, input); };
+  }): Promise<InspirationProfile> => {
+    // Capture before any analysis starts; OFF/clear invalidates this ticket.
+    const ticket = await beginDrawerImageMemory(input.itemId).catch(() => null);
+    const profile = await analyzeDrawerInspirationWithLlmImpl({ assetStorageMode, imageSourceToDataUrl, inspirationRetrievalCacheRef, itemsRef, setItems, updateAssetsFromQuery }, input);
+    await syncAnalyzedDrawerProfile(ticket, profile, { title: itemsRef.current.find(item => item.id === input.itemId)?.name }).catch(() => {});
+    return profile;
+  };
 
   const isAutoAiTaggableItem = (item: BufferItem) => {
     if (
@@ -5816,30 +5891,32 @@ useEffect(() => {
     canvasAgent.appendWorkflowResult(result);
   };
 
-  const chatImageModelOptions = useMemo<ChatImageModelOption[]>(() => (
-    canvasAiUnifiedImageModelOptions
+  const chatImageModelOptions = useMemo<ChatImageModelOption[]>(() => ([
+    {
+      value: CHAT_AUTO_IMAGE_SETTING,
+      label: '自动选择（推荐）',
+      hint: '根据任务内容、版面比例和清晰度自动匹配生图模型',
+      meta: '智能匹配',
+    },
+    ...canvasAiUnifiedImageModelOptions
       .filter(option => !option.disabled)
-      .map(option => {
-        const choice = parseCanvasAiModelChoiceValue(option.value);
-        return {
-          value: option.label,
-          label: option.label,
-          hint: option.hint,
-          meta: choice?.source === 'local' ? '本地 API' : '账号额度',
-        };
-      })
-  ), [canvasAiUnifiedImageModelOptions]);
+      .map(option => ({
+        value: option.label,
+        label: option.label,
+        hint: option.hint,
+        meta: parseCanvasAiModelChoiceValue(option.value)?.source === 'local' ? '本地 API' : '账号额度',
+      })),
+  ]), [canvasAiUnifiedImageModelOptions]);
   const [chatImageModel, setChatImageModel] = useState(() => (
-    localStorage.getItem(CHAT_IMAGE_MODEL_STORAGE_KEY) || ''
+    localStorage.getItem(CHAT_IMAGE_MODEL_STORAGE_KEY) || CHAT_AUTO_IMAGE_SETTING
   ));
   const activeChatImageModel = chatImageModelOptions.some(option => option.value === chatImageModel)
     ? chatImageModel
-    : chatImageModelOptions[0]?.value || '';
-  const activeChatImageModelChoice = canvasAiUnifiedImageModelOptions
-    .find(option => !option.disabled && option.label === activeChatImageModel);
-  const activeChatImageModelConfig = activeChatImageModelChoice
-    ? parseCanvasAiModelChoiceValue(activeChatImageModelChoice.value)
-    : null;
+    : CHAT_AUTO_IMAGE_SETTING;
+  const activeChatImageModelChoice = activeChatImageModel === CHAT_AUTO_IMAGE_SETTING
+    ? undefined
+    : canvasAiUnifiedImageModelOptions.find(option => !option.disabled && option.label === activeChatImageModel);
+  const activeChatImageModelConfig = activeChatImageModelChoice ? parseCanvasAiModelChoiceValue(activeChatImageModelChoice.value) : null;
   const activeChatImageModelCandidates = activeChatImageModelConfig?.providerCandidates || [];
   const activeChatImageModelCandidate = activeChatImageModelCandidates[0];
   const activeChatImageCatalogModel = findAiCatalogModel(
@@ -5848,70 +5925,93 @@ useEffect(() => {
   );
   const chatLegacyImageResolutionValues = activeChatImageModelCandidates.length > 0
     ? getCanvasAiImageResolutionValuesForCandidates(activeChatImageModelCandidates)
-    : getCanvasAiImageResolutionValues(
-      activeChatImageModelConfig?.provider,
-      activeChatImageModelConfig?.model,
-    );
+    : getCanvasAiImageResolutionValues(activeChatImageModelConfig?.provider, activeChatImageModelConfig?.model);
   const chatResolvedImageCapabilities = resolveImageModelCapabilities({
     canonical: activeChatImageCatalogModel?.capabilities,
     route: activeChatImageModelCandidate?.modelCapabilities,
     legacy: { resolutions: chatLegacyImageResolutionValues },
   });
-  const chatImageResolutionValues = Array.from(new Set([
-    ...chatResolvedImageCapabilities.resolutions,
-    ...chatLegacyImageResolutionValues,
-  ]));
-  const chatImageResolutionOptions = useMemo<ChatImageModelOption[]>(() => (
-    chatImageResolutionValues.length > 0
+  const chatImageModelRuntimeOptions = useMemo(() => (
+    canvasAiUnifiedImageModelOptions
+      .filter(option => !option.disabled)
+      .map(option => {
+        const config = parseCanvasAiModelChoiceValue(option.value);
+        const candidates = config?.providerCandidates || [];
+        const candidate = candidates[0];
+        const catalogModel = findAiCatalogModel(
+          getAiCatalogModels(canvasAiCloudImageModels, 'image'),
+          candidate?.canonicalModelId || config?.model,
+        );
+        const resolutions = candidates.length > 0
+          ? getCanvasAiImageResolutionValuesForCandidates(candidates)
+          : getCanvasAiImageResolutionValues(config?.provider, config?.model);
+        const capabilities = resolveImageModelCapabilities({
+          canonical: catalogModel?.capabilities,
+          route: candidate?.modelCapabilities,
+          legacy: { resolutions },
+        });
+        const ratios = capabilities.aspectRatios.length > 0
+          ? capabilities.aspectRatios
+          : getCanvasAiAspectRatioOptionsForModel(config?.model, resolutions[0]).map(ratio => ratio.value);
+        return {
+          value: option.value,
+          label: option.label,
+          hint: option.hint,
+          resolutions,
+          aspectRatios: ratios,
+          aspectRatiosByResolution: capabilities.aspectRatiosByResolution,
+        };
+      })
+  ), [canvasAiCloudImageModels, canvasAiUnifiedImageModelOptions]);
+  const chatAutoImageAspectRatioValues = Array.from(new Set(chatImageModelRuntimeOptions.flatMap(option => option.aspectRatios || [])));
+  const chatAutoImageResolutionValues = Array.from(new Set(chatImageModelRuntimeOptions.flatMap(option => option.resolutions || [])));
+  const chatImageResolutionValues = activeChatImageModel === CHAT_AUTO_IMAGE_SETTING
+    ? []
+    : Array.from(new Set([...chatResolvedImageCapabilities.resolutions, ...chatLegacyImageResolutionValues]));
+  const chatImageResolutionOptions = useMemo<ChatImageModelOption[]>(() => ([
+    { value: CHAT_AUTO_IMAGE_SETTING, label: '自动匹配', hint: '根据当前提示词选择合适清晰度' },
+    ...(chatImageResolutionValues.length > 0
       ? chatImageResolutionValues.map(value => ({ value, label: value.toUpperCase() }))
-      : [{ value: '', label: '模型默认' }]
-  ), [chatImageResolutionValues.join('|')]);
+      : [{ value: '', label: '模型默认' }]),
+  ]), [chatImageResolutionValues.join('|')]);
   const [chatImageResolution, setChatImageResolution] = useState(() => (
-    localStorage.getItem(CHAT_IMAGE_RESOLUTION_STORAGE_KEY) || CANVAS_AI_DEFAULT_IMAGE_RESOLUTION
+    localStorage.getItem(CHAT_IMAGE_RESOLUTION_STORAGE_KEY) || CHAT_AUTO_IMAGE_SETTING
   ));
-  const activeChatImageResolution = chatImageResolutionOptions.some(option => option.value === chatImageResolution)
-    ? chatImageResolution
-    : chatImageResolutionOptions[0]?.value || '';
-  const chatImageAspectRatioValues = getImageAspectRatioOptionsForResolution(
-    chatResolvedImageCapabilities,
-    activeChatImageResolution,
-  );
-  const chatImageAspectRatioOptions = useMemo<ChatImageModelOption[]>(() => (
-    chatImageAspectRatioValues.length > 0
-      ? chatImageAspectRatioValues.map(value => ({
-        value,
-        label: formatCanvasAiAspectRatioOptionLabel(value),
-      }))
-      : getCanvasAiAspectRatioOptionsForModel(
-        activeChatImageModelConfig?.model,
-        activeChatImageResolution,
-      ).map(option => ({ value: option.value, label: option.label, hint: option.hint }))
-  ), [activeChatImageModelConfig?.model, activeChatImageResolution, chatImageAspectRatioValues.join('|')]);
-  const [chatImageAspectRatio, setChatImageAspectRatio] = useState(() => (
-    localStorage.getItem(CHAT_IMAGE_ASPECT_RATIO_STORAGE_KEY) || CANVAS_AI_DEFAULT_ASPECT_RATIO
-  ));
-  const activeChatImageAspectRatio = chatImageAspectRatioValues.length > 0
-    ? normalizeCapabilityOption(
-      chatImageAspectRatioValues,
-      chatImageAspectRatio,
-      CANVAS_AI_DEFAULT_ASPECT_RATIO,
-    )
-    : normalizeCanvasAiAspectRatioForModel(
-      activeChatImageModelConfig?.model,
-      chatImageAspectRatio,
-      activeChatImageResolution,
+  const activeChatImageResolution = chatImageResolution === CHAT_AUTO_IMAGE_SETTING
+    ? CHAT_AUTO_IMAGE_SETTING
+    : chatImageResolutionOptions.some(option => option.value === chatImageResolution)
+      ? chatImageResolution
+      : chatImageResolutionOptions.find(option => option.value !== CHAT_AUTO_IMAGE_SETTING)?.value || CHAT_AUTO_IMAGE_SETTING;
+  const chatImageAspectRatioValues = activeChatImageModel === CHAT_AUTO_IMAGE_SETTING
+    ? []
+    : getImageAspectRatioOptionsForResolution(
+      chatResolvedImageCapabilities,
+      activeChatImageResolution === CHAT_AUTO_IMAGE_SETTING ? undefined : activeChatImageResolution,
     );
+  const chatImageAspectRatioOptions = useMemo<ChatImageModelOption[]>(() => ([
+    { value: CHAT_AUTO_IMAGE_SETTING, label: '自动匹配', hint: '根据用途和版面自动选择比例' },
+    ...(chatImageAspectRatioValues.length > 0
+      ? chatImageAspectRatioValues.map(value => ({ value, label: formatCanvasAiAspectRatioOptionLabel(value) }))
+      : activeChatImageModel === CHAT_AUTO_IMAGE_SETTING
+        ? []
+        : getCanvasAiAspectRatioOptionsForModel(activeChatImageModelConfig?.model, activeChatImageResolution === CHAT_AUTO_IMAGE_SETTING ? undefined : activeChatImageResolution)
+          .map(option => ({ value: option.value, label: option.label, hint: option.hint }))),
+  ]), [activeChatImageModel, activeChatImageModelConfig?.model, activeChatImageResolution, chatImageAspectRatioValues.join('|')]);
+  const [chatImageAspectRatio, setChatImageAspectRatio] = useState(() => (
+    localStorage.getItem(CHAT_IMAGE_ASPECT_RATIO_STORAGE_KEY) || CHAT_AUTO_IMAGE_SETTING
+  ));
+  const activeChatImageAspectRatio = chatImageAspectRatio === CHAT_AUTO_IMAGE_SETTING || activeChatImageModel === CHAT_AUTO_IMAGE_SETTING
+    ? CHAT_AUTO_IMAGE_SETTING
+    : chatImageAspectRatioValues.length > 0
+      ? normalizeCapabilityOption(chatImageAspectRatioValues, chatImageAspectRatio, CANVAS_AI_DEFAULT_ASPECT_RATIO)
+      : normalizeCanvasAiAspectRatioForModel(activeChatImageModelConfig?.model, chatImageAspectRatio, activeChatImageResolution === CHAT_AUTO_IMAGE_SETTING ? undefined : activeChatImageResolution);
   useEffect(() => {
-    if (!activeChatImageModel || activeChatImageModel === chatImageModel) return;
-    setChatImageModel(activeChatImageModel);
+    if (activeChatImageModel !== chatImageModel) setChatImageModel(activeChatImageModel);
+    localStorage.setItem(CHAT_IMAGE_MODEL_STORAGE_KEY, activeChatImageModel);
   }, [activeChatImageModel, chatImageModel]);
   useEffect(() => {
-    if (activeChatImageModel) localStorage.setItem(CHAT_IMAGE_MODEL_STORAGE_KEY, activeChatImageModel);
-  }, [activeChatImageModel]);
-  useEffect(() => {
     if (activeChatImageResolution !== chatImageResolution) setChatImageResolution(activeChatImageResolution);
-    if (activeChatImageResolution) localStorage.setItem(CHAT_IMAGE_RESOLUTION_STORAGE_KEY, activeChatImageResolution);
-    else localStorage.removeItem(CHAT_IMAGE_RESOLUTION_STORAGE_KEY);
+    localStorage.setItem(CHAT_IMAGE_RESOLUTION_STORAGE_KEY, activeChatImageResolution);
   }, [activeChatImageResolution, chatImageResolution]);
   useEffect(() => {
     if (activeChatImageAspectRatio !== chatImageAspectRatio) setChatImageAspectRatio(activeChatImageAspectRatio);
@@ -6177,17 +6277,17 @@ useEffect(() => {
       .map(entry => entry.item),
     [canvasGeneratedDownloadableItems, canvasGeneratedSelectedIdSet],
   );
-  const getCanvasItemRenderedBox = (canvasItem: CanvasImageItem): CanvasItemBox => { return getCanvasItemRenderedBoxImpl({ getCanvasAiNodeDesignSizeForItem }, canvasItem); };
+  const getCanvasItemRenderedBox = (canvasItem: CanvasImageItem): CanvasItemBox => { return getCanvasAiPromptEditingBox(canvasItem, canvasAiPromptEditorSessions) || getCanvasItemRenderedBoxImpl({ getCanvasAiNodeDesignSizeForItem }, canvasItem); };
   const canvasNavItems = useMemo(() => canvasItemsForNav.map(item => ({
     item,
     box: getCanvasItemRenderedBox(item),
-  })), [canvasItemsForNav, canvasAiPromptEditingId]);
+  })), [canvasItemsForNav, canvasAiPromptEditingId, canvasAiPromptEditorSessions]);
   const canvasSelectedIdsSet = useMemo(() => new Set(canvasSelectedIds), [canvasSelectedIds]);
   const canvasSelectedBoxesForRender = useMemo(() => (
     canvasSelectedIds.length > 1
       ? canvasItems.filter(item => canvasSelectedIdsSet.has(item.id)).map(getCanvasItemRenderedBox)
       : []
-  ), [canvasItems, canvasSelectedIds, canvasSelectedIdsSet, canvasAiPromptEditingId]);
+  ), [canvasItems, canvasSelectedIds, canvasSelectedIdsSet, canvasAiPromptEditingId, canvasAiPromptEditorSessions]);
   const canvasSelectedBounds = useMemo(() => (canvasSelectedBoxesForRender.length > 1 ? {
     x: Math.min(...canvasSelectedBoxesForRender.map(box => box.x)),
     y: Math.min(...canvasSelectedBoxesForRender.map(box => box.y)),
@@ -6203,14 +6303,15 @@ useEffect(() => {
     canvasSingleSelectedItemForRender
       ? getCanvasItemRenderedBox(canvasSingleSelectedItemForRender)
       : null
-  ), [canvasSingleSelectedItemForRender, canvasAiPromptEditingId]);
+  ), [canvasSingleSelectedItemForRender, canvasAiPromptEditingId, canvasAiPromptEditorSessions]);
   const canvasScaledSelectionRadius = CANVAS_SELECTION_RADIUS;
   const canvasScaledNodeRadius = CANVAS_NODE_RADIUS;
   const canvasRenderScale = clamp(canvasScale || 1, CANVAS_MIN_SCALE, CANVAS_MAX_SCALE);
   const canvasItemsById = useMemo(() => new Map(canvasItems.map(item => [item.id, item])), [canvasItems]);
   const canvasRenderViewport = useMemo<CanvasItemBox | null>(() => {
     if (!canvasViewport) return null;
-    const overscan = isCanvasInteractingRef.current ? CANVAS_INTERACTION_OVERSCAN_PX : CANVAS_VIEWPORT_OVERSCAN_PX;
+    const screenOverscan = isCanvasInteractingRef.current ? CANVAS_INTERACTION_OVERSCAN_PX : CANVAS_VIEWPORT_OVERSCAN_PX;
+    const overscan = screenOverscan / Math.max(CANVAS_MIN_SCALE, canvasScaleRef.current || 1);
     return {
       x: canvasViewport.x - overscan,
       y: canvasViewport.y - overscan,
@@ -6218,19 +6319,18 @@ useEffect(() => {
       height: canvasViewport.height + overscan * 2,
     };
   }, [canvasViewport]);
-  const canvasGroupOutlinesForRender = useMemo(() => (
+  // Group geometry is independent of the viewport and selection. Keep its
+  // all-node scan out of the continuous-zoom viewport update path.
+  const canvasGroupOutlines = useMemo(() => (
     getCanvasGroupOutlines(canvasItems, getCanvasItemRenderedBox)
-      .filter(outline => (
-        !canvasRenderViewport
-        || outline.itemIds.some(id => canvasSelectedIdsSet.has(id))
-        || canvasRectsIntersect(canvasRenderViewport, outline.bounds)
-      ))
-  ), [
-    canvasAiPromptEditingId,
-    canvasItems,
-    canvasRenderViewport,
-    canvasSelectedIdsSet,
-  ]);
+  ), [canvasItems, canvasAiPromptEditingId, canvasAiPromptEditorSessions, canvasAiExpandedOutputNodeIds]);
+  const canvasGroupOutlinesForRender = useMemo(() => (
+    canvasGroupOutlines.filter(outline => (
+      !canvasRenderViewport
+      || outline.itemIds.some(id => canvasSelectedIdsSet.has(id))
+      || canvasRectsIntersect(canvasRenderViewport, outline.bounds)
+    ))
+  ), [canvasGroupOutlines, canvasRenderViewport, canvasSelectedIdsSet]);
   const canvasAlwaysRenderedIds = useMemo(() => {
     const ids = new Set<string>();
     if (activeThreeSceneId) ids.add(activeThreeSceneId);
@@ -6246,39 +6346,52 @@ useEffect(() => {
     return ids;
   }, [
     canvasAiPromptEditingId,
+    canvasAiPromptEditorSessions,
     canvasConnectionDraft,
     canvasInputActionDraft,
     canvasInputMenuForId,
     canvasInputPickTargetId,
     canvasPromptOptimizingId,
   ]);
+  // Compare with committed arrays only; an interrupted render must not
+  // publish its membership cache to a still-visible canvas.
+  const canvasViewportRenderableItemsRef = useRef<CanvasImageItem[] | null>(null);
+  const canvasRenderableItemsRef = useRef<CanvasImageItem[] | null>(null);
+  const canvasConnectionsForRenderRef = useRef<{ source: CanvasImageItem; target: CanvasImageItem }[] | null>(null);
   const canvasViewportRenderableItems = useMemo(() => {
-    if (!canvasRenderViewport) return canvasItems;
-    return canvasItems.filter(item => (
-      canvasAlwaysRenderedIds.has(item.id)
-      || canvasRectsIntersect(canvasRenderViewport, getCanvasItemRenderedBox(item))
-    ));
+    const nextItems = canvasRenderViewport
+      ? canvasItems.filter(item => (
+        canvasAlwaysRenderedIds.has(item.id)
+        || canvasRectsIntersect(canvasRenderViewport, getCanvasItemRenderedBox(item))
+      ))
+      : canvasItems;
+    return reuseCanvasRenderArray(canvasViewportRenderableItemsRef.current, nextItems);
   }, [
     canvasAlwaysRenderedIds,
     canvasAiPromptEditingId,
+    canvasAiPromptEditorSessions,
     canvasItems,
     canvasRenderViewport,
   ]);
   const canvasRenderableItems = useMemo(() => {
-    if (!canvasRenderViewport || canvasSelectedIds.length === 0) return canvasViewportRenderableItems;
-    const supplementalSelectedItems = canvasSelectedIds.reduce<CanvasImageItem[]>((items, id) => {
-      if (canvasAlwaysRenderedIds.has(id)) return items;
-      const item = canvasItemsById.get(id);
-      if (!item || canvasRectsIntersect(canvasRenderViewport, getCanvasItemRenderedBox(item))) return items;
-      items.push(item);
-      return items;
-    }, []);
-    return supplementalSelectedItems.length > 0
-      ? [...canvasViewportRenderableItems, ...supplementalSelectedItems]
-      : canvasViewportRenderableItems;
+    let nextItems = canvasViewportRenderableItems;
+    if (canvasRenderViewport && canvasSelectedIds.length > 0) {
+      const supplementalSelectedItems = canvasSelectedIds.reduce<CanvasImageItem[]>((items, id) => {
+        if (canvasAlwaysRenderedIds.has(id)) return items;
+        const item = canvasItemsById.get(id);
+        if (!item || canvasRectsIntersect(canvasRenderViewport, getCanvasItemRenderedBox(item))) return items;
+        items.push(item);
+        return items;
+      }, []);
+      if (supplementalSelectedItems.length > 0) {
+        nextItems = [...canvasViewportRenderableItems, ...supplementalSelectedItems];
+      }
+    }
+    return reuseCanvasRenderArray(canvasRenderableItemsRef.current, nextItems);
   }, [
     activeThreeSceneId,
     canvasAiPromptEditingId,
+    canvasAiPromptEditorSessions,
     canvasAlwaysRenderedIds,
     canvasItemsById,
     canvasRenderViewport,
@@ -6372,12 +6485,23 @@ useEffect(() => {
       .filter((item): item is { source: CanvasImageItem; target: CanvasImageItem } => !!item)
   )), [canvasItems, canvasItemsById]);
   const canvasConnectionsForRender = useMemo(() => {
-    if (!canvasRenderViewport) return canvasConnections;
-    return canvasConnections.filter(({ source, target }) => (
-      canvasRectsIntersect(canvasRenderViewport, getCanvasItemRenderedBox(source))
-      || canvasRectsIntersect(canvasRenderViewport, getCanvasItemRenderedBox(target))
-    ));
-  }, [canvasAiPromptEditingId, canvasConnections, canvasRenderViewport]);
+    const nextConnections = canvasRenderViewport
+      ? canvasConnections.filter(({ source, target }) => (
+        canvasRectsIntersect(canvasRenderViewport, getCanvasItemRenderedBox(source))
+        || canvasRectsIntersect(canvasRenderViewport, getCanvasItemRenderedBox(target))
+      ))
+      : canvasConnections;
+    return reuseCanvasRenderArray(
+      canvasConnectionsForRenderRef.current,
+      nextConnections,
+      haveSameCanvasConnectionEndpoints,
+    );
+  }, [canvasAiPromptEditingId, canvasAiPromptEditorSessions, canvasConnections, canvasRenderViewport]);
+  useLayoutEffect(() => {
+    canvasViewportRenderableItemsRef.current = canvasViewportRenderableItems;
+    canvasRenderableItemsRef.current = canvasRenderableItems;
+    canvasConnectionsForRenderRef.current = canvasConnectionsForRender;
+  }, [canvasViewportRenderableItems, canvasRenderableItems, canvasConnectionsForRender]);
   const canvasConnectedSourceIds = useMemo(() => (
     new Set(canvasConnections.map(connection => connection.source.id))
   ), [canvasConnections]);
@@ -6396,6 +6520,7 @@ useEffect(() => {
     canvasSelectedIds,
     canvasConnections,
     canvasRenderScale,
+    canvasAiPromptEditorSessions,
   ]);
   const canvasConnectionDraftPath = canvasConnectionDraft ? (() => {
     const bend = Math.max(80, Math.abs(canvasConnectionDraft.toX - canvasConnectionDraft.fromX) * 0.45);
@@ -6407,14 +6532,20 @@ useEffect(() => {
     const direction = canvasInputActionDraft.toX <= canvasInputActionDraft.fromX ? -1 : 1;
     return `M ${canvasInputActionDraft.fromX} ${canvasInputActionDraft.fromY} C ${canvasInputActionDraft.fromX + bend * direction} ${canvasInputActionDraft.fromY}, ${canvasInputActionDraft.toX - bend * direction} ${canvasInputActionDraft.toY}, ${canvasInputActionDraft.toX} ${canvasInputActionDraft.toY}`;
   })() : '';
-  const selectedCanvasAiGenerator = canvasItems.find(item => canvasSelectedIdsSet.has(item.id) && canUseCanvasItemAsAiTarget(item));
-  const selectedCanvasConnectableCount = selectedCanvasAiGenerator
-    ? canvasSelectedIds.filter(id => {
-      if (id === selectedCanvasAiGenerator.id) return false;
-      const item = canvasItemsById.get(id);
-      return canUseCanvasItemAsAiInput(item);
-    }).length
-    : 0;
+  const selectedCanvasAiGenerator = useMemo(() => (
+    canvasSelectedIdsSet.size === 0
+      ? undefined
+      : canvasItems.find(item => canvasSelectedIdsSet.has(item.id) && canUseCanvasItemAsAiTarget(item))
+  ), [canvasItems, canvasSelectedIdsSet]);
+  const selectedCanvasConnectableCount = useMemo(() => (
+    selectedCanvasAiGenerator
+      ? canvasSelectedIds.reduce((count, id) => (
+        id !== selectedCanvasAiGenerator.id && canUseCanvasItemAsAiInput(canvasItemsById.get(id))
+          ? count + 1
+          : count
+      ), 0)
+      : 0
+  ), [selectedCanvasAiGenerator, canvasSelectedIds, canvasItemsById]);
   const visibleCanvasFolderPickerItems = useMemo(
     () => canvasFolderPickerItems.slice(0, canvasFolderPickerVisibleCount),
     [canvasFolderPickerItems, canvasFolderPickerVisibleCount],
@@ -6589,7 +6720,7 @@ useEffect(() => {
 
 <DrawerShell
   canvasItemsRef={canvasItemsRef}
-  scope={{ activeCanvasId, addCanvasMusicGeneratorNode, activateSearch, activeChatImageAspectRatio, activeChatImageModel, activeChatImageModelChoice, activeChatImageResolution, activeDrawerAiClassificationLabel, activeFolderId, activeSettingCategory, activeTab, activeThreeSceneId, activeThreeSceneIdRef, addCalendarScheduleItem, addCanvasAiGeneratorNode, addCanvasAiGeneratorNodeAtWorld, addCanvasAiGeneratorNodeForSources, addCanvasAiVideoGeneratorNode, addCanvasAiVideoGeneratorNodeAtWorld, addCanvasAiVideoGeneratorNodeForSources, addCanvasEnhancementNode, addCanvasEnhancementNodeAtWorld, addCanvasEnhancementNodeForSources, addCanvasFrameInterpolationNode, addCanvasFrameInterpolationNodeAtWorld, addCanvasFrameInterpolationNodeForSources, addCanvasImageFusionNode, addCanvasImageFusionNodeAtWorld, addCanvasSearchMediaCandidate, addCanvasTextInputForGenerator, addCanvasTextItem, addCanvasTextItemAtWorld, addCanvasThreeSceneGeneratorNode, addCanvasWorkflowTemplate, addChatMediaToCanvas, addWebImageCollectorTag, agentCustomApiKey, agentCustomBaseUrl, agentCustomProvider, agentCustomSaving, agentModels, agentModelsLoading, aiGeneratedImageFolderIds, analyzeCanvasThreeSceneNode, applyCanvasScaleStyles, appVersion, assetWindowOffset, assignDrawerImageToCanvasWorkflowSlot, assignSelectedImagesToCanvasWorkflowSlot, autoAiAnalysisProgress, autoScrollCanvasNearEdge, beginDrawerTextEditUndo, beginThreeSceneInteraction, blockInternalCanvasNativeDrag, broadcastFloatingNoteTextUpdate, broadcastFloatingNoteTitleUpdate, buildCanvasAgentSelectedItems, calendarDraftPriority, calendarDraftText, calendarEvents, calendarEventsByDay, calendarMonth, calendarMonthDays, calendarNotificationsEnabled, calendarOpenCount, calendarPageStyle, calendarScheduleNoteOptions, calendarSelectedDate, calendarTagFilter, calendarTagFilterLabel, calendarTagOptions, calendarTargetNoteLabel, cancelByokCustomization, cancelCanvasEnhancementEstimate, CANVAS_CONNECTION_HANDLE_OUTSET, CANVAS_GENERATED_LIST_RENDER_LIMIT, CANVAS_TEXT_CONTEXT_ROUTING_OPTIONS, canvasAgent, canvasAgentSelectedItems, canvasAgentSidebarWidth, canvasAiApiKey, canvasAiCanRefreshModels, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiEndpoint, canvasAiExpandedOutputNodeIds, canvasAiHasApiCredential, canvasAiHeadersText, canvasAiNewApiVideoKey, canvasAiOpenAiModelError, canvasAiPromptEditingId, canvasAiPromptPresets, canvasAiPromptPresetSelectOptions, canvasAiPromptTextAreaRefs, canvasAiProvider, canvasAiRemoteModelCount, canvasAiRemoteModelEmptyHint, canvasAiUnifiedImageModelOptions, canvasAiUsesCloudImageModels, canvasAiXaisBalance, canvasAiXaisBalanceText, canvasBrushEditor, canvasClipboardRef, canvasConnectedSourceIds, canvasConnectedTargetIds, canvasConnectionDraft, canvasConnectionDraftPath, canvasConnectionsForRender, canvasContentRef, canvasContextMenu, canvasDrawerSourceItemIds, canvasGeneratedDownloadableItems, canvasGeneratedItemsForList, canvasGeneratedItemsForRender, canvasGeneratedSelectedDownloadItems, canvasGeneratedSelectedIdSet, canvasGroupOutlinesForRender, canvasHoveredItemIdRef, canvasInputActionDraft, canvasInputActionDraftPath, canvasInputMenuForId, canvasInputPickTargetId, canvasInputPickTargetIdRef, canvasInteractionSurfaceRectRef, canvasItems, canvasItemsById, canvasListItems, canvasNavigatorPanelRef, canvasNavItems, canvasPanRef, canvasPresetEditingId, canvasPresetEditorMode, canvasPresetEditorTitle, canvasPresetNameDraft, canvasPresetPromptDraft, canvasPromptOptimizingId, canvasRailItems, canvasReferenceDragState, canvasReferenceReplaceTarget, canvasReferenceSuppressClickRef, canvasRenderableItems, canvasRenderScale, canvasScale, canvasScaledNodeRadius, canvasScaledSelectionRadius, canvasScaleRef, canvasSearchCandidateLimit, canvasSearchMediaResults, canvasSelectedBounds, canvasSelectedIds, canvasSelectedIdsRef, canvasSelectedIdsSet, canvasSelectionOverlayRef, canvasShortcut, canvasSingleSelectedBoxForRender, canvasSingleSelectedItemForRender, canvasSize, canvasSizeRef, canvasSizerRef, canvasSurfaceRef, canvasTextAgentRunningIds, canvasTextAreaRefs, canvasTextOutputAreaRefs, canvasToolbarRef, canvasToolbarTop, canvasTrashCount, canvasUploadInputRef, canvasWorkflowEditingAiCount, canvasWorkflowEditingId, canvasWorkflowEditingNodeCount, canvasWorkflowFileInputRef, canvasWorkflowHintDraft, canvasWorkflowNameDraft, canvasWorkflowSelectOptions, canvasWorkflowSingleEditGroupIds, canvasWorkflowSlotPickTarget, canvasWorkflowTemplates, canvasWorkingTimerTick, captureThreeSceneView, cardMediaHeight, cardWidth, centerCanvasItemInView, chatImageAspectRatioOptions, chatImageModelOptions, chatImageResolutionOptions, checkCanvasAiXaisBalance, checkLocalVisionModelStatus, chooseLocalAudiosForCanvasGenerator, chooseLocalFilesForCanvasWorkflow, chooseLocalImagesForCanvasGenerator, chooseLocalImagesForCanvasWorkflowSlot, chooseLocalVideosForCanvasGenerator, chooseReferenceImageForCollector, clearIdleAutoClose, clearWebImageCollectorTags, closeAllFloatingNotes, closeCanvasPresetEditor, closeCanvasWorkflowManager, closeFloatingNoteByLabel, closeFolderModal, closeTimerRef, closeWebImageCollector, cloudAccount, cloudAccountSyncError, collapseCanvasWorkflowGroup, collectWebImagesToDrawer, commitCanvasAiPromptDraft, commitCanvasScaleSoon, commitCanvasTextDraft, commitCanvasTextOutputDraft, commitQuickText, completeChatBatchCanvasGroup, confirmCloudAccountLogout, connectCanvasItemsToGenerator, connectSelectedCanvasItemsToGenerator, copyCanvasAiOutputToCanvas, copyCanvasImageToSystemClipboard, copyCanvasItemsToAvailableClipboards, copyCanvasTextOutput, createBlankFloatingNote, createCanvasGroup, createChatBatchCanvasGroup, createFloatingNote, createFolderAndMoveSelected, createNewCanvasPage, creditRedemptionCode, creditRedemptionError, customCanvasAiPromptPresets, customCanvasWorkflows, deferredSearchQuery, deletedCanvasItems, deleteSelectedCanvasPromptPresets, deleteSelectedCanvasWorkflows, DESIGN_AGENT_ARTIFACT_OPTIONS, DESIGN_AGENT_ROLE_OPTIONS, DESIGN_AGENT_THINKING_MODE_OPTIONS, disconnectCanvasInput, displayItems, downloadBufferItems, downloadCanvasItemsByIds, draggingItemId, dragOverFolderId, DRAWER_TOOL_BUTTON_BASE_CLASS, DRAWER_VIRTUALIZATION_THRESHOLD, drawerAgentSelectedItems, drawerAiAnalysisSummary, drawerAiClassificationDimension, drawerAiClassificationGroups, drawerAssetQueryKey, drawerCardActionContext, drawerClassificationView, drawerFolderSidebarWidth, drawerHeight, drawerScopedItems, drawerScrollNode, drawerShellClassName, drawerShellTransform, drawerSidebarClassName, drawerState, eagleImportMode, eagleImportStatus, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiProvider, ENABLE_THREE_SCENE_CREATION, enableCanvasWorkflowSingleEditForItem, endDrawerTextEditUndo, endThreeSceneInteraction, ensureMediaThumbnail, enterCanvasMode, executeChatTool, exitThreeSceneInteraction, expandCanvasWorkflowModuleForEdit, exportAllCanvasPresets, exportAllCanvasWorkflows, exportCanvasWorkflowModuleInstance, exportCurrentCanvasPreset, exportCurrentCanvasWorkflow, fillChatBatchCanvasSlot, filteredCalendarEvents, finishMainDrawerPress, fitCanvasViewToItems, focusFloatingNote, folderMoveSelectionIds, folderMoveTargetEntries, folderMoveTargetId, folderRailHeight, folders, generateCanvasAiGeneratorNode, generateCanvasWorkflowModuleNode, generatedImageCachePendingIdsRef, generateQueryAndCollectFromReference, getCachedCanvasNavThumbnailSource, getCanvasActionIds, getCanvasAiErrorSummary, getCanvasAiNodeDesignSizeForItem, getCanvasAiResolvedModel, getCanvasAiUnifiedImageModelValue, getCanvasImageInputBufferItemsForNode, getCanvasItemNavPreview, getCanvasItemRenderedBox, getCanvasPrimaryImageItem, getQuickAccessVisual, getStableCanvasImageSource, handleAddFolder, handleAppUpdatePromptClick, handleCanvasAiRunClick, handleCanvasAiRunPointerDown, handleCanvasDrop, handleCanvasGeneratorUpload, handleCanvasWorkflowFileUpload, handleCanvasWorkflowSlotDrop, handleCloseTextInput, handleDrawerCardWheel, handleDrawerFolderPointerEnter, handleDrawerFolderPointerLeave, handleDrawerFolderPointerUp, handleDrawerItemDragLeaveFolder, handleDrawerItemDragOverFolder, handleDrawerItemDropToFolder, handleDrawerItemSelect, handleDrawerPanelKeyDown, handleDrawerPanelMouseDown, handleDrawerPanelPointerDown, handleExportSelectedItems, handleOpenFolderModal, handleOpenTextInput, handleRecordShortcut, handleTogglePin, hasLocalXaisAccount, hasMoreAssets, hasRemoteImageSearch, importCanvasTemplateFile, importFromEagle, importFromEagleLibrary, installOllamaSilently, isAssetPageLoading, isAutoStart, isAutoStartChanging, isByokUnlocked, isCanvasAiLicenseManaged, isCanvasAiPanelOpen, isCanvasChromeHidden, isCanvasGeneratedListVisible, isCanvasGeneratedMultiSelect, isCanvasMode, isCanvasNavigatorVisible, isCanvasPointerInsideRef, isCanvasPresetEditorOpen, isCanvasSpacePressedRef, isCanvasTrashOpen, isCanvasWorkbenchActive, isCanvasWorkbenchMode, isCanvasWorkflowManagerOpen, isCheckingAppUpdate, isCloudAccountLoading, isCloudAccountLoggingOut, isCollectingWebImages, isCreatingBlankNote, isDark, isDataLoaded, isDrawerActive, isDrawerAgentOpen, isDrawerAiClassificationMode, isDrawerWorkbenchActive, isDrawerWorkbenchMode, isFolderSidebarLayout, isGeneratingWebImageQuery, isInstallingOllama, isInvalidFolderMoveTarget, isLicenseGateActive, isLicenseLoading, isLoadingCanvasTrash, isLocalVisionModelChecking, isMainWorkbenchActive, isMainWorkbenchActiveRef, isMobileConnected, isMovingFolders, isOpen, isPinned, isPointerInsideDrawerRef, isRecording, isRecordingCanvas, isRecordingNote, isRecordingSearch, isRecordingSnip, isRecordingText, isRecordingTrigger, isRedeemingCredits, isRefreshingCanvasAiOpenAiModels, isResizingCards, isSearchActive, isSelectMode, isShortcutReveal, isStartupOverlayActive, isTestingCanvasAiConnection, isUtilityActiveTab, items, jumpCalendarToday, lastCanvasDragClientRef, lastDrawerPointerDownAtRef, lastSelectedDrawerItemIdRef, LICENSE_EDITION_LABELS, LICENSE_STATE_LABELS, licenseAiAccess, licenseStatus, loadNextDrawerAssetPage, loadPreviousDrawerAssetPage, localVisionModelDownload, localVisionModelLastError, localVisionModelReadyRef, mainDrawerItemCount, mainDrawerLongPressTriggeredRef, managedCanvasAiProviderLabel, moveCalendarMonth, moveDrawerFoldersToParent, moveFolderName, moveFolderParent, moveSelectedItemsToFolder, newFolderName, newFolderParent, normalizedDeferredSearchQuery, noteShortcut, openCanvasBrushEditor, openCanvasBrushEditorFromSource, openCanvasContextMenu, openCanvasCreateMenu, openCanvasPresetEditor, openCanvasPresetManager, openCanvasReferenceAddMenu, openCanvasReferenceReplaceMenu, openCanvasTrash, openCanvasWorkflowManager, openCloudCreditUsage, openFloatingNoteCount, openFloatingNoteEntries, openInspirationSpace, openOllamaDownloadPage, openQuickAccessItem, openSelectedImagePreview, openSelectedVideoPreview, optimizeCanvasPrompt, orderedFolderEntries, organizeCanvasItems, pasteCanvasItems, pendingCanvasFusionRoleRef, preventCanvasNativeDrag, pushDrawerUndoSnapshot, quickAccessItems, quickRailMode, quickText, redeemCloudCredits, refreshAgentModels, refreshCanvasAiOpenAiModels, refreshCloudAccount, refreshNoteManager, refreshVisibleBalances, removeCanvasConnection, removeCanvasItemsByIds, removeDrawerItemsFromDrawer, removeWebImageCollectorTag, renameCanvasGroup, renderCalendarEvent, renderDrawerFolderListItem, renderDrawerFolderRailItem, replaceCanvasWorkflowManagerWithSelection, replaceCanvasWorkflowSlotAssets, requestAddFolderMediaToCanvas, requestDeleteDrawerItems, requestExitCanvasMode, resizeCanvasAiPromptEditor, retryCanvasWorkflowOutput, retryLocalVisionModelDownload, rotateCanvasImageClockwise, runCanvasTextAgentNode, runCanvasWorkbenchWindowAction, runDrawerWorkbenchWindowAction, runSelectedCanvasWorkflowModules, saveAgentCustomApi, saveCanvasAiCustomPromptPreset, saveCanvasWorkflowManagerChanges, saveSelectedCanvasWorkflow, scheduleAutoClose, scheduleCanvasAiPromptDraftCommit, scheduleCanvasTextDraftCommit, scheduleCanvasTextOutputDraftCommit, screenshotAutoPinNote, searchInputRef, searchQuery, searchShortcut, selectCanvasPresetForEdit, selectCanvasWorkflowForEdit, selectedCalendarEvents, selectedCalendarOpenCount, selectedCanvasAiGenerator, selectedCanvasConnectableCount, selectedCanvasPresetDeleteIds, selectedCanvasWorkflowDeleteIds, selectedIds, selectedImage, selectedVideo, setActiveDrawerAiClassificationLabel, setActiveFolderId, setActiveSettingCategory, setActiveTab, setAgentCustomApiKey, setAgentCustomBaseUrl, setAgentCustomProvider, setCalendarDraftPriority, setCalendarDraftText, setCalendarMonth, setCalendarSelectedDate, setCalendarTagFilter, setCalendarTargetNoteLabel, setCanvasAgentSidebarWidth, setCanvasAiApiKey, setCanvasAiApiProvider, setCanvasAiCredentialSource, setCanvasAiEndpoint, setCanvasAiHeadersText, setCanvasAiNewApiVideoKey, setCanvasAiPromptEditingId, setCanvasAiProvider, setCanvasContextMenu, setCanvasDesignAgentConfig, setCanvasGeneratedSelectedIds, setCanvasInputMenuForId, setCanvasInputPickTargetId, setCanvasPresetNameDraft, setCanvasPresetPromptDraft, setCanvasReferenceReplacement, setCanvasSearchCandidateLimit, setCanvasShortcut, setCanvasSpacePressed, setCanvasTextContextRouting, setCanvasTextNodeMode, setCanvasWorkflowHintDraft, setCanvasWorkflowNameDraft, setCanvasWorkflowOutputMode, setCanvasWorkflowSlotPickTarget, setCardMediaHeight, setCardWidth, setChatImageAspectRatio, setChatImageModel, setChatImageResolution, setCreditRedemptionCode, setCreditRedemptionError, setDrawerAiClassificationDimension, setDrawerClassificationView, setDrawerItemQuickAccess, setDrawerScrollElement, setEagleImportMode, setFolderMoveTargetId, setIsCanvasAiPanelOpen, setIsCanvasChromeHidden, setIsCanvasGeneratedListVisible, setIsCanvasGeneratedMultiSelect, setIsCanvasNavigatorVisible, setIsCanvasTrashOpen, setIsDark, setIsDrawerAgentOpen, setIsRecording, setIsRecordingCanvas, setIsRecordingNote, setIsRecordingSearch, setIsRecordingSnip, setIsRecordingText, setIsRecordingTrigger, setIsResizingCards, setIsSearchActive, setIsSelectMode, setItems, setMoveFolderName, setNewFolderName, setNoteShortcut, setQuickRailMode, setQuickText, setSearchQuery, setSearchShortcut, setSelectedCanvasPresetDeleteIds, setSelectedCanvasWorkflowDeleteIds, setSelectedIds, setShortcut, setShowAboutSoftware, setShowFolderModal, setShowMoveExistingFolderModal, setShowMoveFolderModal, setShowQR, setShowSettings, setShowStoragePath, setSnipShortcut, setTextShortcut, setTriggerShortcut, setWebImageCollectorQuery, setWebImageCollectorReference, setWebImageCollectorStatus, setWebImageCollectorTagDraft, shortcut, shouldBlockAutoClose, shouldShowLegacyAiSettings, showAboutSoftware, showAppUpdatePromptArrow, showContact, showFolderModal, showHelp, showMoveExistingFolderModal, showMoveFolderModal, showQR, showSettings, showStoragePath, showTextInput, showToast, showWebImageCollector, snipMode, snipShortcut, startCanvasConnectionDrag, startCanvasGroupResize, startCanvasInputActionDrag, startCanvasItemDrag, startCanvasItemResize, startCanvasPan, startCanvasReferenceLongPress, startCanvasSelection, startDrawerItemPointerDrag, startDrawerTitleDrag, startMainDrawerLongPress, startPickCanvasImageForGenerator, startPreviewWindowDrag, startResizingCorner, startResizingFolderSidebarWidth, startResizingHeight, startResizingRightCorner, startResizingSidebarAreas, startResizingWidth, startupAutoCloseSuppressedRef, switchAgentFundingSource, TABS, testCanvasAiConnection, textShortcut, threeSceneAnalyzingIds, toggleAutoStartSetting, toggleCalendarNotificationsSetting, toggleCanvasAiOutputsExpanded, toggleCanvasImageRule, toggleCanvasImageRulePanel, toggleCanvasWorkbenchMode, toggleDrawerSidebarLayout, toggleDrawerWorkbenchMode, toggleScreenshotAutoPinNoteSetting, toggleSettings, toggleTriggerMode, totalAssetCount, transitionStyle, triggerMode, triggerShortcut, ungroupCanvasItems, unscheduledCalendarEvents, updateCanvasAiGeneratorData, updateCanvasSelection, updateCollapsedCanvasWorkflowSlot, updateThreeScenePreview, updateThreeSceneReferenceOverlay, updateThreeSceneSpec, updateWebImageCollectorTag, visibleFolderEntries, visibleFolderRailEntryCount, webImageCacheDir, webImageCollectorPanelRef, webImageCollectorQuery, webImageCollectorReference, webImageCollectorStatus, webImageCollectorTagDraft, webImageCollectorTags, WORKFLOW_SLOT_ASSET_DRAG_MIME, zoomCanvasAt }}
+  scope={{ openDesignMemorySource, activeCanvasId, addCanvasMusicGeneratorNode, activateSearch, activeChatImageAspectRatio, activeChatImageModel, activeChatImageModelChoice, activeChatImageResolution, chatImageModelRuntimeOptions, chatAutoImageAspectRatioValues, chatAutoImageResolutionValues, activeDrawerAiClassificationLabel, activeFolderId, activeSettingCategory, activeTab, activeThreeSceneId, activeThreeSceneIdRef, addCalendarScheduleItem, addCanvasAiGeneratorNode, addCanvasAiGeneratorNodeAtWorld, addCanvasAiGeneratorNodeForSources, addCanvasAiVideoGeneratorNode, addCanvasAiVideoGeneratorNodeAtWorld, addCanvasAiVideoGeneratorNodeForSources, addCanvasEnhancementNode, addCanvasEnhancementNodeAtWorld, addCanvasEnhancementNodeForSources, addCanvasFrameInterpolationNode, addCanvasFrameInterpolationNodeAtWorld, addCanvasFrameInterpolationNodeForSources, addCanvasImageFusionNode, addCanvasImageFusionNodeAtWorld, addCanvasSearchMediaCandidate, addCanvasTextInputForGenerator, addCanvasTextItem, addCanvasTextItemAtWorld, addCanvasThreeSceneGeneratorNode, addCanvasWorkflowTemplate, addChatMediaToCanvas, addWebImageCollectorTag, agentCustomApiKey, agentCustomBaseUrl, agentCustomProvider, agentCustomSaving, agentModels, agentModelsLoading, aiGeneratedImageFolderIds, analyzeCanvasThreeSceneNode, applyCanvasScaleStyles, appVersion, assetWindowOffset, assignDrawerImageToCanvasWorkflowSlot, assignSelectedImagesToCanvasWorkflowSlot, autoAiAnalysisProgress, autoScrollCanvasNearEdge, beginDrawerTextEditUndo, beginThreeSceneInteraction, blockInternalCanvasNativeDrag, broadcastFloatingNoteTextUpdate, broadcastFloatingNoteTitleUpdate, buildCanvasAgentSelectedItems, calendarDraftPriority, calendarDraftText, calendarEvents, calendarEventsByDay, calendarMonth, calendarMonthDays, calendarNotificationsEnabled, calendarOpenCount, calendarPageStyle, calendarScheduleNoteOptions, calendarSelectedDate, calendarTagFilter, calendarTagFilterLabel, calendarTagOptions, calendarTargetNoteLabel, cancelByokCustomization, cancelCanvasEnhancementEstimate, CANVAS_CONNECTION_HANDLE_OUTSET, CANVAS_GENERATED_LIST_RENDER_LIMIT, CANVAS_TEXT_CONTEXT_ROUTING_OPTIONS, canvasAgent, canvasAgentSelectedItems, canvasAgentSidebarWidth, canvasAiApiKey, canvasAiCanRefreshModels, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiEndpoint, canvasAiExpandedOutputNodeIds, canvasAiHasApiCredential, canvasAiHeadersText, canvasAiNewApiVideoKey, canvasAiOpenAiModelError, canvasAiPromptEditingId, canvasAiPromptEditorSessions, startCanvasAiPromptResize, canvasAiPromptPresets, canvasAiPromptPresetSelectOptions, canvasAiPromptTextAreaRefs, canvasAiProvider, canvasAiRemoteModelCount, canvasAiRemoteModelEmptyHint, canvasAiUnifiedImageModelOptions, canvasAiUsesCloudImageModels, canvasAiXaisBalance, canvasAiXaisBalanceText, canvasBrushEditor, canvasClipboardRef, canvasConnectedSourceIds, canvasConnectedTargetIds, canvasConnectionDraft, canvasConnectionDraftPath, canvasConnectionsForRender, canvasContentRef, canvasContextMenu, canvasDrawerSourceItemIds, canvasGeneratedDownloadableItems, canvasGeneratedItemsForList, canvasGeneratedItemsForRender, canvasGeneratedSelectedDownloadItems, canvasGeneratedSelectedIdSet, canvasGroupOutlinesForRender, canvasHoveredItemIdRef, canvasInputActionDraft, canvasInputActionDraftPath, canvasInputMenuForId, canvasInputPickTargetId, canvasInputPickTargetIdRef, canvasInteractionSurfaceRectRef, canvasItems, canvasItemsById, canvasListItems, canvasNavigatorPanelRef, canvasNavItems, canvasPanRef, canvasPresetEditingId, canvasPresetEditorMode, canvasPresetEditorTitle, canvasPresetNameDraft, canvasPresetPromptDraft, canvasPromptOptimizingId, canvasRailItems, canvasReferenceDragState, canvasReferenceReplaceTarget, canvasReferenceSuppressClickRef, canvasRenderableItems, canvasRenderScale, canvasScale, canvasScaledNodeRadius, canvasScaledSelectionRadius, canvasScaleRef, canvasSearchCandidateLimit, canvasSearchMediaResults, canvasSelectedBounds, canvasSelectedIds, canvasSelectedIdsRef, canvasSelectedIdsSet, canvasSelectionOverlayRef, canvasShortcut, canvasSingleSelectedBoxForRender, canvasSingleSelectedItemForRender, canvasSize, canvasSizeRef, canvasSizerRef, canvasSurfaceRef, canvasTextAgentRunningIds, canvasTextAreaRefs, canvasTextOutputAreaRefs, canvasToolbarRef, canvasToolbarTop, canvasTrashCount, canvasUploadInputRef, canvasWorkflowEditingAiCount, canvasWorkflowEditingId, canvasWorkflowEditingNodeCount, canvasWorkflowFileInputRef, canvasWorkflowHintDraft, canvasWorkflowNameDraft, canvasWorkflowSelectOptions, canvasWorkflowSingleEditGroupIds, canvasWorkflowSlotPickTarget, canvasWorkflowTemplates, canvasWorkingTimerTick, captureThreeSceneView, cardMediaHeight, cardWidth, centerCanvasItemInView, chatImageAspectRatioOptions, chatImageModelOptions, chatImageResolutionOptions, checkCanvasAiXaisBalance, checkLocalVisionModelStatus, chooseLocalAudiosForCanvasGenerator, chooseLocalFilesForCanvasWorkflow, chooseLocalImagesForCanvasGenerator, chooseLocalImagesForCanvasWorkflowSlot, chooseLocalVideosForCanvasGenerator, chooseReferenceImageForCollector, clearIdleAutoClose, clearWebImageCollectorTags, closeAllFloatingNotes, closeCanvasPresetEditor, closeCanvasWorkflowManager, closeFloatingNoteByLabel, closeFolderModal, closeTimerRef, closeWebImageCollector, cloudAccount, cloudAccountSyncError, collapseCanvasWorkflowGroup, collectWebImagesToDrawer, commitCanvasAiPromptDraft, commitCanvasScaleSoon, commitCanvasTextDraft, commitCanvasTextOutputDraft, commitQuickText, completeChatBatchCanvasGroup, confirmCloudAccountLogout, connectCanvasItemsToGenerator, connectSelectedCanvasItemsToGenerator, copyCanvasAiOutputToCanvas, copyCanvasImageToSystemClipboard, copyCanvasItemsToAvailableClipboards, copyCanvasTextOutput, createBlankFloatingNote, createCanvasGroup, createChatBatchCanvasGroup, createFloatingNote, createFolderAndMoveSelected, createNewCanvasPage, creditRedemptionCode, creditRedemptionError, customCanvasAiPromptPresets, customCanvasWorkflows, deferredSearchQuery, deletedCanvasItems, deleteSelectedCanvasPromptPresets, deleteSelectedCanvasWorkflows, DESIGN_AGENT_ARTIFACT_OPTIONS, DESIGN_AGENT_ROLE_OPTIONS, DESIGN_AGENT_THINKING_MODE_OPTIONS, disconnectCanvasInput, displayItems, downloadBufferItems, downloadCanvasItemsByIds, draggingItemId, dragOverFolderId, DRAWER_TOOL_BUTTON_BASE_CLASS, DRAWER_VIRTUALIZATION_THRESHOLD, drawerAgentSelectedItems, drawerAiAnalysisSummary, drawerAiClassificationDimension, drawerAiClassificationGroups, drawerAssetQueryKey, drawerCardActionContext, drawerClassificationView, drawerFolderSidebarWidth, drawerHeight, drawerScopedItems, drawerScrollNode, drawerShellClassName, drawerShellTransform, drawerSidebarClassName, drawerState, eagleImportMode, eagleImportStatus, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiProvider, ENABLE_THREE_SCENE_CREATION, enableCanvasWorkflowSingleEditForItem, endDrawerTextEditUndo, endThreeSceneInteraction, ensureMediaThumbnail, enterCanvasMode, executeChatTool, exitThreeSceneInteraction, expandCanvasWorkflowModuleForEdit, exportAllCanvasPresets, exportAllCanvasWorkflows, exportCanvasWorkflowModuleInstance, exportCurrentCanvasPreset, exportCurrentCanvasWorkflow, fillChatBatchCanvasSlot, filteredCalendarEvents, finishMainDrawerPress, fitCanvasViewToItems, focusFloatingNote, folderMoveSelectionIds, folderMoveTargetEntries, folderMoveTargetId, folderRailHeight, folders, generateCanvasAiGeneratorNode, generateCanvasWorkflowModuleNode, generatedImageCachePendingIdsRef, generateQueryAndCollectFromReference, getCachedCanvasNavThumbnailSource, getCanvasActionIds, getCanvasAiErrorSummary, getCanvasAiNodeDesignSizeForItem, getCanvasAiResolvedModel, getCanvasAiUnifiedImageModelValue, getCanvasImageInputBufferItemsForNode, getCanvasItemNavPreview, getCanvasItemRenderedBox, getCanvasPrimaryImageItem, getQuickAccessVisual, getStableCanvasImageSource, handleAddFolder, handleAppUpdatePromptClick, handleCanvasAiRunClick, handleCanvasAiRunPointerDown, handleCanvasDrop, handleCanvasGeneratorUpload, handleCanvasWorkflowFileUpload, handleCanvasWorkflowSlotDrop, handleCloseTextInput, handleDrawerCardWheel, handleDrawerFolderPointerEnter, handleDrawerFolderPointerLeave, handleDrawerFolderPointerUp, handleDrawerItemDragLeaveFolder, handleDrawerItemDragOverFolder, handleDrawerItemDropToFolder, handleDrawerItemSelect, handleDrawerPanelKeyDown, handleDrawerPanelMouseDown, handleDrawerPanelPointerDown, handleExportSelectedItems, handleOpenFolderModal, handleOpenTextInput, handleRecordShortcut, handleTogglePin, hasLocalXaisAccount, hasMoreAssets, hasRemoteImageSearch, importCanvasTemplateFile, importFromEagle, importFromEagleLibrary, installOllamaSilently, isAssetPageLoading, isAutoStart, isAutoStartChanging, isByokUnlocked, isCanvasAiLicenseManaged, isCanvasAiPanelOpen, isCanvasChromeHidden, isCanvasGeneratedListVisible, isCanvasGeneratedMultiSelect, isCanvasMode, isCanvasNavigatorVisible, isCanvasPointerInsideRef, isCanvasPresetEditorOpen, isCanvasSpacePressedRef, isCanvasTrashOpen, isCanvasWorkbenchActive, isCanvasWorkbenchMode, isCanvasWorkflowManagerOpen, isCheckingAppUpdate, isCloudAccountLoading, isCloudAccountLoggingOut, isCollectingWebImages, isCreatingBlankNote, isDark, isDataLoaded, isDrawerActive, isDrawerAgentOpen, isDrawerAiClassificationMode, isDrawerWorkbenchActive, isDrawerWorkbenchMode, isFolderSidebarLayout, isGeneratingWebImageQuery, isInstallingOllama, isInvalidFolderMoveTarget, isLicenseGateActive, isLicenseLoading, isLoadingCanvasTrash, isLocalVisionModelChecking, isMainWorkbenchActive, isMainWorkbenchActiveRef, isMobileConnected, isMovingFolders, isOpen, isPinned, isPointerInsideDrawerRef, isRecording, isRecordingCanvas, isRecordingNote, isRecordingSearch, isRecordingSnip, isRecordingText, isRecordingTrigger, isRedeemingCredits, isRefreshingCanvasAiOpenAiModels, isResizingCards, isSearchActive, isSelectMode, isShortcutReveal, isStartupOverlayActive, isTestingCanvasAiConnection, isUtilityActiveTab, items, jumpCalendarToday, lastCanvasDragClientRef, lastDrawerPointerDownAtRef, lastSelectedDrawerItemIdRef, LICENSE_EDITION_LABELS, LICENSE_STATE_LABELS, licenseAiAccess, licenseStatus, loadNextDrawerAssetPage, loadPreviousDrawerAssetPage, localVisionModelDownload, localVisionModelLastError, localVisionModelReadyRef, mainDrawerItemCount, mainDrawerLongPressTriggeredRef, managedCanvasAiProviderLabel, moveCalendarMonth, moveDrawerFoldersToParent, moveFolderName, moveFolderParent, moveSelectedItemsToFolder, newFolderName, newFolderParent, normalizedDeferredSearchQuery, noteShortcut, openCanvasBrushEditor, openCanvasBrushEditorFromSource, openCanvasContextMenu, openCanvasCreateMenu, openCanvasPresetEditor, openCanvasPresetManager, openCanvasReferenceAddMenu, openCanvasReferenceReplaceMenu, openCanvasTrash, openCanvasWorkflowManager, openCloudCreditUsage, openFloatingNoteCount, openFloatingNoteEntries, openInspirationSpace, openOllamaDownloadPage, openQuickAccessItem, openSelectedImagePreview, openSelectedVideoPreview, optimizeCanvasPrompt, orderedFolderEntries, organizeCanvasItems, pasteCanvasItems, pendingCanvasFusionRoleRef, preventCanvasNativeDrag, pushDrawerUndoSnapshot, quickAccessItems, quickRailMode, quickText, redeemCloudCredits, refreshAgentModels, refreshCanvasAiOpenAiModels, refreshCloudAccount, refreshNoteManager, refreshVisibleBalances, removeCanvasConnection, removeCanvasItemsByIds, removeDrawerItemsFromDrawer, removeWebImageCollectorTag, renameCanvasGroup, renderCalendarEvent, renderDrawerFolderListItem, renderDrawerFolderRailItem, replaceCanvasWorkflowManagerWithSelection, replaceCanvasWorkflowSlotAssets, requestAddFolderMediaToCanvas, requestDeleteDrawerItems, requestExitCanvasMode, resizeCanvasAiPromptEditor, retryCanvasWorkflowOutput, retryLocalVisionModelDownload, rotateCanvasImageClockwise, runCanvasTextAgentNode, runCanvasWorkbenchWindowAction, runDrawerWorkbenchWindowAction, runSelectedCanvasWorkflowModules, saveAgentCustomApi, saveCanvasAiCustomPromptPreset, saveCanvasWorkflowManagerChanges, saveSelectedCanvasWorkflow, scheduleAutoClose, scheduleCanvasAiPromptDraftCommit, scheduleCanvasTextDraftCommit, scheduleCanvasTextOutputDraftCommit, screenshotAutoPinNote, searchInputRef, searchQuery, searchShortcut, selectCanvasPresetForEdit, selectCanvasWorkflowForEdit, selectedCalendarEvents, selectedCalendarOpenCount, selectedCanvasAiGenerator, selectedCanvasConnectableCount, selectedCanvasPresetDeleteIds, selectedCanvasWorkflowDeleteIds, selectedIds, selectedImage, selectedVideo, setActiveDrawerAiClassificationLabel, setActiveFolderId, setActiveSettingCategory, setActiveTab, setAgentCustomApiKey, setAgentCustomBaseUrl, setAgentCustomProvider, setCalendarDraftPriority, setCalendarDraftText, setCalendarMonth, setCalendarSelectedDate, setCalendarTagFilter, setCalendarTargetNoteLabel, setCanvasAgentSidebarWidth, setCanvasAiApiKey, setCanvasAiApiProvider, setCanvasAiCredentialSource, setCanvasAiEndpoint, setCanvasAiHeadersText, setCanvasAiNewApiVideoKey, setCanvasAiPromptEditingId, setCanvasAiProvider, setCanvasContextMenu, setCanvasDesignAgentConfig, setCanvasGeneratedSelectedIds, setCanvasInputMenuForId, setCanvasInputPickTargetId, setCanvasPresetNameDraft, setCanvasPresetPromptDraft, setCanvasReferenceReplacement, setCanvasSearchCandidateLimit, setCanvasShortcut, setCanvasSpacePressed, setCanvasTextContextRouting, setCanvasTextNodeMode, setCanvasWorkflowHintDraft, setCanvasWorkflowNameDraft, setCanvasWorkflowOutputMode, setCanvasWorkflowSlotPickTarget, setCardMediaHeight, setCardWidth, setChatImageAspectRatio, setChatImageModel, setChatImageResolution, setCreditRedemptionCode, setCreditRedemptionError, setDrawerAiClassificationDimension, setDrawerClassificationView, setDrawerItemQuickAccess, setDrawerScrollElement, setEagleImportMode, setFolderMoveTargetId, setIsCanvasAiPanelOpen, setIsCanvasChromeHidden, setIsCanvasGeneratedListVisible, setIsCanvasGeneratedMultiSelect, setIsCanvasNavigatorVisible, setIsCanvasTrashOpen, setIsDark, setIsDrawerAgentOpen, setIsRecording, setIsRecordingCanvas, setIsRecordingNote, setIsRecordingSearch, setIsRecordingSnip, setIsRecordingText, setIsRecordingTrigger, setIsResizingCards, setIsSearchActive, setIsSelectMode, setItems, setMoveFolderName, setNewFolderName, setNoteShortcut, setQuickRailMode, setQuickText, setSearchQuery, setSearchShortcut, setSelectedCanvasPresetDeleteIds, setSelectedCanvasWorkflowDeleteIds, setSelectedIds, setShortcut, setShowAboutSoftware, setShowFolderModal, setShowMoveExistingFolderModal, setShowMoveFolderModal, setShowQR, setShowSettings, setShowStoragePath, setSnipShortcut, setTextShortcut, setTriggerShortcut, setWebImageCollectorQuery, setWebImageCollectorReference, setWebImageCollectorStatus, setWebImageCollectorTagDraft, shortcut, shouldBlockAutoClose, shouldShowLegacyAiSettings, showAboutSoftware, showAppUpdatePromptArrow, showContact, showFolderModal, showHelp, showMoveExistingFolderModal, showMoveFolderModal, showQR, showSettings, showStoragePath, showTextInput, showToast, showWebImageCollector, snipMode, snipShortcut, startCanvasConnectionDrag, startCanvasGroupResize, startCanvasInputActionDrag, startCanvasItemDrag, startCanvasItemResize, startCanvasPan, startCanvasReferenceLongPress, startCanvasSelection, startDrawerItemPointerDrag, startDrawerTitleDrag, startMainDrawerLongPress, startPickCanvasImageForGenerator, startPreviewWindowDrag, startResizingCorner, startResizingFolderSidebarWidth, startResizingHeight, startResizingRightCorner, startResizingSidebarAreas, startResizingWidth, startupAutoCloseSuppressedRef, switchAgentFundingSource, TABS, testCanvasAiConnection, textShortcut, threeSceneAnalyzingIds, toggleAutoStartSetting, toggleCalendarNotificationsSetting, toggleCanvasAiOutputsExpanded, toggleCanvasImageRule, toggleCanvasImageRulePanel, toggleCanvasWorkbenchMode, toggleDrawerSidebarLayout, toggleDrawerWorkbenchMode, toggleScreenshotAutoPinNoteSetting, toggleSettings, toggleTriggerMode, totalAssetCount, transitionStyle, triggerMode, triggerShortcut, ungroupCanvasItems, unscheduledCalendarEvents, updateCanvasAiGeneratorData, updateCanvasSelection, updateCollapsedCanvasWorkflowSlot, updateThreeScenePreview, updateThreeSceneReferenceOverlay, updateThreeSceneSpec, updateWebImageCollectorTag, visibleFolderEntries, visibleFolderRailEntryCount, webImageCacheDir, webImageCollectorPanelRef, webImageCollectorQuery, webImageCollectorReference, webImageCollectorStatus, webImageCollectorTagDraft, webImageCollectorTags, WORKFLOW_SLOT_ASSET_DRAG_MIME, zoomCanvasAt }}
 />
 <AppDialogHost
   scope={{ acceptUpdateLogAndClose, activateCanvasBrushTool, activateDoodleShortcutScope, activeDraftForDisplay, activeWorkflowDraftRef, addFolderMediaPickerItemToCanvas, applyCanvasBrushCrop, appVersion, CANVAS_BRUSH_COLORS, CANVAS_FOLDER_PICKER_SCROLL_EDGE, CANVAS_FOLDER_PICKER_VISIBLE_STEP, canvasAgent, canvasBrushBaseCanvasRef, canvasBrushCanvasRef, canvasBrushColor, canvasBrushCropRect, canvasBrushCursor, canvasBrushEditor, canvasBrushHistory, canvasBrushMode, canvasBrushOpacity, canvasBrushSize, canvasFolderImportPrompt, canvasFolderPickerError, canvasFolderPickerHasMore, canvasFolderPickerItems, canvasFolderPickerTotal, canvasFolderPickerVisibleCount, canvasShortcut, canvasToolbarTop, canvasWorkflowSaveDraft, checkAndInstallAppUpdate, chooseWebImageCacheDir, clearCanvasBrushCrop, clearCanvasBrushMarks, closeCanvasFolderMediaPicker, closeCanvasWorkflowSaveDialog, closeConfirmDialog, closeSelectedImagePreview, closeSelectedVideoPreview, closeTextInputDialog, closeUpdateLog, cloudAccount, confirmAddFolderMediaToCanvas, confirmDialog, confirmSaveCanvasWorkflow, copySelectedImagePreviewToClipboard, creditUsageError, creditUsageItems, doodleRootRef, finishCanvasBrushStroke, finishLaunchIntro, flashSelectedImageZoom, handleCanvasBrushPointerDown, handleCanvasBrushPointerMove, handleDoodleKeyDown, handleFloatingLayerPointerLeave, hideCanvasBrushCursor, isCanvasBrushShapeMode, isCanvasFolderPickerLoading, isCheckingAppUpdate, isCloudflaredDisclaimerAccepted, isCreditUsageLoading, keepDrawerOpenByPointer, loadCanvasFolderMediaPage, loadCloudCreditUsage, localIP, mobilePairUrl, resetWebImageCacheDir, saveCanvasBrushEditedImage, selectedImage, selectedImageGallery, selectedImagePan, selectedImagePanRef, selectedImageZoom, selectedVideo, setActiveDraftForDisplay, setActiveShortcutScope, setCanvasBrushColor, setCanvasBrushEditor, setCanvasBrushOpacity, setCanvasBrushSize, setCanvasFolderPickerVisibleCount, setCanvasWorkflowSaveDraft, setSelectedImagePan, setSelectedImageZoom, setShowAboutSoftware, setShowContact, setShowCreditUsage, setShowHelp, setShowQR, setShowStoragePath, setShowUpdateLog, setShowWorkflowDraftPanel, setTextInputDialog, showAboutSoftware, showContact, showCreditUsage, showHelp, showLaunchIntro, showQR, showSelectedImageZoom, showStoragePath, showToast, showUpdateLog, showWorkflowDraftPanel, startPreviewWindowDrag, startResizingCorner, startResizingHeight, startResizingRightCorner, startResizingWidth, startSelectedImagePanDrag, STARTUP_CONSENT_DELAY_MS, stepSelectedImageGallery, textInputDialog, textInputDialogCanConfirm, TextInputDialogIcon, textInputDialogInputRef, triggerShortcut, undoCanvasBrushStroke, updateCanvasBrushCursorFromEvent, visibleCanvasFolderPickerItems, webImageCacheDir }}
