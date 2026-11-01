@@ -7,7 +7,6 @@ use chrono::NaiveDate;
 use tauri::Manager;
 
 pub use crate::ai_gateway::{EffectiveApiProfile, StoredApiSettings};
-use crate::license::current_machine_id;
 use crate::license::types::AiGatewayKind;
 use crate::license::types::{
     AiCredentialMode, LicenseEdition, LicenseError, LicenseErrorCode, LicenseFile, LicensePayload,
@@ -16,7 +15,7 @@ use crate::license::types::{
 use crate::license::verifier::{verify_license_content, verify_license_content_with_key};
 
 const LICENSE_FILE_NAME: &str = "license.json";
-const BYOK_UNLOCK_FILE_NAME: &str = "byok_unlock.machine";
+const BYOK_UNLOCK_FILE_NAME: &str = "byok_unlock.enabled";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApiProfileScope {
@@ -61,26 +60,22 @@ fn byok_unlock_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 pub fn is_byok_unlocked(app_handle: &tauri::AppHandle) -> bool {
-    let Ok(machine_id) = current_machine_id(app_handle) else {
-        return false;
-    };
     byok_unlock_path(app_handle)
         .ok()
         .and_then(|path| fs::read_to_string(path).ok())
-        .is_some_and(|stored| stored.trim().eq_ignore_ascii_case(machine_id.trim()))
+        .is_some_and(|stored| stored.trim() == "enabled")
 }
 
 pub fn activate_byok_unlock(app_handle: &tauri::AppHandle, code: &str) -> Result<bool, String> {
     if !code.trim().eq_ignore_ascii_case("undesign") {
         return Ok(false);
     }
-    let machine_id = current_machine_id(app_handle).map_err(|err| format!("io_error: {err}"))?;
     let path = byok_unlock_path(app_handle)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|err| format!("io_error: 无法创建本机配置目录：{err}"))?;
     }
-    fs::write(path, machine_id).map_err(|err| format!("io_error: 无法保存本机配置：{err}"))?;
+    fs::write(path, "enabled").map_err(|err| format!("io_error: 无法保存本机配置：{err}"))?;
     Ok(true)
 }
 
@@ -254,20 +249,18 @@ pub fn resolve_effective_api_profile(
     if is_byok_unlocked(app_handle) {
         return Ok(user_settings_to_effective(settings));
     }
-    let machine_id = current_machine_id(app_handle).map_err(|err| format!("io_error: {err}"))?;
     let content = read_license_content(app_handle)?;
-    resolve_effective_api_profile_from_content(content.as_deref(), &machine_id, settings)
+    resolve_effective_api_profile_from_content(content.as_deref(), "", settings)
 }
 
 pub fn resolve_effective_canvas_api_profile(
     app_handle: &tauri::AppHandle,
     settings: StoredApiSettings,
 ) -> Result<EffectiveApiProfile, String> {
-    let machine_id = current_machine_id(app_handle).map_err(|err| format!("io_error: {err}"))?;
     let content = read_license_content(app_handle)?;
     resolve_effective_api_profile_from_content_with_date(
         content.as_deref(),
-        &machine_id,
+        "",
         settings,
         ApiProfileScope::Canvas,
         None,

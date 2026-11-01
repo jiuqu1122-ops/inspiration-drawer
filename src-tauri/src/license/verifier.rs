@@ -78,15 +78,15 @@ pub fn verify_license_content_with_key(
     Ok(payload)
 }
 
-pub fn status_from_content(content: Option<&str>, machine_id: String) -> LicenseStatus {
+pub fn status_from_content(content: Option<&str>) -> LicenseStatus {
     match content {
         Some(content) if !content.trim().is_empty() => {
-            match verify_license_content(content, &machine_id) {
-                Ok(payload) => LicenseStatus::from_payload(machine_id, payload),
-                Err(err) => LicenseStatus::invalid(machine_id, err.code, err.message),
+            match verify_license_content(content, "") {
+                Ok(payload) => LicenseStatus::from_payload(payload),
+                Err(err) => LicenseStatus::invalid(err.code, err.message),
             }
         }
-        _ => LicenseStatus::unlicensed(machine_id),
+        _ => LicenseStatus::unlicensed(),
     }
 }
 
@@ -119,10 +119,9 @@ pub fn check_feature_from_status(status: LicenseStatus, feature: &str) -> Featur
 
 pub fn require_feature_from_content(
     content: Option<&str>,
-    machine_id: String,
     feature: &str,
 ) -> Result<(), LicenseError> {
-    let status = status_from_content(content, machine_id);
+    let status = status_from_content(content);
     if !status.valid {
         return Err(LicenseError::new(
             status.error_code.unwrap_or(LicenseErrorCode::NotLicensed),
@@ -154,10 +153,12 @@ fn validate_payload(
             "授权产品不匹配",
         ));
     }
-    if payload.machine_id.trim() != machine_id.trim() {
+    // Empty machine_id means account-based verification. The payload field is
+    // retained only for compatibility with historical signed licenses.
+    if !machine_id.trim().is_empty() && payload.machine_id.trim() != machine_id.trim() {
         return Err(LicenseError::new(
             LicenseErrorCode::MachineMismatch,
-            "机器码不匹配",
+            "授权绑定信息不匹配",
         ));
     }
     let expire_at =
@@ -270,7 +271,7 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 6, 18).unwrap(),
         )
         .unwrap();
-        let status = LicenseStatus::from_payload("machine-a".to_string(), payload);
+        let status = LicenseStatus::from_payload(payload);
         let result = check_feature_from_status(status, "batch_render");
         assert!(result.allowed);
         assert_eq!(result.status.edition, Some(LicenseEdition::Enterprise));

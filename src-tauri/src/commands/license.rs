@@ -65,7 +65,6 @@ struct EmailVerificationRequest<'a> {
     email: &'a str,
     challenge_id: &'a str,
     code: &'a str,
-    machine_id: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     display_name: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,7 +78,6 @@ struct EmailVerificationRequest<'a> {
 #[serde(rename_all = "camelCase")]
 struct CloudLicenseSyncRequest<'a> {
     license: &'a str,
-    machine_id: &'a str,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2235,11 +2233,8 @@ async fn sync_cloud_account_uncached(
     if payload.license_id.is_none() {
         return Err("cloud_account_required: 请先完成邮箱注册或登录".to_string());
     }
-    let machine_id = crate::platform::machine_fingerprint(app_handle)
-        .map_err(|err| format!("io_error: {err}"))?;
     let request = CloudLicenseSyncRequest {
         license: current,
-        machine_id: &machine_id,
     };
     let mut attempt = 0;
     let response = loop {
@@ -2256,7 +2251,7 @@ async fn sync_cloud_account_uncached(
             }
         }
     };
-    verify_and_save_cloud_license(app_handle, machine_id, &response, Some(current))?;
+    verify_and_save_cloud_license(app_handle, &response, Some(current))?;
     Ok(response)
 }
 
@@ -2427,11 +2422,10 @@ pub(crate) async fn cloud_access_token(app_handle: &tauri::AppHandle) -> Result<
 
 fn verify_and_save_cloud_license(
     app_handle: &tauri::AppHandle,
-    machine_id: String,
     response: &EmailVerificationResponse,
     expected_license: Option<&str>,
 ) -> Result<LicenseStatus, String> {
-    let payload = crate::license::verifier::verify_license_content(&response.license, &machine_id)
+    let payload = crate::license::verifier::verify_license_content(&response.license, "")
         .map_err(format_license_error)?;
     let _guard = CLOUD_AUTH_WRITE_LOCK
         .lock()
@@ -2454,7 +2448,7 @@ fn verify_and_save_cloud_license(
             "serverClockAvailable": response.server_time.is_some(),
         }),
     );
-    Ok(LicenseStatus::from_payload(machine_id, payload))
+    Ok(LicenseStatus::from_payload(payload))
 }
 
 fn format_license_error(err: LicenseError) -> String {
@@ -2462,16 +2456,9 @@ fn format_license_error(err: LicenseError) -> String {
 }
 
 #[tauri::command]
-pub fn get_machine_id(app_handle: tauri::AppHandle) -> Result<String, String> {
-    crate::platform::machine_fingerprint(&app_handle).map_err(|err| format!("io_error: {err}"))
-}
-
-#[tauri::command]
 pub fn get_license_status(app_handle: tauri::AppHandle) -> Result<LicenseStatus, String> {
-    let machine_id = crate::platform::machine_fingerprint(&app_handle)
-        .map_err(|err| format!("io_error: {err}"))?;
     let content = read_license_content(&app_handle)?;
-    Ok(status_from_content(content.as_deref(), machine_id))
+    Ok(status_from_content(content.as_deref()))
 }
 
 #[tauri::command]
@@ -2506,13 +2493,10 @@ pub async fn verify_email_registration(
     if code.len() != 6 || !code.chars().all(|character| character.is_ascii_digit()) {
         return Err("invalid_email_code: 请输入 6 位数字验证码".to_string());
     }
-    let machine_id = crate::platform::machine_fingerprint(&app_handle)
-        .map_err(|err| format!("io_error: {err}"))?;
     let current = read_license_content(&app_handle)?;
     let legacy_license = current.as_deref().filter(|content| {
-        decode_license_payload_unverified(content).is_some_and(|payload| {
-            payload.license_id.is_none() && payload.machine_id.trim() == machine_id
-        })
+        decode_license_payload_unverified(content)
+            .is_some_and(|payload| payload.license_id.is_none())
     });
     let response = post_cloud::<EmailVerificationResponse>(
         &app_handle,
@@ -2521,7 +2505,6 @@ pub async fn verify_email_registration(
             email: &email,
             challenge_id: challenge_id.trim(),
             code,
-            machine_id: &machine_id,
             display_name: display_name.as_deref(),
             legacy_license,
             invite_code: invite_code
@@ -2532,7 +2515,7 @@ pub async fn verify_email_registration(
         },
     )
     .await?;
-    verify_and_save_cloud_license(&app_handle, machine_id, &response, None)
+    verify_and_save_cloud_license(&app_handle, &response, None)
 }
 
 #[tauri::command]
@@ -2997,9 +2980,7 @@ pub fn import_license(
         }
     };
 
-    let machine_id = crate::platform::machine_fingerprint(&app_handle)
-        .map_err(|err| format!("io_error: {err}"))?;
-    let payload = crate::license::verifier::verify_license_content(&license_content, &machine_id)
+    let payload = crate::license::verifier::verify_license_content(&license_content, "")
         .map_err(format_license_error)?;
 
     let target = license_path(&app_handle)?;
@@ -3014,7 +2995,7 @@ pub fn import_license(
         }
     }
 
-    Ok(LicenseStatus::from_payload(machine_id, payload))
+    Ok(LicenseStatus::from_payload(payload))
 }
 
 #[tauri::command]
@@ -3031,9 +3012,7 @@ pub fn remove_license(app_handle: tauri::AppHandle) -> Result<LicenseStatus, Str
             *guard = None;
         }
     }
-    let machine_id = crate::platform::machine_fingerprint(&app_handle)
-        .map_err(|err| format!("io_error: {err}"))?;
-    Ok(LicenseStatus::unlicensed(machine_id))
+    Ok(LicenseStatus::unlicensed())
 }
 
 #[tauri::command]
@@ -3051,10 +3030,8 @@ pub fn require_feature(app_handle: &tauri::AppHandle, feature: &str) -> Result<(
         return Ok(());
     }
 
-    let machine_id = crate::platform::machine_fingerprint(app_handle)
-        .map_err(|err| format!("io_error: {err}"))?;
     let content = read_license_content(app_handle)?;
-    require_feature_from_content(content.as_deref(), machine_id, feature)
+    require_feature_from_content(content.as_deref(), feature)
         .map_err(format_license_error)
 }
 

@@ -182,6 +182,7 @@ pub struct LicensePayload {
     pub license_id: Option<String>,
     pub product: String,
     pub customer: String,
+    #[serde(default)]
     pub machine_id: String,
     pub edition: LicenseEdition,
     #[serde(default)]
@@ -201,7 +202,6 @@ pub struct LicenseFile {
 pub struct LicenseStatus {
     pub state: LicenseState,
     pub valid: bool,
-    pub machine_id: String,
     pub customer: Option<String>,
     pub edition: Option<LicenseEdition>,
     pub expire_at: Option<String>,
@@ -267,11 +267,10 @@ impl From<&LicenseAiAccess> for LicenseAiAccessSummary {
 }
 
 impl LicenseStatus {
-    pub fn unlicensed(machine_id: String) -> Self {
+    pub fn unlicensed() -> Self {
         Self {
             state: LicenseState::Unlicensed,
             valid: false,
-            machine_id,
             customer: None,
             edition: None,
             expire_at: None,
@@ -283,13 +282,12 @@ impl LicenseStatus {
         }
     }
 
-    pub fn from_payload(machine_id: String, payload: LicensePayload) -> Self {
+    pub fn from_payload(payload: LicensePayload) -> Self {
         let needs_email_registration = payload.license_id.is_none();
         let ai_access = payload.ai_access.as_ref().map(LicenseAiAccessSummary::from);
         Self {
             state: payload.edition.status_state(),
             valid: true,
-            machine_id,
             customer: Some(payload.customer),
             edition: Some(LicenseEdition::Enterprise),
             expire_at: Some(payload.expire_at),
@@ -301,7 +299,7 @@ impl LicenseStatus {
         }
     }
 
-    pub fn invalid(machine_id: String, code: LicenseErrorCode, message: String) -> Self {
+    pub fn invalid(code: LicenseErrorCode, message: String) -> Self {
         let state = if code == LicenseErrorCode::Expired {
             LicenseState::Expired
         } else {
@@ -310,7 +308,6 @@ impl LicenseStatus {
         Self {
             state,
             valid: false,
-            machine_id,
             customer: None,
             edition: None,
             expire_at: None,

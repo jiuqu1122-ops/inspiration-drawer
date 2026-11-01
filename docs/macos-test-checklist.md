@@ -13,7 +13,7 @@ Target: Apple Silicon (`aarch64-apple-darwin`), macOS 12 or newer. Test the ad-h
 - [ ] Optionally mount the separately supplied DMG and verify it remains usable; the Preview ZIP is the primary distribution path.
 - [ ] Confirm the main window appears, is focusable, resizes, minimizes, and quits with Command+Q.
 - [ ] Confirm standard Edit actions use Command+C, Command+V, Command+A, Command+Z, and Command+Shift+Z.
-- [ ] Quit and relaunch; confirm the same local database and machine ID are used.
+- [ ] Quit and relaunch; confirm the same local database and account session are used.
 
 ## macOS window chrome and visual adaptation
 

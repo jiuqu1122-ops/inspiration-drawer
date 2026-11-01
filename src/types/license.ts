@@ -19,7 +19,6 @@ export type LicenseErrorCode =
 export type LicenseStatus = {
   state: LicenseState;
   valid: boolean;
-  machine_id: string;
   customer?: string | null;
   edition?: LicenseEdition | null;
   expire_at?: string | null;

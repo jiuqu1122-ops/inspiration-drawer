@@ -157,10 +157,6 @@ pub fn browser_candidates(browser: &str) -> Vec<PathBuf> {
     }
 }
 
-pub fn machine_fingerprint(app_handle: &tauri::AppHandle) -> Result<String, String> {
-    crate::license::machine_id::current_machine_id(app_handle)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

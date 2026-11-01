@@ -19522,7 +19522,6 @@ fn main() {
             commands::eagle::eagle_finish_offline_library,
             save_item_source_as,
             save_dropped_file,
-            commands::license::get_machine_id,
             commands::license::get_license_status,
             commands::license::request_email_verification,
             commands::license::verify_email_registration,

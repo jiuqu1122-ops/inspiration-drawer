@@ -3,7 +3,7 @@ name: macOS Preview
 on:
   push:
     branches:
-      - feat/macos-support
+      - feat/macos-port-from-old-8.0.27
   pull_request:
 
 permissions:

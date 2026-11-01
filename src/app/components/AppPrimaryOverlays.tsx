@@ -430,7 +430,7 @@ export function AppPrimaryOverlays({ scope }: { scope: AppPrimaryOverlaysScope }
 
               {canRegisterByEmail && (
                 <div className="mt-4 rounded-[14px] border border-stone-200 bg-stone-50 px-3 py-2 text-center text-[10px] leading-4 text-stone-500 dark:border-stone-800 dark:bg-stone-950/60 dark:text-stone-400">
-                  本机会自动读取已有离线授权并继承原到期时间，无需粘贴 License 或填写机器码。
+                  使用邮箱验证码登录，账号信息与会员权益自动同步。
                 </div>
               )}
             </motion.div>
