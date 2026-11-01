@@ -5,7 +5,6 @@ on:
     branches:
       - feat/macos-port-from-old-8.0.27
   pull_request:
-
 permissions:
   contents: read
 
@@ -209,7 +208,7 @@ jobs:
             src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
 
       - name: Publish Preview and updater to COS
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/macos-support'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/macos-port-from-old-8.0.27'
         id: publish-cos
         run: node scripts/macos/publish-updater.mjs
         env:
@@ -219,7 +218,7 @@ jobs:
           TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
 
       - name: Verify published COS updater payload
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/macos-support'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/macos-port-from-old-8.0.27'
         shell: bash
         env:
           ARCHIVE_URL: ${{ steps.publish-cos.outputs.archive_url }}
