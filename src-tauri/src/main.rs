@@ -18639,8 +18639,6 @@ fn build_hidden_note_window(
     let builder = builder.shadow(true);
     #[cfg(not(target_os = "macos"))]
     let builder = builder.shadow(false);
-    #[cfg(target_os = "windows")]
-    let builder = builder.drag_and_drop(false);
     builder.build().map_err(|e| e.to_string())
 }
 #[tauri::command]

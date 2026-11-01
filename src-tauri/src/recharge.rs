@@ -171,7 +171,6 @@ fn build_recharge_window(
         .transparent(false)
         .visible(false)
         .focused(false)
-        .drag_and_drop(false)
         .on_navigation(is_payment_url)
         .on_new_window(move |url, features| open_payment_window(&app_for_popup, url, features))
         .on_page_load(move |window, payload| {
