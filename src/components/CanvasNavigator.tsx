@@ -1,5 +1,5 @@
 import type React from 'react';
-import { memo, useCallback, useMemo, useRef } from 'react';
+import { memo, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import { Compass, LayoutGrid, Maximize2, Minimize2, X } from 'lucide-react';
 import type { CanvasImageItem, CanvasItemBox } from '../features/canvasModel';
 import { getCanvasAiMediaType, isCanvasAiGeneratorType } from '../features/canvasAiRuntime';
@@ -99,6 +99,88 @@ const CanvasNavigatorNode = memo(function CanvasNavigatorNode({
   );
 });
 
+// Only mounted while visible. Zoom/chrome callbacks are deliberately not map inputs.
+const CanvasNavigatorMap = memo(function CanvasNavigatorMap({
+  items,
+  selectedIds,
+  getPreview,
+  getThumbnailSource,
+  onSelectItem,
+}: Pick<CanvasNavigatorProps,
+  'items' | 'selectedIds' | 'getPreview' | 'getThumbnailSource' | 'onSelectItem'
+>) {
+  const { bounds, scale } = useMemo(() => {
+    if (items.length === 0) return { bounds: null, scale: 1 };
+
+    let left = Infinity;
+    let top = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
+    for (const { box } of items) {
+      left = Math.min(left, box.x);
+      top = Math.min(top, box.y);
+      right = Math.max(right, box.x + box.width);
+      bottom = Math.max(bottom, box.y + box.height);
+    }
+    return {
+      bounds: { left, top, right, bottom },
+      scale: Math.min(
+        (CANVAS_NAV_WIDTH - 18) / Math.max(1, right - left),
+        (CANVAS_NAV_HEIGHT - 18) / Math.max(1, bottom - top),
+      ),
+    };
+  }, [items]);
+  const renderItems = useMemo(() => items.map(({ item, box }) => {
+    const preview = getPreview(item);
+    const label = item.ai?.type === 'workflow'
+      ? item.ai?.presetLabel || '工作流'
+      : isCanvasAiGeneratorType(item.ai?.type)
+        ? item.ai?.presetLabel || (getCanvasAiMediaType(item.ai) === 'video' ? '视频' : '生图')
+        : item.item.type === 'text'
+          ? '文字'
+          : item.item.name || item.item.type || '节点';
+    return {
+      item,
+      box,
+      source: getThumbnailSource(item, preview),
+      label,
+    };
+  }), [getPreview, getThumbnailSource, items]);
+
+  return (
+    <div
+      className="relative mt-2 h-[116px] w-full overflow-hidden rounded-[10px] border border-stone-200 bg-stone-100 dark:border-stone-700 dark:bg-stone-950"
+      title="点击缩略图定位"
+    >
+      {items.length === 0 ? (
+        <div className="flex h-full items-center justify-center text-[10px] font-bold text-stone-400 dark:text-stone-500">
+          暂无节点
+        </div>
+      ) : bounds && renderItems.map(({ item, box, source, label }) => {
+        const left = 9 + (box.x - bounds.left) * scale;
+        const top = 9 + (box.y - bounds.top) * scale;
+        const width = Math.max(10, box.width * scale);
+        const height = Math.max(10, box.height * scale);
+        const selected = selectedIds.has(item.id);
+        return (
+          <CanvasNavigatorNode
+            key={item.id}
+            item={item}
+            left={left}
+            top={top}
+            width={width}
+            height={height}
+            selected={selected}
+            source={source}
+            label={label}
+            onSelectItem={onSelectItem}
+          />
+        );
+      })}
+    </div>
+  );
+});
+
 export function CanvasNavigator({
   visible,
   panelRef,
@@ -116,44 +198,14 @@ export function CanvasNavigator({
   onZoomIn,
   onLocatePrimary,
 }: CanvasNavigatorProps) {
-  const { bounds, scale } = useMemo(() => {
-    const nextBounds = items.length > 0 ? {
-      left: Math.min(...items.map(entry => entry.box.x)),
-      top: Math.min(...items.map(entry => entry.box.y)),
-      right: Math.max(...items.map(entry => entry.box.x + entry.box.width)),
-      bottom: Math.max(...items.map(entry => entry.box.y + entry.box.height)),
-    } : null;
-    return {
-      bounds: nextBounds,
-      scale: nextBounds
-        ? Math.min(
-          (CANVAS_NAV_WIDTH - 18) / Math.max(1, nextBounds.right - nextBounds.left),
-          (CANVAS_NAV_HEIGHT - 18) / Math.max(1, nextBounds.bottom - nextBounds.top),
-        )
-        : 1,
-    };
-  }, [items]);
   const onSelectItemRef = useRef(onSelectItem);
-  onSelectItemRef.current = onSelectItem;
+  // Publish actions only after commit; an abandoned render must not leak its callback.
+  useLayoutEffect(() => {
+    onSelectItemRef.current = onSelectItem;
+  }, [onSelectItem]);
   const selectItem = useCallback((item: CanvasImageItem) => {
     onSelectItemRef.current(item);
   }, []);
-  const renderItems = useMemo(() => items.map(({ item, box }) => {
-    const preview = getPreview(item);
-    const label = item.ai?.type === 'workflow'
-      ? item.ai?.presetLabel || '工作流'
-      : isCanvasAiGeneratorType(item.ai?.type)
-        ? item.ai?.presetLabel || (getCanvasAiMediaType(item.ai) === 'video' ? '视频' : '生图')
-        : item.item.type === 'text'
-          ? '文字'
-          : item.item.name || item.item.type || '节点';
-    return {
-      item,
-      box,
-      source: getThumbnailSource(item, preview),
-      label,
-    };
-  }), [getPreview, getThumbnailSource, items]);
 
   return (
     <>
@@ -199,36 +251,13 @@ export function CanvasNavigator({
               </button>
             </div>
           </div>
-          <div
-            className="relative mt-2 h-[116px] w-full overflow-hidden rounded-[10px] border border-stone-200 bg-stone-100 dark:border-stone-700 dark:bg-stone-950"
-            title="点击缩略图定位"
-          >
-            {items.length === 0 ? (
-              <div className="flex h-full items-center justify-center text-[10px] font-bold text-stone-400 dark:text-stone-500">
-                暂无节点
-              </div>
-            ) : bounds && renderItems.map(({ item, box, source, label }) => {
-              const left = 9 + (box.x - bounds.left) * scale;
-              const top = 9 + (box.y - bounds.top) * scale;
-              const width = Math.max(10, box.width * scale);
-              const height = Math.max(10, box.height * scale);
-              const selected = selectedIds.has(item.id);
-              return (
-                <CanvasNavigatorNode
-                  key={item.id}
-                  item={item}
-                  left={left}
-                  top={top}
-                  width={width}
-                  height={height}
-                  selected={selected}
-                  source={source}
-                  label={label}
-                  onSelectItem={selectItem}
-                />
-              );
-            })}
-          </div>
+          <CanvasNavigatorMap
+            items={items}
+            selectedIds={selectedIds}
+            getPreview={getPreview}
+            getThumbnailSource={getThumbnailSource}
+            onSelectItem={selectItem}
+          />
           <div className="mt-2 flex items-center justify-between gap-1.5">
             <button
               type="button"

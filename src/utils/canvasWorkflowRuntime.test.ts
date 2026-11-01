@@ -261,6 +261,31 @@ describe('canvas workflow runtime', () => {
       ...second,
       nodes: second.nodes.map(node => node.id === 'b' ? { ...node, width: node.width + 2 } : node),
     })).toBe(true);
+    expect(hasCanvasWorkflowTemplateChanged(first, {
+      ...second,
+      nodes: second.nodes.map(node => node.id === 'a'
+        ? { ...node, ai: { ...node.ai!, resolution: '4k' } }
+        : node),
+    })).toBe(true);
+    expect(hasCanvasWorkflowTemplateChanged(first, {
+      ...second,
+      nodes: second.nodes.map(node => node.id === 'a'
+        ? {
+          ...node,
+          ai: {
+            ...node.ai!,
+            providerChannelId: 'fast-channel',
+            providerCandidates: [{
+              source: 'wallet',
+              provider: 'new-api',
+              model: 'shared-route-model',
+              canonicalModelId: 'public-fast-model',
+              providerChannelId: 'fast-channel',
+            }],
+          },
+        }
+        : node),
+    })).toBe(true);
   });
 
   it('maps expanded group results back to stable collapsed output drafts', () => {

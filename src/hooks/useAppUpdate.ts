@@ -13,6 +13,10 @@ const APP_UPDATE_PROMPT_SHOWN_DATE_STORAGE_KEY = 'drawer_app_update_prompt_shown
 const APP_UPDATE_LAST_AUTOMATIC_CHECK_STORAGE_KEY = 'drawer_app_update_last_automatic_check';
 const APP_UPDATE_AUTOMATIC_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 
+// Opt-in, build-time only: internal performance installers must not silently
+// replace themselves with a public release. Ordinary builds keep existing behavior.
+export const isAppUpdateEnabled = () => import.meta.env.VITE_DISABLE_APP_UPDATES !== 'true';
+
 type UseAppUpdateOptions = {
   isMainDrawerWindow: boolean;
   showToast: (message: string) => void;
@@ -74,8 +78,9 @@ export const formatAppUpdateErrorMessage = (err: unknown) => {
 };
 
 export const useAppUpdate = ({ isMainDrawerWindow, showToast }: UseAppUpdateOptions) => {
+  const updatesEnabled = isAppUpdateEnabled();
   const shouldShowDailyAppUpdatePrompt = () => {
-    if (!isMainDrawerWindow) return false;
+    if (!isMainDrawerWindow || !updatesEnabled) return false;
     const todayKey = getLocalDateKey(Date.now());
     if (localStorage.getItem(APP_UPDATE_PROMPT_SHOWN_DATE_STORAGE_KEY) === todayKey) return false;
     localStorage.setItem(APP_UPDATE_PROMPT_SHOWN_DATE_STORAGE_KEY, todayKey);
@@ -83,20 +88,27 @@ export const useAppUpdate = ({ isMainDrawerWindow, showToast }: UseAppUpdateOpti
   };
 
   const [appVersion, setAppVersion] = useState('');
-  const [autoUpdaterSupported, setAutoUpdaterSupported] = useState(false);
+  const [autoUpdaterSupported, setAutoUpdaterSupported] = useState(true);
   const [isCheckingAppUpdate, setIsCheckingAppUpdate] = useState(false);
   const isCheckingAppUpdateRef = useRef(false);
-  const [showAppUpdatePromptArrow, setShowAppUpdatePromptArrow] = useState(false);
+  const [showAppUpdatePromptArrow, setShowAppUpdatePromptArrow] = useState(shouldShowDailyAppUpdatePrompt);
 
   useEffect(() => {
+    if (!updatesEnabled) return;
     let disposed = false;
-    void loadPlatformCapabilities().then(capabilities => {
-      if (disposed) return;
-      setAutoUpdaterSupported(capabilities.autoUpdater);
-      if (capabilities.autoUpdater && shouldShowDailyAppUpdatePrompt()) {
-        setShowAppUpdatePromptArrow(true);
-      }
-    });
+    try {
+      const request = loadPlatformCapabilities();
+      if (!request || typeof (request as Promise<unknown>).then !== 'function') return;
+      void request.then(capabilities => {
+        if (disposed) return;
+        setAutoUpdaterSupported(capabilities.autoUpdater);
+        if (!capabilities.autoUpdater) {
+          setShowAppUpdatePromptArrow(false);
+        }
+      });
+    } catch (error) {
+      console.warn('平台能力检测失败:', error);
+    }
     return () => {
       disposed = true;
     };
@@ -116,6 +128,10 @@ export const useAppUpdate = ({ isMainDrawerWindow, showToast }: UseAppUpdateOpti
     if (!isMainDrawerWindow) return;
     if (!autoUpdaterSupported) {
       if (!options.silent) showToast(unsupportedPlatformMessage('自动更新'));
+      return;
+    }
+    if (!updatesEnabled) {
+      if (!options.silent) showToast('当前为内部测试包，已关闭在线更新');
       return;
     }
     if (isCheckingAppUpdateRef.current) {
@@ -252,7 +268,7 @@ export const useAppUpdate = ({ isMainDrawerWindow, showToast }: UseAppUpdateOpti
   };
 
   useEffect(() => {
-    if (!isMainDrawerWindow || !autoUpdaterSupported) return;
+    if (!isMainDrawerWindow || !updatesEnabled || !autoUpdaterSupported) return;
     let disposed = false;
     let timer: number | null = null;
 

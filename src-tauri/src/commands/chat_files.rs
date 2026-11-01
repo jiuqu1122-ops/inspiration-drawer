@@ -1,8 +1,11 @@
+use super::chat_presentation::{ChatPresentation, PresentationImage};
+use super::chat_presentation_assets::resolve_presentation_images;
 use printpdf::{
     Mm, Op, ParsedFont, PdfDocument, PdfFontHandle, PdfPage, PdfSaveOptions, Point, Pt, TextItem,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -32,6 +35,8 @@ pub struct ChatCreateFileRequest {
     pub format: String,
     pub content: Option<String>,
     pub sheets: Option<Vec<ChatSpreadsheetSheet>>,
+    #[serde(default)]
+    pub presentation: Option<ChatPresentation>,
 }
 
 #[derive(Debug, Serialize)]
@@ -43,12 +48,16 @@ pub struct ChatGeneratedFile {
     format: String,
     mime_type: String,
     size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slide_count: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatGeneratedFileResult {
     files: Vec<ChatGeneratedFile>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +69,7 @@ enum GeneratedFormat {
     Docx,
     Xlsx,
     Pdf,
+    Pptx,
 }
 
 impl GeneratedFormat {
@@ -77,8 +87,9 @@ impl GeneratedFormat {
             "docx" | "word" => Ok(Self::Docx),
             "xlsx" | "excel" => Ok(Self::Xlsx),
             "pdf" => Ok(Self::Pdf),
+            "pptx" | "powerpoint" => Ok(Self::Pptx),
             _ => Err(
-                "暂不支持该文件格式，可使用 TXT、Markdown、CSV、JSON、DOCX、XLSX 或 PDF"
+                "暂不支持该文件格式，可使用 TXT、Markdown、CSV、JSON、DOCX、XLSX、PDF 或 PPTX"
                     .to_string(),
             ),
         }
@@ -93,6 +104,7 @@ impl GeneratedFormat {
             Self::Docx => "docx",
             Self::Xlsx => "xlsx",
             Self::Pdf => "pdf",
+            Self::Pptx => "pptx",
         }
     }
 
@@ -105,6 +117,9 @@ impl GeneratedFormat {
             Self::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             Self::Xlsx => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             Self::Pdf => "application/pdf",
+            Self::Pptx => {
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            }
         }
     }
 }
@@ -667,11 +682,36 @@ fn write_pdf(path: &Path, title: &str, content: &str) -> Result<(), String> {
     fs::write(path, bytes).map_err(|error| format!("写入 PDF 文件失败：{error}"))
 }
 
+#[derive(Default)]
+struct FileWriteSummary {
+    slide_count: Option<usize>,
+    warnings: Vec<String>,
+}
+
 fn write_generated_file(
     path: &Path,
     format: GeneratedFormat,
     request: &ChatCreateFileRequest,
-) -> Result<(), String> {
+    images: &HashMap<String, PresentationImage>,
+) -> Result<FileWriteSummary, String> {
+    if format == GeneratedFormat::Pptx {
+        let presentation = request.presentation.as_ref().ok_or_else(|| {
+            "生成 PPT 需要 presentation 和 slides，不是将文本改成 .pptx 后缀".to_string()
+        })?;
+        if serde_json::to_vec(presentation)
+            .map_err(|error| error.to_string())?
+            .len()
+            > MAX_SOURCE_BYTES
+        {
+            return Err("PPT 结构化内容不能超过 2MB".to_string());
+        }
+        return super::chat_presentation::write_pptx(path, presentation, images).map(|summary| {
+            FileWriteSummary {
+                slide_count: Some(summary.slide_count),
+                warnings: summary.warnings,
+            }
+        });
+    }
     let content = request.content.as_deref().unwrap_or_default();
     if content.len() > MAX_SOURCE_BYTES {
         return Err(format!(
@@ -709,7 +749,9 @@ fn write_generated_file(
         GeneratedFormat::Docx => write_docx(path, &request.file_name, content),
         GeneratedFormat::Xlsx => write_xlsx(path, request.sheets.as_deref().unwrap_or_default()),
         GeneratedFormat::Pdf => write_pdf(path, &request.file_name, content),
+        GeneratedFormat::Pptx => unreachable!("handled before ordinary document rendering"),
     }
+    .map(|()| FileWriteSummary::default())
 }
 
 #[tauri::command]
@@ -719,6 +761,31 @@ pub async fn chat_create_file(
 ) -> Result<ChatGeneratedFileResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let format = GeneratedFormat::parse(&request.format)?;
+        let images: HashMap<String, PresentationImage> = if format == GeneratedFormat::Pptx {
+            let presentation = request.presentation.as_ref().ok_or_else(|| {
+                "生成 PPT 需要 presentation 和非空 slides，不能只提供大纲正文".to_string()
+            })?;
+            let bytes = serde_json::to_vec(presentation).map_err(|error| error.to_string())?;
+            if bytes.len() > MAX_SOURCE_BYTES {
+                return Err("PPT 结构化内容不能超过 2MB".to_string());
+            }
+            if presentation.slides.is_empty() || presentation.slides.len() > 40 {
+                return Err("PPT 需要 1～40 个页面，请减少页数或拆分文件".to_string());
+            }
+            if presentation.slides.iter().any(|slide| {
+                slide
+                    .image_attachment_id
+                    .as_deref()
+                    .is_some_and(|id| !id.trim().is_empty())
+            }) {
+                let conn = crate::db::connection::open_connection(&app_handle)?;
+                resolve_presentation_images(&conn, &request.conversation_id, presentation)?
+            } else {
+                HashMap::new()
+            }
+        } else {
+            HashMap::new()
+        };
         let file_name = normalized_file_name(&request.file_name, format);
         let conversation = sanitize_component(&request.conversation_id, "conversation", 80);
         let directory = generated_root(&app_handle)?.join(conversation);
@@ -729,10 +796,13 @@ pub async fn chat_create_file(
             rand::random::<u32>()
         );
         let path = directory.join(format!("{}-{}", &id[5..], file_name));
-        if let Err(error) = write_generated_file(&path, format, &request) {
-            let _ = fs::remove_file(&path);
-            return Err(error);
-        }
+        let summary = match write_generated_file(&path, format, &request, &images) {
+            Ok(summary) => summary,
+            Err(error) => {
+                let _ = fs::remove_file(&path);
+                return Err(error);
+            }
+        };
         let size = fs::metadata(&path)
             .map_err(|error| format!("读取生成文件信息失败：{error}"))?
             .len();
@@ -751,7 +821,9 @@ pub async fn chat_create_file(
                 format: format.extension().to_string(),
                 mime_type: format.mime_type().to_string(),
                 size,
+                slide_count: summary.slide_count,
             }],
+            warnings: summary.warnings,
         })
     })
     .await
@@ -861,5 +933,154 @@ mod tests {
         assert!(bytes.starts_with(b"%PDF-"));
         assert!(bytes.len() > 1_000);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn pptx_format_and_real_file_delivery_contract() {
+        use super::{write_generated_file, ChatCreateFileRequest};
+        use std::collections::HashMap;
+        use std::io::Read;
+        assert_eq!(
+            GeneratedFormat::parse("PPTX").unwrap(),
+            GeneratedFormat::Pptx
+        );
+        assert_eq!(
+            GeneratedFormat::parse("powerpoint").unwrap(),
+            GeneratedFormat::Pptx
+        );
+        assert_eq!(
+            normalized_file_name("../方案.exe", GeneratedFormat::Pptx),
+            "方案.pptx"
+        );
+        assert!(GeneratedFormat::Pptx
+            .mime_type()
+            .ends_with("presentationml.presentation"));
+        let request: ChatCreateFileRequest = serde_json::from_value(json!({
+            "conversationId":"synthetic","fileName":"可编辑设计方案.pptx","format":"pptx",
+            "presentation":{"title":"产品设计方案","slides":[{"layout":"cover","title":"产品设计方案","subtitle":"可编辑文字与形状"},{"title":"设计目标","bullets":["保持产品结构","明确使用场景"]}]}
+        })).unwrap();
+        let path = temp_path("pptx");
+        let summary =
+            write_generated_file(&path, GeneratedFormat::Pptx, &request, &HashMap::new()).unwrap();
+        assert_eq!(summary.slide_count, Some(2));
+        let mut archive = ZipArchive::new(fs::File::open(&path).unwrap()).unwrap();
+        let mut xml = String::new();
+        archive
+            .by_name("ppt/slides/slide2.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        assert!(xml.contains("保持产品结构"));
+        assert!(xml.contains("<a:t"));
+        drop(archive);
+        fs::remove_file(&path).unwrap();
+        let mut invalid = request.clone();
+        invalid.presentation = None;
+        assert!(
+            write_generated_file(&path, GeneratedFormat::Pptx, &invalid, &HashMap::new()).is_err()
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn pptx_verification_fixture_uses_the_production_file_writer_and_safe_image_resolver() {
+        use super::{resolve_presentation_images, write_generated_file, ChatCreateFileRequest};
+        use rusqlite::Connection;
+        use screenshots::image::{DynamicImage, Rgba, RgbaImage};
+        let retained = std::env::var_os("PPTX_VALIDATION_DIR").map(PathBuf::from);
+        let root = retained.clone().unwrap_or_else(|| {
+            std::env::temp_dir().join(format!(
+                "pptx-fixture-{}-{}",
+                std::process::id(),
+                rand::random::<u32>()
+            ))
+        });
+        assert!(root.is_absolute());
+        fs::create_dir_all(&root).unwrap();
+        let picture_path = root.join("synthetic-reference.png");
+        // A deliberately synthetic steering-wheel diagram, not a product photo.
+        let pixels = RgbaImage::from_fn(960, 600, |x, y| {
+            let dx = x as f64 - 480.0;
+            let dy = y as f64 - 275.0;
+            let radius = (dx * dx + dy * dy).sqrt();
+            if (155.0..=190.0).contains(&radius) {
+                Rgba([40, 52, 68, 255])
+            } else if radius < 48.0 {
+                Rgba([217, 103, 56, 255])
+            } else if radius < 160.0 && (dy.abs() < 18.0 || (dx.abs() < 18.0 && dy > 0.0)) {
+                Rgba([103, 120, 141, 255])
+            } else if y > 520 && y < 540 && x > 275 && x < 685 {
+                match (x - 275) / 137 {
+                    0 => Rgba([40, 52, 68, 255]),
+                    1 => Rgba([217, 103, 56, 255]),
+                    _ => Rgba([185, 177, 160, 255]),
+                }
+            } else {
+                Rgba([237, 239, 240, 255])
+            }
+        });
+        DynamicImage::ImageRgba8(pixels)
+            .save(&picture_path)
+            .unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE chat_messages(id TEXT, conversation_id TEXT); CREATE TABLE chat_attachments(id TEXT, message_id TEXT, type TEXT, path TEXT); CREATE TABLE chat_tool_calls(message_id TEXT, tool_name TEXT, status TEXT, result_json TEXT, created_at INTEGER); INSERT INTO chat_messages VALUES ('fixture-message','fixture-conversation');").unwrap();
+        conn.execute(
+            "INSERT INTO chat_attachments VALUES ('fixture-image','fixture-message','image',?1)",
+            [picture_path.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        for theme in ["light", "dark", "warm"] {
+            let request: ChatCreateFileRequest = serde_json::from_value(json!({
+                "conversationId":"fixture-conversation","fileName":format!("{theme}-sample.pptx"),"format":"pptx",
+                "presentation":{"title":"欧卡方向盘的人机设计调研","subtitle":"功能、交互与长途驾驶体验","theme":theme,"designStyle":"editorial","accentColor":"#D96738","slides":[
+                    {"layout":"cover","title":"面向长途驾驶的\n方向盘设计研究","subtitle":"人机交互 · 功能编排 · CMF 方向","body":"概念示意 · 研究结论待实测","notes":"合成验证样例。所有视觉均为可编辑的结构示意，并非真实竞品或测量证据。","elements":[{"kind":"ellipse","x":60,"y":22,"width":30,"height":53.33,"stroke":"#71839A","strokeWidth":5},{"kind":"ellipse","x":62,"y":25.56,"width":26,"height":46.22,"stroke":"#D96738","strokeWidth":2},{"kind":"rect","x":63,"y":47,"width":24,"height":5,"fill":"#71839A"},{"kind":"rect","x":73.5,"y":50,"width":3,"height":20,"fill":"#71839A"},{"kind":"ellipse","x":71,"y":41,"width":8,"height":14.22,"fill":"#D96738"},{"kind":"rect","x":65.3,"y":47.8,"width":4,"height":3,"fill":"#E8DDD1"},{"kind":"rect","x":80.7,"y":47.8,"width":4,"height":3,"fill":"#E8DDD1"},{"kind":"text","x":62,"y":80,"width":30,"height":6,"text":"结构示意 · 非真实产品","fontSize":14,"color":"#ADB9C8"}]},
+                    {"layout":"insight","title":"研究的核心张力不是功能数量，而是触达效率","eyebrow":"01 · 关键洞察","subtitle":"高频操作需要足够顺手，同时避免把握持区变成密集的控制面板","takeaway":"先按驾驶场景和触达频率组织功能，再决定按钮数量。","body":"常用操作靠近拇指活动区，握持区减少局部干扰。"},
+                    {"layout":"comparison","title":"两种布局方向的权衡","eyebrow":"02 · 方向比较","items":[{"title":"轴辐集中式","value":"更紧凑","body":"控件更集中；验证拥挤感与误触。"},{"title":"分区渐进式","value":"更清晰","body":"主次分区清晰；验证高频触达距离。"}],"takeaway":"先做可用性原型验证，再确定控件的最终密度。"},
+                    {"layout":"grid","title":"把界面拆成四个可验证的设计维度","eyebrow":"03 · 研究框架","items":[{"title":"握持","body":"轮圈截面、摩擦与手掌支撑。"},{"title":"触达","body":"按键位置与拇指路径。"},{"title":"反馈","body":"触觉反馈与误触恢复。"},{"title":"材质","body":"触感、耐磨与清洁。"}],"takeaway":"每个维度都要有对应的原型检查项。"},
+                    {"layout":"process","title":"用低成本原型逐步验证交互假设","eyebrow":"04 · 验证流程","items":[{"title":"观察","body":"记录场景与高频任务。"},{"title":"布置","body":"制作不同控件布局模型。"},{"title":"试用","body":"模拟单手触达和持续握持。"},{"title":"校准","body":"根据错误率与主观反馈调整。"}],"takeaway":"先验证任务流程，不用过早锁定硬件细节。"},
+                    {"layout":"image-right","title":"概念视觉应与真实研究证据分开","eyebrow":"05 · 概念示意","subtitle":"合成图片位置验证","imageAttachmentId":"fixture-image","imageCaption":"合成概念图，不代表任何真实品牌产品","body":"用留白保持主视觉可读。
+左侧说明文字保持可编辑。
+真实竞品比较需要另外附上已核实的产品来源。","takeaway":"图片表达设计氛围，事实仍由来源和测量支撑。"},
+                    {"layout":"two-column","title":"下一步：把研究变成可执行的验证计划","eyebrow":"06 · 行动建议","leftTitle":"先验证体验","leftBody":"招募目标用户。
+观察触达与握持任务。
+记录主观不适和误触。","rightTitle":"再收敛方案","rightBody":"对比布局模型。
+明确CMF样片标准。
+将未决项标为待确认。","takeaway":"验证结果应决定下一轮设计，而不是视觉偏好替代数据。"},
+                    {"layout":"statement","title":"设计原则","eyebrow":"07 · 总结","body":"让高频功能更容易触达；让长时间握持更舒适。","takeaway":"用任务证据筛选功能，用真实试用校准形态和材质。"}
+                ]}
+            })).unwrap();
+            let images = resolve_presentation_images(
+                &conn,
+                &request.conversation_id,
+                request.presentation.as_ref().unwrap(),
+            )
+            .unwrap();
+            let path = root.join(format!("{theme}-sample.pptx"));
+            let summary =
+                write_generated_file(&path, GeneratedFormat::Pptx, &request, &images).unwrap();
+            assert_eq!(
+                summary.slide_count,
+                Some(8),
+                "Concise visual fixtures should not spill onto accidental continuation slides"
+            );
+            assert!(fs::metadata(&path).unwrap().len() > 5000);
+            println!(
+                "PPTX_FIXTURE theme={theme} slides={} path={}",
+                summary.slide_count.unwrap(),
+                path.display()
+            );
+        }
+        // Only remove explicitly created fixture files, never recursively delete a computed directory.
+        if retained.is_none() {
+            for file in [
+                "light-sample.pptx",
+                "dark-sample.pptx",
+                "warm-sample.pptx",
+                "synthetic-reference.png",
+            ] {
+                fs::remove_file(root.join(file)).unwrap();
+            }
+            fs::remove_dir(root).unwrap();
+        }
     }
 }

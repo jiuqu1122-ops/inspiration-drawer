@@ -16,6 +16,7 @@ import {
 import {
   getCanvasAiMediaType,
   isCanvasAiGeneratorType,
+  isCanvasWorkflowGeneratorType,
 } from '../features/canvasAiRuntime';
 import { recoverCanvasAiOutputWithUsableResult } from '../features/canvasAiOutputs';
 import {
@@ -35,33 +36,91 @@ import {
 } from './canvasItemSelectors';
 import { cloneDrawerValue } from './canvasSerialization';
 
+// Render projections contain only primitive output fields. In particular, never
+// normalize/clone runtime items, prompts, slot assets or image payload containers
+// just to measure a node. Writers replace ai/runtime/outputs references.
+const previewOutputFields = ['id', 'mediaType', 'assetType', 'url', 'path', 'thumbnail', 'name',
+  'status', 'cacheStatus', 'error', 'generatedAt', 'width', 'height', 'nodeId', 'nodeLabel'] as const;
+const projectPreviewOutput = (output: CanvasAiGeneratedOutput): CanvasAiGeneratedOutput => {
+  const fields = previewOutputFields.flatMap(key => output[key] === undefined ? [] : [[key, output[key]]]);
+  return Object.freeze(Object.fromEntries(fields)) as CanvasAiGeneratedOutput;
+};
+
+const previewCache = new WeakMap<NonNullable<CanvasImageItem['ai']>, {
+  id: string; outputs?: CanvasAiGeneratedOutput[]; runtime: unknown;
+  workflow: CanvasWorkflowTemplate | null; mode?: 'final' | 'all';
+  count?: number; aspectRatio?: string; mediaType: string; result: CanvasAiGeneratedOutput[];
+}>();
+
+const emptyPreviewData = {};
+const workflowPreviewDataCache = new WeakMap<CanvasWorkflowTemplate,
+  WeakMap<object, Map<string, CanvasAiGeneratedOutput[]>>>();
+const getWorkflowPreviewDataCache = (workflow: CanvasWorkflowTemplate, data: unknown) => {
+  let byData = workflowPreviewDataCache.get(workflow);
+  if (!byData) { byData = new WeakMap(); workflowPreviewDataCache.set(workflow, byData); }
+  const key = data && typeof data === 'object' ? data as object : emptyPreviewData;
+  let byNode = byData.get(key);
+  if (!byNode) { byNode = new Map(); byData.set(key, byNode); }
+  return byNode;
+};
+const cacheWorkflowPreviewData = (cache: Map<string, CanvasAiGeneratedOutput[]>, key: string, result: CanvasAiGeneratedOutput[]) => {
+  if (cache.size >= 32 && !cache.has(key)) cache.delete(cache.keys().next().value!);
+  cache.set(key, result);
+};
+
+// Also supports legacy snapshot arrays without traversing item/ai contents or
+// normalizing internalSlotBindings. These references are read, never modified.
+const readRuntimeOutputArrays = (value: unknown) => {
+  const byTemplateId = new Map<string, CanvasAiGeneratedOutput[]>();
+  if (!value || typeof value !== 'object') return byTemplateId;
+  const entries = Array.isArray(value)
+    ? value.map(snapshot => ['', snapshot] as const)
+    : Object.entries((value as CanvasWorkflowRuntime).nodeSnapshots || {});
+  for (const [key, candidate] of entries) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const snapshot = candidate as CanvasWorkflowRuntimeNodeSnapshot;
+    const templateId = String(snapshot.templateId || key).trim().slice(0, 160);
+    if (templateId && Array.isArray(snapshot.ai?.outputs)) {
+      byTemplateId.set(templateId, snapshot.ai.outputs);
+    }
+  }
+  return byTemplateId;
+};
+
 export const getCanvasWorkflowAllRuntimeOutputSlots = (
   canvasItem: CanvasImageItem,
   workflow: CanvasWorkflowTemplate
 ): CanvasAiGeneratedOutput[] => {
-  const drafts = createCanvasWorkflowOutputDrafts(canvasItem, workflow, undefined, 'all');
-  const runtimeSnapshots = normalizeCanvasWorkflowRuntimeSnapshots(canvasItem.ai?.workflowRuntime);
-  const snapshotsByTemplateId = new Map(runtimeSnapshots.map(snapshot => [snapshot.templateId, snapshot]));
-  return drafts.map((draft) => {
+  const cache = getWorkflowPreviewDataCache(workflow, canvasItem.ai?.workflowRuntime);
+  const key = `all:${canvasItem.id}`;
+  const cached = cache.get(key);
+  if (cached) return cached;
+  const drafts = createCanvasWorkflowPreviewDrafts(canvasItem, workflow, 'all');
+  const outputsByTemplateId = readRuntimeOutputArrays(canvasItem.ai?.workflowRuntime);
+  const result = drafts.map((rawDraft) => {
+    const draft = projectPreviewOutput(rawDraft);
     const nodeId = draft.nodeId || '';
     const outputIndex = Number(draft.id.split('_').pop()) || 0;
-    const snapshotOutputs = snapshotsByTemplateId.get(nodeId)?.ai?.outputs;
+    const snapshotOutputs = outputsByTemplateId.get(nodeId);
     const output = Array.isArray(snapshotOutputs)
       ? snapshotOutputs[outputIndex] as CanvasAiGeneratedOutput | undefined
       : undefined;
     if (!output) return draft;
     return {
       ...draft,
-      ...output,
+      ...projectPreviewOutput(output),
       id: draft.id,
       name: output.name || draft.name,
       nodeId: draft.nodeId,
       nodeLabel: draft.nodeLabel,
     };
-  });
+  }).map(projectPreviewOutput);
+  Object.freeze(result);
+  cacheWorkflowPreviewData(cache, key, result);
+  return result;
 };
 
-export const getCanvasAiOutputPreviewSlots = (canvasItem?: CanvasImageItem | null): CanvasAiGeneratedOutput[] => {
+const buildCanvasAiOutputPreviewSlots = (canvasItem: CanvasImageItem): CanvasAiGeneratedOutput[] => {
   if (!isCanvasAiGeneratorType(canvasItem?.ai?.type) && canvasItem?.ai?.type !== 'workflow') return [];
   const outputs = canvasItem.ai.outputs || [];
   const workflow = getCanvasWorkflowTemplateFromNode(canvasItem);
@@ -69,7 +128,7 @@ export const getCanvasAiOutputPreviewSlots = (canvasItem?: CanvasImageItem | nul
     if (canvasItem.ai.workflowOutputMode !== 'final') {
       return getCanvasWorkflowAllRuntimeOutputSlots(canvasItem, workflow);
     }
-    const drafts = createCanvasWorkflowOutputDrafts(canvasItem, workflow);
+    const drafts = createCanvasWorkflowPreviewDrafts(canvasItem, workflow);
     if (outputs.length === 0) return drafts;
     const usedOutputIds = new Set<string>();
     const merged = drafts.map((draft, index) => {
@@ -79,15 +138,15 @@ export const getCanvasAiOutputPreviewSlots = (canvasItem?: CanvasImageItem | nul
       if (output.id) usedOutputIds.add(output.id);
       return recoverCanvasAiOutputWithUsableResult({
         ...draft,
-        ...output,
+        ...projectPreviewOutput(output),
         id: output.id || draft.id,
         name: output.name || draft.name,
       });
     });
     const extras = outputs.filter(output => output.id && !usedOutputIds.has(output.id));
-    return [...merged, ...extras.map(recoverCanvasAiOutputWithUsableResult)];
+    return [...merged, ...extras.map(output => recoverCanvasAiOutputWithUsableResult(projectPreviewOutput(output)))];
   }
-  if (outputs.length > 0) return outputs.map(recoverCanvasAiOutputWithUsableResult);
+  if (outputs.length > 0) return outputs.map(output => recoverCanvasAiOutputWithUsableResult(projectPreviewOutput(output)));
   const count = clamp(Math.round(Number(canvasItem.ai.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
   const size = getCanvasAiOutputSize(canvasItem.ai.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO);
   return Array.from({ length: count }, (_, index) => ({
@@ -99,15 +158,61 @@ export const getCanvasAiOutputPreviewSlots = (canvasItem?: CanvasImageItem | nul
   }));
 };
 
+export const getCanvasAiOutputPreviewSlots = (canvasItem?: CanvasImageItem | null): CanvasAiGeneratedOutput[] => {
+  const ai = canvasItem?.ai;
+  if (!canvasItem || !ai || (!isCanvasAiGeneratorType(ai.type) && ai.type !== 'workflow')) return [];
+  const workflow = getCanvasWorkflowTemplateFromNode(canvasItem);
+  const mediaType = getCanvasAiMediaType(ai);
+  const cached = previewCache.get(ai);
+  if (cached && cached.id === canvasItem.id && cached.outputs === ai.outputs
+    && cached.runtime === ai.workflowRuntime && cached.workflow === workflow
+    && cached.mode === ai.workflowOutputMode && cached.count === ai.count
+    && cached.aspectRatio === ai.aspectRatio && cached.mediaType === mediaType) return cached.result;
+  const mode = ai.workflowOutputMode === 'final' ? 'final' : 'all';
+  const dataCache = workflow ? getWorkflowPreviewDataCache(workflow,
+    mode === 'final' ? ai.outputs : ai.workflowRuntime) : undefined;
+  const dataKey = `${mode}:${canvasItem.id}`;
+  const built = dataCache?.get(dataKey) || buildCanvasAiOutputPreviewSlots(canvasItem);
+  const result = Object.isFrozen(built) ? built : built.map(projectPreviewOutput);
+  Object.freeze(result);
+  if (dataCache) cacheWorkflowPreviewData(dataCache, dataKey, result);
+  previewCache.set(ai, { id: canvasItem.id, outputs: ai.outputs, runtime: ai.workflowRuntime,
+    workflow, mode: ai.workflowOutputMode, count: ai.count, aspectRatio: ai.aspectRatio, mediaType, result });
+  return result;
+};
+
+// A user action may need provenance (for example the original output prompt).
+// Resolve that single output here instead of carrying execution metadata into
+// every readonly preview or copying any surrounding runtime snapshots.
+export const getCanvasAiOutputForAction = (
+  canvasItem: CanvasImageItem, preview: CanvasAiGeneratedOutput, outputIndex: number,
+): CanvasAiGeneratedOutput => {
+  const ai = canvasItem.ai;
+  const workflow = getCanvasWorkflowTemplateFromNode(canvasItem);
+  let output: CanvasAiGeneratedOutput | undefined;
+  if (workflow && ai?.workflowOutputMode !== 'final') {
+    const slot = getCanvasWorkflowOutputSlotTemplates(workflow, 'all')[outputIndex];
+    output = slot ? readRuntimeOutputArrays(ai?.workflowRuntime).get(slot.node.id)?.[slot.index] : undefined;
+  } else {
+    output = ai?.outputs?.find(value => value.id === preview.id) || ai?.outputs?.[outputIndex];
+  }
+  const slot = workflow ? getCanvasWorkflowOutputSlotTemplates(workflow,
+    ai?.workflowOutputMode === 'final' ? 'final' : 'all')[outputIndex] : undefined;
+  const prompt = output?.prompt || slot?.node.ai?.presetPrompt || slot?.node.item.content;
+  return output || prompt ? recoverCanvasAiOutputWithUsableResult({ ...preview, ...output, id: preview.id, prompt,
+    nodeId: preview.nodeId || output?.nodeId, nodeLabel: preview.nodeLabel || output?.nodeLabel,
+    name: preview.name || output?.name }) : preview;
+};
+
 export const getCanvasWorkflowGeneratorNodes = (workflow: CanvasWorkflowTemplate) => (
-  workflow.nodes.filter(node => node.ai?.type === 'image-generator')
+  workflow.nodes.filter(node => isCanvasWorkflowGeneratorType(node.ai?.type))
 );
 
 export const getCanvasWorkflowTerminalNodeTemplates = (workflow: CanvasWorkflowTemplate) => {
   const generatorIds = new Set(getCanvasWorkflowGeneratorNodes(workflow).map(node => node.id));
   const upstreamGeneratorIds = new Set<string>();
   workflow.nodes.forEach(node => {
-    if (node.ai?.type !== 'image-generator') return;
+    if (!isCanvasWorkflowGeneratorType(node.ai?.type)) return;
     (node.inputs || []).forEach(inputId => {
       if (generatorIds.has(inputId)) upstreamGeneratorIds.add(inputId);
     });
@@ -132,9 +237,23 @@ export const getCanvasWorkflowOutputSlotTemplates = (
     const count = clamp(Math.round(Number(node.ai?.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS);
     return Array.from({ length: count }, (_, index) => ({ node, index }));
   });
-  const fallbackNode = outputNodes[outputNodes.length - 1] || workflow.nodes.find(node => node.ai?.type === 'image-generator') || workflow.nodes[0];
+  const fallbackNode = outputNodes[outputNodes.length - 1] || workflow.nodes.find(node => isCanvasWorkflowGeneratorType(node.ai?.type)) || workflow.nodes[0];
   if (slots.length > 0) return slots.slice(0, CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS);
   return fallbackNode ? [{ node: fallbackNode, index: 0 }] : [];
+};
+
+// Unlike execution drafts, placeholders for rendering need no prompt text,
+// task identity or current timestamp. This also keeps reads deterministic.
+const createCanvasWorkflowPreviewDrafts = (
+  canvasItem: CanvasImageItem, workflow: CanvasWorkflowTemplate, mode: 'final' | 'all' = 'final',
+): CanvasAiGeneratedOutput[] => {
+  const slots = getCanvasWorkflowOutputSlotTemplates(workflow, mode);
+  return (slots.length ? slots : [{ node: workflow.nodes[0], index: 0 }]).map((slot, index) => {
+    const size = getCanvasAiOutputSize(slot.node.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO);
+    return { id: `${canvasItem.id}_workflow_${mode}_output_${slot.node.id}_${slot.index}`,
+      name: getCanvasWorkflowOutputLabel(slot.node, slot.index) || `输出 ${index + 1}`,
+      nodeId: slot.node.id, nodeLabel: getCanvasWorkflowOutputLabel(slot.node), ...size };
+  });
 };
 
 export const createCanvasWorkflowOutputDrafts = (
@@ -151,6 +270,7 @@ export const createCanvasWorkflowOutputDrafts = (
     return {
       id: `${canvasItem.id}_workflow_${mode}_output_${slot.node.id}_${slot.index}`,
       name: label || `输出 ${slotIndex + 1}`,
+      assetType: slot.node.ai?.type === 'music-generator' ? 'audio' : getCanvasAiMediaType(slot.node.ai as CanvasImageItem['ai']),
       nodeId: slot.node.id,
       nodeLabel: getCanvasWorkflowOutputLabel(slot.node),
       prompt: slot.node.ai?.presetPrompt || slot.node.item.content || '',
@@ -297,14 +417,27 @@ export const getComparableCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemp
         ? {
           type: node.ai.type,
           provider: node.ai.provider,
+          providerChannelId: node.ai.providerChannelId || '',
+          credentialSource: node.ai.credentialSource || '',
+          providerCandidates: (node.ai.providerCandidates || []).map(candidate => ({
+            source: candidate.source,
+            provider: candidate.provider,
+            model: candidate.model,
+            canonicalModelId: candidate.canonicalModelId || '',
+            providerChannelId: candidate.providerChannelId || '',
+          })),
           model: node.ai.model,
           prompt: node.ai.prompt || '',
           presetId: node.ai.presetId || '',
           presetLabel: node.ai.presetLabel || '',
           presetPrompt: node.ai.presetPrompt || '',
           aspectRatio: node.ai.aspectRatio || '',
+          targetSize: node.ai.targetSize || '',
+          resolution: node.ai.resolution || '',
           outputFormat: node.ai.outputFormat || '',
           count: node.ai.count || 1,
+          duration: node.ai.duration || 0,
+          videoInputMode: node.ai.videoInputMode || '',
         }
         : null,
     }))
@@ -341,7 +474,7 @@ export const createCanvasWorkflowModuleOutputsFromExpandedGroup = (
 export const sortCanvasWorkflowRuntimeNodeIds = (sourceItems: CanvasImageItem[]) => {
   const itemsById = new Map(sourceItems.map(item => [item.id, item]));
   const runnableIds = sourceItems
-    .filter(item => item.ai?.type === 'image-generator' || (isCanvasAgentTextTarget(item) && (item.inputs || []).length > 0))
+    .filter(item => isCanvasWorkflowGeneratorType(item.ai?.type) || (isCanvasAgentTextTarget(item) && (item.inputs || []).length > 0))
     .map(item => item.id);
   const nodeSet = new Set(runnableIds);
   const indegree = new Map(runnableIds.map(id => [id, 0]));

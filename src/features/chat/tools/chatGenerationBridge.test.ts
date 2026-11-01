@@ -73,4 +73,28 @@ describe('Chat generation bridge', () => {
       assetId: 'generated-asset',
     })]);
   });
+
+  it('passes image, video and audio references plus FLF mode through the existing video generator', async () => {
+    const runGenerator = vi.fn(async (target: CanvasImageItem, options: { sourceItems: () => CanvasImageItem[] }) => {
+      expect(target.ai?.videoInputMode).toBe('FLF');
+      expect(options.sourceItems().map(item => item.item.type)).toEqual(['image', 'video', 'file']);
+      return [{ id: 'generated-video', url: 'https://example.com/generated.mp4', mediaType: 'video' as const, status: 'success' as const }];
+    });
+
+    await runChatMediaGeneration({
+      toolName: 'generate_video',
+      args: {
+        prompt: '生成参考视频',
+        inputMode: 'FLF',
+        referenceImages: ['https://example.com/start.png'],
+        referenceVideos: ['https://example.com/reference.mp4'],
+        referenceAudios: ['https://example.com/reference.mp3'],
+      },
+      sourceItems: () => [],
+      buildGeneratorNode: generatorNode,
+      runGenerator,
+    });
+
+    expect(runGenerator).toHaveBeenCalledOnce();
+  });
 });

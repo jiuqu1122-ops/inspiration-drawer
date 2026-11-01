@@ -44,7 +44,8 @@ const normalizeCapabilities = (value: Partial<PlatformCapabilities> | null | und
 export const loadPlatformCapabilities = async (): Promise<PlatformCapabilities> => {
   if (cachedCapabilities) return cachedCapabilities;
   if (!capabilitiesRequest) {
-    capabilitiesRequest = invoke<PlatformCapabilities>('get_platform_capabilities')
+    capabilitiesRequest = Promise.resolve()
+      .then(() => invoke<PlatformCapabilities>('get_platform_capabilities'))
       .then(normalizeCapabilities)
       .catch(error => {
         console.warn('platform capability detection failed:', error);

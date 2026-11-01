@@ -204,6 +204,7 @@ export type WorkflowResultReference = {
 };
 
 export type WorkflowResultMedia = {
+  assetType?: 'image' | 'video' | 'audio';
   id: string;
   nodeId?: string;
   name: string;

@@ -9,18 +9,32 @@ import {
   getCachedAiCatalog,
   getDefaultAiCatalogModelId,
   getImageAspectRatioOptionsForResolution,
+  getVideoAspectRatioOptions,
+  getVideoDurationOptions,
   mergeAiModelCapabilities,
+  normalizeImageAspectRatioOption,
+  normalizeVideoAspectRatioSelection,
+  normalizeVideoDurationSelection,
   reconcileStaleCanvasAiModels,
+  reconcileStaleCanvasWorkflowModels,
+  resolveEffectiveVideoResolution,
   resolveImageModelCapabilities,
   resolveVideoModelCapabilities,
 } from './aiModelCapabilities';
 import {
   filterCanvasAiVideoModelCandidates,
   getCanvasAiVideoModelCandidates,
+  getCanvasAiVideoReferenceSlotDisplayLabel,
+  getCanvasAiVideoReferenceSlotLabels,
   getCanvasAiVideoReferenceSlots,
   resolveCanvasAiImageModelCapabilities,
   resolveCanvasAiVideoModelCapabilities,
 } from './canvasAiImage';
+import {
+  reconcileCanvasAiModelsWithCatalog,
+  resolveCanvasWalletVideoModelContext,
+} from './canvasWalletVideoModelContext';
+
 
 const catalogSnapshot = (): CloudImageModelsResult => ({
   provider: 'NEW_API',
@@ -69,7 +83,7 @@ const catalogSnapshot = (): CloudImageModelsResult => ({
 
 const generatorNode = (
   id: string,
-  type: 'image-generator' | 'video-generator',
+  type: 'image-generator' | 'video-generator' | 'music-generator',
   model: string,
   credentialSource: 'wallet' | 'local' = 'wallet',
 ): CanvasImageItem => ({
@@ -103,6 +117,7 @@ describe('server-driven AI model capabilities', () => {
         resolutions: ['1K', '2K', '4K'],
         aspectRatios: ['1:1', '16:9'],
         aspectRatiosByResolution: {
+          '1K': ['1024x1024', '1280x720'],
           '2K': ['2048x2048', '2048x1152'],
           '4K': ['2880x2880', '3840x2160'],
         },
@@ -115,6 +130,27 @@ describe('server-driven AI model capabilities', () => {
       '2880x2880', '3840x2160',
     ]);
     expect(getImageAspectRatioOptionsForResolution(resolved, '1K')).toEqual(['1:1', '16:9']);
+  });
+
+  it('maps semantic image ratios to exact Image2 dimensions instead of the square first option', () => {
+    expect(normalizeImageAspectRatioOption(
+      ['2048x2048', '2048x1152'],
+      '16:9',
+      '16:9',
+    )).toBe('2048x1152');
+    expect(normalizeImageAspectRatioOption(
+      ['2880x2880', '3840x2160'],
+      '2048x1152',
+      '16:9',
+    )).toBe('3840x2160');
+  });
+
+  it('uses the displayed default when an old exact dimension is stale at 1K', () => {
+    expect(normalizeImageAspectRatioOption(
+      ['1:1', '16:9'],
+      '2048x2048',
+      '16:9',
+    )).toBe('16:9');
   });
 
   it('drives a new video model resolutions, durations, reference slots and FLF mode', () => {
@@ -163,14 +199,171 @@ describe('server-driven AI model capabilities', () => {
 
   it('lets server input modes disable the legacy first/last-frame mode', () => {
     const resolved = resolveVideoModelCapabilities({
-      canonical: { supportedInputModes: ['reference'] },
+      canonical: {
+        supportsFirstFrame: true,
+        supportsLastFrame: true,
+        supportsFirstLastFrame: false,
+        supportsTextPrompt: false,
+        supportedInputModes: ['TEXT', 'reference'],
+      },
       legacy: {
         supportsFirstLastFrame: true,
         supportedInputModes: ['reference', 'first_last_frame'],
       },
     });
     expect(resolved.firstLastFrame).toBe(false);
-    expect(resolved.inputModes).toEqual(['reference']);
+    expect(resolved.supportsTextPrompt).toBe(false);
+    expect(resolved.inputModes).toEqual(['TEXT', 'reference']);
+  });
+
+  it('uses one canonical wallet context for the real 9-image / 3-video / 3-audio model', () => {
+    const snapshot: CloudImageModelsResult = {
+      provider: 'NEW_API',
+      models: [],
+      catalog: [{
+        id: 'sd2-fast-realperson',
+        displayName: 'sd2.0-fast-900-卡真人',
+        modality: 'video',
+        aliases: ['sd2.0-fast-900-卡真人'],
+        capabilities: {
+          resolutions: ['720p'],
+          durationMode: 'range',
+          durationRange: { min: 4, max: 15, step: 1 },
+          defaultDurationSeconds: 5,
+          aspectRatioMode: 'list',
+          aspectRatios: ['1:1', '9:16', '16:9'],
+          minReferenceImages: 0,
+          maxReferenceImages: 9,
+          minReferenceVideos: 0,
+          maxReferenceVideos: 3,
+          minReferenceAudios: 0,
+          maxReferenceAudios: 3,
+          supportsReferenceImages: true,
+          supportsReferenceVideo: true,
+          supportsReferenceAudio: true,
+          supportsFirstFrame: true,
+          supportsLastFrame: true,
+          supportsFirstLastFrame: false,
+          supportsTextPrompt: true,
+          supportedInputModes: ['TEXT', 'IMAGE', 'REF'],
+          maxOutputs: 4,
+        },
+      }],
+      channels: [],
+      videoChannels: [{
+        id: 'new-api-video',
+        name: 'New API video',
+        provider: 'NEW_API',
+        models: ['sd2.0-fast-900-卡真人'],
+      }],
+    };
+    const context = resolveCanvasWalletVideoModelContext({
+      type: 'video-generator',
+      provider: 'new-api',
+      providerChannelId: 'new-api-video',
+      credentialSource: 'wallet',
+      model: 'sd2.0-fast-900-卡真人',
+      providerCandidates: [{
+        source: 'wallet',
+        provider: 'new-api',
+        providerChannelId: 'new-api-video',
+        model: 'sd2.0-fast-900-卡真人',
+      }],
+    }, snapshot, 'wallet');
+
+    expect(context.capabilityStatus).toBe('resolved');
+    expect(context.canonicalModelId).toBe('sd2-fast-realperson');
+    expect(context.pricingModelId).toBe('sd2-fast-realperson');
+    expect(context.capabilities).toMatchObject({
+      source: 'server',
+      resolutions: ['720p'],
+      durations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      aspectRatios: ['1:1', '9:16', '16:9'],
+      referenceImages: 9,
+      referenceVideos: 3,
+      referenceAudios: 3,
+      firstLastFrame: false,
+      maxOutputs: 4,
+    });
+    const canonicalCandidateContext = resolveCanvasWalletVideoModelContext({
+      type: 'video-generator',
+      provider: 'new-api',
+      credentialSource: 'wallet',
+      model: 'obsolete-upstream-name',
+      providerCandidates: [{
+        source: 'wallet',
+        provider: 'new-api',
+        model: 'obsolete-upstream-name',
+        canonicalModelId: 'sd2-fast-realperson',
+      }],
+    }, snapshot, 'wallet');
+    expect(canonicalCandidateContext.canonicalModelId).toBe('sd2-fast-realperson');
+    const slots = getCanvasAiVideoReferenceSlots(
+      context.canonicalModelId,
+      'REF',
+      context.selectedCandidate?.provider,
+      context.capabilities,
+    );
+    const imageLabels = getCanvasAiVideoReferenceSlotLabels(
+      context.canonicalModelId,
+      'REF',
+      context.selectedCandidate?.provider,
+      context.capabilities,
+    );
+    const labels = Array.from({ length: 15 }, (_, index) => (
+      getCanvasAiVideoReferenceSlotDisplayLabel(index, slots, imageLabels, context.capabilities)
+    ));
+    expect(labels.slice(0, 9)).toEqual(Array.from({ length: 9 }, (_, index) => `参考图${index + 1}`));
+    expect(labels.slice(9, 12)).toEqual(['参考视频1', '参考视频2', '参考视频3']);
+    expect(labels.slice(12)).toEqual(['参考音频1', '参考音频2', '参考音频3']);
+    expect(labels).not.toContain('主体');
+
+    const migrated = reconcileCanvasAiModelsWithCatalog([
+      {
+        ...generatorNode('legacy-video', 'video-generator', 'sd2.0-fast-900-卡真人'),
+        ai: {
+          type: 'video-generator',
+          provider: 'new-api',
+          credentialSource: 'wallet',
+          model: 'sd2.0-fast-900-卡真人',
+          providerCandidates: [{
+            source: 'wallet',
+            provider: 'new-api',
+            model: 'sd2.0-fast-900-卡真人',
+          }],
+        },
+        inputs: ['keep-connected-reference'],
+      },
+    ], snapshot);
+    expect(migrated[0].ai?.model).toBe('sd2-fast-realperson');
+    expect(migrated[0].ai?.providerCandidates?.[0]).toMatchObject({
+      canonicalModelId: 'sd2-fast-realperson',
+      modelCapabilities: { maxReferenceImages: 9, maxReferenceVideos: 3, maxReferenceAudios: 3 },
+    });
+    expect(migrated[0].inputs).toEqual(['keep-connected-reference']);
+  });
+
+  it('marks an unresolved wallet catalog model unavailable instead of reviving Veo legacy slots', () => {
+    const snapshot: CloudImageModelsResult = {
+      provider: 'NEW_API', models: [], catalog: [], channels: [], videoChannels: [],
+    };
+    const context = resolveCanvasWalletVideoModelContext({
+      type: 'video-generator', provider: 'new-api', credentialSource: 'wallet', model: 'veo-3.1',
+    }, snapshot, 'wallet');
+    expect(context.serverDriven).toBe(true);
+    expect(context.capabilityStatus).toBe('unresolved');
+    expect(context.capabilities.source).toBe('server');
+    expect(getCanvasAiVideoReferenceSlotLabels(
+      'veo-3.1', 'REF', 'new-api', context.capabilities,
+    )).toEqual([]);
+
+    const localContext = resolveCanvasWalletVideoModelContext({
+      type: 'video-generator', provider: 'new-api', credentialSource: 'local', model: 'veo-3.1',
+    }, snapshot, 'wallet');
+    expect(localContext.capabilityStatus).toBe('legacy');
+    expect(getCanvasAiVideoReferenceSlotLabels(
+      'veo-3.1', 'REF', 'new-api', localContext.capabilities,
+    )).toEqual(['主体', '场景/背景', '风格/纹理']);
   });
 
   it('preserves Banana, Image2, Seedance and MiniMax legacy behaviour without server data', () => {
@@ -198,6 +391,18 @@ describe('server-driven AI model capabilities', () => {
     }).source).toBe('legacy');
   });
 
+  it('treats an explicit empty catalog as authoritative instead of reviving hardcoded models', () => {
+    const snapshot: CloudImageModelsResult = {
+      provider: 'NEW_API',
+      models: ['legacy-route-model'],
+      catalog: [],
+      capabilities: { 'legacy-route-model': { durations: [5] } },
+      channels: [],
+      videoChannels: [],
+    };
+    expect(getAiCatalogModels(snapshot, 'video')).toEqual([]);
+  });
+
   it('keeps the last successful in-memory catalog when a later request fails', () => {
     const snapshot = catalogSnapshot();
     cacheSuccessfulAiCatalog(snapshot);
@@ -205,20 +410,164 @@ describe('server-driven AI model capabilities', () => {
     expect(getCachedAiCatalog()).toBe(snapshot);
   });
 
-  it('falls a stale image model back to the successful server default', () => {
+  it('preserves an unavailable explicit image model during catalog refresh', () => {
     const next = reconcileStaleCanvasAiModels(
       [generatorNode('image', 'image-generator', 'retired-image')],
+      catalogSnapshot(),
+    );
+    expect(next[0].ai?.model).toBe('retired-image');
+  });
+
+  it('parses server duration modes, defaults, aspect modes, and reference minima', () => {
+    const resolved = resolveVideoModelCapabilities({ canonical: {
+      resolutions: ['768p', '2k'],
+      defaultResolution: '768p',
+      durationMode: 'range',
+      durationRange: { min: 5, max: 15, step: 2 },
+      defaultDurationSeconds: 5,
+      aspectRatioMode: 'any',
+      defaultAspectRatio: '16:9',
+      minReferenceImages: 1,
+      maxReferenceImages: 9,
+      minReferenceVideos: 0,
+      maxReferenceVideos: 0,
+      minReferenceAudios: 1,
+      maxReferenceAudios: 3,
+      supportsReferenceImages: true,
+      supportsReferenceVideo: false,
+      supportsReferenceAudio: true,
+      supportsFirstFrame: false,
+      supportsLastFrame: false,
+      supportsFirstLastFrame: false,
+    } });
+    expect(resolved.source).toBe('server');
+    expect(resolved.defaultResolution).toBe('768p');
+    expect(resolved.durations).toEqual([5, 7, 9, 11, 13, 15]);
+    expect(resolved.defaultDurationSeconds).toBe(5);
+    expect(resolved.aspectRatioMode).toBe('any');
+    expect(resolved.minReferenceImages).toBe(1);
+    expect(resolved.minReferenceAudios).toBe(1);
+    expect(resolved.referenceVideos).toBe(0);
+    expect(resolved.firstLastFrame).toBe(false);
+    const slots = getCanvasAiVideoReferenceSlots('server-model', 'REF', 'new-api', resolved);
+    const labels = getCanvasAiVideoReferenceSlotLabels('server-model', 'REF', 'new-api', resolved);
+    expect(getCanvasAiVideoReferenceSlotDisplayLabel(0, slots, labels, resolved)).toBe('参考图1 · 必需');
+    expect(getCanvasAiVideoReferenceSlotDisplayLabel(1, slots, labels, resolved)).toBe('参考图2');
+    expect(getCanvasAiVideoReferenceSlotDisplayLabel(9, slots, labels, resolved)).toBe('参考音频1 · 必需');
+  });
+
+  it('builds range, list, and fixed duration choices without model-name inference', () => {
+    expect(getVideoDurationOptions({ durationMode: 'range', durationRange: { min: 4, max: 7, step: 1 } }))
+      .toEqual([4, 5, 6, 7]);
+    expect(getVideoDurationOptions({ durationMode: 'list', durations: [10, 15] })).toEqual([10, 15]);
+    expect(getVideoDurationOptions({ durationMode: 'fixed', durations: [30] })).toEqual([30]);
+    expect(normalizeVideoDurationSelection({
+      durationMode: 'range', durationRange: { min: 5, max: 15 }, defaultDurationSeconds: 5,
+    }, 10)).toBe(10);
+    expect(normalizeVideoDurationSelection({
+      durationMode: 'fixed', durations: [30], defaultDurationSeconds: 30,
+    }, 10)).toBe(30);
+    expect(normalizeVideoDurationSelection({
+      durationMode: 'list', durations: [5, 10],
+    })).toBeUndefined();
+  });
+
+  it('resolves an effective video resolution without inventing 720p', () => {
+    const capabilities = { resolutions: ['768p', '2k'], defaultResolution: '768p' };
+    expect(resolveEffectiveVideoResolution(capabilities)).toBe('768p');
+    expect(resolveEffectiveVideoResolution(capabilities, '1080p')).toBe('768p');
+    expect(resolveEffectiveVideoResolution(capabilities, '2K')).toBe('2k');
+    expect(resolveEffectiveVideoResolution({ resolutions: ['768p', '2k'] })).toBeUndefined();
+    expect(resolveEffectiveVideoResolution({ resolutions: ['768p'] })).toBe('768p');
+  });
+
+  it('supports arbitrary valid ratios and omits an unspecified ratio', () => {
+    expect(getVideoAspectRatioOptions({ aspectRatioMode: 'any' }, '2:1')).toContain('2:1');
+    expect(normalizeVideoAspectRatioSelection({ aspectRatioMode: 'any' }, '5:4')).toBe('5:4');
+    expect(normalizeVideoAspectRatioSelection({ aspectRatioMode: 'unspecified' }, '16:9')).toBeUndefined();
+    expect(normalizeVideoAspectRatioSelection({
+      aspectRatioMode: 'list', aspectRatios: ['16:9', '9:16'], defaultAspectRatio: '9:16',
+    }, '2:1')).toBe('9:16');
+    expect(normalizeVideoAspectRatioSelection({
+      aspectRatioMode: 'list', aspectRatios: ['16:9', '9:16'],
+    })).toBeUndefined();
+  });
+
+  it('persists explicit catalog defaults and clamps outputs during reconciliation', () => {
+    const snapshot = catalogSnapshot();
+    const videoModel = snapshot.catalog?.find(model => model.id === 'test-video-x');
+    if (!videoModel) throw new Error('video fixture is missing');
+    videoModel.capabilities = {
+      ...videoModel.capabilities,
+      resolutions: ['768p', '2k'],
+      defaultResolution: '768p',
+      durations: [5, 10],
+      defaultDurationSeconds: 5,
+      aspectRatioMode: 'list',
+      aspectRatios: ['16:9', '9:16'],
+      defaultAspectRatio: '16:9',
+      maxOutputs: 2,
+    };
+    const node = generatorNode('video-defaults', 'video-generator', 'route-video-v9');
+    node.ai = {
+      ...node.ai!,
+      resolution: '1080p',
+      duration: 15,
+      aspectRatio: '4:3',
+      count: 4,
+    };
+
+    const [reconciled] = reconcileCanvasAiModelsWithCatalog([node], snapshot);
+    expect(reconciled.ai).toMatchObject({
+      model: 'test-video-x',
+      resolution: '768p',
+      duration: 5,
+      aspectRatio: '16:9',
+      count: 2,
+    });
+
+    const validNode = {
+      ...node,
+      ai: { ...node.ai!, resolution: '2k', duration: 10, aspectRatio: '9:16', count: 1 },
+    };
+    const [preserved] = reconcileCanvasAiModelsWithCatalog([validNode], snapshot);
+    expect(preserved.ai).toMatchObject({
+      resolution: '2k', duration: 10, aspectRatio: '9:16', count: 1,
+    });
+  });
+
+  it('preserves an unavailable explicit video model during catalog refresh', () => {
+    const next = reconcileStaleCanvasAiModels(
+      [generatorNode('video', 'video-generator', 'retired-video')],
+      catalogSnapshot(),
+    );
+    expect(next[0].ai?.model).toBe('retired-video');
+  });
+
+  it('uses the server default only for an unconfigured wallet node', () => {
+    const next = reconcileStaleCanvasAiModels(
+      [generatorNode('image', 'image-generator', '')],
       catalogSnapshot(),
     );
     expect(next[0].ai?.model).toBe('test-image-x');
   });
 
-  it('falls a stale video model back to the successful server default', () => {
-    const next = reconcileStaleCanvasAiModels(
-      [generatorNode('video', 'video-generator', 'retired-video')],
-      catalogSnapshot(),
+  it('selects and reconciles music independently of image and video defaults', () => {
+    const snapshot = catalogSnapshot();
+    snapshot.catalog!.push(
+      { id: 'other-music', displayName: 'Other music', modality: 'audio', aliases: [], capabilities: {} },
+      { id: 'configured-music', displayName: 'Music', modality: 'audio', aliases: ['music-alias'], isDefault: true, capabilities: {} },
     );
-    expect(next[0].ai?.model).toBe('test-video-x');
+    expect(getDefaultAiCatalogModelId(snapshot, 'audio')).toBe('configured-music');
+    const next = reconcileCanvasAiModelsWithCatalog([
+      generatorNode('empty-music', 'music-generator', ''),
+      generatorNode('alias-music', 'music-generator', 'music-alias'),
+      generatorNode('saved-music', 'music-generator', 'temporarily-unavailable-music'),
+    ], snapshot);
+    expect(next.map(node => node.ai?.model)).toEqual(['configured-music', 'configured-music', 'temporarily-unavailable-music']);
+    const workflow = { nodes: [{ ai: { type: 'music-generator', model: '' } }] };
+    expect(reconcileStaleCanvasWorkflowModels(workflow, snapshot)).toMatchObject({ nodes: [{ ai: { model: 'configured-music' } }] });
+    expect(reconcileCanvasAiModelsWithCatalog(next, { ...snapshot, catalog: [] })).toBe(next);
   });
 
   it('does not reset local models during a wallet catalog refresh', () => {
@@ -249,5 +598,17 @@ describe('server-driven AI model capabilities', () => {
     expect(findAiCatalogModel(catalog, 'route-image-v2')?.id).toBe('test-image-x');
     expect(findAiCatalogModel(catalog, 'test image x')).toBeUndefined();
     expect(getDefaultAiCatalogModelId(catalogSnapshot(), 'image')).toBe('test-image-x');
+  });
+
+  it('reconciles stale ids inside expanded workflow snapshots without replacing explicit intent', () => {
+    const nested = {
+      workflowGroup: {
+        nodes: [{ ai: { type: 'image-generator', model: 'route-image-v2' } }],
+        nodeSnapshots: { nested: { ai: { type: 'image-generator', model: 'retired-image' } } },
+      },
+    };
+    const next = reconcileStaleCanvasWorkflowModels(nested, catalogSnapshot()) as typeof nested;
+    expect(next.workflowGroup.nodes[0].ai.model).toBe('test-image-x');
+    expect(next.workflowGroup.nodeSnapshots.nested.ai.model).toBe('retired-image');
   });
 });

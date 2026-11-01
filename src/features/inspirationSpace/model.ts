@@ -1,6 +1,6 @@
 export const INSPIRATION_SPACE_API_BASE_URL = 'https://api.unmind.art';
 
-export type InspirationShareKind = 'NODE_PRESET' | 'WORKFLOW' | 'PROMPT';
+export type InspirationShareKind = 'NODE_PRESET' | 'WORKFLOW' | 'PROMPT' | 'AGENT';
 
 export type InspirationSharePreview = {
   id: string;
@@ -55,6 +55,21 @@ export type PromptSharePayload = {
   version: number;
   title?: string;
   prompt: string;
+};
+
+export type AgentSharePayload = {
+  type: 'inspiration-drawer-agent-share';
+  version: 1;
+  markdown: string;
+};
+
+export const isAgentSharePayload = (value: unknown): value is AgentSharePayload => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return record.type === 'inspiration-drawer-agent-share'
+    && record.version === 1
+    && typeof record.markdown === 'string'
+    && record.markdown.trim().length > 0;
 };
 
 export const isPromptSharePayload = (value: unknown): value is PromptSharePayload => {

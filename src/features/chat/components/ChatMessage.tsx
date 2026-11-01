@@ -1,3 +1,4 @@
+import { hasSuccessfulSearchToolReceipt } from '../runtime/chatSearchContinuation';
 import { Check, Copy, RotateCcw, Square } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { memo, useState } from 'react';
@@ -94,7 +95,9 @@ export const ChatMessage = memo(function ChatMessage({
         ))}
         {generatedFiles.map(file => <ChatGeneratedFileCard key={file.id} file={file} />)}
         {message.role === 'assistant' && message.status === 'error' && (
-          <div className="chat-message__error">请求失败，你可以直接重试。</div>
+          <div className="chat-message__error">{hasSuccessfulSearchToolReceipt(message.toolCalls)
+            ? '检索步骤已完成，但后续回答或文件生成未完成。可重试或更换 Chat 模型。'
+            : '请求失败，你可以直接重试。'}</div>
         )}
         {message.role === 'assistant' && (message.content || message.status === 'error') && (
           <div className="chat-message__actions">

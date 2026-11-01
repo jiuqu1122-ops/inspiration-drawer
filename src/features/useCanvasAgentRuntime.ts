@@ -74,6 +74,8 @@ import { upsertWorkflowResultMessage } from './workflowResult';
 import {
   runInternalAgentModelRequest,
 } from './chat/runtime/agentModelResolution';
+import { scheduleCloudAccountQuotaRefresh } from './cloudAccountQuotaRefresh';
+import { resolvePromptOptimizationRouting } from './internalAgentCapabilityRouting';
 
 type RuntimeOptions = {
   getContext: () => AgentCanvasContext;
@@ -84,6 +86,7 @@ type RuntimeOptions = {
   ) => Promise<AgentCanvasVisualReference[]>;
   executeTool: AgentCanvasToolExecutor;
   onNotice?: (message: string) => void;
+  onWalletSettlementComplete?: () => void;
 };
 
 type AgentSendSnapshot = {
@@ -2500,7 +2503,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
   const optimizePrompt = useCallback(async (content: string, mediaType: 'image' | 'video') => {
     const text = content.trim();
     if (!text) return '';
-    if (settingsRef.current.provider !== 'openai-compatible') {
+    const routing = resolvePromptOptimizationRouting(settingsRef.current);
+    if (!routing.allowed) {
       throw new Error('提示词优化需要先在 Agent 设置中切换到 API 模式');
     }
 
@@ -2509,8 +2513,10 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       ? '这是视频生成提示词。补充并组织主体、动作与时间节奏、镜头运动、景别、运镜速度、场景、光线和视觉风格；不要凭空改变用户意图。'
       : '这是图片生成提示词。补充并组织主体、构图、视角、材质、光线、色彩、背景和视觉风格；不要凭空改变用户意图。';
     const result = await runInternalAgentModelRequest({
-      savedModel: settingsRef.current.apiModel,
-      usageContext: 'prompt_optimization',
+      // Prompt optimization shares the server-owned CANVAS_TEXT binding in
+      // Wallet mode. Direct/BYOK keeps its configured provider model.
+      savedModel: routing.savedModel,
+      usageContext: routing.usageContext,
       requestId,
         createRequestId: () => createAgentId('prompt-optimize-model-fallback'),
         request: requestModel => invoke<OpenAiChatResult>('agent_openai_chat', {
@@ -2534,6 +2540,10 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         },
       }),
     });
+    if (routing.usesCloudWallet) {
+      optionsRef.current.onWalletSettlementComplete?.();
+      scheduleCloudAccountQuotaRefresh();
+    }
     return result.content.trim();
   }, []);
 

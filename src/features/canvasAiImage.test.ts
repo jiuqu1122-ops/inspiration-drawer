@@ -16,10 +16,12 @@ import {
   buildNewApiVideoPrompt,
   buildCanvasAiIndexedReferencePrompt,
   collectVideoStrings,
+  getCloudWalletVideoDeliveredResults,
   selectCloudWalletVideoTaskPayload,
   executeNewApiImageProtocol,
   formatNewApiImageProtocolError,
   getCanvasAiImageModelFamily,
+  getCanvasAiImageOutputConcurrency,
   getCanvasAiPublicImageModelPriority,
   getCanvasAiPublicImageModelName,
   getCanvasAiPublicImageModelVariantName,
@@ -39,6 +41,7 @@ import {
   filterCanvasAiVideoModelCandidates,
   isSeedance20VideoModel,
   getCloudWalletImageLookupImages,
+  getCloudVideoPollAfterMs,
   getDefaultNewApiImageProtocol,
   getNewApiImageModelDisplayName,
   getNewApiImageModelFamily,
@@ -68,6 +71,7 @@ import {
   normalizeCanvasAiImageResolutionForModel,
   normalizeCanvasAiImageResolutionForCandidates,
   normalizeCloudWalletImageAspectRatio,
+  resolveCloudWalletImageAspectRatio,
   normalizeCloudWalletImageProvider,
   normalizeCloudWalletVideoProvider,
   normalizeNewApiBaseEndpoint,
@@ -126,6 +130,22 @@ describe('wallet provider protocol compatibility', () => {
       canonicalModelId: 'gpt-image-medium',
     })).toBe('vendor/gpt-image-2.5-high');
   });
+
+  it.each(['1:1', '4:3', '9:16', '16:9'])('preserves the selected standard ratio when wallet capabilities are stale (%s)', aspectRatio => {
+    expect(resolveCloudWalletImageAspectRatio(aspectRatio, {
+      source: 'server',
+      aspectRatios: ['1:1'],
+      aspectRatiosByResolution: { '1k': ['1:1'] },
+    }, '1k')).toBe(aspectRatio);
+  });
+
+  it('keeps a semantic wallet ratio at 1K even when the catalog advertises exact dimensions', () => {
+    expect(resolveCloudWalletImageAspectRatio('16:9', {
+      source: 'server',
+      aspectRatios: [],
+      aspectRatiosByResolution: { '1k': ['1280x720'] },
+    }, '1k')).toBe('16:9');
+  });
 });
 
 describe('cloud wallet video result parsing', () => {
@@ -183,6 +203,56 @@ describe('cloud wallet video result parsing', () => {
     }, 'completed-task');
     expect(getNewApiVideoTaskState(completed)).toBe('succeeded');
     expect(collectVideoStrings(completed)).toEqual(['https://upstream.example/current.mp4']);
+  });
+
+  it('keeps a root wallet envelope when the upstream task id is nested', () => {
+    expect(getCloudWalletVideoDeliveredResults({
+      task_id: 'client-request-1',
+      status: 'succeeded',
+      upstreamTaskIds: ['upstream-1'],
+      walletVideoResults: ['https://api.unmind.art/v1/ai/video-results/stable.mp4'],
+    }, 'upstream-1')).toEqual([
+      'https://api.unmind.art/v1/ai/video-results/stable.mp4',
+    ]);
+  });
+
+  it('keeps the server root envelope compatible with the old selector', () => {
+    const response = {
+      task_id: 'task-1',
+      taskId: 'task-1',
+      status: 'succeeded',
+      walletVideoResults: ['https://api.unmind.art/v1/ai/video-results/current.mp4'],
+      upstreamTaskIds: ['task-1'],
+      upstream: { task_id: 'task-1', status: 'succeeded', video_url: 'https://provider/current.mp4' },
+    };
+    const selected = selectCloudWalletVideoTaskPayload(response, 'task-1') as Record<string, unknown>;
+    expect(selected.task_id).toBe('task-1');
+    expect(selected.status).toBe('succeeded');
+    expect(selected.walletVideoResults).toEqual(['https://api.unmind.art/v1/ai/video-results/current.mp4']);
+  });
+
+  it('does not treat a task receipt or status endpoint as delivered video', () => {
+    expect(getCloudWalletVideoDeliveredResults({
+      task_id: 'upstream-1',
+      status: 'processing',
+      video_url: 'https://api.unmind.art/v1/ai/videos/upstream-1',
+    }, 'upstream-1')).toEqual([]);
+    expect(getCloudWalletVideoDeliveredResults({
+      task_id: 'upstream-1',
+      status: 'processing',
+      walletVideoResults: ['https://api.unmind.art/v1/ai/video-results/not-ready.mp4'],
+    }, 'upstream-1')).toEqual([]);
+  });
+
+  it('recovers only the current task from a mixed historical result list', () => {
+    expect(getCloudWalletVideoDeliveredResults({
+      results: [
+        { task_id: 'old', status: 'failed', video_url: 'https://upstream.example/old.mp4' },
+        { task_id: 'current', status: 'succeeded', walletVideoResults: ['https://api.unmind.art/v1/ai/video-results/current.mp4'] },
+      ],
+    }, 'current')).toEqual([
+      'https://api.unmind.art/v1/ai/video-results/current.mp4',
+    ]);
   });
 });
 
@@ -271,12 +341,10 @@ describe('NewAPI image model mapping', () => {
 });
 
 describe('unified wallet image model families', () => {
-  it('binds prompt image numbers to attachment order for multi-reference requests', () => {
-    const prompt = buildCanvasAiIndexedReferencePrompt('使用图1的脸和图2的服装', 2);
+  it('does not inject generic image-numbering instructions into multi-reference prompts', () => {
+    const prompt = '使用图1的脸和图2的服装';
 
-    expect(prompt).toContain('第1个附件 = 图1（Image 1）');
-    expect(prompt).toContain('第2个附件 = 图2（Image 2）');
-    expect(prompt).toContain('不要交换、重排');
+    expect(buildCanvasAiIndexedReferencePrompt(prompt, 2)).toBe(prompt);
   });
 
   it('does not add numbering instructions to a single-reference request', () => {
@@ -315,6 +383,17 @@ describe('unified wallet image model families', () => {
     expect(getCanvasAiSlotClientRequestId('request-1', 0, 2)).toBe('request-1:slot:1');
     expect(getCanvasAiSlotClientRequestId('request-1', 1, 2)).toBe('request-1:slot:2');
     expect(getCanvasAiSlotClientRequestId('request-1', 0, 1)).toBe('request-1');
+  });
+
+  it('does not impose a GPT Image-specific concurrency cap on independent jobs', () => {
+    expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-2', 4)).toBe(4);
+    expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-2.5', 4)).toBe(4);
+    expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-medium', 4)).toBe(4);
+    expect(getCanvasAiImageOutputConcurrency('xais-chat', 'Image2_4K', 4)).toBe(4);
+    expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-2.5', 6)).toBe(6);
+    expect(getCanvasAiImageOutputConcurrency('xais-chat', 'Image2_4K_H', 12)).toBe(12);
+    expect(getCanvasAiImageOutputConcurrency('new-api', 'gpt-image-2.5', 2)).toBe(2);
+    expect(getCanvasAiImageOutputConcurrency('new-api', 'gemini-3.1-flash-image', 4)).toBe(4);
   });
 
   it('uses the runtime provider when an old node retains a different provider', () => {
@@ -665,6 +744,8 @@ describe('unified wallet image model families', () => {
   });
 
   it('only fails over after an explicit rejection', () => {
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('HTTP 429: rate limit exceeded'))).toBe(false);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('cloud_rate_limited: too many requests'))).toBe(false);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=400, invalid reference image'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('HTTP 402: insufficient_credits'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('provider_unavailable'))).toBe(true);
@@ -680,9 +761,11 @@ describe('unified wallet image model families', () => {
   });
 
   it('retries a temporarily busy preferred channel before falling back', () => {
-    expect(shouldRetrySameCanvasAiImageCandidate(new Error('HTTP 429: rate limit exceeded'))).toBe(true);
+    expect(shouldRetrySameCanvasAiImageCandidate(new Error('HTTP 429: rate limit exceeded'))).toBe(false);
+    expect(shouldRetrySameCanvasAiImageCandidate(new Error('provider_request_failed: Upstream request failed (429): concurrency exceeded'))).toBe(false);
     expect(shouldRetrySameCanvasAiImageCandidate(new Error('status_code=503, service unavailable'))).toBe(true);
     expect(shouldRetrySameCanvasAiImageCandidate(new Error('上游算力紧张，请稍后再试'))).toBe(true);
+    expect(shouldRetrySameCanvasAiImageCandidate(new Error('上游并发数超过限制，请稍后再试'))).toBe(true);
     expect(shouldRetrySameCanvasAiImageCandidate(new Error('HTTP 402: insufficient credits'))).toBe(false);
     expect(shouldRetrySameCanvasAiImageCandidate(new Error('request timed out after upstream accepted it'))).toBe(false);
   });
@@ -1127,6 +1210,48 @@ describe('NewAPI video routing', () => {
     expect(isNewApiVideoResultReady({ status: 'succeeded', video_url: 'https://example.com/new.mp4' })).toBe(true);
     expect(isNewApiVideoResultReady({ video_url: 'https://example.com/legacy.mp4' })).toBe(true);
     expect(isNewApiVideoResultReady({ status: 'failed', video_url: 'https://example.com/old.mp4' })).toBe(false);
+    expect(isNewApiVideoResultReady({ status: 'completed', video_available: false })).toBe(false);
+    expect(isNewApiVideoResultReady({ status: 'completed', video_available: true, asset_state: 'saving' })).toBe(false);
+    expect(isNewApiVideoResultReady({ status: 'processing', asset_state: 'failed' })).toBe(false);
+    expect(isNewApiVideoResultReady({ status: 'failed', asset_state: 'expired' })).toBe(false);
+  });
+
+  it('uses bounded server poll_after_ms hints', () => {
+    expect(getCloudVideoPollAfterMs({ poll_after_ms: 8_000 })).toBe(8_000);
+    expect(getCloudVideoPollAfterMs({ pollAfterMs: 200 })).toBe(1_000);
+    expect(getCloudVideoPollAfterMs({ data: { poll_after_ms: 90_000 } })).toBe(90_000);
+    expect(getCloudVideoPollAfterMs({ status: 'pending_confirmation' })).toBe(2_500);
+  });
+
+  it('enforces server reference minima and maxima before generation', () => {
+    const capabilities = {
+      source: 'server' as const,
+      resolutions: ['768p'], durations: [5], aspectRatios: [],
+      referenceImages: 9, referenceVideos: 0, referenceAudios: 3,
+      minReferenceImages: 1, minReferenceVideos: 0, minReferenceAudios: 0,
+      supportsFirstFrame: false, supportsLastFrame: false, supportsFirstLastFrame: false,
+      supportsTextPrompt: true,
+      firstLastFrame: false, inputModes: ['REF'], outputFormats: [], maxOutputs: 4,
+      supportsReferenceImages: true, supportsReferenceVideo: false, supportsAudioReference: true,
+    };
+    expect(validateCanvasAiVideoReferences('brand-new-model', 'REF', 0, capabilities)).toContain('至少需要 1 张');
+    expect(validateCanvasAiVideoReferences('brand-new-model', 'REF', 1, capabilities)).toBe('');
+    expect(validateCanvasAiVideoReferences('brand-new-model', 'REF', 1, capabilities, 1)).toContain('最多支持 0 个参考视频');
+  });
+
+  it('rejects a stale FLF selection instead of silently converting it to reference mode', () => {
+    const capabilities = {
+      source: 'server' as const,
+      resolutions: ['720p'], durations: [5], aspectRatios: [],
+      referenceImages: 9, referenceVideos: 0, referenceAudios: 0,
+      minReferenceImages: 0, minReferenceVideos: 0, minReferenceAudios: 0,
+      supportsFirstFrame: false, supportsLastFrame: false, supportsFirstLastFrame: false,
+      supportsTextPrompt: true,
+      firstLastFrame: false, inputModes: ['REF'], outputFormats: [], maxOutputs: 1,
+      supportsReferenceImages: true, supportsReferenceVideo: false, supportsAudioReference: false,
+    };
+    expect(validateCanvasAiVideoReferences('future-video', 'FLF', 2, capabilities))
+      .toContain('不支持首尾帧');
   });
 
   it('adapts the reference UI slots to each video model', () => {

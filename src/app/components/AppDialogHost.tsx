@@ -9,15 +9,11 @@ import type { CanvasWorkflowImageNodeModeDraft } from '../../features/canvasTemp
 import { getCanvasChatOffsetRight } from '../../features/chat/runtime/canvasChatVisibility';
 import { formatCreditAmount,formatCreditUsageAmount,formatCreditUsageDate,formatCreditUsageDescription } from '../../features/cloudCreditUsage';
 import { clamp } from '../../features/common';
-import { platformShortcutLabel } from '../../platform/capabilities';
-import { usePlatformCapabilities } from '../../platform/usePlatformCapabilities';
 
 export type AppDialogHostScope = Record<string, any>;
 
 export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
   const { acceptUpdateLogAndClose, activateCanvasBrushTool, activateDoodleShortcutScope, activeDraftForDisplay, activeWorkflowDraftRef, addFolderMediaPickerItemToCanvas, applyCanvasBrushCrop, appVersion, CANVAS_BRUSH_COLORS, CANVAS_FOLDER_PICKER_SCROLL_EDGE, CANVAS_FOLDER_PICKER_VISIBLE_STEP, canvasAgent, canvasBrushBaseCanvasRef, canvasBrushCanvasRef, canvasBrushColor, canvasBrushCropRect, canvasBrushCursor, canvasBrushEditor, canvasBrushHistory, canvasBrushMode, canvasBrushOpacity, canvasBrushSize, canvasFolderImportPrompt, canvasFolderPickerError, canvasFolderPickerHasMore, canvasFolderPickerItems, canvasFolderPickerTotal, canvasFolderPickerVisibleCount, canvasShortcut, canvasToolbarTop, canvasWorkflowSaveDraft, checkAndInstallAppUpdate, chooseWebImageCacheDir, clearCanvasBrushCrop, clearCanvasBrushMarks, closeCanvasFolderMediaPicker, closeCanvasWorkflowSaveDialog, closeConfirmDialog, closeSelectedImagePreview, closeSelectedVideoPreview, closeTextInputDialog, closeUpdateLog, cloudAccount, confirmAddFolderMediaToCanvas, confirmDialog, confirmSaveCanvasWorkflow, copySelectedImagePreviewToClipboard, creditUsageError, creditUsageItems, doodleRootRef, finishCanvasBrushStroke, finishLaunchIntro, flashSelectedImageZoom, handleCanvasBrushPointerDown, handleCanvasBrushPointerMove, handleDoodleKeyDown, handleFloatingLayerPointerLeave, hideCanvasBrushCursor, isCanvasBrushShapeMode, isCanvasFolderPickerLoading, isCheckingAppUpdate, isCloudflaredDisclaimerAccepted, isCreditUsageLoading, keepDrawerOpenByPointer, loadCanvasFolderMediaPage, loadCloudCreditUsage, localIP, mobilePairUrl, resetWebImageCacheDir, saveCanvasBrushEditedImage, selectedImage, selectedImageGallery, selectedImagePan, selectedImagePanRef, selectedImageZoom, selectedVideo, setActiveDraftForDisplay, setActiveShortcutScope, setCanvasBrushColor, setCanvasBrushEditor, setCanvasBrushOpacity, setCanvasBrushSize, setCanvasFolderPickerVisibleCount, setCanvasWorkflowSaveDraft, setSelectedImagePan, setSelectedImageZoom, setShowAboutSoftware, setShowContact, setShowCreditUsage, setShowHelp, setShowQR, setShowStoragePath, setShowUpdateLog, setShowWorkflowDraftPanel, setTextInputDialog, showAboutSoftware, showContact, showCreditUsage, showHelp, showLaunchIntro, showQR, showSelectedImageZoom, showStoragePath, showToast, showUpdateLog, showWorkflowDraftPanel, startPreviewWindowDrag, startResizingCorner, startResizingHeight, startResizingRightCorner, startResizingWidth, startSelectedImagePanDrag, STARTUP_CONSENT_DELAY_MS, stepSelectedImageGallery, textInputDialog, textInputDialogCanConfirm, TextInputDialogIcon, textInputDialogInputRef, triggerShortcut, undoCanvasBrushStroke, updateCanvasBrushCursorFromEvent, visibleCanvasFolderPickerItems, webImageCacheDir } = scope;
-  const platformCapabilities = usePlatformCapabilities();
-  const autoUpdaterSupported = platformCapabilities?.autoUpdater === true;
   return (
 <>
 <AnimatePresence>
@@ -807,9 +803,18 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
             activeWorkflowDraftRef.current = updated;
             setActiveDraftForDisplay(updated);  // 触发 re-render，panel 立即响应
           }}
-          onSave={() => {
-            void canvasAgent.sendMessage('保存这个工作流');
-            setShowWorkflowDraftPanel(false);
+          onSave={async () => {
+            try {
+              await canvasAgent.executeExternalTool(
+                'canvas_update_workflow_draft',
+                { action: 'save_draft_as_workflow' },
+                { userRequest: '保存这个工作流' },
+              );
+              setShowWorkflowDraftPanel(false);
+            } catch (error) {
+              console.warn('保存工作流草稿失败:', error);
+              showToast(`工作流保存失败：${String(error)}`);
+            }
           }}
           onDiscard={() => {
             setShowWorkflowDraftPanel(false);
@@ -1220,9 +1225,9 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
               <div className="mt-5 space-y-2.5 text-xs leading-5 text-stone-600 dark:text-stone-300">
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">本次更新</p>
-                  <p>优化图片保存逻辑：画布参考图只保留在画布，需要时仍可主动保存到素材抽屉。</p>
-                  <p className="mt-1">素材卡片按图片或视频的实际比例显示，并自动补齐瀑布流空位。</p>
-                  <p className="mt-1">滑动到底部会自动加载更多素材，无需再手动点击。</p>
+                  <p>Chat 支持工作流创建和修改，可从画布选择节点或节点组生成工作流快照。</p>
+                  <p className="mt-1">本地附件支持 TXT、Word、Excel、PDF，并按文件类型保留正确的 MIME 信息。</p>
+                  <p className="mt-1">修复工作流节点移动后价格显示丢失，以及图片/视频任务恢复和重复查询问题。</p>
                 </div>
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">免责说明</p>
@@ -1362,8 +1367,7 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
-                      disabled={isCheckingAppUpdate || !autoUpdaterSupported}
-                      title={!autoUpdaterSupported ? '当前平台暂不支持自动更新' : undefined}
+                      disabled={isCheckingAppUpdate}
                       className="flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-bold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-wait disabled:opacity-60 dark:border-emerald-400/25 dark:bg-emerald-400/10 dark:text-emerald-200 dark:hover:bg-emerald-400/15"
                     >
                       <RefreshCw className={`h-3.5 w-3.5 ${isCheckingAppUpdate ? 'animate-spin' : ''}`} />
@@ -1440,8 +1444,8 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
 
                 <section className="space-y-1.5">
                   <h3 className="text-[12px] font-bold text-stone-800 dark:text-stone-100">抽屉与触发入口</h3>
-                  <p>抽屉支持“侧边小条”和“悬浮方块”两种入口，可在设置里切换，也可用 <span className="font-semibold">{platformShortcutLabel(triggerShortcut)}</span> 快速切换。</p>
-                  <p>侧边小条默认在右侧中间：悬停展开；按住左键经过不会误触发；<span className="font-semibold">{platformShortcutLabel('Ctrl + 鼠标左键拖动')}</span> 可上下移动小条。</p>
+                  <p>抽屉支持“侧边小条”和“悬浮方块”两种入口，可在设置里切换，也可用 <span className="font-semibold">{triggerShortcut}</span> 快速切换。</p>
+                  <p>侧边小条默认在右侧中间：悬停展开；按住左键经过不会误触发；<span className="font-semibold">Ctrl + 鼠标左键拖动</span> 可上下移动小条。</p>
                   <p>悬浮方块默认在右下角：悬停 0.8 秒展开；按住左键可拖动位置；拖入文件/网页图会自动展开抽屉。</p>
                   <p>拖动抽屉标题栏可以移动抽屉位置，移动后会自动进入钉住状态；点击右上角收回按钮后，抽屉会回到触发边并恢复自动缩回。</p>
                   <p>左边缘、底边和左下角可以拖动调整抽屉宽高；鼠标离开抽屉后，如果没有钉住或预览内容，抽屉会自动缩回。</p>
@@ -1451,7 +1455,7 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
                   <h3 className="text-[12px] font-bold text-stone-800 dark:text-stone-100">分类与整理</h3>
                   <p>左侧栏可以创建收纳夹，把卡片拖到收纳夹上即可归类。双击收纳夹名称可重命名，鼠标悬停可删除收纳夹。</p>
                   <p>进入多选模式后，可以批量导出到本地、移动到已有/新建分类文件夹，或批量删除。</p>
-                  <p>文本卡片双击正文即可编辑；鼠标悬停任意卡片后按 <span className="font-semibold">{platformShortcutLabel('Ctrl + C')}</span> 可直接复制该卡片内容。</p>
+                  <p>文本卡片双击正文即可编辑；鼠标悬停任意卡片后按 <span className="font-semibold">Ctrl + C</span> 可直接复制该卡片内容。</p>
                   <p>搜索会同时匹配文件名、路径、文本内容和备注，适合快速找回临时素材。</p>
                 </section>
 
@@ -1471,14 +1475,14 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
 
                 <section className="space-y-1.5">
                   <h3 className="text-[12px] font-bold text-stone-800 dark:text-stone-100">快捷键</h3>
-                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{platformShortcutLabel('Alt + G')}</span>：切换防误触模式。开启后抽屉会锁定，避免鼠标靠边误触。</p>
+                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">Alt + G</span>：切换防误触模式。开启后抽屉会锁定，避免鼠标靠边误触。</p>
                   <p><span className="font-semibold text-stone-800 dark:text-stone-100">F1</span>：快速截图。</p>
-                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{platformShortcutLabel('Alt + T')}</span>：打开快速文字记录。</p>
-                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{platformShortcutLabel('Alt + E')}</span>：新增桌面便签。</p>
-                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{platformShortcutLabel(canvasShortcut)}</span>：切换无限画布 / 普通抽屉。</p>
-                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{platformShortcutLabel('Alt + S')}</span>：打开搜索栏。</p>
-                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{platformShortcutLabel('Alt + Q')}</span>：切换侧边小条 / 悬浮方块。</p>
-                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{platformShortcutLabel('Ctrl + C')}</span>：鼠标悬停卡片时复制该卡片内容。</p>
+                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">Alt + T</span>：打开快速文字记录。</p>
+                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">Alt + E</span>：新增桌面便签。</p>
+                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{canvasShortcut}</span>：切换无限画布 / 普通抽屉。</p>
+                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">Alt + S</span>：打开搜索栏。</p>
+                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">Alt + Q</span>：切换侧边小条 / 悬浮方块。</p>
+                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">Ctrl + C</span>：鼠标悬停卡片时复制该卡片内容。</p>
                   <p>以上全局快捷键都可以在设置里重新录制和修改。</p>
                 </section>
               </div>
@@ -1496,11 +1500,17 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
                 <button data-drawer-dialog-close="true" onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.20</p>
-                <p>优化画布生成节点的模型、比例、清晰度、格式和数量切换，减少选择后的界面卡顿。</p>
-                <p>优化生成结果落地、缩略图回填和抽屉同步，生成完成后画布操作更加流畅。</p>
-                <p>钱包参考图改为直接上传 COS，并兼容不同渠道返回的参考图字段。</p>
-                <p>减少钱包余额的重复同步，同时保留最近一次可用余额缓存。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v8.0.27</p>
+                <p>优化大画布的可视区域渲染、快照和状态保存，改善缩放、拖动、节点更新与恢复时的流畅度。</p>
+                <p>改进 Chat 搜索后的续接、文件工具调用和错误恢复；新增可编辑 PPTX 生成、来源整理与多种视觉方向。</p>
+                <p>新增可按相关性检索的本地设计记忆，帮助跨会话延续设计上下文，并明确区分本轮用户要求与历史参考。</p>
+                <p>改进图片模型参数适配及截图选区调整，模型比例、清晰度和交互状态更稳定。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v8.0.26</p>
+                <p>改善音乐与钱包文字节点的连接稳定性；文字请求可在暂时连接错误后自动接管一次。</p>
+                <p>音乐结果待确认时保留原请求与已有曲目，恢复结果直接更新原节点。</p>
+                <p>统一音乐节点圆角，将积分提示放入生成按钮，移除多余的连接箭头。</p>
+                <p>钱包图片节点遵守管理端参考图开关：关闭后禁止新增参考图和图片连接，已有输入仍可移除，重新启用后可正常添加。</p>
+                <p>图片已有部分结果时，恢复操作继续查询原任务，避免误创建新生成任务。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

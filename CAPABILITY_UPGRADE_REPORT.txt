@@ -1,0 +1,188 @@
+AI 平台能力升级交付记录
+范围：inspiration-wallet-server、inspiration-drawer、unmind-website。
+状态：代码审核和提交快照验证已完成；本次授权提交并推送 main，不部署，数据库迁移未执行。
+已有未提交改动已保留；本清单仅列本次编辑或新增的文件。
+
+1. 架构变化
+- 沿用 AI CENTER 的模型目录、能力 JSON、价格版本和路由，新增字段经后端公共目录及 Rust 桥接传到客户端。
+- 图片质量下拉框由 supportedQualities 驱动。没有配置时隐藏；请求只按配置的 qualityParameter 发送质量值。
+- 通用图片适配器按 outputMode/maxOutputImages 保留多资产。一轮请求返回的所有配置范围内图片均进入保存和展示流程，工作流结果也保留额外资产。
+- billingMode 控制按请求或按图片计费。质量价格优先匹配，未配置对应质量时沿用旧分辨率/基础价格。
+- 新增独立 music-service/music-adapter、audio 模型类型和 music_flat 计费。发送一次 POST，解析所有 choices 的音频链接，保存全部音频资产。
+- 音乐请求复用 clientRequestId 保证重复请求不重复扣费。超时、连接失败和 5xx 不重发，保留预扣等待确认；明确拒绝时释放预扣。
+- 音乐节点使用与其它入口一致的 SVG 图标，位于视频入口下方；复用模型选择器，提供提示词、生成状态、音频试听与下载，并适配深色模式和节点缩放。assetType 标识音频，音乐输出可作为视频参考。
+- 音频流式下载到临时文件，经现有存储抽象上传到 COS 的 generated-audios 命名空间；持久化 objectKey 和稳定 API 地址，每次播放/视频引用重新签名。下载单独签名为附件，支持多格式。
+- 上游成功结果先保存为请求回执，再逐个转存。COS 故障可用同一请求 ID 或认证 GET 恢复，保留原价格快照；客户端的「恢复结果」不再 POST，原生传输也禁止音乐 POST 连接失败自动回退。
+- 上传图片的删除/替换等修改意图进入编辑工具。通用适配器由 supportsImageEdit 决定编辑接口或带参考图的生成接口，不回退为纯文本。
+- 复制媒体节点沿用资产 ID、缓存路径和缩略图，画布节点 ID 重新生成；一同复制的引用节点重新映射，无需重新下载媒体。
+- 工作流会话按 canvasId + nodeId 绑定。聊天消息沿用现有 SQLite 持久化；会话绑定和结果卡存入本地持久化存储，重新进入画布可恢复。
+- 缩放会重设当前拖动基准，拖动前提交未完成缩放，避免旧滚动偏移覆盖新视口。
+- 画布列表支持长按 350ms 后拖动排序，完整顺序通过 SQLite 事务保存。
+- Shift 先选参考节点，再选 AI 节点可连接；对话列表支持 Shift 区间多选、确认删除、保留运行中/删除失败的会话并刷新状态。
+
+2. 数据结构变化
+能力 JSON 新增：
+  supportedQualities: string[]
+  qualityParameter: string（默认 quality）
+  outputMode: single_asset | multiple_assets
+  maxOutputImages: number（1..16）
+  billingMode: per_request | per_image
+  supportsImageEdit: boolean
+请求：ImageInput/原生桥接增加 quality?: string。
+售价：creditsPerImageByResolutionQuality[resolution][quality]。
+公共价格投影：creditsByResolutionQuality[resolution][quality]。
+成本：cnyPerImageByResolutionQuality 或 amountPerImageByResolutionQuality；保留原币种。
+图片结果：兼容 images[]，新增 imageAssets[{assetType:"image",url}]。
+音乐结果：{type:"audio",content:"",audioUrls:[],assets:[{assetType:"audio",url,objectKey,mime,size,name}]}。
+音乐请求恢复字段：CanvasAiItemData.musicClientRequestId；服务端 AiRequest.result 暂存 music_storage_pending 回执。
+新增访问接口：GET /v1/ai/audio-results/:key（播放/引用，download=1 下载）；认证 GET /v1/ai/music/generations/by-request/:requestId。
+节点及工作流结果：assetType?: image | video | audio；工作流端口支持 audio/audio[]。
+计费：新增 music_flat；快照保存 quality、billingMode 和预估结果数量。
+数据库：AiCapability 增加 AUDIO，迁移文件为 20261014120000_add_audio_capability/migration.sql。
+画布排序继续使用已有 sort_order 列；工作流绑定使用版本化本地存储键。
+
+3. 测试结果
+最终提交代码单独导出到 E:/idears/capability-push-check-20261014 验证，不依赖其它未提交修改。
+inspiration-wallet-server：lint 0 警告；typecheck、build 通过；64 个文件，697 个测试通过。
+inspiration-drawer：lint 通过（20 条存量警告）；typecheck、build 通过；143 个文件，999 个测试通过。
+原生客户端：Rust 1.98 隔离测试 247 通过、1 个存量忽略；隔离 build 通过。
+unmind-website：lint 通过（3 条存量警告）；typecheck、包含生产构建的 npm test 通过，35 个测试通过。
+针对性覆盖包括能力配置/传输/价格、多资产保存、质量采购成本加价、音乐解析/单次收费/不重发、COS 下载上传与恢复、签名续期和附件下载、音频视频参考、工具栏位置图标、会话持久化与交互。
+工作区中其它预先存在的回归测试也运行过；提交快照仅保留本次新增或修改的测试。
+跨端核对修复：音乐售价缺失校验、质量成本加价建议遗漏、多资产及工作流费用预估、按次计费说明、音乐参考预览分类。
+浏览器连接不可用，未完成截图视觉验收；音乐节点的组件渲染、交互入口与状态结构测试通过。
+
+4. 未解决风险与边界
+- 尚未执行 AUDIO 数据库迁移；运行新版音乐服务前需要对应迁移和 AI CENTER 中启用的音频模型、路由及已发布价格。
+- 未用真实上游账号进行收费联调。异步接口路径、任务状态和参考图序列化仍需按提供商真实协议在 AI CENTER 配置。
+- 音乐提交结果不确定时预扣保留，需要管理员确认结果并处理账务；没有后台自动重发或自动补交费用流程。
+- 本次新增音乐结果已转存 COS，不依赖上游 URL 长期有效；旧版本历史音频尚未批量迁移。转存前若上游链接已失效，需要管理员处理原请求，系统不会重新发起收费生成。
+- 历史已丢失且没有持久化的聊天内容无法重建。工作流结果卡和绑定为当前设备的本地持久化，不是云端同步。
+- 新增能力路径不通过模型名称推断。原有本地/旧协议兼容分支仍保留历史名称映射；本次没有全面改写与这些新增能力无关的模型逻辑。
+- 本机默认 Rust 1.94 在隔离净构建时出现 zlib-rs 0.6.4 的常量求值错误；使用本机已安装的 Rust 1.98 完成净构建。默认输出 EXE 被运行中的应用占用，因此使用了隔离目录，未停止应用或更改默认工具链。
+- 客户端仍有存量 lint 警告、大包体积提示、Browserslist 数据提示和原生 dead-code 警告，本次未改动相关功能。
+
+5. 修改文件清单
+inspiration-wallet-server：23 个代码/配置文件
+  prisma/migrations/20261014120000_add_audio_capability/migration.sql
+  prisma/schema.prisma
+  src/modules/ai/audio-result-store.ts
+  src/modules/ai/discovery-modality.ts
+  src/modules/ai/image-adapters/generic-openai-image.ts
+  src/modules/ai/image-adapters/registry.ts
+  src/modules/ai/image-adapters/types.ts
+  src/modules/ai/image-capabilities.ts
+  src/modules/ai/image-service.ts
+  src/modules/ai/model-admin-routes.ts
+  src/modules/ai/model-admin.ts
+  src/modules/ai/model-catalog.ts
+  src/modules/ai/music-adapter.ts
+  src/modules/ai/music-service.ts
+  src/modules/ai/pricing-center.ts
+  src/modules/ai/pricing.ts
+  src/modules/ai/routes.ts
+  src/modules/storage/service.ts
+  test/audio-result-routes.test.ts
+  test/audio-result-store.test.ts
+  test/capability-upgrade.test.ts
+  test/music-service.test.ts
+  test/music-wallet.test.ts
+
+inspiration-drawer：57 个代码/配置文件
+  eslint.config.mjs
+  package-lock.json
+  package.json
+  src-tauri/src/commands/canvas.rs
+  src-tauri/src/commands/license.rs
+  src-tauri/src/main.rs
+  src-tauri/src/repositories/canvas_repository.rs
+  src-tauri/src/repositories/sqlite_canvas_repository.rs
+  src-tauri/src/services/canvas_service.rs
+  src/App.tsx
+  src/components/CanvasGeneratorControls.tsx
+  src/components/CanvasListItems.tsx
+  src/components/CanvasToolbar.test.tsx
+  src/components/CanvasToolbar.tsx
+  src/components/WorkflowResultCard.tsx
+  src/features/agentModel.ts
+  src/features/aiModelCapabilities.ts
+  src/features/canvas/canvasImageRequestSettings.test.ts
+  src/features/canvas/canvasNodeViewModel.ts
+  src/features/canvas/components/CanvasNode.tsx
+  src/features/canvas/components/CanvasOverlayPanels.tsx
+  src/features/canvas/controllers/canvasGenerationActions.ts
+  src/features/canvas/controllers/canvasInputActions.ts
+  src/features/canvas/controllers/canvasInteractionActions.ts
+  src/features/canvas/controllers/canvasMediaActions.ts
+  src/features/canvas/controllers/canvasWorkflowRuntimeActions.ts
+  src/features/canvas/controllers/workflowZoomRegression.test.ts
+  src/features/canvasAiImage.ts
+  src/features/canvasAiOutputs.ts
+  src/features/canvasAiRuntime.ts
+  src/features/canvasGenerationCredits.ts
+  src/features/canvasInteractionUpgrade.test.ts
+  src/features/canvasModel.ts
+  src/features/canvasMusic.tsx
+  src/features/canvasTemplates.ts
+  src/features/capabilityUpgrade.test.tsx
+  src/features/chat/components/ChatComposer.tsx
+  src/features/chat/components/ChatHost.tsx
+  src/features/chat/components/ChatImageSettings.tsx
+  src/features/chat/components/ChatView.tsx
+  src/features/chat/model/conversationSelection.ts
+  src/features/chat/runtime/canvasWorkflowProgress.ts
+  src/features/chat/runtime/chatImageGenerationSettings.ts
+  src/features/chat/runtime/useChatRuntime.ts
+  src/features/chat/storage/chatStorage.ts
+  src/features/chat/storage/workflowChatStorage.ts
+  src/features/chat/tools/chatGenerationBridge.ts
+  src/features/chat/tools/chatToolDefinitions.ts
+  src/features/drawer/components/DrawerContent.tsx
+  src/features/drawer/components/DrawerInteractionOverlays.tsx
+  src/features/drawer/components/DrawerMain.tsx
+  src/features/drawer/components/DrawerShell.tsx
+  src/features/workflowResult.ts
+  src/services/canvasApi.ts
+  src/types/license.ts
+  src/utils/canvasItemSelectors.ts
+  src/utils/canvasWorkflowRuntime.ts
+
+unmind-website：3 个代码/配置文件
+  app/admin/ai-model-center-model.ts
+  app/admin/ai-model-center.tsx
+  tests/admin-ai-model-center.test.mjs
+
+另包含本交付记录 CAPABILITY_UPGRADE_REPORT.txt。部分原有修改与本次改动位于相同文件，只提交本次相关差异，其它内容保留在工作区。
+
+
+2026-10-15 音乐目录显示修复
+- 根因：桌面桥接 GET /v1/ai/images/models 的公共模型筛选及可用路由集合漏掉 audio，且接口在没有图片渠道时提前返回 503。
+- 服务端：返回已发布、可见、有生效售价和可用音频路由的音乐模型；支持只有音频渠道的配置；音乐默认模型独立于图片、视频默认模型。音频渠道不走图片模型探测。
+- 客户端：新增音乐节点立即刷新钱包目录；本地图片凭证不会阻止音乐目录加载。刷新后为空白音乐节点及工作流补上音乐默认模型，并保留已有模型选择及离线缓存。
+- 回归：实际管理 HTTP 创建/发布/启用 → 桌面兼容 HTTP 音频目录；不可用/隐藏渠道过滤；真实 Rust 音频目录序列化；前端目录刷新 → 音乐节点渲染和生成按钮可用。
+- 验证：服务端 lint/typecheck/build 通过，66 个测试文件、717 个测试通过；客户端 lint/typecheck/build 通过，144 个测试文件、1005 个测试通过；原生音乐目录桥接测试 1 个通过，隔离目标目录 cargo +1.98.0 build 通过。
+- 服务端提交：00d5a6f0284ae53d9507c07f50cc88ada5a8c60a；客户端补丁一同提交推送。管理端无需额外修改。
+- 生产尚未部署。本次只构建验证客户端，没有发布安装包。部署服务端修复后，当前已支持音乐目录的客户端重新读取目录即可显示模型；自动刷新和默认选择改进需使用本次客户端代码。
+
+
+2026-10-15 音频画布功能补齐
+- 外部音频：原生媒体扫描支持 mp3/wav/aac/flac/m4a/ogg/opus/aiff/wma，拖放入口接入现有音频缓存建节点逻辑；混合媒体导入按已处理文件去重，保留尚未由 DOM 导入的音频，并错开放置位置。
+- 单段放置：每段生成音乐均有“放到画布”，只复制选中的音频资产为独立可播放、可下载节点；保留该段资源 ID、格式、路径及稳定 URL，使用新画布节点 ID。画布保存后仍可恢复。
+- 音频识别：预览保留 assetType，音频不再进入图片恢复/缩略图队列；抽屉音频可单独拖入画布。
+- 价格：后端客户端价格目录增加 musicModels，来自当前已发布的 music_flat 价格版本；Rust 桥接和前端均传递并显示每次请求的积分。两段结果仅按请求计费一次，成功后记录并显示服务器实际扣费。
+- 旧版本：价格目录缺少音乐售价时显示“价格待同步”，避免错误地宣称管理端没有配置价格。需要同步部署新后端，完整重新编译/重启客户端原生进程；单独热更新前端不会更新 Rust 价格字段。
+- UI：独立音频卡片为右上角移除按钮保留空间，下载与移除不再重叠。浅/深色浏览器预览检查通过，两段音乐播放器及放置按钮均可见。
+- 验证：服务端 lint/typecheck/build 通过，66 个测试文件、717 个测试通过；客户端 lint/typecheck/build 通过，145 个测试文件、1014 个测试通过；原生端 230 个测试通过、1 个原有测试忽略，cargo +1.98.0 build 通过。
+- 服务端提交：0f10578aac5af8b35135f21f9b0b0b71e3c66858，Build backend image 已成功；客户端补丁提交推送，未发布新安装包。管理端无需更改。
+- 本次未操作生产环境，部署命令沿用仓库 scripts/deploy.sh 的镜像部署流程。
+
+
+2026-10-15 异步图片任务结果交付与多图占位修复
+- 已确认根因：渠道回执为 imgtask_cd5440d1-5a5c-4f2e-aad0-3fbd98eedcac；最终 GET 返回 OpenAI 图片数组及内部 task_id 677c22c20a86413ea819a04d8cdebbe3，无状态字段。旧解析器据此构造另一任务的状态 URL，并触发 task_identity_mismatch，造成渠道成功、客户端报错、积分仍预留。
+- 仅在已知任务的读取结果是明确最终图片数组、且没有状态或任务控制地址时，沿用原回执任务 ID；正常轮询中的明确 ID 不一致仍拦截。b64_json 与 url 属于同一图片时保留一个表示，四个资产不重复计数。不依赖 Midjourney 或任何版本名称。
+- 多图画布：按管理端的 outputMode=multiple_assets / maxOutputImages 配置创建生成占位，填 4 显示 4 个；已验证 2、8、16 同样随配置变化，生成请求 count 仍为原请求数量；普通单图及双图请求保持原流程。小于模型输出上限的成功结果收起多余占位，不误报失败。后台结果恢复按对应索引放入共享回执的各个槽位。
+- 状态：结果待确认独立于生成失败，保存原客户端请求 ID，显示预扣仍保留。新增“恢复原任务”，调用 authenticated POST /v1/ai/images/generations/by-request/:clientRequestId/recover；服务端只对已有任务执行 GET，不提交新生成、不预扣第二次、不换渠道；沿用原始价格快照，只结算一次。确定失败才释放原预扣。
+- 管理端：异常记录包含 PROCESSING 中明确的待恢复任务，显示结果待恢复、预留积分、恢复阶段/原因及安全的任务 ID；普通处理中不算失败。不输出图片签名 URL、上游原始响应或密钥。已存在的待恢复记录也可查询。
+- 验证：准确提交内容的服务端 lint/typecheck/build 通过，67 个文件、724 个测试通过；客户端 lint/typecheck/build 通过，147 个文件、1028 个测试通过；管理端 lint/typecheck/构建与 36 个测试通过。Rust 230 个测试通过、1 个原有测试忽略，cargo +1.98.0 build 通过。覆盖真正任务 ID 错配、Seedream 与同步/异步接口、四图保持一次请求与 20 积分原价、并发/重复恢复只结算一次、所有权隔离、明确失败退款、普通单图和双图请求。
+- 服务端提交 3cbfee723e0a2fc92610543c14ef006a0191f5ca；管理端提交 e95db0becbbe2cca462b056fef7c251e4b0878b1。客户端前端及原生桥接必须一起更新；只热更新前端不能提供新恢复命令。
+- 未部署生产，未对渠道发起付费请求，未发布客户端安装包。生产原任务是否已恢复须在部署后点击“恢复原任务”确认。

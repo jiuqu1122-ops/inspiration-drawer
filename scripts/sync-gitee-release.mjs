@@ -113,13 +113,29 @@ const getPlatform = (latestJson) => {
     || null;
 };
 
-const getInstallerLocalPath = (files) => {
+const getInstallerLocalPath = (files, latestJson) => {
   const candidates = files
     .filter(file => path.basename(file) !== 'latest.json')
     .filter(file => !file.endsWith('.sig'))
     .filter(file => /\.(exe|msi|zip)$/i.test(file));
   if (candidates.length === 0) throw new Error('No installer asset found in dist-updater.');
-  candidates.sort((left, right) => {
+
+  // dist-updater can contain artifacts from several releases. Never let a
+  // stale installer win merely because it sorts first by filename: the
+  // selected artifact must match the version advertised by latest.json.
+  const expectedVersion = String(latestJson?.version || '').trim();
+  const matchingCandidates = expectedVersion
+    ? candidates.filter(file => path.basename(file).includes(expectedVersion))
+    : candidates;
+  if (expectedVersion && matchingCandidates.length === 0) {
+    throw new Error(
+      `No installer asset for latest.json version ${expectedVersion}. `
+      + `Found: ${candidates.map(file => path.basename(file)).join(', ')}`,
+    );
+  }
+
+  const selectableCandidates = matchingCandidates.length > 0 ? matchingCandidates : candidates;
+  selectableCandidates.sort((left, right) => {
     const score = (file) => {
       const name = path.basename(file).toLowerCase();
       if (name.includes('-setup.exe')) return 0;
@@ -130,7 +146,7 @@ const getInstallerLocalPath = (files) => {
     };
     return score(left) - score(right) || left.localeCompare(right);
   });
-  return candidates[0];
+  return selectableCandidates[0];
 };
 
 const uniqueUrls = (urls) => {
@@ -368,7 +384,7 @@ const main = async () => {
   ).replace(/\/+$/, '');
 
   const files = walkDistUpdaterAssets();
-  const installerPath = getInstallerLocalPath(files);
+  const installerPath = getInstallerLocalPath(files, latestJson);
   const platform = getPlatform(latestJson);
   const giteeUrlFromManifest = Array.isArray(platform && platform.urls)
     ? ((platform.urls.find(entry => entry && /gitee\.com/i.test(entry.url)) || {}).url || '')

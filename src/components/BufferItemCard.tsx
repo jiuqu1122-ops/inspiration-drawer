@@ -12,6 +12,8 @@ import {
   writeImageSourceToClipboard,
   writeLocalImageFileToClipboard,
 } from '../features/imageClipboard';
+import { shouldPreserveNativeTextCopy } from '../utils/clipboardShortcutRouting';
+import { createDelayedHover } from '../features/drawer/delayedHover';
 import { getImageListSource, getPreviewOriginalSource, getPreviewPlaceholderSource } from '../features/mediaSources';
 import {
   getInspirationColorFamilyKey,
@@ -302,6 +304,21 @@ function BufferItemCard({
   const [isEditingText, setIsEditingText] = useState(false);
   const [editContentText, setEditContentText] = useState(item.content || '');
   const [isHovered, setIsHovered] = useState(false);
+  const [isAnalysisHoverReady, setIsAnalysisHoverReady] = useState(false);
+  const analysisHoverRef = useRef<ReturnType<typeof createDelayedHover> | null>(null);
+  if (!analysisHoverRef.current) analysisHoverRef.current = createDelayedHover(setIsAnalysisHoverReady);
+  useEffect(() => {
+    analysisHoverRef.current?.leave();
+    return () => analysisHoverRef.current?.cancel();
+  }, [item.id, isSelectMode, isResizing]);
+  const enterCard = () => {
+    setIsHovered(true);
+    if (!isSelectMode && !isResizing) analysisHoverRef.current?.enter();
+  };
+  const leaveCard = () => {
+    setIsHovered(false);
+    analysisHoverRef.current?.leave();
+  };
   const [resolvedOriginalSize, setResolvedOriginalSize] = useState<{ width: number; height: number } | null>(null);
   const openUrlTimerRef = useRef<any | null>(null);
   const videoPreviewRef = useRef<HTMLVideoElement | null>(null);
@@ -585,8 +602,7 @@ function BufferItemCard({
   useEffect(() => {
     if (!isHovered) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      const activeTag = document.activeElement?.tagName;
-      if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') return;
+      if (shouldPreserveNativeTextCopy(e)) return;
       if (e.repeat) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
         e.preventDefault();
@@ -798,8 +814,8 @@ return (
       layout={!optimizeLargeList}
       transition={optimizeLargeList ? { duration: 0.12 } : { layout: { type: 'tween', duration: isResizing ? 0 : 0.24, ease: [0.16, 1, 0.3, 1] }, default: { type: 'tween', duration: 0.2, ease: [0.16, 1, 0.3, 1] } }}
       initial={optimizeLargeList ? false : { opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={optimizeLargeList ? undefined : { opacity: 0, scale: 0.98 }}
-      onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)}
-      onPointerEnter={() => setIsHovered(true)} onPointerLeave={() => setIsHovered(false)}
+      onMouseEnter={enterCard} onMouseLeave={leaveCard}
+      onPointerEnter={enterCard} onPointerLeave={leaveCard}
       draggable={false}
       onDragStart={(e: any) => e.preventDefault()}
       className={`group relative transition-[border-color,box-shadow] duration-200 flex flex-col overflow-hidden bg-white dark:bg-stone-900 ${optimizeLargeList ? '' : 'will-change-transform'} ${isSelectMode && isSelected ? 'ring-2 ring-blue-500 border-blue-500' : 'border border-stone-200/90 dark:border-stone-700 hover:border-stone-300 hover:shadow-[0_8px_20px_rgba(24,24,27,0.07)] dark:hover:border-stone-600 hover:z-50'}`}
@@ -811,7 +827,7 @@ return (
         </div>
       )}
 
-      {isSelectMode && <div className="absolute inset-0 z-50 bg-black/[0.03] dark:bg-black/20 cursor-pointer flex items-start justify-end p-2.5" style={{ borderRadius: cardRadius }} onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleSelect(e); }}><div className={`w-4 h-4 rounded-[5px] shadow-sm border flex items-center justify-center transition-colors ${isSelected ? 'bg-blue-600 border-blue-600' : 'border-stone-300 dark:border-stone-500 bg-white/90 dark:bg-stone-800/90'}`}>{isSelected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}</div></div>}
+      {isSelectMode && <div data-asset-selection-overlay="true" className="absolute inset-0 z-50 bg-black/[0.03] dark:bg-black/20 cursor-pointer flex items-start justify-end p-2.5" style={{ borderRadius: cardRadius }} onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleSelect(e); }}><div className={`w-4 h-4 rounded-[5px] shadow-sm border flex items-center justify-center transition-colors ${isSelected ? 'bg-blue-600 border-blue-600' : 'border-stone-300 dark:border-stone-500 bg-white/90 dark:bg-stone-800/90'}`}>{isSelected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}</div></div>}
 
       {!isSelectMode && (
         <div data-card-action-toolbar="true" data-no-drag="true" onPointerDown={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} className="absolute inset-x-2 top-2 z-[80] flex min-w-0 flex-wrap justify-end gap-1.5 opacity-0 transition-opacity group-hover:opacity-100 pointer-events-auto">
@@ -1020,9 +1036,10 @@ return (
       )}
 
       <AnimatePresence initial={false}>
-        {hasCompactAiTerms && isHovered && (
+        {hasCompactAiTerms && isHovered && isAnalysisHoverReady && !isSelectMode && !isResizing && (
           <motion.div
             key="compact-ai-terms"
+            data-asset-analysis="true"
             data-no-drag="true"
             onPointerDown={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}

@@ -1,6 +1,5 @@
 import { motion } from 'framer-motion';
 import { BookOpen,Box,Brush,Check,CheckSquare,Clipboard,Compass,Copy,Download,Edit3,File as FileIcon,Film,Image as ImageIcon,Layers,LayoutGrid,Link,Maximize2,Minimize2,RefreshCw,Sparkles,Trash2,Type,Unplug,Upload,X } from 'lucide-react';
-import { useLayoutEffect,useState } from 'react';
 import { CanvasAiSettingsPanel } from '../../../components/CanvasAiSettingsPanel';
 import { CanvasNavigator } from '../../../components/CanvasNavigator';
 import { CanvasToolbar } from '../../../components/CanvasToolbar';
@@ -19,8 +18,8 @@ import type { CanvasImageItem } from '../../canvasModel';
 import type { CanvasWorkflowTemplate } from '../../canvasTemplates';
 import type { CanvasGeneratedListEntry } from '../../../types/canvasMedia';
 import type { CanvasAiPromptPreset } from '../../../types/canvasWorkflow';
-import { platformShortcutLabel } from '../../../platform/capabilities';
-import { usePlatformCapabilities } from '../../../platform/usePlatformCapabilities';
+import { useCloudAccount } from '../../cloudAccountContext';
+import { CanvasAccountStatus } from './CanvasAccountStatus';
 
 export type CanvasOverlayPanelsScope = Record<string, any> & {
   canvasAiPromptPresets: CanvasAiPromptPreset[];
@@ -44,41 +43,16 @@ export type CanvasOverlayPanelsScope = Record<string, any> & {
 };
 
 export function CanvasOverlayPanels({ scope }: { scope: CanvasOverlayPanelsScope }) {
-  const { addCanvasAiGeneratorNode, addCanvasAiGeneratorNodeAtWorld, addCanvasAiGeneratorNodeForSources, addCanvasAiVideoGeneratorNode, addCanvasAiVideoGeneratorNodeAtWorld, addCanvasAiVideoGeneratorNodeForSources, addCanvasEnhancementNode, addCanvasEnhancementNodeAtWorld, addCanvasEnhancementNodeForSources, addCanvasFrameInterpolationNode, addCanvasFrameInterpolationNodeAtWorld, addCanvasFrameInterpolationNodeForSources, addCanvasImageFusionNode, addCanvasImageFusionNodeAtWorld, addCanvasTextInputForGenerator, addCanvasTextItem, addCanvasTextItemAtWorld, addCanvasThreeSceneGeneratorNode, addCanvasWorkflowTemplate, applyCanvasScaleStyles, CANVAS_GENERATED_LIST_RENDER_LIMIT, canvasAiApiKey, canvasAiCanRefreshModels, canvasAiEndpoint, canvasAiHasApiCredential, canvasAiHeadersText, canvasAiNewApiVideoKey, canvasAiOpenAiModelError, canvasAiPromptPresets, canvasAiPromptPresetSelectOptions, canvasAiProvider, canvasAiRemoteModelCount, canvasAiRemoteModelEmptyHint, canvasAiXaisBalance, canvasAiXaisBalanceText, canvasClipboardRef, canvasContextMenu, canvasGeneratedDownloadableItems, canvasGeneratedItemsForList, canvasGeneratedItemsForRender, canvasGeneratedSelectedDownloadItems, canvasGeneratedSelectedIdSet, canvasItems, canvasItemsById, canvasNavigatorPanelRef, canvasNavItems, canvasPresetEditingId, canvasPresetEditorMode, canvasPresetEditorTitle, canvasPresetNameDraft, canvasPresetPromptDraft, canvasReferenceDragState, canvasScale, canvasScaleRef, canvasSelectedIds, canvasSelectedIdsSet, canvasSizeRef, canvasSurfaceRef, canvasToolbarRef, canvasToolbarTop, canvasWorkflowEditingAiCount, canvasWorkflowEditingId, canvasWorkflowEditingNodeCount, canvasWorkflowHintDraft, canvasWorkflowNameDraft, canvasWorkflowSelectOptions, canvasWorkflowTemplates, canvasWorkingTimerTick, centerCanvasItemInView, checkCanvasAiXaisBalance, chooseLocalFilesForCanvasWorkflow, chooseLocalImagesForCanvasGenerator, chooseLocalVideosForCanvasGenerator, closeCanvasPresetEditor, closeCanvasWorkflowManager, collapseCanvasWorkflowGroup, commitCanvasScaleSoon, connectCanvasItemsToGenerator, copyCanvasItemsToAvailableClipboards, createCanvasGroup, customCanvasAiPromptPresets, customCanvasWorkflows, deleteSelectedCanvasPromptPresets, deleteSelectedCanvasWorkflows, downloadBufferItems, downloadCanvasItemsByIds, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiProvider, ENABLE_THREE_SCENE_CREATION, expandCanvasWorkflowModuleForEdit, exportAllCanvasPresets, exportAllCanvasWorkflows, exportCanvasWorkflowModuleInstance, exportCurrentCanvasPreset, exportCurrentCanvasWorkflow, fitCanvasViewToItems, generateCanvasAiGeneratorNode, generateCanvasWorkflowModuleNode, getCachedCanvasNavThumbnailSource, getCanvasActionIds, getCanvasAiErrorSummary, getCanvasItemNavPreview, getCanvasPrimaryImageItem, importCanvasTemplateFile, isCanvasAiLicenseManaged, isCanvasAiPanelOpen, isCanvasChromeHidden, isCanvasGeneratedListVisible, isCanvasGeneratedMultiSelect, isCanvasMode, isCanvasNavigatorVisible, isCanvasPresetEditorOpen, isCanvasWorkflowManagerOpen, isRefreshingCanvasAiOpenAiModels, licenseAiAccess, managedCanvasAiProviderLabel, openCanvasBrushEditor, openCanvasPresetEditor, openCanvasPresetManager, openCanvasWorkflowManager, openInspirationSpace, organizeCanvasItems, pasteCanvasItems, refreshCanvasAiOpenAiModels, removeCanvasConnection, removeCanvasItemsByIds, renameCanvasGroup, replaceCanvasWorkflowManagerWithSelection, runCanvasTextAgentNode, runSelectedCanvasWorkflowModules, saveCanvasAiCustomPromptPreset, saveCanvasWorkflowManagerChanges, saveSelectedCanvasWorkflow, selectCanvasPresetForEdit, selectCanvasWorkflowForEdit, selectedCanvasPresetDeleteIds, selectedCanvasWorkflowDeleteIds, setCanvasAiApiKey, setCanvasAiApiProvider, setCanvasAiEndpoint, setCanvasAiHeadersText, setCanvasAiNewApiVideoKey, setCanvasAiProvider, setCanvasContextMenu, setCanvasGeneratedSelectedIds, setCanvasPresetNameDraft, setCanvasPresetPromptDraft, setCanvasWorkflowHintDraft, setCanvasWorkflowNameDraft, setIsCanvasAiPanelOpen, setIsCanvasChromeHidden, setIsCanvasGeneratedListVisible, setIsCanvasGeneratedMultiSelect, setIsCanvasNavigatorVisible, setSelectedCanvasPresetDeleteIds, setSelectedCanvasWorkflowDeleteIds, showToast, ungroupCanvasItems, updateCanvasSelection, zoomCanvasAt } = scope;
-  const platformCapabilities = usePlatformCapabilities();
-  const isMacDesktopWindow = platformCapabilities?.platform === 'macos';
-  const [macCanvasToolbarStartTop, setMacCanvasToolbarStartTop] = useState<string | null>(null);
-
-  useLayoutEffect(() => {
-    if (!isMacDesktopWindow || !isCanvasMode) {
-      setMacCanvasToolbarStartTop(null);
-      return;
-    }
-
-    const updateToolbarStartTop = () => {
-      const toolbarHeight = canvasToolbarRef.current?.getBoundingClientRect().height || 40;
-      const panelHeight = isCanvasNavigatorVisible
-        ? canvasNavigatorPanelRef.current?.getBoundingClientRect().height || 0
-        : 0;
-      const minTop = isCanvasNavigatorVisible ? 12 + panelHeight + (toolbarHeight / 2) + 8 : 0;
-      const centerTop = Math.max(window.innerHeight * 0.5, minTop);
-      setMacCanvasToolbarStartTop(`${Math.round(centerTop - toolbarHeight / 2)}px`);
-    };
-
-    updateToolbarStartTop();
-    window.addEventListener('resize', updateToolbarStartTop);
-    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateToolbarStartTop) : null;
-    if (observer) {
-      if (canvasToolbarRef.current) observer.observe(canvasToolbarRef.current);
-      if (canvasNavigatorPanelRef.current) observer.observe(canvasNavigatorPanelRef.current);
-    }
-    return () => {
-      window.removeEventListener('resize', updateToolbarStartTop);
-      observer?.disconnect();
-    };
-  }, [canvasNavItems.length, canvasNavigatorPanelRef, canvasToolbarRef, isCanvasMode, isCanvasNavigatorVisible, isMacDesktopWindow]);
+  const cloudAccountContext = useCloudAccount();
+  const { addCanvasAiGeneratorNode, addCanvasAiGeneratorNodeAtWorld, addCanvasAiGeneratorNodeForSources, addCanvasAiVideoGeneratorNode, addCanvasAiVideoGeneratorNodeAtWorld, addCanvasAiVideoGeneratorNodeForSources, addCanvasEnhancementNode, addCanvasEnhancementNodeAtWorld, addCanvasEnhancementNodeForSources, addCanvasFrameInterpolationNode, addCanvasFrameInterpolationNodeAtWorld, addCanvasFrameInterpolationNodeForSources, addCanvasImageFusionNode, addCanvasImageFusionNodeAtWorld, addCanvasTextInputForGenerator, addCanvasTextItem, addCanvasTextItemAtWorld, addCanvasThreeSceneGeneratorNode, addCanvasWorkflowTemplate, applyCanvasScaleStyles, CANVAS_GENERATED_LIST_RENDER_LIMIT, canvasAiApiKey, canvasAiCanRefreshModels, canvasAiEndpoint, canvasAiHasApiCredential, canvasAiHeadersText, canvasAiNewApiVideoKey, canvasAiOpenAiModelError, canvasAiPromptPresets, canvasAiPromptPresetSelectOptions, canvasAiProvider, canvasAiRemoteModelCount, canvasAiRemoteModelEmptyHint, canvasAiXaisBalance, canvasAiXaisBalanceText, canvasClipboardRef, canvasContextMenu, canvasGeneratedDownloadableItems, canvasGeneratedItemsForList, canvasGeneratedItemsForRender, canvasGeneratedSelectedDownloadItems, canvasGeneratedSelectedIdSet, canvasItems, canvasItemsById, canvasNavigatorPanelRef, canvasNavItems, canvasPresetEditingId, canvasPresetEditorMode, canvasPresetEditorTitle, canvasPresetNameDraft, canvasPresetPromptDraft, canvasReferenceDragState, canvasScale, canvasScaleRef, canvasSelectedIds, canvasSelectedIdsSet, canvasSizeRef, canvasSurfaceRef, canvasToolbarRef, canvasToolbarTop, canvasWorkflowEditingAiCount, canvasWorkflowEditingId, canvasWorkflowEditingNodeCount, canvasWorkflowHintDraft, canvasWorkflowNameDraft, canvasWorkflowSelectOptions, canvasWorkflowTemplates, canvasWorkingTimerTick, centerCanvasItemInView, checkCanvasAiXaisBalance, chooseLocalFilesForCanvasWorkflow, chooseLocalImagesForCanvasGenerator, chooseLocalVideosForCanvasGenerator, closeCanvasPresetEditor, closeCanvasWorkflowManager, cloudAccount, collapseCanvasWorkflowGroup, commitCanvasScaleSoon, connectCanvasItemsToGenerator, copyCanvasItemsToAvailableClipboards, createCanvasGroup, customCanvasAiPromptPresets, customCanvasWorkflows, deleteSelectedCanvasPromptPresets, deleteSelectedCanvasWorkflows, downloadBufferItems, downloadCanvasItemsByIds, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiProvider, ENABLE_THREE_SCENE_CREATION, expandCanvasWorkflowModuleForEdit, exportAllCanvasPresets, exportAllCanvasWorkflows, exportCanvasWorkflowModuleInstance, exportCurrentCanvasPreset, exportCurrentCanvasWorkflow, fitCanvasViewToItems, generateCanvasAiGeneratorNode, generateCanvasWorkflowModuleNode, getCachedCanvasNavThumbnailSource, getCanvasActionIds, getCanvasAiErrorSummary, getCanvasItemNavPreview, getCanvasPrimaryImageItem, importCanvasTemplateFile, isCanvasAiLicenseManaged, isCanvasAiPanelOpen, isCanvasChromeHidden, isCanvasGeneratedListVisible, isCanvasGeneratedMultiSelect, isCanvasMode, isCanvasNavigatorVisible, isCanvasPresetEditorOpen, isCanvasWorkflowManagerOpen, isCloudAccountLoading, isRefreshingCanvasAiOpenAiModels, licenseAiAccess, managedCanvasAiProviderLabel, openCanvasBrushEditor, openCanvasPresetEditor, openCanvasPresetManager, openCanvasWorkflowManager, openInspirationSpace, organizeCanvasItems, pasteCanvasItems, refreshCanvasAiOpenAiModels, removeCanvasConnection, removeCanvasItemsByIds, renameCanvasGroup, replaceCanvasWorkflowManagerWithSelection, runCanvasTextAgentNode, runSelectedCanvasWorkflowModules, saveCanvasAiCustomPromptPreset, saveCanvasWorkflowManagerChanges, saveSelectedCanvasWorkflow, selectCanvasPresetForEdit, selectCanvasWorkflowForEdit, selectedCanvasPresetDeleteIds, selectedCanvasWorkflowDeleteIds, setCanvasAiApiKey, setCanvasAiApiProvider, setCanvasAiEndpoint, setCanvasAiHeadersText, setCanvasAiNewApiVideoKey, setCanvasAiProvider, setCanvasContextMenu, setCanvasGeneratedSelectedIds, setCanvasPresetNameDraft, setCanvasPresetPromptDraft, setCanvasWorkflowHintDraft, setCanvasWorkflowNameDraft, setIsCanvasAiPanelOpen, setIsCanvasChromeHidden, setIsCanvasGeneratedListVisible, setIsCanvasGeneratedMultiSelect, setIsCanvasNavigatorVisible, setSelectedCanvasPresetDeleteIds, setSelectedCanvasWorkflowDeleteIds, showToast, ungroupCanvasItems, updateCanvasSelection, zoomCanvasAt } = scope;
   return (
 <>
+{isCanvasMode && !isCanvasChromeHidden && (
+  <CanvasAccountStatus
+    cloudAccount={cloudAccountContext.account ?? cloudAccount ?? null}
+    loading={cloudAccountContext.loading || Boolean(isCloudAccountLoading)}
+  />
+)}
 {isCanvasMode && isCanvasAiPanelOpen && (
                     <CanvasAiSettingsPanel
                       licenseManaged={isCanvasAiLicenseManaged}
@@ -628,7 +602,7 @@ export function CanvasOverlayPanels({ scope }: { scope: CanvasOverlayPanelsScope
                                         ? <Edit3 className="h-3.5 w-3.5 text-violet-300" />
                                         : <Layers className="h-3.5 w-3.5 text-violet-300" />}
                                       <span>{selectedGroup ? '重命名编组' : selectionHasGroup ? '重新编组' : '编组'}</span>
-                                      <span className="ml-auto font-mono text-[9px] font-medium tracking-normal text-stone-400">{platformShortcutLabel('Ctrl+G')}</span>
+                                      <span className="ml-auto font-mono text-[9px] font-medium tracking-normal text-stone-400">Ctrl G</span>
                                     </button>
                                     {selectionHasGroup && (
                                       <button
@@ -796,7 +770,7 @@ export function CanvasOverlayPanels({ scope }: { scope: CanvasOverlayPanelsScope
                                   >
                                     <Layers className="h-3.5 w-3.5 text-violet-300" />
                                     <span>{hasCanvasGroup ? '重新编组' : '编组'}</span>
-                                    <span className="ml-auto font-mono text-[9px] font-medium tracking-normal text-stone-400 transition-colors group-hover/menu-action:text-violet-300">{platformShortcutLabel('Ctrl+G')}</span>
+                                    <span className="ml-auto font-mono text-[9px] font-medium tracking-normal text-stone-400 transition-colors group-hover/menu-action:text-violet-300">Ctrl G</span>
                                   </button>
                                 )}
                                 {commonCanvasGroup && (
@@ -823,7 +797,7 @@ export function CanvasOverlayPanels({ scope }: { scope: CanvasOverlayPanelsScope
                                   >
                                     <Unplug className="h-3.5 w-3.5 text-stone-400" />
                                     <span>取消编组</span>
-                                    <span className="ml-auto font-mono text-[9px] font-medium tracking-normal text-stone-400">{platformShortcutLabel('Ctrl+Shift+G')}</span>
+                                    <span className="ml-auto font-mono text-[9px] font-medium tracking-normal text-stone-400">Ctrl ⇧ G</span>
                                   </button>
                                 )}
                                 {target?.item.type !== 'three-scene' && (
@@ -1232,8 +1206,7 @@ export function CanvasOverlayPanels({ scope }: { scope: CanvasOverlayPanelsScope
                   {isCanvasMode && (
                     <CanvasToolbar
                       toolbarRef={canvasToolbarRef}
-                      top={isMacDesktopWindow && macCanvasToolbarStartTop ? macCanvasToolbarStartTop : canvasToolbarTop}
-                      centerVertically={!isMacDesktopWindow || !macCanvasToolbarStartTop}
+                      top={canvasToolbarTop}
                       right={16}
                       navigator={(
                         <CanvasNavigator
@@ -1290,6 +1263,7 @@ export function CanvasOverlayPanels({ scope }: { scope: CanvasOverlayPanelsScope
                       showThreeScene={ENABLE_THREE_SCENE_CREATION}
                       onCreateThreeScene={() => addCanvasThreeSceneGeneratorNode()}
                       onAddFusion={() => addCanvasImageFusionNode()}
+                      onAddMusic={() => scope.addCanvasMusicGeneratorNode()}
                       onAddVideo={() => addCanvasAiVideoGeneratorNode()}
                       onAddFrameInterpolation={() => addCanvasFrameInterpolationNode()}
                       onAddEnhancement={mediaType => addCanvasEnhancementNode(mediaType)}
@@ -1543,6 +1517,11 @@ export function CanvasOverlayPanels({ scope }: { scope: CanvasOverlayPanelsScope
                                       }`}>
                                         {isError ? '失败' : isPending ? (generatedElapsedText ? `生成中 ${generatedElapsedText}` : '生成中') : '完成'}
                                       </span>
+                                      {generatedItem.source === 'chat' && (
+                                        <span className="shrink-0 rounded-full bg-violet-100/80 px-1.5 py-0.5 text-[8px] font-bold text-violet-600 dark:bg-violet-400/12 dark:text-violet-200">
+                                          Chat
+                                        </span>
+                                      )}
                                       <span className="truncate text-[10px] font-black text-stone-700 dark:text-stone-200">
                                         {generatedItem.item.name || (generatedItem.item.type === 'video' ? 'AI 视频' : 'AI 生图')}
                                       </span>

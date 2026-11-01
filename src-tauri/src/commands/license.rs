@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::async_runtime::Mutex as AsyncMutex;
 use tauri::Manager;
 use tokio::sync::OnceCell;
@@ -25,12 +26,21 @@ const EMAIL_SYNC_BACKOFF_SECONDS: [u64; 4] = [5, 15, 30, 60];
 struct CachedCloudToken {
     value: String,
     expires_at: Instant,
+    license_key: [u8; 32],
+}
+
+impl CachedCloudToken {
+    fn matches_license_at(&self, license_key: &[u8; 32], now: Instant) -> bool {
+        self.expires_at > now && &self.license_key == license_key
+    }
 }
 
 static CLOUD_TOKEN_CACHE: OnceLock<Mutex<Option<CachedCloudToken>>> = OnceLock::new();
+static CLOUD_AUTH_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 struct EmailSyncFlight {
     result: OnceCell<Result<EmailVerificationResponse, String>>,
+    license_key: [u8; 32],
 }
 
 static EMAIL_SYNC_FLIGHT: OnceLock<AsyncMutex<Option<Arc<EmailSyncFlight>>>> = OnceLock::new();
@@ -60,6 +70,8 @@ struct EmailVerificationRequest<'a> {
     display_name: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     legacy_license: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    invite_code: Option<&'a str>,
     app_version: &'a str,
 }
 
@@ -76,6 +88,211 @@ struct EmailVerificationResponse {
     license: String,
     access_token: String,
     account: CloudAccountResponse,
+    #[serde(default)]
+    access_token_expires_in: Option<String>,
+    // Populated from the HTTPS response Date header, never used for auth.
+    #[serde(default, rename = "__clientServerTime")]
+    server_time: Option<i64>,
+}
+
+fn license_cache_key(license: &str) -> [u8; 32] {
+    Sha256::digest(license.as_bytes()).into()
+}
+
+fn token_duration(value: &str) -> Option<u64> {
+    let split = value.len().checked_sub(1)?;
+    let amount = value.get(..split)?;
+    let unit = value.get(split..)?;
+    if amount.is_empty() || !amount.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let multiplier = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86400,
+        _ => return None,
+    };
+    amount.parse::<u64>().ok()?.checked_mul(multiplier)
+}
+
+fn token_cache_lifetime(response: &EmailVerificationResponse) -> Duration {
+    let mut seconds = 12 * 60;
+    if let Some(duration) = response
+        .access_token_expires_in
+        .as_deref()
+        .and_then(token_duration)
+    {
+        seconds = seconds.min(duration);
+    }
+    // JWT payload is decoded only to shorten the cache lifetime. This does not
+    // verify a token or grant access; the server remains the verifier.
+    if let Some(claims) = response
+        .access_token
+        .split('.')
+        .nth(1)
+        .and_then(|part| general_purpose::URL_SAFE_NO_PAD.decode(part).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+    {
+        if let Some(exp) = claims.get("exp").and_then(|value| value.as_i64()) {
+            let issued_at = claims.get("iat").and_then(|value| value.as_i64());
+            if let Some(reference) = response.server_time.or(issued_at) {
+                seconds = seconds.min(exp.saturating_sub(reference).max(0) as u64);
+            }
+        }
+    }
+    let margin = (seconds / 10).clamp(1, 30);
+    Duration::from_secs(seconds.saturating_sub(margin))
+}
+
+pub(crate) fn cloud_tokens_same_account(original: &str, current: &str) -> bool {
+    let subject = |token: &str| -> Option<String> {
+        let bytes = general_purpose::URL_SAFE_NO_PAD
+            .decode(token.split('.').nth(1)?)
+            .ok()?;
+        let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        claims.get("sub")?.as_str().map(str::to_owned)
+    };
+    match (subject(original), subject(current)) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
+    }
+}
+
+fn server_time(response: &reqwest::Response) -> Option<i64> {
+    response
+        .headers()
+        .get(reqwest::header::DATE)?
+        .to_str()
+        .ok()
+        .and_then(|value| chrono::DateTime::parse_from_rfc2822(value).ok())
+        .map(|value| value.timestamp())
+}
+
+fn parse_auth_response<T: for<'de> Deserialize<'de>>(
+    body: &str,
+    server_time: Option<i64>,
+) -> Result<T, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_str(body)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("__clientServerTime".into(), serde_json::json!(server_time));
+    }
+    serde_json::from_value(value)
+}
+
+#[cfg(test)]
+mod cloud_token_tests {
+    use super::*;
+    fn jwt(sub: &str, issued: i64, expires: i64) -> String {
+        format!(
+            "header.{}.signature",
+            general_purpose::URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(&serde_json::json!({
+                    "sub": sub, "iat": issued, "exp": expires,
+                }))
+                .unwrap()
+            )
+        )
+    }
+    fn response(
+        token: &str,
+        duration: Option<&str>,
+        server_time: Option<i64>,
+    ) -> EmailVerificationResponse {
+        serde_json::from_value(serde_json::json!({
+            "license": "fixture-license", "accessToken": token, "accessTokenExpiresIn": duration,
+            "__clientServerTime": server_time, "account": { "user": {} },
+        }))
+        .unwrap()
+    }
+    #[test]
+    fn short_server_lifetimes_and_server_clock_limit_cached_tokens() {
+        let token = jwt("fixture-account", 1_000_000, 1_000_060);
+        let auth = response(&token, Some("1m"), Some(1_000_010));
+        let lifetime = token_cache_lifetime(&auth);
+        assert_eq!(lifetime.as_secs(), 45);
+        let now = Instant::now();
+        let entry = CachedCloudToken {
+            value: token.clone(),
+            expires_at: now + lifetime,
+            license_key: license_cache_key(&auth.license),
+        };
+        assert!(entry.matches_license_at(
+            &license_cache_key(&auth.license),
+            now + Duration::from_secs(44)
+        ));
+        assert!(!entry.matches_license_at(
+            &license_cache_key(&auth.license),
+            now + Duration::from_secs(45)
+        ));
+        assert!(!entry.matches_license_at(&license_cache_key("different-login"), now));
+        assert_eq!(
+            token_cache_lifetime(&response(&token, Some("15m"), Some(1_000_061))).as_secs(),
+            0
+        );
+        // No dependency on the user's potentially wrong wall clock.
+        assert_eq!(
+            token_cache_lifetime(&response(&token, None, Some(1_000_010))),
+            lifetime
+        );
+    }
+    #[test]
+    fn uses_jwt_duration_for_legacy_responses_and_rejects_malformed_duration_safely() {
+        let token = jwt("fixture-account", 100, 160);
+        assert_eq!(
+            token_cache_lifetime(&response(&token, None, None)).as_secs(),
+            54
+        );
+        assert_eq!(
+            token_cache_lifetime(&response("opaque-legacy-token", None, None)).as_secs(),
+            690
+        );
+        for value in ["", "永久", "0", "-1m", "1ms", "18446744073709551615d"] {
+            assert!(token_duration(value).is_none());
+        }
+        assert_eq!(token_duration("15m"), Some(900));
+    }
+    #[test]
+    fn login_replaces_old_token_and_old_401_cannot_evict_the_new_login() {
+        let old = response("old-token", Some("15m"), None);
+        let new = response("new-token", Some("15m"), None);
+        cache_cloud_access_token(&old);
+        cache_cloud_access_token(&new);
+        assert!(!invalidate_cloud_token("old-token"));
+        assert_eq!(
+            CLOUD_TOKEN_CACHE
+                .get()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .value,
+            "new-token"
+        );
+        assert!(invalidate_cloud_token("new-token"));
+        assert!(CLOUD_TOKEN_CACHE.get().unwrap().lock().unwrap().is_none());
+    }
+    #[test]
+    fn task_polling_can_refresh_a_token_but_must_not_change_accounts() {
+        assert!(cloud_tokens_same_account(
+            &jwt("a", 100, 160),
+            &jwt("a", 150, 210)
+        ));
+        assert!(!cloud_tokens_same_account(
+            &jwt("a", 100, 160),
+            &jwt("b", 150, 210)
+        ));
+    }
+    #[test]
+    fn response_metadata_comes_from_headers_and_operation_logs_hide_dynamic_ids() {
+        let auth: EmailVerificationResponse = parse_auth_response(r#"{"license":"fixture","accessToken":"fixture-token","account":{"user":{}},"__clientServerTime":999}"#, Some(123)).unwrap();
+        assert_eq!(auth.server_time, Some(123));
+        assert_eq!(
+            cloud_operation("/v1/ai/tasks/private-task-id?token=secret"),
+            "task_status"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -83,6 +300,8 @@ struct EmailVerificationResponse {
 struct CloudAccountResponse {
     user: CloudUserResponse,
     wallet: Option<CloudWalletSummary>,
+    membership: Option<CloudMembershipSummary>,
+    referral: Option<CloudReferralSummary>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -90,6 +309,58 @@ struct CloudAccountResponse {
 struct CloudUserResponse {
     email: Option<String>,
     display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudMembershipSummary {
+    id: String,
+    status: String,
+    starts_at: String,
+    expires_at: String,
+    source: Option<String>,
+    plan: CloudMembershipPlan,
+    #[serde(default)]
+    quotas: Vec<CloudMembershipQuota>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudMembershipQuota {
+    #[serde(default, rename = "type")]
+    quota_type: String,
+    #[serde(default)]
+    canonical_model_id: String,
+    #[serde(default)]
+    model_name: String,
+    #[serde(default)]
+    period: String,
+    #[serde(default)]
+    limit: u64,
+    #[serde(default)]
+    used: u64,
+    #[serde(default)]
+    remaining: u64,
+    #[serde(default)]
+    reset_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudMembershipPlan {
+    id: String,
+    code: String,
+    name: String,
+    description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudReferralSummary {
+    invite_code: String,
+    bound: Option<bool>,
+    can_bind: Option<bool>,
+    bind_blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +378,8 @@ pub struct CloudAccountSummary {
     email: Option<String>,
     display_name: Option<String>,
     wallet: CloudWalletSummary,
+    membership: Option<CloudMembershipSummary>,
+    referral: Option<CloudReferralSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,9 +402,22 @@ pub struct CloudCreditUsageResult {
     next_cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudRechargeSession {
+    url: String,
+    expires_at: Option<String>,
+}
+
 #[derive(Serialize)]
 struct CreditRedemptionRequest<'a> {
     code: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReferralBindRequest<'a> {
+    invite_code: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -151,17 +437,13 @@ pub struct CreditRedemptionResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloudImageGenerationRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    quality: Option<String>,
     client_request_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    provider_channel_id: Option<String>,
     model: String,
     prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     negative_prompt: Option<String>,
-    #[serde(default)]
-    preserve_reference_identity: bool,
     input_images: Vec<String>,
     aspect_ratio: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -187,12 +469,24 @@ pub struct CloudImageGenerationLookup {
     status: String,
     completed_at: Option<i64>,
     #[serde(default)]
+    confirmation_required: bool,
+    recovery_status: Option<String>,
+    error: Option<CloudImageFailure>,
+    #[serde(default)]
     images: Vec<String>,
     provider: Option<String>,
     provider_channel_id: Option<String>,
     provider_channel_name: Option<String>,
     model: Option<String>,
     charged_credits: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudImageFailure {
+    code: String,
+    message: String,
+    http_status: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,12 +535,35 @@ pub struct CloudAiModelCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolutions: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    supported_qualities: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_image_edit: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    quality_parameter: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_output_images: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    billing_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_resolution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     aspect_ratios: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    aspect_ratios_by_resolution:
-        Option<std::collections::HashMap<String, Vec<String>>>,
+    aspect_ratio_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_aspect_ratio: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    aspect_ratios_by_resolution: Option<std::collections::HashMap<String, Vec<String>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     durations: Option<Vec<f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    duration_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    duration_range: Option<CloudVideoDurationRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_duration_seconds: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_reference_images: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -256,13 +573,25 @@ pub struct CloudAiModelCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     min_reference_images: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    min_reference_videos: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    min_reference_audios: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     supports_reference_images: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     supports_reference_video: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_reference_audio: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     supports_audio_reference: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_first_frame: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_last_frame: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     supports_first_last_frame: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_text_prompt: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     supported_input_modes: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -275,16 +604,37 @@ pub struct CloudAiModelCapabilities {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CloudVideoDurationRange {
+    min: u32,
+    max: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    step: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CloudAiPricing {
     agent_request_credits: String,
     inspiration_analysis_credits: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    canvas_text_agent_credits: Option<String>,
     image_default_credits: String,
     video_default_credits: String,
     #[serde(default)]
     image_models: Vec<CloudImageModelPricing>,
     #[serde(default)]
     video_models: Vec<CloudVideoModelPricing>,
+    #[serde(default)]
+    music_models: Vec<CloudMusicModelPricing>,
     updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudMusicModelPricing {
+    model: String,
+    billing_type: String,
+    credits_per_request: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -292,15 +642,29 @@ pub struct CloudAiPricing {
 pub struct CloudImageModelPricing {
     model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    billing_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_per_request: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_per_image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_by_resolution: Option<std::collections::HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_by_resolution_quality: Option<std::collections::HashMap<String, std::collections::HashMap<String, String>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     credits1k: Option<String>,
-    credits2k: String,
-    credits4k: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits2k: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits4k: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloudVideoModelPricing {
     model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    billing_type: Option<String>,
     credits: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     credits_per_second: Option<String>,
@@ -357,10 +721,6 @@ pub struct CloudVideoModelChannel {
 #[serde(rename_all = "camelCase")]
 pub struct CloudVideoGenerationRequest {
     client_request_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    provider_channel_id: Option<String>,
     model: String,
     prompt: String,
     input_images: Vec<String>,
@@ -368,7 +728,8 @@ pub struct CloudVideoGenerationRequest {
     input_videos: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     input_audios: Vec<String>,
-    aspect_ratio: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    aspect_ratio: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolution: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -557,6 +918,19 @@ fn cloud_http_fallback(status: reqwest::StatusCode, body: &str) -> String {
     let compact = body
         .replace(['\r', '\n', '\t'], " ")
         .split_whitespace()
+        .map(|part| {
+            let lower = part.to_ascii_lowercase();
+            if lower.contains("token")
+                || lower.contains("api_key")
+                || lower.contains("authorization")
+                || lower.contains("http://")
+                || lower.contains("https://")
+            {
+                "[已隐藏]"
+            } else {
+                part
+            }
+        })
         .collect::<Vec<_>>()
         .join(" ");
     let detail = if compact.starts_with('<') {
@@ -569,28 +943,1014 @@ fn cloud_http_fallback(status: reqwest::StatusCode, body: &str) -> String {
     format!("云端请求失败（HTTP {}）：{detail}", status.as_u16())
 }
 
+fn reqwest_error_detail(error: &reqwest::Error) -> String {
+    let mut detail = error.to_string().to_ascii_lowercase();
+    let mut source = std::error::Error::source(error);
+    while let Some(current) = source {
+        detail.push(' ');
+        detail.push_str(&current.to_string().to_ascii_lowercase());
+        source = current.source();
+    }
+    detail
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CloudTransportErrorCategory {
+    Timeout,
+    Tls,
+    ConnectionReset,
+    ConnectionClosed,
+    ProxyConnect,
+    Dns,
+    Connect,
+    Request,
+    Builder,
+    ResponseBody,
+    Network,
+    Initialization,
+}
+
+impl CloudTransportErrorCategory {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Tls => "tls",
+            Self::ConnectionReset => "connection_reset",
+            Self::ConnectionClosed => "connection_closed",
+            Self::ProxyConnect => "proxy_connect",
+            Self::Dns => "dns",
+            Self::Connect => "connect",
+            Self::Request => "request",
+            Self::Builder => "builder",
+            Self::ResponseBody => "response_body",
+            Self::Network => "network",
+            Self::Initialization => "initialization",
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Timeout => "请求超时",
+            Self::Tls => "TLS 连接失败",
+            Self::ConnectionReset => "连接被重置",
+            Self::ConnectionClosed => "连接提前关闭",
+            Self::ProxyConnect => "代理连接失败",
+            Self::Dns => "DNS 解析失败",
+            Self::Connect => "无法建立连接",
+            Self::Request => "请求发送失败",
+            Self::Builder => "请求构造失败",
+            Self::ResponseBody => "响应传输失败",
+            Self::Network => "网络错误",
+            Self::Initialization => "网络连接初始化失败",
+        }
+    }
+
+    pub(crate) fn is_retryable(self) -> bool {
+        matches!(self, Self::Timeout | Self::ConnectionReset | Self::ConnectionClosed | Self::ProxyConnect | Self::Dns | Self::Connect | Self::Request | Self::ResponseBody | Self::Network)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CloudTransportFailure {
+    pub category: CloudTransportErrorCategory,
+    pub fallback_attempted: bool,
+    pub request_not_sent: bool,
+}
+
+impl CloudTransportFailure {
+    pub(crate) fn from_reqwest(
+        error: &reqwest::Error,
+        via_proxy: bool,
+        fallback_attempted: bool,
+    ) -> Self {
+        Self {
+            category: cloud_transport_category(error, via_proxy),
+            fallback_attempted,
+            request_not_sent: false,
+        }
+    }
+
+    fn safe_message(self, method: &str) -> String {
+        format!(
+            "{}: {method} {}；凭证和请求地址已隐藏",
+            if self.request_not_sent { "music_not_submitted" } else { "cloud_unavailable" },
+            self.category.label()
+        )
+    }
+}
+
+fn transport_io_error<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a std::io::Error> {
+    let mut source = Some(error);
+    while let Some(current) = source {
+        if let Some(error) = current.downcast_ref::<std::io::Error>() {
+            return Some(error);
+        }
+        source = current.source();
+    }
+    None
+}
+
+fn cloud_transport_category(
+    error: &reqwest::Error,
+    via_proxy: bool,
+) -> CloudTransportErrorCategory {
+    let detail = reqwest_error_detail(error);
+    if error.is_builder() {
+        CloudTransportErrorCategory::Builder
+    } else if error.is_timeout() {
+        CloudTransportErrorCategory::Timeout
+    } else if transport_io_error(error).is_some_and(|error| {
+        matches!(error.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::BrokenPipe)
+    }) || detail.contains("connection reset")
+        || detail.contains("connection was reset")
+        || detail.contains("forcibly closed")
+    {
+        CloudTransportErrorCategory::ConnectionReset
+    } else if transport_io_error(error).is_some_and(|error| error.kind() == std::io::ErrorKind::UnexpectedEof)
+        || detail.contains("connection closed") || detail.contains("incomplete message")
+    {
+        CloudTransportErrorCategory::ConnectionClosed
+    } else if detail.contains("certificate")
+        || detail.contains("tls")
+        || detail.contains("handshake")
+    {
+        CloudTransportErrorCategory::Tls
+    } else if error.is_connect() {
+        if via_proxy {
+            CloudTransportErrorCategory::ProxyConnect
+        } else if detail.contains("dns") || detail.contains("resolve") {
+            CloudTransportErrorCategory::Dns
+        } else {
+            CloudTransportErrorCategory::Connect
+        }
+    } else if error.is_request() {
+        CloudTransportErrorCategory::Request
+    } else if error.is_body() {
+        CloudTransportErrorCategory::ResponseBody
+    } else {
+        CloudTransportErrorCategory::Network
+    }
+}
+
+fn should_retry_cloud_transport(error: &reqwest::Error, method: &str) -> bool {
+    // POST may already have been accepted. Only replay it on a connect error.
+    // GET and a signed PUT of the same bytes to the same object are idempotent.
+    !error.is_builder() && (error.is_connect()
+        || (matches!(method, "GET" | "PUT") && cloud_transport_category(error, false).is_retryable()))
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct CloudRequestLogContext {
+    pub operation: &'static str,
+    pub upload_bytes: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CloudTransportPolicy {
+    Standard,
+    MusicPostNoRedirect,
+}
+
+async fn send_cloud_request_with_clients_detailed<F>(
+    clients: &[(reqwest::Client, bool)],
+    method: &'static str,
+    log_context: Option<CloudRequestLogContext>,
+    build: &F,
+    diagnostic_app: Option<&tauri::AppHandle>,
+    policy: CloudTransportPolicy,
+) -> Result<reqwest::Response, CloudTransportFailure>
+where
+    F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+{
+    let mut all_music_attempts_unsent = policy == CloudTransportPolicy::MusicPostNoRedirect;
+    for (index, (client, via_proxy)) in clients.iter().enumerate() {
+        let route = if *via_proxy { "proxy" } else { "direct" };
+        let attempt_started_at = std::time::Instant::now();
+        // Invoke the factory for every route. RequestBuilder bodies (notably
+        // multipart forms and streams) are consumed by send and cannot be
+        // cloned safely for a fallback attempt.
+        let request = build(client).build();
+        let request_url_length = request.as_ref().ok().map(|request| request.url().as_str().len());
+        let request_operation = request
+            .as_ref()
+            .ok()
+            .map(|request| cloud_operation(request.url().path()))
+            .unwrap_or("request_build");
+        let operation = log_context.map(|context| context.operation).unwrap_or(request_operation);
+        let music_post = method == "POST" && request_operation == "music_generate"
+            && request.as_ref().is_ok_and(|request| request.method() == reqwest::Method::POST);
+        let cloud_token = request
+            .as_ref()
+            .ok()
+            .filter(|request| request.url().host_str() == Some("api.unmind.art"))
+            .and_then(|request| request.headers().get(reqwest::header::AUTHORIZATION))
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .map(str::to_owned);
+        let response = match request {
+            Ok(request) => client.execute(request).await,
+            Err(error) => Err(error),
+        };
+        match response {
+            Ok(response) => {
+                if let Some(app) = diagnostic_app {
+                    if let Some(token) = cloud_token.as_deref() {
+                        observe_cloud_auth_rejection(app, token, response.status(), operation);
+                    }
+                    if !response.status().is_success()
+                        || index > 0
+                        || attempt_started_at.elapsed() >= Duration::from_secs(3)
+                    {
+                        crate::renderer_diagnostics::record(
+                            app,
+                            "main",
+                            "cloud_http_response",
+                            serde_json::json!({
+                                "operation": operation, "method": method, "route": route, "attempt": index + 1,
+                                "httpStatus": response.status().as_u16(), "elapsedMs": attempt_started_at.elapsed().as_millis() as u64,
+                                "requestUrlLength": request_url_length, "responseUrlLength": response.url().as_str().len(),
+                                "uploadBytes": log_context.map(|context| context.upload_bytes),
+                            }),
+                        );
+                    }
+                }
+                if let Some(context) = log_context {
+                    eprintln!(
+                        "[cloud_transport] operation={} route={} connect_failure_category=none fallback_attempted={} upload_bytes={} elapsed_ms={} http_status={}",
+                        context.operation,
+                        route,
+                        index > 0,
+                        context.upload_bytes,
+                        attempt_started_at.elapsed().as_millis(),
+                        response.status().as_u16(),
+                    );
+                }
+                return Ok(response);
+            }
+            Err(error) => {
+                let has_fallback = index + 1 < clients.len();
+                // The ordinary clients may have followed a redirect after the
+                // original paid POST arrived. Only the dedicated music factory
+                // supplies the no-redirect/no-retry policy that makes a connect
+                // error proof that this submission never reached the server.
+                let music_submission_unsent = music_post
+                    && policy == CloudTransportPolicy::MusicPostNoRedirect
+                    && !error.is_builder() && !error.is_timeout() && error.is_connect();
+                all_music_attempts_unsent &= music_submission_unsent;
+                let fallback_attempted = has_fallback && if music_post {
+                    index == 0 && music_submission_unsent
+                } else {
+                    should_retry_cloud_transport(&error, method)
+                };
+                if let Some(app) = diagnostic_app {
+                    crate::renderer_diagnostics::record(
+                        app,
+                        "main",
+                        "cloud_transport_failure",
+                        serde_json::json!({
+                            "operation": operation, "method": method, "route": route, "attempt": index + 1,
+                            "category": cloud_transport_category(&error, *via_proxy).code(),
+                            "fallbackAttempted": fallback_attempted, "elapsedMs": attempt_started_at.elapsed().as_millis() as u64,
+                            "phase": if error.is_builder() { "build" } else { "send" },
+                            "isConnect": error.is_connect(), "isTimeout": error.is_timeout(),
+                            "musicSubmissionUnsent": music_submission_unsent,
+                            "ioErrorKind": transport_io_error(&error).map(|error| format!("{:?}", error.kind())),
+                            "osErrorCode": transport_io_error(&error).and_then(|error| error.raw_os_error()),
+                            "requestUrlLength": request_url_length,
+                            "uploadBytes": log_context.map(|context| context.upload_bytes),
+                        }),
+                    );
+                }
+                if let Some(context) = log_context {
+                    let category = cloud_transport_category(&error, *via_proxy);
+                    eprintln!(
+                        "[cloud_transport] operation={} route={} connect_failure_category={} fallback_attempted={} upload_bytes={} elapsed_ms={} http_status=none",
+                        context.operation,
+                        route,
+                        category.code(),
+                        fallback_attempted,
+                        context.upload_bytes,
+                        attempt_started_at.elapsed().as_millis(),
+                    );
+                }
+                if fallback_attempted {
+                    continue;
+                }
+                let mut failure = CloudTransportFailure::from_reqwest(
+                    &error,
+                    *via_proxy,
+                    index > 0,
+                );
+                failure.request_not_sent = all_music_attempts_unsent;
+                return Err(failure);
+            }
+        }
+    }
+    Err(CloudTransportFailure {
+        category: CloudTransportErrorCategory::Network,
+        fallback_attempted: clients.len() > 1,
+        request_not_sent: all_music_attempts_unsent,
+    })
+}
+
+fn cloud_operation(path: &str) -> &'static str {
+    match path {
+        "/v1/auth/email/send-code" => "email_send_code",
+        "/v1/auth/email/verify" => "email_verify",
+        "/v1/auth/email/sync" => "account_sync",
+        "/v1/ai/images/models" => "image_models",
+        "/v1/ai/images/generations" => "image_generate",
+        "/v1/ai/music/generations" => "music_generate",
+        "/v1/ai/models" => "chat_models",
+        "/v1/ai/tasks" => "task_submit",
+        "/v1/ai/reference-images" => "reference_images",
+        "/v1/ai/reference-images/upload-ticket" => "upload_ticket",
+        _ if path.starts_with("/v1/ai/tasks/") => "task_status",
+        _ if path.starts_with("/v1/ai/videos/") => "video_status",
+        _ if path.starts_with("/v1/ai/images/generations/by-request/") => "image_status",
+        _ if path.starts_with("/v1/ai/music/generations/by-request/") => "music_status",
+        _ => "other_cloud_request",
+    }
+}
+
+#[cfg(test)]
+async fn send_cloud_request_with_clients<F>(
+    clients: &[(reqwest::Client, bool)],
+    method: &'static str,
+    log_context: Option<CloudRequestLogContext>,
+    build: &F,
+) -> Result<reqwest::Response, String>
+where
+    F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+{
+    send_cloud_request_with_clients_detailed(clients, method, log_context, build, None, CloudTransportPolicy::Standard)
+        .await
+        .map_err(|failure| failure.safe_message(method))
+}
+
+pub(crate) async fn send_cloud_request_detailed<F>(
+    app_handle: &tauri::AppHandle,
+    timeout: Duration,
+    method: &'static str,
+    log_context: Option<CloudRequestLogContext>,
+    build: F,
+) -> Result<reqwest::Response, CloudTransportFailure>
+where
+    F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+{
+    let policy = if method == "POST"
+        && log_context.is_some_and(|context| context.operation == "music_generate")
+    {
+        CloudTransportPolicy::MusicPostNoRedirect
+    } else {
+        CloudTransportPolicy::Standard
+    };
+    let client_result = if policy == CloudTransportPolicy::MusicPostNoRedirect {
+        crate::build_music_post_http_clients_with_direct_fallback(Some(app_handle), None, timeout.as_secs().max(1))
+    } else {
+        crate::build_async_http_clients_with_direct_fallback(Some(app_handle), None, timeout.as_secs().max(1))
+    };
+    let (configured, direct) = client_result
+    .map_err(|_| {
+        crate::renderer_diagnostics::record(
+            app_handle,
+            "main",
+            "cloud_transport_failure",
+            serde_json::json!({
+                "operation": "client_initialize", "method": method, "category": "initialization",
+            }),
+        );
+        CloudTransportFailure {
+            category: CloudTransportErrorCategory::Initialization,
+            fallback_attempted: false,
+            request_not_sent: policy == CloudTransportPolicy::MusicPostNoRedirect,
+        }
+    })?;
+    let app_proxy_configured = !crate::read_network_proxy(app_handle).trim().is_empty();
+    let proxy_available = crate::effective_proxy(Some(app_handle), None).is_some();
+    let mut clients: Vec<(reqwest::Client, bool)> = Vec::with_capacity(2);
+    // Direct is the default route. A proxy explicitly entered in the app is
+    // intentionally preferred, but it still gets a direct fallback.
+    if app_proxy_configured {
+        clients.push((configured, proxy_available));
+        if let Some(direct) = direct {
+            clients.push((direct, false));
+        }
+    } else if let Some(direct) = direct {
+        clients.push((direct, false));
+        clients.push((configured, proxy_available));
+    } else {
+        clients.push((configured, proxy_available));
+    }
+    send_cloud_request_with_clients_detailed(
+        &clients,
+        method,
+        log_context,
+        &build,
+        Some(app_handle),
+        policy,
+    )
+    .await
+}
+
+pub(crate) async fn send_cloud_request<F>(
+    app_handle: &tauri::AppHandle,
+    timeout: Duration,
+    method: &'static str,
+    log_context: Option<CloudRequestLogContext>,
+    build: F,
+) -> Result<reqwest::Response, String>
+where
+    F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+{
+    send_cloud_request_detailed(app_handle, timeout, method, log_context, build)
+        .await
+        .map_err(|failure| failure.safe_message(method))
+}
+
+#[cfg(test)]
+mod cloud_transport_tests {
+    use super::{send_cloud_request_with_clients, send_cloud_request_with_clients_detailed, cloud_transport_category,
+        transport_io_error, should_retry_cloud_transport, music_not_submitted_before_request,
+        CloudTransportErrorCategory, CloudTransportFailure, CloudTransportPolicy};
+    use reqwest::header::CONNECTION;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    fn header_end(bytes: &[u8]) -> Option<usize> {
+        bytes
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| index + 4)
+    }
+
+    fn content_length(headers: &[u8]) -> usize {
+        String::from_utf8_lossy(headers)
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0)
+    }
+
+    fn spawn_test_server(
+        status: &'static str,
+        response_body: &'static [u8],
+        response_delay: Duration,
+    ) -> (String, Arc<Mutex<Vec<u8>>>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener");
+        let address = listener.local_addr().expect("test address");
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let captured_request = captured.clone();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("test request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("read timeout");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        request.extend_from_slice(&buffer[..read]);
+                        if let Some(end) = header_end(&request) {
+                            let expected = end + content_length(&request[..end]);
+                            if request.len() >= expected {
+                                break;
+                            }
+                        }
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(error) => panic!("test request read failed: {error}"),
+                }
+            }
+            *captured_request.lock().expect("captured request") = request;
+            thread::sleep(response_delay);
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response_body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(response_body);
+            let _ = stream.flush();
+        });
+        (
+            format!("http://{address}/reference-images"),
+            captured,
+            handle,
+        )
+    }
+
+    fn direct_test_client(timeout: Duration) -> reqwest::Client {
+        reqwest::Client::builder()
+            .no_proxy()
+            .connect_timeout(Duration::from_millis(200))
+            .timeout(timeout)
+            .build()
+            .expect("direct test client")
+    }
+
+    fn unavailable_proxy_client() -> reqwest::Client {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("closed proxy port");
+        let address = listener.local_addr().expect("closed proxy address");
+        drop(listener);
+        reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(format!("http://{address}")).expect("test proxy"))
+            .connect_timeout(Duration::from_millis(100))
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("proxy test client")
+    }
+
+    fn music_test_client(timeout: Duration) -> reqwest::Client {
+        reqwest::Client::builder().no_proxy()
+            .redirect(reqwest::redirect::Policy::none()).retry(reqwest::retry::never())
+            .connect_timeout(Duration::from_millis(200)).timeout(timeout)
+            .build().expect("music test client")
+    }
+
+    fn unavailable_music_proxy_client() -> reqwest::Client {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(format!("http://{address}")).unwrap())
+            .redirect(reqwest::redirect::Policy::none()).retry(reqwest::retry::never())
+            // Windows can take just over two seconds to report loopback
+            // connection refusal. This fixture needs that explicit refusal,
+            // rather than accidentally exercising the excluded timeout case.
+            .connect_timeout(Duration::from_secs(5)).timeout(Duration::from_secs(7))
+            .build().unwrap()
+    }
+
+    fn music_url(url: &str) -> String {
+        let mut url = url::Url::parse(url).unwrap();
+        url.set_path("/v1/ai/music/generations");
+        url.into()
+    }
+
+    fn send_music_with_clients<F>(clients: &[(reqwest::Client, bool)], build: &F)
+        -> Result<reqwest::Response, String>
+    where F: Fn(&reqwest::Client) -> reqwest::RequestBuilder {
+        tauri::async_runtime::block_on(send_cloud_request_with_clients_detailed(
+            clients, "POST", None, build, None, CloudTransportPolicy::MusicPostNoRedirect,
+        )).map_err(|failure| failure.safe_message("POST"))
+    }
+
+    fn capture_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut request = Vec::new();
+        loop {
+            let mut buffer = [0; 4096];
+            let read = stream.read(&mut buffer).unwrap();
+            if read == 0 { break; }
+            request.extend_from_slice(&buffer[..read]);
+            if let Some(end) = header_end(&request) {
+                if request.len() >= end + content_length(&request[..end]) { break; }
+            }
+        }
+        request
+    }
+
+    fn spawn_redirect_server() -> (String, Arc<Mutex<Vec<u8>>>, thread::JoinHandle<()>) {
+        let unavailable = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = format!("http://{}/v1/ai/music/generations", unavailable.local_addr().unwrap());
+        drop(unavailable);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/ai/music/generations", listener.local_addr().unwrap());
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let captured_request = captured.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            *captured_request.lock().unwrap() = capture_request(&mut stream);
+            let response = format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        (url, captured, server)
+    }
+
+    #[test]
+    fn invalid_headers_are_builder_errors_and_do_not_expose_credentials() {
+        let client = direct_test_client(Duration::from_secs(1));
+        let error = client.post("https://example.test/?token=secret").header("Authorization", "Bearer secret\nvalue").build().unwrap_err();
+        assert_eq!(cloud_transport_category(&error, false), CloudTransportErrorCategory::Builder);
+        assert!(!should_retry_cloud_transport(&error, "POST"));
+        assert!(!should_retry_cloud_transport(&error, "PUT"));
+        let message = CloudTransportFailure::from_reqwest(&error, false, false).safe_message("POST");
+        assert!(message.contains("请求构造失败"));
+        assert!(!message.contains("secret"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_connection_resets_are_detected_by_error_kind() {
+        let error = std::io::Error::from_raw_os_error(10054);
+        assert_eq!(transport_io_error(&error).unwrap().kind(), std::io::ErrorKind::ConnectionReset);
+        assert_eq!(transport_io_error(&error).unwrap().raw_os_error(), Some(10054));
+    }
+
+    #[test]
+    fn interrupted_put_rebuilds_the_same_body_but_post_is_not_replayed() {
+        for method in ["PUT", "POST"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/upload", listener.local_addr().unwrap());
+            let expected = if method == "PUT" { 2 } else { 1 };
+            let server = thread::spawn(move || {
+                for attempt in 0..expected {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                    let mut request = Vec::new();
+                    loop {
+                        let mut buffer = [0; 4096];
+                        let read = stream.read(&mut buffer).unwrap();
+                        if read == 0 { break; }
+                        request.extend_from_slice(&buffer[..read]);
+                        if let Some(end) = header_end(&request) {
+                            if request.len() >= end + content_length(&request[..end]) { break; }
+                        }
+                    }
+                    assert!(request.ends_with(b"identical-image-bytes"));
+                    if attempt > 0 {
+                        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                    }
+                    // First connection deliberately closes without a response.
+                }
+            });
+            let client = direct_test_client(Duration::from_secs(2));
+            let clients = vec![(client.clone(), false), (client, false)];
+            let attempts = AtomicUsize::new(0);
+            let result = tauri::async_runtime::block_on(send_cloud_request_with_clients(&clients, method, None, &|client| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                client.request(reqwest::Method::from_bytes(method.as_bytes()).unwrap(), &url)
+                    .body("identical-image-bytes")
+            }));
+            assert_eq!(attempts.load(Ordering::SeqCst), expected);
+            if method == "PUT" {
+                assert_eq!(result.unwrap().status(), reqwest::StatusCode::OK);
+            } else {
+                let message = result.unwrap_err();
+                assert!(message.contains("连接提前关闭"), "{message}");
+                assert!(!message.contains("请求构造失败"));
+            }
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn ordinary_clients_do_not_opt_music_into_connect_fallback() {
+        let clients = vec![
+            (unavailable_proxy_client(), true),
+            (direct_test_client(Duration::from_secs(1)), false),
+        ];
+        let attempts = AtomicUsize::new(0);
+        let result = tauri::async_runtime::block_on(send_cloud_request_with_clients(
+            &clients, "POST", None, &|client| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                client.post("https://example.test/v1/ai/music/generations").body("music")
+            },
+        ));
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn music_connect_failure_uses_the_other_route_before_one_paid_post() {
+        let (url, captured, server) = spawn_test_server("200 OK", br#"{"audioUrls":[]}"#, Duration::ZERO);
+        let url = music_url(&url);
+        let clients = vec![(unavailable_music_proxy_client(), true), (music_test_client(Duration::from_secs(2)), false)];
+        let attempts = AtomicUsize::new(0);
+        let body = serde_json::json!({ "clientRequestId": "same-music-receipt", "model": "fixture", "prompt": "fixture" });
+        let response = send_music_with_clients(&clients, &|client| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            client.post(&url).json(&body)
+        }).unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        server.join().unwrap();
+        let request = captured.lock().unwrap();
+        let end = header_end(&request).unwrap();
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&request[end..]).unwrap(), body);
+        assert!(String::from_utf8_lossy(&request).starts_with("POST /v1/ai/music/generations "));
+    }
+
+    #[test]
+    fn music_marks_unsent_failures_after_at_most_one_backup_as_not_submitted() {
+        let clients = vec![(unavailable_music_proxy_client(), true), (unavailable_music_proxy_client(), true),
+            (unavailable_music_proxy_client(), true)];
+        let attempts = AtomicUsize::new(0);
+        let error = send_music_with_clients(&clients, &|client| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            client.post("http://127.0.0.1:1/v1/ai/music/generations?token=fixture-secret").body("fixture")
+        }).unwrap_err();
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(error.starts_with("music_not_submitted:"), "{error}");
+        assert!(!error.contains("fixture-secret"));
+        assert!(!error.contains("127.0.0.1"));
+    }
+
+    #[test]
+    fn music_upload_completion_then_eof_never_replays_or_claims_unsent() {
+        for failed_first_route in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/ai/music/generations", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = capture_request(&mut stream);
+            assert!(request.ends_with(b"complete-music-body"));
+        });
+        let mut clients = vec![(music_test_client(Duration::from_secs(2)), false), (music_test_client(Duration::from_secs(2)), false)];
+        if failed_first_route { clients.insert(0, (unavailable_music_proxy_client(), true)); }
+        let attempts = AtomicUsize::new(0);
+        let error = send_music_with_clients(&clients, &|client| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            client.post(&url).body("complete-music-body")
+        }).unwrap_err();
+        assert_eq!(attempts.load(Ordering::SeqCst), if failed_first_route { 2 } else { 1 });
+        assert!(error.starts_with("cloud_unavailable:"), "{error}");
+        assert!(!error.contains("music_not_submitted"));
+        server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn music_uploaded_post_timeout_never_replays_or_claims_unsent() {
+        for failed_first_route in [false, true] {
+        let (url, captured, server) = spawn_test_server("200 OK", b"{}", Duration::from_millis(250));
+        let url = music_url(&url);
+        let mut clients = vec![(music_test_client(Duration::from_millis(50)), false), (music_test_client(Duration::from_secs(2)), false)];
+        if failed_first_route { clients.insert(0, (unavailable_music_proxy_client(), true)); }
+        let attempts = AtomicUsize::new(0);
+        let error = send_music_with_clients(&clients, &|client| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            client.post(&url).body("complete-music-body")
+        }).unwrap_err();
+        assert_eq!(attempts.load(Ordering::SeqCst), if failed_first_route { 2 } else { 1 });
+        assert!(error.starts_with("cloud_unavailable:"), "{error}");
+        assert!(error.contains("请求超时"));
+        server.join().unwrap();
+        assert!(captured.lock().unwrap().ends_with(b"complete-music-body"));
+        }
+    }
+
+    #[test]
+    fn music_connect_timeout_is_not_an_unsent_retry_signal() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert!(String::from_utf8_lossy(&capture_request(&mut stream)).starts_with("CONNECT "));
+            thread::sleep(Duration::from_millis(200));
+        });
+        let client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(format!("http://{address}")).unwrap())
+            .redirect(reqwest::redirect::Policy::none()).retry(reqwest::retry::never())
+            .connect_timeout(Duration::from_millis(50)).timeout(Duration::from_secs(1))
+            .build().unwrap();
+        let clients = vec![(client, true), (music_test_client(Duration::from_secs(2)), false)];
+        let attempts = AtomicUsize::new(0);
+        let error = send_music_with_clients(&clients, &|client| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            client.post("https://example.test/v1/ai/music/generations").body("same-music-receipt")
+        }).unwrap_err();
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(error.starts_with("cloud_unavailable:"), "{error}");
+        assert!(error.contains("请求超时"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn music_response_body_interruption_does_not_replay_the_post() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/ai/music/generations", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert!(capture_request(&mut stream).ends_with(b"same-music-receipt"));
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{}").unwrap();
+        });
+        let clients = vec![(music_test_client(Duration::from_secs(2)), false), (music_test_client(Duration::from_secs(2)), false)];
+        let attempts = AtomicUsize::new(0);
+        let response = send_music_with_clients(&clients, &|client| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            client.post(&url).body("same-music-receipt")
+        }).unwrap();
+        assert!(tauri::async_runtime::block_on(response.text()).is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn music_http_responses_never_replay_the_post() {
+        for (status, expected) in [("400 Bad Request", 400), ("401 Unauthorized", 401),
+            ("429 Too Many Requests", 429), ("500 Internal Server Error", 500)] {
+            let (url, captured, server) = spawn_test_server(status, b"{}", Duration::ZERO);
+            let url = music_url(&url);
+            let clients = vec![(music_test_client(Duration::from_secs(2)), false), (music_test_client(Duration::from_secs(2)), false)];
+            let attempts = AtomicUsize::new(0);
+            let response = send_music_with_clients(&clients, &|client| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                client.post(&url).body("same-music-receipt")
+            }).unwrap();
+            assert_eq!(response.status().as_u16(), expected);
+            assert_eq!(attempts.load(Ordering::SeqCst), 1);
+            server.join().unwrap();
+            assert!(captured.lock().unwrap().ends_with(b"same-music-receipt"));
+        }
+    }
+
+    #[test]
+    fn music_factory_cache_does_not_reuse_redirect_following_clients() {
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+        drop(proxy);
+        let _standard = crate::build_async_http_clients_with_direct_fallback(None, Some(&proxy_url), 3).unwrap();
+        let (_, direct) = crate::build_music_post_http_clients_with_direct_fallback(None, Some(&proxy_url), 3).unwrap();
+        let clients = vec![(direct.unwrap(), false), (music_test_client(Duration::from_secs(2)), false)];
+        let (url, captured, server) = spawn_redirect_server();
+        let attempts = AtomicUsize::new(0);
+        let response = send_music_with_clients(&clients, &|client| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            client.post(&url).body("same-music-receipt")
+        }).unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        server.join().unwrap();
+        assert!(captured.lock().unwrap().ends_with(b"same-music-receipt"));
+    }
+
+    #[test]
+    fn ordinary_redirect_following_music_clients_never_gain_connect_replay_permission() {
+        let (url, captured, server) = spawn_redirect_server();
+        let client = direct_test_client(Duration::from_secs(2));
+        let clients = vec![(client.clone(), false), (client, false)];
+        let attempts = AtomicUsize::new(0);
+        let result = tauri::async_runtime::block_on(send_cloud_request_with_clients(
+            &clients, "POST", None, &|client| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                client.post(&url).body("already-sent")
+            },
+        ));
+        assert!(result.unwrap_err().starts_with("cloud_unavailable:"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        server.join().unwrap();
+        assert!(captured.lock().unwrap().ends_with(b"already-sent"));
+    }
+
+    #[test]
+    fn music_auth_failure_marker_does_not_include_untrusted_error_details() {
+        let safe = music_not_submitted_before_request("cloud_unavailable: https://fixture.test/?token=secret");
+        assert!(safe.starts_with("music_not_submitted:"));
+        assert!(safe.contains("cloud_unavailable"));
+        assert!(!safe.contains("fixture.test"));
+        assert!(!safe.contains("secret"));
+        assert!(!music_not_submitted_before_request("secret-without-code").contains("secret"));
+        assert!(!music_not_submitted_before_request("secret: unsafe detail").contains("secret"));
+        assert!(!music_not_submitted_before_request("pureAlnumCanary").contains("pureAlnumCanary"));
+        let initialization = CloudTransportFailure {
+            category: CloudTransportErrorCategory::Initialization,
+            fallback_attempted: false, request_not_sent: true,
+        }.safe_message("POST");
+        assert!(initialization.starts_with("music_not_submitted:"));
+    }
+
+    #[test]
+    fn connect_failure_falls_back_and_rebuilds_multipart_body() {
+        let (url, captured, server) = spawn_test_server(
+            "200 OK",
+            br#"{"objectKey":"reference-images/test.png"}"#,
+            Duration::ZERO,
+        );
+        let clients = vec![
+            (unavailable_proxy_client(), true),
+            (direct_test_client(Duration::from_secs(2)), false),
+        ];
+        let attempts = AtomicUsize::new(0);
+        let image_bytes = b"multipart-image-payload".to_vec();
+        let response = tauri::async_runtime::block_on(send_cloud_request_with_clients(
+            &clients,
+            "POST",
+            None,
+            &|client| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                let part = reqwest::multipart::Part::bytes(image_bytes.clone())
+                    .file_name("reference.png")
+                    .mime_str("image/png")
+                    .expect("multipart MIME");
+                client
+                    .post(&url)
+                    .header(CONNECTION, "close")
+                    .multipart(reqwest::multipart::Form::new().part("image", part))
+            },
+        ))
+        .expect("direct fallback response");
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        server.join().expect("test server");
+        let request = captured.lock().expect("captured request");
+        assert!(String::from_utf8_lossy(&request).contains("multipart/form-data"));
+        assert!(request
+            .windows(image_bytes.len())
+            .any(|window| window == image_bytes));
+    }
+
+    #[test]
+    fn http_client_errors_do_not_replay_post() {
+        for (status_line, expected_status) in [
+            ("400 Bad Request", reqwest::StatusCode::BAD_REQUEST),
+            ("401 Unauthorized", reqwest::StatusCode::UNAUTHORIZED),
+            (
+                "413 Payload Too Large",
+                reqwest::StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+        ] {
+            let (url, _, server) = spawn_test_server(status_line, b"{}", Duration::ZERO);
+            let client = direct_test_client(Duration::from_secs(2));
+            let clients = vec![(client.clone(), false), (client, false)];
+            let attempts = AtomicUsize::new(0);
+            let response = tauri::async_runtime::block_on(send_cloud_request_with_clients(
+                &clients,
+                "POST",
+                None,
+                &|client| {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    client.post(&url).header(CONNECTION, "close").body("upload")
+                },
+            ))
+            .expect("HTTP response");
+
+            assert_eq!(response.status(), expected_status);
+            assert_eq!(attempts.load(Ordering::SeqCst), 1);
+            server.join().expect("test server");
+        }
+    }
+
+    #[test]
+    fn post_upload_timeout_is_classified_and_not_replayed() {
+        let (url, _, server) = spawn_test_server("200 OK", b"{}", Duration::from_millis(250));
+        let client = direct_test_client(Duration::from_millis(50));
+        let clients = vec![(client.clone(), false), (client, false)];
+        let attempts = AtomicUsize::new(0);
+        let error = tauri::async_runtime::block_on(send_cloud_request_with_clients(
+            &clients,
+            "POST",
+            None,
+            &|client| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                client.post(&url).header(CONNECTION, "close").body("upload")
+            },
+        ))
+        .expect_err("upload timeout");
+
+        assert!(error.contains("请求超时"), "{error}");
+        assert!(!error.contains("127.0.0.1"), "{error}");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        server.join().expect("test server");
+    }
+}
+
 async fn post_cloud<T: for<'de> Deserialize<'de>>(
+    app_handle: &tauri::AppHandle,
     path: &str,
     request_body: &impl Serialize,
 ) -> Result<T, String> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|err| format!("cloud_unavailable: 无法初始化云端连接：{err}"))?;
-    let response = client
-        .post(format!("{CLOUD_API_BASE_URL}{path}"))
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
-        .json(request_body)
-        .send()
-        .await
-        .map_err(|err| format!("cloud_unavailable: 无法连接授权服务器：{err}"))?;
+    let body = serde_json::to_value(request_body)
+        .map_err(|_| "cloud_invalid_request: 请求内容格式无效".to_string())?;
+    let response = send_cloud_request(
+        app_handle,
+        Duration::from_secs(20),
+        "POST",
+        None,
+        |client| {
+            client
+                .post(format!("{CLOUD_API_BASE_URL}{path}"))
+                .header("x-client-version", env!("CARGO_PKG_VERSION"))
+                .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
+                .json(&body)
+        },
+    )
+    .await?;
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|err| format!("cloud_invalid_response: 无法读取授权服务器响应：{err}"))?;
+    let response_server_time = server_time(&response);
+    let body_started = Instant::now();
+    let body = response.text().await.map_err(|err| {
+        observe_cloud_response_failure(app_handle, status, cloud_operation(path), &err);
+        format!("cloud_invalid_response: 无法读取授权服务器响应：{err}")
+    })?;
     if !status.is_success() {
         let parsed = serde_json::from_str::<CloudApiError>(&body).ok();
         let fallback = cloud_http_fallback(status, &body);
@@ -604,45 +1964,58 @@ async fn post_cloud<T: for<'de> Deserialize<'de>>(
             .unwrap_or(&fallback);
         return Err(cloud_error(code, message));
     }
-    serde_json::from_str::<T>(&body)
-        .map_err(|_| "cloud_invalid_response: 授权服务器返回格式无效".to_string())
+    parse_auth_response::<T>(
+        &body,
+        response_server_time
+            .map(|time| time.saturating_add(body_started.elapsed().as_secs() as i64)),
+    )
+    .map_err(|_| "cloud_invalid_response: 授权服务器返回格式无效".to_string())
 }
 
 async fn post_cloud_email_sync_once(
+    app_handle: &tauri::AppHandle,
     request_body: &CloudLicenseSyncRequest<'_>,
 ) -> Result<EmailVerificationResponse, EmailSyncRequestError> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|err| EmailSyncRequestError {
-            status: None,
-            retry_after: None,
-            message: format!("cloud_unavailable: 无法初始化云端连接：{err}"),
-        })?;
-    let response = client
-        .post(format!("{CLOUD_API_BASE_URL}/v1/auth/email/sync"))
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
-        .json(request_body)
-        .send()
-        .await
-        .map_err(|err| EmailSyncRequestError {
-            status: None,
-            retry_after: None,
-            message: format!("cloud_unavailable: 无法连接授权服务器：{err}"),
-        })?;
+    let body = serde_json::to_value(request_body).map_err(|_| EmailSyncRequestError {
+        status: None,
+        retry_after: None,
+        message: "cloud_invalid_request: 请求内容格式无效".to_string(),
+    })?;
+    let response = send_cloud_request(
+        app_handle,
+        Duration::from_secs(20),
+        "POST",
+        None,
+        |client| {
+            client
+                .post(format!("{CLOUD_API_BASE_URL}/v1/auth/email/sync"))
+                .header("x-client-version", env!("CARGO_PKG_VERSION"))
+                .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
+                .json(&body)
+        },
+    )
+    .await
+    .map_err(|message| EmailSyncRequestError {
+        status: None,
+        retry_after: None,
+        message,
+    })?;
     let status = response.status();
+    let response_server_time = server_time(&response);
+    let body_started = Instant::now();
     let retry_after = parse_retry_after(
         response
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|value| value.to_str().ok()),
     );
-    let body = response.text().await.map_err(|err| EmailSyncRequestError {
-        status: Some(status.as_u16()),
-        retry_after,
-        message: format!("cloud_invalid_response: 无法读取授权服务器响应：{err}"),
+    let body = response.text().await.map_err(|err| {
+        observe_cloud_response_failure(app_handle, status, "account_sync", &err);
+        EmailSyncRequestError {
+            status: Some(status.as_u16()),
+            retry_after,
+            message: format!("cloud_invalid_response: 无法读取授权服务器响应：{err}"),
+        }
     })?;
     if !status.is_success() {
         let parsed = serde_json::from_str::<CloudApiError>(&body).ok();
@@ -661,7 +2034,12 @@ async fn post_cloud_email_sync_once(
             message: cloud_error(code, message),
         });
     }
-    serde_json::from_str::<EmailVerificationResponse>(&body).map_err(|_| EmailSyncRequestError {
+    parse_auth_response::<EmailVerificationResponse>(
+        &body,
+        response_server_time
+            .map(|time| time.saturating_add(body_started.elapsed().as_secs() as i64)),
+    )
+    .map_err(|_| EmailSyncRequestError {
         status: Some(status.as_u16()),
         retry_after,
         message: "cloud_invalid_response: 授权服务器返回格式无效".to_string(),
@@ -669,44 +2047,56 @@ async fn post_cloud_email_sync_once(
 }
 
 async fn post_cloud_with_bearer<T: for<'de> Deserialize<'de>>(
+    app_handle: &tauri::AppHandle,
     path: &str,
     access_token: &str,
     request_body: &impl Serialize,
 ) -> Result<T, String> {
-    post_cloud_with_bearer_timeout(path, access_token, request_body, Duration::from_secs(20)).await
+    post_cloud_with_bearer_timeout(
+        app_handle,
+        path,
+        access_token,
+        request_body,
+        Duration::from_secs(20),
+    )
+    .await
 }
 
 async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
+    app_handle: &tauri::AppHandle,
     path: &str,
     access_token: &str,
     request_body: &impl Serialize,
     timeout: Duration,
 ) -> Result<T, String> {
     let request_started_at = Instant::now();
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(timeout)
-        .build()
-        .map_err(|err| format!("cloud_unavailable: 无法初始化云端连接：{err}"))?;
-    let response = client
-        .post(format!("{CLOUD_API_BASE_URL}{path}"))
-        .bearer_auth(access_token)
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
-        .json(request_body)
-        .send()
-        .await
-        .map_err(|err| format!("cloud_unavailable: 无法连接额度服务器：{err}"))?;
+    let body = serde_json::to_value(request_body)
+        .map_err(|_| "cloud_invalid_request: 请求内容格式无效".to_string())?;
+    let log_context = (path == "/v1/ai/music/generations").then(|| CloudRequestLogContext {
+        operation: "music_generate",
+        upload_bytes: serde_json::to_vec(&body).map_or(0, |bytes| bytes.len()),
+    });
+    let response = send_cloud_request(app_handle, timeout, "POST", log_context, |client| {
+        client
+            .post(format!("{CLOUD_API_BASE_URL}{path}"))
+            .bearer_auth(access_token)
+            .header("x-client-version", env!("CARGO_PKG_VERSION"))
+            .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
+            .json(&body)
+    })
+    .await?;
     let response_received_at = Instant::now();
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|err| format!("cloud_invalid_response: 无法读取额度服务器响应：{err}"))?;
+    let body = response.text().await.map_err(|err| {
+        observe_cloud_response_failure(app_handle, status, cloud_operation(path), &err);
+        format!("cloud_invalid_response: 无法读取额度服务器响应：{err}")
+    })?;
     if path == "/v1/ai/images/generations" {
         eprintln!(
             "[cloud_image_http_timing] responseWaitMs={} bodyReadMs={} totalMs={}",
-            response_received_at.duration_since(request_started_at).as_millis(),
+            response_received_at
+                .duration_since(request_started_at)
+                .as_millis(),
             response_received_at.elapsed().as_millis(),
             request_started_at.elapsed().as_millis(),
         );
@@ -729,27 +2119,24 @@ async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
 }
 
 async fn get_cloud_with_bearer<T: for<'de> Deserialize<'de>>(
+    app_handle: &tauri::AppHandle,
     path: &str,
     access_token: &str,
 ) -> Result<T, String> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|err| format!("cloud_unavailable: 无法初始化云端连接：{err}"))?;
-    let response = client
-        .get(format!("{CLOUD_API_BASE_URL}{path}"))
-        .bearer_auth(access_token)
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
-        .send()
-        .await
-        .map_err(|err| format!("cloud_unavailable: 无法连接额度服务器：{err}"))?;
+    let timeout = if path.starts_with("/v1/ai/music/generations/by-request/") { Duration::from_secs(900) } else { Duration::from_secs(30) };
+    let response = send_cloud_request(app_handle, timeout, "GET", None, |client| {
+        client
+            .get(format!("{CLOUD_API_BASE_URL}{path}"))
+            .bearer_auth(access_token)
+            .header("x-client-version", env!("CARGO_PKG_VERSION"))
+            .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
+    })
+    .await?;
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|err| format!("cloud_invalid_response: 无法读取额度服务器响应：{err}"))?;
+    let body = response.text().await.map_err(|err| {
+        observe_cloud_response_failure(app_handle, status, cloud_operation(path), &err);
+        format!("cloud_invalid_response: 无法读取额度服务器响应：{err}")
+    })?;
     if !status.is_success() {
         let parsed = serde_json::from_str::<CloudApiError>(&body).ok();
         let fallback = cloud_http_fallback(status, &body);
@@ -779,15 +2166,71 @@ fn summarize_cloud_account(
         email: response.account.user.email.clone(),
         display_name: response.account.user.display_name.clone(),
         wallet,
+        membership: response.account.membership.clone(),
+        referral: response.account.referral.clone(),
     })
+}
+
+#[cfg(test)]
+mod quota_tests {
+    use super::CloudAccountResponse;
+
+    #[test]
+    fn old_account_response_without_membership_quotas_deserializes_to_empty_list() {
+        let response: CloudAccountResponse = serde_json::from_value(serde_json::json!({
+            "user": { "email": "designer@example.com", "displayName": "Designer" },
+            "wallet": {
+                "availableCredits": "100.000000",
+                "reservedCredits": "0.000000",
+                "lifetimeGranted": "100.000000",
+                "lifetimeConsumed": "0.000000"
+            },
+            "membership": {
+                "id": "membership-1",
+                "status": "ACTIVE",
+                "startsAt": "2026-09-01T00:00:00.000Z",
+                "expiresAt": "2026-10-01T00:00:00.000Z",
+                "source": "ADMIN",
+                "plan": { "id": "plan-1", "code": "pro", "name": "Pro" }
+            },
+            "referral": null
+        }))
+        .expect("legacy account response should deserialize");
+
+        assert!(response.membership.expect("membership").quotas.is_empty());
+    }
+
+    #[test]
+    fn missing_quota_fields_use_serde_defaults() {
+        let response: CloudAccountResponse = serde_json::from_value(serde_json::json!({
+            "user": { "email": null, "displayName": null },
+            "wallet": null,
+            "membership": {
+                "id": "membership-1",
+                "status": "ACTIVE",
+                "startsAt": "2026-09-01T00:00:00.000Z",
+                "expiresAt": "2026-10-01T00:00:00.000Z",
+                "source": null,
+                "plan": { "id": "plan-1", "code": "pro", "name": "Pro" },
+                "quotas": [{}]
+            },
+            "referral": null
+        }))
+        .expect("partial quota should deserialize");
+
+        let membership = response.membership.expect("membership");
+        let quota = &membership.quotas[0];
+        assert_eq!(quota.limit, 0);
+        assert_eq!(quota.remaining, 0);
+        assert!(quota.canonical_model_id.is_empty());
+    }
 }
 
 async fn sync_cloud_account_uncached(
     app_handle: &tauri::AppHandle,
+    current: &str,
 ) -> Result<EmailVerificationResponse, String> {
-    let current = read_license_content(app_handle)?
-        .ok_or_else(|| "license_missing: 请先完成邮箱注册或登录".to_string())?;
-    let payload = decode_license_payload_unverified(&current)
+    let payload = decode_license_payload_unverified(current)
         .ok_or_else(|| "malformed_license: 本地授权格式无效".to_string())?;
     if payload.license_id.is_none() {
         return Err("cloud_account_required: 请先完成邮箱注册或登录".to_string());
@@ -795,12 +2238,12 @@ async fn sync_cloud_account_uncached(
     let machine_id = crate::platform::machine_fingerprint(app_handle)
         .map_err(|err| format!("io_error: {err}"))?;
     let request = CloudLicenseSyncRequest {
-        license: &current,
+        license: current,
         machine_id: &machine_id,
     };
     let mut attempt = 0;
     let response = loop {
-        match post_cloud_email_sync_once(&request).await {
+        match post_cloud_email_sync_once(app_handle, &request).await {
             Ok(response) => break response,
             Err(error) => {
                 if attempt + 1 >= EMAIL_SYNC_MAX_ATTEMPTS || !is_retryable_email_sync_error(&error)
@@ -813,22 +2256,33 @@ async fn sync_cloud_account_uncached(
             }
         }
     };
-    verify_and_save_cloud_license(app_handle, machine_id, response.license.clone())?;
-    cache_cloud_access_token(&response.access_token);
+    verify_and_save_cloud_license(app_handle, machine_id, &response, Some(current))?;
     Ok(response)
 }
 
 async fn sync_cloud_account(
     app_handle: &tauri::AppHandle,
 ) -> Result<EmailVerificationResponse, String> {
+    let current = {
+        let _guard = CLOUD_AUTH_WRITE_LOCK
+            .lock()
+            .map_err(|_| "cloud_account_busy: 授权状态暂时无法更新".to_string())?;
+        read_license_content(app_handle)?
+            .ok_or_else(|| "license_missing: 请先完成邮箱注册或登录".to_string())?
+    };
+    let license_key = license_cache_key(&current);
     let flight_store = EMAIL_SYNC_FLIGHT.get_or_init(|| AsyncMutex::new(None));
     let flight = {
         let mut guard = flight_store.lock().await;
-        if let Some(flight) = guard.as_ref() {
+        if let Some(flight) = guard
+            .as_ref()
+            .filter(|flight| flight.license_key == license_key)
+        {
             flight.clone()
         } else {
             let flight = Arc::new(EmailSyncFlight {
                 result: OnceCell::new(),
+                license_key,
             });
             *guard = Some(flight.clone());
             flight
@@ -837,7 +2291,7 @@ async fn sync_cloud_account(
 
     let result = flight
         .result
-        .get_or_init(|| async { sync_cloud_account_uncached(app_handle).await })
+        .get_or_init(|| async { sync_cloud_account_uncached(app_handle, &current).await })
         .await
         .clone();
 
@@ -870,7 +2324,10 @@ fn email_sync_retry_delay(retry_index: usize, retry_after: Option<Duration>) -> 
 }
 
 fn is_retryable_email_sync_error(error: &EmailSyncRequestError) -> bool {
-    matches!(error.status, None | Some(429 | 500 | 502 | 503 | 504))
+    // The sync endpoint is a POST. Once a response is lost we cannot know
+    // whether the server accepted the license, so never replay it here.
+    let _ = error;
+    false
 }
 
 fn parse_retry_after(value: Option<&str>) -> Option<Duration> {
@@ -878,24 +2335,90 @@ fn parse_retry_after(value: Option<&str>) -> Option<Duration> {
     Some(Duration::from_secs(seconds))
 }
 
-fn cache_cloud_access_token(access_token: &str) {
+fn cache_cloud_access_token(response: &EmailVerificationResponse) {
     let cache = CLOUD_TOKEN_CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(mut guard) = cache.lock() {
         *guard = Some(CachedCloudToken {
-            value: access_token.to_string(),
-            expires_at: Instant::now() + Duration::from_secs(12 * 60),
+            value: response.access_token.clone(),
+            expires_at: Instant::now() + token_cache_lifetime(response),
+            license_key: license_cache_key(&response.license),
         });
     }
 }
 
+pub(crate) fn invalidate_cloud_token(access_token: &str) -> bool {
+    let Some(cache) = CLOUD_TOKEN_CACHE.get() else {
+        return false;
+    };
+    let Ok(mut guard) = cache.lock() else {
+        return false;
+    };
+    // Do not evict a new login's token for an old in-flight request's 401.
+    if guard
+        .as_ref()
+        .is_some_and(|cached| cached.value == access_token)
+    {
+        *guard = None;
+        return true;
+    }
+    false
+}
+
+pub(crate) fn observe_cloud_auth_rejection(
+    app: &tauri::AppHandle,
+    token: &str,
+    status: reqwest::StatusCode,
+    operation: &'static str,
+) {
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        let invalidated = invalidate_cloud_token(token);
+        crate::renderer_diagnostics::record(
+            app,
+            "main",
+            "cloud_auth_rejected",
+            serde_json::json!({
+                "operation": operation, "httpStatus": 401, "cachedTokenInvalidated": invalidated,
+                "automaticRequestReplay": false,
+            }),
+        );
+    }
+}
+
+pub(crate) fn observe_cloud_response_failure(
+    app: &tauri::AppHandle,
+    status: reqwest::StatusCode,
+    operation: &'static str,
+    error: &reqwest::Error,
+) {
+    crate::renderer_diagnostics::record(
+        app,
+        "main",
+        "cloud_response_failure",
+        serde_json::json!({
+            "operation": operation, "httpStatus": status.as_u16(),
+            "category": if error.is_timeout() { "timeout" } else if error.is_decode() { "decode" } else { "response_body" },
+        }),
+    );
+}
+
 pub(crate) async fn cloud_access_token(app_handle: &tauri::AppHandle) -> Result<String, String> {
-    let cache = CLOUD_TOKEN_CACHE.get_or_init(|| Mutex::new(None));
-    if let Ok(guard) = cache.lock() {
-        if let Some(cached) = guard
-            .as_ref()
-            .filter(|cached| cached.expires_at > Instant::now())
-        {
-            return Ok(cached.value.clone());
+    {
+        // Read license + cache consistently with login/import/logout writes.
+        // Release this synchronous lock before any network await.
+        let _auth_guard = CLOUD_AUTH_WRITE_LOCK
+            .lock()
+            .map_err(|_| "cloud_account_busy: 授权状态暂时无法更新".to_string())?;
+        let current = read_license_content(app_handle)?
+            .ok_or_else(|| "license_missing: 请先完成邮箱注册或登录".to_string())?;
+        let license_key = license_cache_key(&current);
+        let cache = CLOUD_TOKEN_CACHE.get_or_init(|| Mutex::new(None));
+        if let Ok(guard) = cache.lock() {
+            if let Some(cached) = guard
+                .as_ref()
+                .filter(|cached| cached.matches_license_at(&license_key, Instant::now()))
+            {
+                return Ok(cached.value.clone());
+            }
         }
     }
     let access_token = sync_cloud_account(app_handle).await?.access_token;
@@ -905,13 +2428,32 @@ pub(crate) async fn cloud_access_token(app_handle: &tauri::AppHandle) -> Result<
 fn verify_and_save_cloud_license(
     app_handle: &tauri::AppHandle,
     machine_id: String,
-    license_content: String,
+    response: &EmailVerificationResponse,
+    expected_license: Option<&str>,
 ) -> Result<LicenseStatus, String> {
-    let payload = crate::license::verifier::verify_license_content(&license_content, &machine_id)
+    let payload = crate::license::verifier::verify_license_content(&response.license, &machine_id)
         .map_err(format_license_error)?;
+    let _guard = CLOUD_AUTH_WRITE_LOCK
+        .lock()
+        .map_err(|_| "cloud_account_busy: 授权状态暂时无法更新".to_string())?;
+    if let Some(expected) = expected_license {
+        if read_license_content(app_handle)?.as_deref() != Some(expected) {
+            return Err("cloud_account_changed: 账号已更改，请重新执行当前操作".to_string());
+        }
+    }
     let target = license_path(app_handle)?;
-    fs::write(&target, license_content)
+    fs::write(&target, &response.license)
         .map_err(|err| format!("io_error: 无法保存云端授权文件：{err}"))?;
+    cache_cloud_access_token(response);
+    crate::renderer_diagnostics::record(
+        app_handle,
+        "main",
+        "cloud_token_received",
+        serde_json::json!({
+            "cacheLifetimeSeconds": token_cache_lifetime(response).as_secs(),
+            "serverClockAvailable": response.server_time.is_some(),
+        }),
+    );
     Ok(LicenseStatus::from_payload(machine_id, payload))
 }
 
@@ -933,9 +2475,13 @@ pub fn get_license_status(app_handle: tauri::AppHandle) -> Result<LicenseStatus,
 }
 
 #[tauri::command]
-pub async fn request_email_verification(email: String) -> Result<EmailCodeChallenge, String> {
+pub async fn request_email_verification(
+    app_handle: tauri::AppHandle,
+    email: String,
+) -> Result<EmailCodeChallenge, String> {
     let email = validate_email(&email)?;
     post_cloud(
+        &app_handle,
         "/v1/auth/email/send-code",
         &EmailCodeRequest { email: &email },
     )
@@ -949,6 +2495,7 @@ pub async fn verify_email_registration(
     challenge_id: String,
     code: String,
     display_name: Option<String>,
+    invite_code: Option<String>,
 ) -> Result<LicenseStatus, String> {
     let email = validate_email(&email)?;
     let display_name = match display_name {
@@ -968,6 +2515,7 @@ pub async fn verify_email_registration(
         })
     });
     let response = post_cloud::<EmailVerificationResponse>(
+        &app_handle,
         "/v1/auth/email/verify",
         &EmailVerificationRequest {
             email: &email,
@@ -976,11 +2524,15 @@ pub async fn verify_email_registration(
             machine_id: &machine_id,
             display_name: display_name.as_deref(),
             legacy_license,
+            invite_code: invite_code
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty()),
             app_version: env!("CARGO_PKG_VERSION"),
         },
     )
     .await?;
-    verify_and_save_cloud_license(&app_handle, machine_id, response.license)
+    verify_and_save_cloud_license(&app_handle, machine_id, &response, None)
 }
 
 #[tauri::command]
@@ -1005,10 +2557,23 @@ pub async fn sync_email_license(
                 || error.starts_with("license_expired:")
                 || error.starts_with("license_revoked:") =>
         {
+            // A revoked old account's in-flight sync must not remove a newer
+            // login that completed while the request was pending.
+            let _guard = CLOUD_AUTH_WRITE_LOCK
+                .lock()
+                .map_err(|_| "cloud_account_busy: 授权状态暂时无法更新".to_string())?;
+            if read_license_content(&app_handle)?.as_deref() != Some(current.as_str()) {
+                return Err("cloud_account_changed: 账号已更改，请重新执行当前操作".to_string());
+            }
             let path = license_path(&app_handle)?;
             if path.exists() {
                 fs::remove_file(path)
                     .map_err(|err| format!("io_error: 无法移除失效授权文件：{err}"))?;
+            }
+            if let Some(cache) = CLOUD_TOKEN_CACHE.get() {
+                if let Ok(mut guard) = cache.lock() {
+                    *guard = None;
+                }
             }
             Err(error)
         }
@@ -1025,11 +2590,48 @@ pub async fn get_cloud_account(
 }
 
 #[tauri::command]
+pub async fn create_cloud_recharge_session(
+    app_handle: tauri::AppHandle,
+) -> Result<CloudRechargeSession, String> {
+    let access_token = cloud_access_token(&app_handle).await?;
+    post_cloud_with_bearer(
+        &app_handle,
+        "/v1/recharge/session",
+        &access_token,
+        &serde_json::json!({}),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn bind_cloud_referral(
+    app_handle: tauri::AppHandle,
+    invite_code: String,
+) -> Result<CloudAccountSummary, String> {
+    let invite_code = invite_code.trim().to_ascii_uppercase();
+    if invite_code.len() < 6 || invite_code.len() > 32 {
+        return Err("invalid_invite_code: 邀请码格式无效".to_string());
+    }
+    let synced = sync_cloud_account(&app_handle).await?;
+    let _: serde_json::Value = post_cloud_with_bearer(
+        &app_handle,
+        "/v1/referrals/bind",
+        &synced.access_token,
+        &ReferralBindRequest {
+            invite_code: &invite_code,
+        },
+    )
+    .await?;
+    let refreshed = sync_cloud_account(&app_handle).await?;
+    summarize_cloud_account(&refreshed)
+}
+
+#[tauri::command]
 pub async fn get_cloud_credit_usage(
     app_handle: tauri::AppHandle,
 ) -> Result<CloudCreditUsageResult, String> {
     let access_token = cloud_access_token(&app_handle).await?;
-    get_cloud_with_bearer("/v1/wallet/usage?limit=50", &access_token).await
+    get_cloud_with_bearer(&app_handle, "/v1/wallet/usage?limit=50", &access_token).await
 }
 
 #[tauri::command]
@@ -1043,6 +2645,7 @@ pub async fn redeem_credit_code(
     }
     let synced = sync_cloud_account(&app_handle).await?;
     let redeemed = post_cloud_with_bearer::<CreditRedemptionResponse>(
+        &app_handle,
         "/v1/wallet/redeem",
         &synced.access_token,
         &CreditRedemptionRequest { code },
@@ -1054,6 +2657,33 @@ pub async fn redeem_credit_code(
         redeemed_credits: redeemed.redeemed_credits,
         account,
     })
+}
+
+#[tauri::command]
+pub async fn generate_cloud_music(app_handle: tauri::AppHandle, request: serde_json::Value) -> Result<serde_json::Value, String> {
+    let access_token = cloud_access_token(&app_handle).await.map_err(|error| music_not_submitted_before_request(&error))?;
+    post_cloud_with_bearer_timeout::<serde_json::Value>(&app_handle, "/v1/ai/music/generations", &access_token, &request, std::time::Duration::from_secs(900)).await
+}
+
+fn music_not_submitted_before_request(error: &str) -> String {
+    let code = error.split_once(':').map(|(code, _)| code).filter(|code| matches!(*code,
+        "cloud_unavailable" | "license_missing" | "cloud_account_required" | "cloud_account_busy"
+        | "cloud_account_changed" | "cloud_invalid_response" | "cloud_invalid_request"
+        | "cloud_request_failed" | "account_disabled" | "license_disabled" | "invalid_license"
+        | "unauthorized" | "forbidden"))
+        .unwrap_or("cloud_unavailable");
+    format!("music_not_submitted: 音乐请求尚未发送（{code}），请检查网络或账号状态后重试")
+}
+
+#[tauri::command]
+pub async fn get_cloud_music_generation_by_request(app_handle: tauri::AppHandle, client_request_id: String) -> Result<serde_json::Value, String> {
+    let client_request_id = client_request_id.trim();
+    if client_request_id.is_empty() || client_request_id.len() > 128 {
+        return Err("invalid_request: 音乐请求 ID 无效".to_string());
+    }
+    let access_token = cloud_access_token(&app_handle).await?;
+    let encoded = url::form_urlencoded::byte_serialize(client_request_id.as_bytes()).collect::<String>();
+    get_cloud_with_bearer(&app_handle, &format!("/v1/ai/music/generations/by-request/{encoded}"), &access_token).await
 }
 
 #[tauri::command]
@@ -1102,6 +2732,7 @@ pub async fn generate_cloud_images(
     let access_token = cloud_access_token(&app_handle).await?;
     let token_ready_at = Instant::now();
     let result = post_cloud_with_bearer_timeout::<CloudImageGenerationResult>(
+        &app_handle,
         "/v1/ai/images/generations",
         &access_token,
         &request,
@@ -1150,14 +2781,48 @@ pub async fn get_cloud_image_generation_by_request(
     {
         return Err("invalid_request: 生图请求 ID 无效".to_string());
     }
+    static LOOKUP_PERMITS: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    static NEXT_LOOKUP: OnceLock<AsyncMutex<Instant>> = OnceLock::new();
+    let _permit = LOOKUP_PERMITS.get_or_init(|| tokio::sync::Semaphore::new(2))
+        .acquire().await.map_err(|_| "cloud_unavailable: 状态查询队列不可用".to_string())?;
+    let delay = {
+        let mut next = NEXT_LOOKUP.get_or_init(|| AsyncMutex::new(Instant::now())).lock().await;
+        let start = (*next).max(Instant::now());
+        *next = start + Duration::from_millis(750);
+        start.saturating_duration_since(Instant::now())
+    };
+    tokio::time::sleep(delay).await;
     let access_token = cloud_access_token(&app_handle).await?;
     let encoded_request_id =
         url::form_urlencoded::byte_serialize(client_request_id.as_bytes()).collect::<String>();
     get_cloud_with_bearer::<CloudImageGenerationLookup>(
+        &app_handle,
         &format!("/v1/ai/images/generations/by-request/{encoded_request_id}"),
         &access_token,
     )
     .await
+}
+
+#[tauri::command]
+pub async fn recover_cloud_image_generation(
+    app_handle: tauri::AppHandle,
+    client_request_id: String,
+) -> Result<CloudImageGenerationLookup, String> {
+    let client_request_id = client_request_id.trim();
+    if client_request_id.len() < 8 || client_request_id.len() > 128
+        || !client_request_id.chars().all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_' | '.' | ':'))
+    {
+        return Err("invalid_request: 生图请求 ID 无效".to_string());
+    }
+    let access_token = cloud_access_token(&app_handle).await?;
+    let encoded = url::form_urlencoded::byte_serialize(client_request_id.as_bytes()).collect::<String>();
+    post_cloud_with_bearer_timeout::<CloudImageGenerationLookup>(
+        &app_handle,
+        &format!("/v1/ai/images/generations/by-request/{encoded}/recover"),
+        &access_token,
+        &serde_json::json!({}),
+        Duration::from_secs(900),
+    ).await
 }
 
 #[tauri::command]
@@ -1169,20 +2834,20 @@ pub async fn get_cloud_image_models(
     // IMAGE channel selection, so the client provider must not constrain it.
     let _ = provider;
     let access_token = cloud_access_token(&app_handle).await?;
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|error| format!("cloud_unavailable: 无法初始化云端连接：{error}"))?;
-    let request = client
-        .get(format!("{CLOUD_API_BASE_URL}/v1/ai/images/models"))
-        .bearer_auth(access_token)
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION);
-    let response = request
-        .send()
-        .await
-        .map_err(|error| format!("cloud_unavailable: 无法连接生图模型服务：{error}"))?;
+    let response = send_cloud_request(
+        &app_handle,
+        Duration::from_secs(30),
+        "GET",
+        None,
+        |client| {
+            client
+                .get(format!("{CLOUD_API_BASE_URL}/v1/ai/images/models"))
+                .bearer_auth(&access_token)
+                .header("x-client-version", env!("CARGO_PKG_VERSION"))
+                .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
+        },
+    )
+    .await?;
     let status = response.status();
     let body = response
         .text()
@@ -1228,24 +2893,12 @@ pub async fn generate_cloud_videos(
     if model.is_empty() || model.len() > 200 || prompt.is_empty() || prompt.len() > 50_000 {
         return Err("invalid_request: 视频模型或提示词无效".to_string());
     }
-    let is_first_last_frame = request
-        .input_mode
-        .as_deref()
-        .map(|value| value.eq_ignore_ascii_case("FLF"))
-        .unwrap_or(false);
-    if !(1..=4).contains(&request.count)
+    if !(1..=16).contains(&request.count)
         || request.input_images.len() > 32
         || request.input_videos.len() > 8
         || request.input_audios.len() > 8
     {
         return Err("invalid_request: 视频数量或参考素材数量无效".to_string());
-    }
-    if is_first_last_frame && request.input_images.len() != 2 {
-        return Err("invalid_request: FLF requires exactly two reference images".to_string());
-    }
-    if is_first_last_frame {
-        request.input_videos.clear();
-        request.input_audios.clear();
     }
     request.input_images =
         normalize_cloud_image_references(std::mem::take(&mut request.input_images))?;
@@ -1253,10 +2906,13 @@ pub async fn generate_cloud_videos(
     // This bridge only enforces conservative transport safety bounds.
     let access_token = cloud_access_token(&app_handle).await?;
     post_cloud_with_bearer_timeout::<CloudVideoGenerationResult>(
+        &app_handle,
         "/v1/ai/videos",
         &access_token,
         &request,
-        Duration::from_secs(25 * 60),
+        // Submission has its own transport deadline.  The caller owns the
+        // longer task-generation budget and will poll the returned task id.
+        Duration::from_secs(60),
     )
     .await
 }
@@ -1265,9 +2921,7 @@ pub async fn generate_cloud_videos(
 pub async fn get_cloud_video_status(
     app_handle: tauri::AppHandle,
     task_id: String,
-    provider: Option<String>,
     client_request_id: Option<String>,
-    provider_channel_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let task_id = task_id.trim();
     if task_id.is_empty()
@@ -1279,31 +2933,32 @@ pub async fn get_cloud_video_status(
         return Err("invalid_request: 视频任务 ID 无效".to_string());
     }
     let access_token = cloud_access_token(&app_handle).await?;
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(25 * 60))
-        .build()
-        .map_err(|error| format!("cloud_unavailable: 无法初始化云端连接：{error}"))?;
-    let mut request = client
-        .get(format!("{CLOUD_API_BASE_URL}/v1/ai/videos/{task_id}"))
-        .bearer_auth(access_token)
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION);
-    if let Some(provider) = provider.filter(|value| !value.trim().is_empty()) {
-        request = request.query(&[("provider", provider)]);
-    }
-    if let Some(client_request_id) = client_request_id.filter(|value| !value.trim().is_empty()) {
-        request = request.query(&[("clientRequestId", client_request_id)]);
-    }
-    if let Some(provider_channel_id) = provider_channel_id.filter(|value| !value.trim().is_empty())
-    {
-        request = request.query(&[("providerChannelId", provider_channel_id)]);
-    }
-    let response = request
-        .send()
-        .await
-        .map_err(|error| format!("cloud_unavailable: 无法连接额度服务器：{error}"))?;
+    let request_id = client_request_id.filter(|value| !value.trim().is_empty());
+    let response = send_cloud_request(
+        &app_handle,
+        Duration::from_secs(30),
+        "GET",
+        None,
+        |client| {
+            let mut request = client
+                .get(format!("{CLOUD_API_BASE_URL}/v1/ai/videos/{task_id}"))
+                .bearer_auth(&access_token)
+                .header("x-client-version", env!("CARGO_PKG_VERSION"))
+                .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION);
+            if let Some(request_id) = request_id.as_deref() {
+                request = request.query(&[("clientRequestId", request_id)]);
+            }
+            request
+        },
+    )
+    .await?;
     let status = response.status();
+    let retry_after_ms = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| seconds.saturating_mul(1_000));
     let body = response
         .text()
         .await
@@ -1318,7 +2973,10 @@ pub async fn get_cloud_video_status(
             .as_ref()
             .and_then(|value| value.message.as_deref())
             .unwrap_or("视频状态查询失败");
-        return Err(cloud_error(code, message));
+        let retry_hint = retry_after_ms
+            .map(|value| format!(" retry_after_ms={value}"))
+            .unwrap_or_default();
+        return Err(format!("{}{}", cloud_error(code, message), retry_hint));
     }
     serde_json::from_str(&body).map_err(|_| "cloud_invalid_response: 视频状态格式无效".to_string())
 }
@@ -1345,14 +3003,25 @@ pub fn import_license(
         .map_err(format_license_error)?;
 
     let target = license_path(&app_handle)?;
+    let _guard = CLOUD_AUTH_WRITE_LOCK
+        .lock()
+        .map_err(|_| "cloud_account_busy: 授权状态暂时无法更新".to_string())?;
     fs::write(&target, license_content)
         .map_err(|err| format!("io_error: 无法保存授权文件：{err}"))?;
+    if let Some(cache) = CLOUD_TOKEN_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            *guard = None;
+        }
+    }
 
     Ok(LicenseStatus::from_payload(machine_id, payload))
 }
 
 #[tauri::command]
 pub fn remove_license(app_handle: tauri::AppHandle) -> Result<LicenseStatus, String> {
+    let _guard = CLOUD_AUTH_WRITE_LOCK
+        .lock()
+        .map_err(|_| "cloud_account_busy: 授权状态暂时无法更新".to_string())?;
     let path = license_path(&app_handle)?;
     if path.exists() {
         fs::remove_file(&path).map_err(|err| format!("io_error: 无法移除授权文件：{err}"))?;
@@ -1392,13 +3061,42 @@ pub fn require_feature(app_handle: &tauri::AppHandle, feature: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::{
-        email_sync_retry_delay, is_retryable_email_sync_error, normalize_cloud_image_references,
-        parse_cloud_image_reference, parse_retry_after, validate_display_name, validate_email,
-        CloudCreditUsageResult, CloudImageGenerationRequest, CloudImageModelsResponse,
-        CloudImageReference, EmailSyncRequestError,
+        cloud_http_fallback, email_sync_retry_delay, is_retryable_email_sync_error,
+        normalize_cloud_image_references, parse_cloud_image_reference, parse_retry_after,
+        validate_display_name, validate_email, CloudCreditUsageResult, CloudImageGenerationRequest,
+        CloudImageModelsResponse, CloudImageReference, CloudVideoGenerationRequest, CloudImageGenerationLookup,
+        EmailSyncRequestError,
     };
     use base64::Engine as _;
     use std::fs;
+
+    #[test]
+    fn cloud_image_lookup_preserves_terminal_failure_for_the_renderer() {
+        let lookup: CloudImageGenerationLookup = serde_json::from_value(serde_json::json!({
+            "status": "failed", "error": {
+                "code": "PROVIDER_IMAGE_URL_BLOCKED", "message": "参考图片被渠道安全策略拒绝", "httpStatus": 400
+            }
+        })).unwrap();
+        let value = serde_json::to_value(lookup).unwrap();
+        assert_eq!(value["error"]["code"], "PROVIDER_IMAGE_URL_BLOCKED");
+        assert_eq!(value["error"]["httpStatus"], 400);
+        assert_eq!(value["images"], serde_json::json!([]));
+        assert_eq!(value["confirmationRequired"], false);
+    }
+
+    #[test]
+    fn cloud_image_lookup_preserves_manual_confirmation_and_old_server_compatibility() {
+        let lookup: CloudImageGenerationLookup = serde_json::from_value(serde_json::json!({
+            "status": "processing", "confirmationRequired": true,
+            "recoveryStatus": "manual_confirmation_required"
+        })).unwrap();
+        let value = serde_json::to_value(lookup).unwrap();
+        assert_eq!(value["confirmationRequired"], true);
+        assert_eq!(value["recoveryStatus"], "manual_confirmation_required");
+        let old: CloudImageGenerationLookup = serde_json::from_value(serde_json::json!({ "status": "processing" })).unwrap();
+        assert!(!old.confirmation_required);
+        assert!(old.error.is_none());
+    }
 
     #[test]
     fn validates_trial_display_names() {
@@ -1420,23 +3118,67 @@ mod tests {
     }
 
     #[test]
-    fn keeps_reference_identity_unlocked_unless_the_client_enables_it() {
-        let base = serde_json::json!({
+    fn strips_legacy_wallet_route_hints_from_image_requests() {
+        let request: CloudImageGenerationRequest = serde_json::from_value(serde_json::json!({
             "clientRequestId": "canvas-image-request-1",
+            "provider": "new-api",
+            "providerChannelId": "stale-channel",
             "model": "gemini-3-pro-image",
             "prompt": "render a projector",
+            "preserveReferenceIdentity": true,
             "inputImages": ["https://example.test/projector.png"],
             "aspectRatio": "16:9",
             "outputFormat": "jpg",
             "count": 1
-        });
-        let unlocked: CloudImageGenerationRequest = serde_json::from_value(base.clone()).unwrap();
-        assert!(!unlocked.preserve_reference_identity);
+        }))
+        .unwrap();
+        let serialized = serde_json::to_value(request).unwrap();
+        assert!(serialized.get("provider").is_none());
+        assert!(serialized.get("providerChannelId").is_none());
+        assert!(serialized.get("preserveReferenceIdentity").is_none());
+    }
 
-        let mut locked_value = base;
-        locked_value["preserveReferenceIdentity"] = serde_json::json!(true);
-        let locked: CloudImageGenerationRequest = serde_json::from_value(locked_value).unwrap();
-        assert!(locked.preserve_reference_identity);
+    #[test]
+    fn strips_legacy_wallet_route_hints_from_video_requests() {
+        let request: CloudVideoGenerationRequest = serde_json::from_value(serde_json::json!({
+            "clientRequestId": "canvas-video-request-1",
+            "provider": "minimax",
+            "providerChannelId": "stale-seedance-channel",
+            "model": "minimax-h3",
+            "prompt": "slow orbital camera move",
+            "inputImages": [],
+            "inputVideos": [],
+            "inputAudios": [],
+            "aspectRatio": "16:9",
+            "resolution": "1080p",
+            "duration": 5,
+            "inputMode": "REF",
+            "count": 1
+        }))
+        .unwrap();
+        let serialized = serde_json::to_value(request).unwrap();
+        assert!(serialized.get("provider").is_none());
+        assert!(serialized.get("providerChannelId").is_none());
+        assert_eq!(
+            serialized.get("model").and_then(|value| value.as_str()),
+            Some("minimax-h3")
+        );
+    }
+
+    #[test]
+    fn keeps_unspecified_wallet_video_ratio_omitted() {
+        let request: CloudVideoGenerationRequest = serde_json::from_value(serde_json::json!({
+            "clientRequestId": "canvas-video-request-auto-ratio",
+            "model": "future-video",
+            "prompt": "automatic framing",
+            "inputImages": [],
+            "count": 1
+        }))
+        .unwrap();
+        let serialized = serde_json::to_value(request).unwrap();
+        assert!(serialized.get("aspectRatio").is_none());
+        assert!(serialized.get("provider").is_none());
+        assert!(serialized.get("providerChannelId").is_none());
     }
 
     #[test]
@@ -1555,18 +3297,18 @@ mod tests {
     }
 
     #[test]
-    fn email_sync_retries_only_transient_failures_and_reads_retry_after() {
+    fn email_sync_does_not_replay_post_after_a_lost_or_error_response() {
         assert_eq!(
             parse_retry_after(Some("12")),
             Some(std::time::Duration::from_secs(12))
         );
         assert_eq!(parse_retry_after(Some("invalid")), None);
-        assert!(is_retryable_email_sync_error(&EmailSyncRequestError {
+        assert!(!is_retryable_email_sync_error(&EmailSyncRequestError {
             status: Some(429),
             retry_after: None,
             message: String::new(),
         }));
-        assert!(is_retryable_email_sync_error(&EmailSyncRequestError {
+        assert!(!is_retryable_email_sync_error(&EmailSyncRequestError {
             status: Some(500),
             retry_after: None,
             message: String::new(),
@@ -1588,6 +3330,7 @@ mod tests {
             "pricing": {
                 "agentRequestCredits": "7",
                 "inspirationAnalysisCredits": "3",
+                "canvasTextAgentCredits": "1.000000",
                 "imageDefaultCredits": "55",
                 "videoDefaultCredits": "500",
                 "imageModels": [{
@@ -1599,8 +3342,18 @@ mod tests {
                     "model": "gemini-3-pro-image",
                     "credits2k": "18",
                     "credits4k": "20"
+                }, {
+                    "model": "example",
+                    "billingType": "image_flat",
+                    "creditsPerRequest": "7.5",
+                    "creditsByResolution": {}
                 }],
-                "videoModels": [],
+                "videoModels": [{
+                    "model": "flat-video",
+                    "billingType": "video_flat",
+                    "credits": "0",
+                    "creditsPerVideo": "15"
+                }],
                 "updatedAt": "2026-07-27T00:00:00.000Z"
             }
         }))
@@ -1615,9 +3368,62 @@ mod tests {
             serde_json::Value::Null
         );
         assert_eq!(
+            value["pricing"]["imageModels"][2]["billingType"],
+            serde_json::json!("image_flat")
+        );
+        assert_eq!(
+            value["pricing"]["imageModels"][2]["creditsPerRequest"],
+            serde_json::json!("7.5")
+        );
+        assert_eq!(
+            value["pricing"]["imageModels"][2]["creditsByResolution"],
+            serde_json::json!({})
+        );
+        assert_eq!(
+            value["pricing"]["imageModels"][2]["credits4k"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
             value["pricing"]["inspirationAnalysisCredits"],
             serde_json::json!("3")
         );
+        assert_eq!(
+            value["pricing"]["canvasTextAgentCredits"],
+            serde_json::json!("1.000000")
+        );
+        assert_eq!(
+            value["pricing"]["videoModels"][0]["billingType"],
+            serde_json::json!("video_flat")
+        );
+    }
+
+    #[test]
+    fn cloud_http_errors_hide_tokens_and_signed_urls() {
+        let message = cloud_http_fallback(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"message":"token=secret https://api.example.test/x?sig=secret"}"#,
+        );
+        assert!(!message.contains("secret"));
+        assert!(!message.contains("api.example.test"));
+        assert!(message.contains("HTTP 400"));
+    }
+
+    #[test]
+    fn accepts_cloud_pricing_from_older_servers_without_canvas_text_price() {
+        let pricing: super::CloudAiPricing = serde_json::from_value(serde_json::json!({
+            "agentRequestCredits": "10",
+            "inspirationAnalysisCredits": "3",
+            "imageDefaultCredits": "55",
+            "videoDefaultCredits": "500",
+            "imageModels": [],
+            "videoModels": [],
+            "updatedAt": null
+        }))
+        .unwrap();
+
+        let value = serde_json::to_value(pricing).unwrap();
+        assert_eq!(value["agentRequestCredits"], serde_json::json!("10"));
+        assert!(value.get("canvasTextAgentCredits").is_none());
     }
 
     #[test]
@@ -1649,6 +3455,7 @@ mod tests {
                         "4K": ["2880x2880", "3840x2160"]
                     },
                     "maxReferenceImages": 7,
+                    "supportsTextPrompt": false,
                     "supportedOutputFormats": ["jpg", "png"]
                 }
             }]
@@ -1664,10 +3471,68 @@ mod tests {
             value["catalog"][0]["capabilities"]["aspectRatiosByResolution"]["4K"],
             serde_json::json!(["2880x2880", "3840x2160"])
         );
+        assert_eq!(
+            value["catalog"][0]["capabilities"]["supportsTextPrompt"],
+            serde_json::json!(false)
+        );
         assert!(value["catalog"][0].get("provider").is_none());
         assert_eq!(
             value["channels"][0]["modelCapabilities"]["route-image-v2"]["resolutions"],
             serde_json::json!(["2K"])
         );
+    }
+}
+
+#[cfg(test)]
+mod capability_upgrade_tests {
+    use super::*;
+    #[test]
+    fn quality_and_multi_asset_capabilities_survive_the_native_bridge() {
+        let input = serde_json::json!({"supportedQualities": ["high", "max"], "qualityParameter": "render_quality", "maxOutputImages": 4, "outputMode": "multiple_assets", "billingMode": "per_request", "supportsImageEdit": false});
+        let capabilities: CloudAiModelCapabilities = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(capabilities).unwrap(), input);
+        let request: CloudImageGenerationRequest = serde_json::from_value(serde_json::json!({"clientRequestId": "quality-request", "model": "arbitrary-model", "prompt": "image", "inputImages": [], "aspectRatio": "1:1", "resolution": "2k", "outputFormat": "png", "count": 1, "quality": "max"})).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap()["quality"], "max");
+    }
+}
+
+#[cfg(test)]
+mod music_catalog_bridge_tests {
+    use super::{CloudAiPricing, CloudImageModelsResponse};
+
+    #[test]
+    fn music_price_survives_the_bridge_and_old_servers_remain_compatible() {
+        let mut input = serde_json::json!({
+            "agentRequestCredits": "1", "inspirationAnalysisCredits": "1",
+            "imageDefaultCredits": "1", "videoDefaultCredits": "1",
+            "imageModels": [], "videoModels": [], "updatedAt": null,
+            "musicModels": [{ "model": "suno", "billingType": "music_flat", "creditsPerRequest": "50.000000" }]
+        });
+        let pricing: CloudAiPricing = serde_json::from_value(input.clone()).unwrap();
+        let output = serde_json::to_value(pricing).unwrap();
+        assert_eq!(output["musicModels"], input["musicModels"]);
+        input.as_object_mut().unwrap().remove("musicModels");
+        let legacy: CloudAiPricing = serde_json::from_value(input).unwrap();
+        assert!(legacy.music_models.is_empty());
+    }
+
+    #[test]
+    fn audio_only_catalog_survives_the_desktop_bridge() {
+        let response: CloudImageModelsResponse = serde_json::from_value(serde_json::json!({
+            "provider": "NEW_API", "defaultModel": null,
+            "defaultImageModel": null, "defaultVideoModel": null,
+            "models": [], "channels": [], "videoChannels": [],
+            "catalog": [{
+                "id": "configured-music", "displayName": "Music", "modality": "audio",
+                "aliases": ["music-alias"], "enabled": true, "visible": true, "isDefault": true,
+                "capabilities": { "billingMode": "per_request" }
+            }]
+        })).unwrap();
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["catalog"][0]["modality"], "audio");
+        assert_eq!(value["catalog"][0]["id"], "configured-music");
+        assert_eq!(value["catalog"][0]["isDefault"], true);
+        assert_eq!(value["catalog"][0]["capabilities"]["billingMode"], "per_request");
+        assert_eq!(value["models"], serde_json::json!([]));
     }
 }

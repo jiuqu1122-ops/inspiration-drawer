@@ -1,3 +1,4 @@
+use crate::renderer_diagnostics::{window_action, WindowAction};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -899,7 +900,7 @@ fn route_bridge_request(
             );
         }
         if let Some(edge_window) = app.get_webview_window("edge") {
-            let _ = edge_window.show();
+            let _ = window_action(&edge_window, WindowAction::Show, "route_bridge_request");
         }
         emit_drag_lifecycle_event(&app, "browser-extension-image-drag-started", &drag_id);
         return (200, json!({ "ok": true, "dragId": drag_id }));

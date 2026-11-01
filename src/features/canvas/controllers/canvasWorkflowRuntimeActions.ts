@@ -1,3 +1,5 @@
+import { isCanvasWorkflowGeneratorType } from '../../canvasAiRuntime';
+import { beginWorkflowDiagnostic } from '../../../utils/rendererDiagnostics';
 import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import React from 'react';
 import { getAssetById } from '../../../services/assetsApi';
@@ -10,9 +12,9 @@ import { canUseCanvasItemAsWorkflowMaterial,getCanvasAiOutputDisplaySource,getCa
 import { cloneDrawerValue } from '../../../utils/canvasSerialization';
 import { validateCanvasWorkflowTemplate } from '../../../utils/canvasWorkflowDefinitions';
 import { applyCanvasWorkflowRuntimeSnapshots,createCanvasWorkflowOutputDrafts,createCanvasWorkflowRuntimeValue,getCanvasExpandedWorkflowDownstreamGeneratorIds,getCanvasWorkflowGroup,getCanvasWorkflowOutputLabel,getCanvasWorkflowOutputSlotTemplates,normalizeCanvasWorkflowRuntimeSnapshots,sortCanvasWorkflowRuntimeNodeIds } from '../../../utils/canvasWorkflowRuntime';
-import { isCanvasImageFileName,isCanvasTemplateJsonFileName,isCanvasVideoFileName,normalizeLocalDragPath } from '../../../utils/localMediaPaths';
+import { isCanvasAudioFileName,isCanvasImageFileName,isCanvasTemplateJsonFileName,isCanvasVideoFileName,normalizeLocalDragPath } from '../../../utils/localMediaPaths';
 import { type WorkflowResultCardData,type WorkflowResultMedia,type WorkflowResultReference } from '../../agentModel';
-import { isCanvasAiImageOutputReadyForWorkflowDependency,recoverCanvasAiNodeWithUsableResults } from '../../canvasAiOutputs';
+import { isCanvasAiAssetOutputReadyForWorkflowDependency,isCanvasAiImageOutputReadyForWorkflowDependency,recoverCanvasAiNodeWithUsableResults } from '../../canvasAiOutputs';
 import { claimCanvasAiRun,createCanvasAiClientRequestId,releaseCanvasAiRun } from '../../canvasAiRunGuard';
 import { getCanvasDrawerMediaPreviewSource,getCanvasDrawerMediaSource,isCanvasDrawerMediaItem } from '../../canvasDrawerMedia';
 import { CANVAS_GROW_CHUNK,type CanvasAiGeneratedOutput,type CanvasImageItem,type CanvasWorkflowRuntime } from '../../canvasModel';
@@ -25,7 +27,7 @@ import { requestCanvasWorkflowConversation } from '../../chat/runtime/canvasWork
 import { buildWorkflowResultCardData } from '../../workflowResult';
 import { INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS,INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID,buildIndustrialDesignLocalInspirationContext,buildIndustrialDesignRuntimeContextText,shouldTolerateIndustrialDesignDependencyFailure,type IndustrialDesignLocalInspirationContext } from '../../workflows/industrialDesignFullProcessWorkflow';
 
-type canvasWorkflowRuntimeActionContext = { canvasSurfaceRef: React.RefObject<HTMLDivElement | null>; isCanvasZoomingRef: React.RefObject<boolean>; canvasScaleRef: React.RefObject<number>; canvasSizeRef: React.RefObject<{ width: number; height: number; }>; width: number; height: number; setCanvasSizeImmediate: (nextSize: { width: number; height: number; }) => void; scheduleCanvasStateSave: (options?: { syncNodes?: boolean; }) => void; activeCanvasIdRef: React.RefObject<string>; canvasItemsRef: React.RefObject<CanvasImageItem[]>; canvasSessionItemsRef: React.RefObject<Map<string, CanvasImageItem[]>>; getCanvasSessionItems: (canvasId: string) => CanvasImageItem[]; updateCanvasAiGeneratorDataForCanvas: (targetCanvasId: string, nodeId: string, patch: Partial<NonNullable<CanvasImageItem["ai"]>>, content?: string) => CanvasImageItem | undefined; getCanvasWorkflowExpandedGroupItems: (groupId: string, sourceItems?: CanvasImageItem[]) => CanvasImageItem[]; showToast: (message: string) => void; getCanvasWorkflowGroupItemIdsForSelection: (groupId: string, sourceItems?: CanvasImageItem[]) => string[]; pushCanvasUndoSnapshot: (label: string, options?: { layoutOnly?: boolean; shareImmutableItems?: boolean; }) => void; updateCanvasItemsImmediate: (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => CanvasImageItem[]; updateCanvasSelection: (ids: string[]) => void; markCanvasRunNodeActive: (canvasId: string, nodeId: string) => void; runCanvasTextAgentTarget: (target: CanvasImageItem, options: { sourceItems?: () => CanvasImageItem[]; updateTextOutput: (output: string) => void; getLatestTarget?: () => CanvasImageItem | undefined; showResultToast?: boolean; showReferenceToast?: boolean; }) => Promise<string>; updateCanvasNodeForCanvas: (targetCanvasId: string, nodeId: string, updater: (item: CanvasImageItem) => CanvasImageItem) => CanvasImageItem | undefined; runCanvasAiGeneratorTarget: (target: CanvasImageItem, options: { canvasId?: string; sourceItems?: () => CanvasImageItem[]; updateAi: (patch: Partial<NonNullable<CanvasImageItem["ai"]>>, content?: string) => void; forceUpdateAi?: (patch: Partial<NonNullable<CanvasImageItem["ai"]>>, content?: string) => void; getLatestTarget?: () => CanvasImageItem | undefined; selectTarget?: () => void; showResultToast?: boolean; toastLabel?: string; clientRequestId?: string; requireLocalImageOutputs?: boolean; }) => Promise<CanvasAiGeneratedOutput[]>; waitForCanvasBackgroundPatches: (canvasId: string) => Promise<void>; markCanvasRunNodeSettled: (canvasId: string, nodeId: string) => void; notifyCanvasAiGenerationResult: (options: { status: "success" | "partial" | "error"; label: string; mediaType: "image" | "video"; generatedCount?: number; requestedCount?: number; error?: string; }) => void; createCanvasAiOutputDrafts: (target: CanvasImageItem, prompt: string, clientRequestId?: string) => CanvasAiGeneratedOutput[]; canvasAiRunTokensRef: React.RefObject<Map<string, string>>; applyCanvasAiGeneratorDataPatch: (item: CanvasImageItem, patch: Partial<NonNullable<CanvasImageItem["ai"]>>, content?: string) => CanvasImageItem; commitCanvasAiPromptDraft: (canvasId: string, content?: string, sync?: boolean) => void; instantiateCanvasWorkflowTemplateItems: (workflow: CanvasWorkflowTemplate, base: { x: number; y: number; }, externalInputIds?: string[]) => { workflow: null; items: CanvasImageItem[]; idMap: Map<string, string>; } | { workflow: CanvasWorkflowTemplate; items: CanvasImageItem[]; idMap: Map<string, string>; }; items: CanvasImageItem[]; idMap: Map<string, string>; hydrateCanvasWorkflowSlotAssetsFromDrawer: (runtimeItems: CanvasImageItem[]) => CanvasImageItem[]; retryCanvasCollapsedWorkflowOutput: (moduleId: string, visibleOutputIndex: number) => Promise<boolean>; retryCanvasExpandedWorkflowOutput: (targetId: string, outputIndex: number) => Promise<boolean>; getCanvasAiRerunNodePosition: (source: CanvasImageItem) => { x: number; y: number; }; buildCanvasWorkflowModuleNode: (workflow: CanvasWorkflowTemplate, pos: { x: number; y: number; }, inputIds?: string[]) => CanvasImageItem | null; workflowResultPublisherRef: React.RefObject<(result: WorkflowResultCardData) => void>; itemsRef: React.RefObject<BufferItem[]>; foldersRef: React.RefObject<Folder[]>; getCanvasAiErrorSummary: (error?: string | null) => string; isCanvasModeRef: React.RefObject<boolean>; runCanvasWorkflowModuleNode: (targetId: string) => Promise<WorkflowResultCardData | undefined>; cloneCanvasWorkflowModuleForRerun: (source: CanvasImageItem) => CanvasImageItem | null; appendCanvasItems: (nextItems: CanvasImageItem[], label: string, select?: boolean) => number; canvasSelectedIdsRef: React.RefObject<string[]>; generateCanvasWorkflowModuleNode: (targetId: string) => Promise<void>; getCanvasTemplateImportPayload: (rawValue: unknown) => { presets: CanvasAiPromptPreset[]; workflows: { builtin: boolean; id: string; label: string; hint: string; nodes: CanvasWorkflowNodeTemplate[]; userInput?: CanvasWorkflowUserInputConfig; createdAt?: number; }[]; workflowInstances: { workflow: { builtin: boolean; id: string; label: string; hint: string; nodes: CanvasWorkflowNodeTemplate[]; userInput?: CanvasWorkflowUserInputConfig; createdAt?: number; }; runtime: CanvasWorkflowRuntime; }[]; }; presets: CanvasAiPromptPreset[]; workflows: { builtin: boolean; id: string; label: string; hint: string; nodes: CanvasWorkflowNodeTemplate[]; userInput?: CanvasWorkflowUserInputConfig; createdAt?: number; }[]; canvasWorkflowTemplates: CanvasWorkflowTemplate[]; materializeImportedCanvasWorkflows: (workflows: CanvasWorkflowTemplate[]) => Promise<CanvasWorkflowTemplate[]>; setCustomCanvasAiPromptPresets: React.Dispatch<React.SetStateAction<CanvasAiPromptPreset[]>>; updateCanvasNodesForPreset: (preset: CanvasAiPromptPreset) => void; setCustomCanvasWorkflows: React.Dispatch<React.SetStateAction<CanvasWorkflowTemplate[]>>; getSelectedCanvasAiInputIds: () => string[]; getCanvasDropPosition: (index?: number, client?: { x: number; y: number; }) => { x: number; y: number; }; x: number; y: number; buildCanvasAiGeneratorNode: (pos: { x: number; y: number; }, preset?: CanvasAiPromptPreset, inputIds?: string[], mediaType?: "image" | "video") => CanvasImageItem; addCanvasTemplateValuesAtDrop: (rawValues: unknown[], client?: { x: number; y: number; }) => Promise<{ recognized: boolean; created: number; presetCount: number; workflowCount: number; }>; recognized: boolean; presetCount: number; workflowCount: number; lastCanvasDroppedPathsKeyRef: React.RefObject<string>; lastCanvasDropAtRef: React.RefObject<number>; createCanvasImageItemFromFile: (file: File, index?: number, client?: { x: number; y: number; }) => Promise<CanvasImageItem | null>; createCanvasVideoItemFromPath: (originalPath: string, index?: number, client?: { x: number; y: number; }) => Promise<CanvasImageItem | null>; addCanvasImageItems: (nextItems: CanvasImageItem[]) => void; addCanvasDroppedTemplateJsonSources: (sources: Array<{ name: string; read: () => Promise<unknown>; }>, client?: { x: number; y: number; }) => Promise<boolean>; createCanvasImageItemFromPath: (originalPath: string, index?: number, client?: { x: number; y: number; }) => Promise<CanvasImageItem | null>; assetStorageMode: "initializing" | "sqlite" | "json"; createAssetId: () => `${string}-${string}-${string}-${string}-${string}`; makeCanvasNodeId: (seed: string, kind?: string) => string; };
+type canvasWorkflowRuntimeActionContext = { canvasSurfaceRef: React.RefObject<HTMLDivElement | null>; isCanvasZoomingRef: React.RefObject<boolean>; canvasScaleRef: React.RefObject<number>; canvasSizeRef: React.RefObject<{ width: number; height: number; }>; width: number; height: number; setCanvasSizeImmediate: (nextSize: { width: number; height: number; }) => void; scheduleCanvasStateSave: (options?: { syncNodes?: boolean; }) => void; activeCanvasIdRef: React.RefObject<string>; canvasItemsRef: React.RefObject<CanvasImageItem[]>; canvasSessionItemsRef: React.RefObject<Map<string, CanvasImageItem[]>>; getCanvasSessionItems: (canvasId: string) => CanvasImageItem[]; updateCanvasAiGeneratorDataForCanvas: (targetCanvasId: string, nodeId: string, patch: Partial<NonNullable<CanvasImageItem["ai"]>>, content?: string) => CanvasImageItem | undefined; getCanvasWorkflowExpandedGroupItems: (groupId: string, sourceItems?: CanvasImageItem[]) => CanvasImageItem[]; showToast: (message: string) => void; getCanvasWorkflowGroupItemIdsForSelection: (groupId: string, sourceItems?: CanvasImageItem[]) => string[]; pushCanvasUndoSnapshot: (label: string, options?: { layoutOnly?: boolean; shareImmutableItems?: boolean; }) => void; updateCanvasItemsImmediate: (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => CanvasImageItem[]; updateCanvasSelection: (ids: string[]) => void; markCanvasRunNodeActive: (canvasId: string, nodeId: string) => void; runCanvasTextAgentTarget: (target: CanvasImageItem, options: { sourceItems?: () => CanvasImageItem[]; updateTextOutput: (output: string) => void; getLatestTarget?: () => CanvasImageItem | undefined; showResultToast?: boolean; showReferenceToast?: boolean; }) => Promise<string>; updateCanvasNodeForCanvas: (targetCanvasId: string, nodeId: string, updater: (item: CanvasImageItem) => CanvasImageItem) => CanvasImageItem | undefined; runCanvasAiGeneratorTarget: (target: CanvasImageItem, options: { canvasId?: string; sourceItems?: () => CanvasImageItem[]; updateAi: (patch: Partial<NonNullable<CanvasImageItem["ai"]>>, content?: string) => void; forceUpdateAi?: (patch: Partial<NonNullable<CanvasImageItem["ai"]>>, content?: string) => void; getLatestTarget?: () => CanvasImageItem | undefined; selectTarget?: () => void; showResultToast?: boolean; toastLabel?: string; clientRequestId?: string; requireLocalImageOutputs?: boolean; }) => Promise<CanvasAiGeneratedOutput[]>; waitForCanvasBackgroundPatches: (canvasId: string) => Promise<void>; markCanvasRunNodeSettled: (canvasId: string, nodeId: string) => void; notifyCanvasAiGenerationResult: (options: { status: "success" | "partial" | "error"; label: string; mediaType: "image" | "video"; generatedCount?: number; requestedCount?: number; error?: string; }) => void; createCanvasAiOutputDrafts: (target: CanvasImageItem, prompt: string, clientRequestId?: string) => CanvasAiGeneratedOutput[]; canvasAiRunTokensRef: React.RefObject<Map<string, string>>; applyCanvasAiGeneratorDataPatch: (item: CanvasImageItem, patch: Partial<NonNullable<CanvasImageItem["ai"]>>, content?: string) => CanvasImageItem; commitCanvasAiPromptDraft: (canvasId: string, content?: string, sync?: boolean) => void; instantiateCanvasWorkflowTemplateItems: (workflow: CanvasWorkflowTemplate, base: { x: number; y: number; }, externalInputIds?: string[]) => { workflow: null; items: CanvasImageItem[]; idMap: Map<string, string>; } | { workflow: CanvasWorkflowTemplate; items: CanvasImageItem[]; idMap: Map<string, string>; }; items: CanvasImageItem[]; idMap: Map<string, string>; hydrateCanvasWorkflowSlotAssetsFromDrawer: (runtimeItems: CanvasImageItem[]) => CanvasImageItem[]; retryCanvasCollapsedWorkflowOutput: (moduleId: string, visibleOutputIndex: number) => Promise<boolean>; retryCanvasExpandedWorkflowOutput: (targetId: string, outputIndex: number) => Promise<boolean>; getCanvasAiRerunNodePosition: (source: CanvasImageItem) => { x: number; y: number; }; buildCanvasWorkflowModuleNode: (workflow: CanvasWorkflowTemplate, pos: { x: number; y: number; }, inputIds?: string[]) => CanvasImageItem | null; workflowResultPublisherRef: React.RefObject<(result: WorkflowResultCardData) => void>; itemsRef: React.RefObject<BufferItem[]>; foldersRef: React.RefObject<Folder[]>; getCanvasAiErrorSummary: (error?: string | null) => string; isCanvasModeRef: React.RefObject<boolean>; runCanvasWorkflowModuleNode: (targetId: string) => Promise<WorkflowResultCardData | undefined>; cloneCanvasWorkflowModuleForRerun: (source: CanvasImageItem) => CanvasImageItem | null; appendCanvasItems: (nextItems: CanvasImageItem[], label: string, select?: boolean) => number; canvasSelectedIdsRef: React.RefObject<string[]>; generateCanvasWorkflowModuleNode: (targetId: string) => Promise<void>; getCanvasTemplateImportPayload: (rawValue: unknown) => { presets: CanvasAiPromptPreset[]; workflows: { builtin: boolean; id: string; label: string; hint: string; nodes: CanvasWorkflowNodeTemplate[]; userInput?: CanvasWorkflowUserInputConfig; createdAt?: number; }[]; workflowInstances: { workflow: { builtin: boolean; id: string; label: string; hint: string; nodes: CanvasWorkflowNodeTemplate[]; userInput?: CanvasWorkflowUserInputConfig; createdAt?: number; }; runtime: CanvasWorkflowRuntime; }[]; }; presets: CanvasAiPromptPreset[]; workflows: { builtin: boolean; id: string; label: string; hint: string; nodes: CanvasWorkflowNodeTemplate[]; userInput?: CanvasWorkflowUserInputConfig; createdAt?: number; }[]; canvasWorkflowTemplates: CanvasWorkflowTemplate[]; materializeImportedCanvasWorkflows: (workflows: CanvasWorkflowTemplate[]) => Promise<CanvasWorkflowTemplate[]>; setCustomCanvasAiPromptPresets: React.Dispatch<React.SetStateAction<CanvasAiPromptPreset[]>>; updateCanvasNodesForPreset: (preset: CanvasAiPromptPreset) => void; setCustomCanvasWorkflows: React.Dispatch<React.SetStateAction<CanvasWorkflowTemplate[]>>; getSelectedCanvasAiInputIds: () => string[]; getCanvasDropPosition: (index?: number, client?: { x: number; y: number; }) => { x: number; y: number; }; x: number; y: number; buildCanvasAiGeneratorNode: (pos: { x: number; y: number; }, preset?: CanvasAiPromptPreset, inputIds?: string[], mediaType?: "image" | "video") => CanvasImageItem; addCanvasTemplateValuesAtDrop: (rawValues: unknown[], client?: { x: number; y: number; }) => Promise<{ recognized: boolean; created: number; presetCount: number; workflowCount: number; }>; recognized: boolean; presetCount: number; workflowCount: number; lastCanvasDroppedPathsKeyRef: React.RefObject<string>; lastCanvasDropAtRef: React.RefObject<number>; createCanvasImageItemFromFile: (file: File, index?: number, client?: { x: number; y: number; }) => Promise<CanvasImageItem | null>; createCanvasVideoItemFromPath: (originalPath: string, index?: number, client?: { x: number; y: number; }) => Promise<CanvasImageItem | null>; createCanvasAudioItemFromPath: (originalPath: string, index?: number, client?: { x: number; y: number; }) => Promise<CanvasImageItem | null>; addCanvasImageItems: (nextItems: CanvasImageItem[]) => void; addCanvasDroppedTemplateJsonSources: (sources: Array<{ name: string; read: () => Promise<unknown>; }>, client?: { x: number; y: number; }) => Promise<boolean>; createCanvasImageItemFromPath: (originalPath: string, index?: number, client?: { x: number; y: number; }) => Promise<CanvasImageItem | null>; assetStorageMode: "initializing" | "sqlite" | "json"; createAssetId: () => `${string}-${string}-${string}-${string}-${string}`; makeCanvasNodeId: (seed: string, kind?: string) => string; };
 
 export const growCanvasNearViewportEdgeImpl = (ctx: Pick<canvasWorkflowRuntimeActionContext, 'canvasScaleRef' | 'canvasSizeRef' | 'isCanvasZoomingRef' | 'scheduleCanvasStateSave' | 'setCanvasSizeImmediate'>, surface: HTMLDivElement | null) => {
   const { canvasScaleRef, canvasSizeRef, isCanvasZoomingRef, scheduleCanvasStateSave, setCanvasSizeImmediate } = ctx;
@@ -146,6 +148,7 @@ export const runCanvasExpandedWorkflowFromNodeImpl = async (ctx: Pick<canvasWork
 
     const failedIds = new Set<string>();
     let successCount = 0;
+    const endDiagnostic = beginWorkflowDiagnostic(createCanvasAiClientRequestId(targetId));
     runIds.forEach(nodeId => markCanvasRunNodeActive(runCanvasId, nodeId));
     try {
       for (const nodeId of runIds) {
@@ -210,6 +213,7 @@ export const runCanvasExpandedWorkflowFromNodeImpl = async (ctx: Pick<canvasWork
       }
       }
     } finally {
+      endDiagnostic();
       await waitForCanvasBackgroundPatches(runCanvasId);
       runIds.forEach(nodeId => markCanvasRunNodeSettled(runCanvasId, nodeId));
     }
@@ -251,6 +255,7 @@ export const retryCanvasExpandedWorkflowOutputImpl = async (ctx: Pick<canvasWork
       showToast('这张图片正在重新生成');
       return true;
     }
+    const endDiagnostic = beginWorkflowDiagnostic(runToken);
     markCanvasRunNodeActive(runCanvasId, targetId);
     pushCanvasUndoSnapshot('重试工作流单张输出');
 
@@ -322,6 +327,7 @@ export const retryCanvasExpandedWorkflowOutputImpl = async (ctx: Pick<canvasWork
         : '这张工作流图片重新生成失败');
       return true;
     } finally {
+      endDiagnostic();
       releaseCanvasAiRun(canvasAiRunTokensRef.current, runKey, runToken);
       await waitForCanvasBackgroundPatches(runCanvasId);
       markCanvasRunNodeSettled(runCanvasId, targetId);
@@ -397,6 +403,7 @@ export const retryCanvasCollapsedWorkflowOutputImpl = async (ctx: Pick<canvasWor
       return true;
     }
     setCanvasChatVisibility(true);
+    const endDiagnostic = beginWorkflowDiagnostic(runToken);
     markCanvasRunNodeActive(runCanvasId, moduleId);
     pushCanvasUndoSnapshot('重试工作流单张输出');
 
@@ -418,7 +425,7 @@ export const retryCanvasCollapsedWorkflowOutputImpl = async (ctx: Pick<canvasWor
       });
     };
     const syncModule = (
-      requestedStatus?: 'idle' | 'working' | 'success' | 'error',
+      requestedStatus?: 'idle' | 'working' | 'success' | 'error' | 'recovery',
       error?: string,
     ) => {
       const selectedOutputs = runtimeItems.find(item => item.id === runtimeTargetId)?.ai?.outputs || [];
@@ -525,6 +532,7 @@ export const retryCanvasCollapsedWorkflowOutputImpl = async (ctx: Pick<canvasWor
         : '这张工作流图片重新生成失败');
       return true;
     } finally {
+      endDiagnostic();
       releaseCanvasAiRun(canvasAiRunTokensRef.current, runKey, runToken);
       await waitForCanvasBackgroundPatches(runCanvasId);
       markCanvasRunNodeSettled(runCanvasId, moduleId);
@@ -612,7 +620,7 @@ export const runCanvasWorkflowModuleNodeImpl = async (ctx: Pick<canvasWorkflowRu
         status: 'waiting',
       })),
     }));
-    requestCanvasWorkflowConversation(workflow.label);
+    requestCanvasWorkflowConversation(workflow.label, runCanvasId, targetId);
     publishWorkflowStartup('running');
     const workflowUserInput = normalizeCanvasWorkflowUserInput(workflow.userInput);
     const workflowUserRequest = String(moduleNode.item.content || '').trim().slice(0, 6_000);
@@ -778,6 +786,7 @@ export const runCanvasWorkflowModuleNodeImpl = async (ctx: Pick<canvasWorkflowRu
       showToast('这个工作流正在运行，请等待完成后再重试');
       return;
     }
+    const endDiagnostic = beginWorkflowDiagnostic(runToken);
     markCanvasRunNodeActive(runCanvasId, targetId);
 
     try {
@@ -866,7 +875,12 @@ export const runCanvasWorkflowModuleNodeImpl = async (ctx: Pick<canvasWorkflowRu
         nodeId: draft.nodeId,
         nodeLabel: draft.nodeLabel,
       };
-    });
+    }).concat(runtimeItems.flatMap(item => {
+      const slots = outputSlots.filter(slot => slot.runtimeId === item.id);
+      if (!slots.length) return [];
+      const covered = Math.max(...slots.map(slot => slot.index)) + 1;
+      return getCanvasAiSuccessfulOutputs(item).slice(covered).map(output => ({ ...output, nodeId: item.workflowTemplateNodeId || item.id, nodeLabel: item.item.name }));
+    }));
     const getRuntimeSnapshots = () => createCanvasWorkflowRuntimeValue(
       workflow,
       runtimeItems,
@@ -1007,6 +1021,7 @@ export const runCanvasWorkflowModuleNodeImpl = async (ctx: Pick<canvasWorkflowRu
           nodeId: output.nodeId,
           name: output.name || output.nodeLabel || `生成结果 ${index + 1}`,
           mediaType: output.mediaType === 'video' ? 'video' : 'image',
+          assetType: output.assetType,
           thumbnail: getCanvasAiOutputThumbnailSource(output),
           url: getCanvasAiOutputDisplaySource(output),
           status: 'success',
@@ -1182,13 +1197,13 @@ export const runCanvasWorkflowModuleNodeImpl = async (ctx: Pick<canvasWorkflowRu
         }
         return;
       }
-      if (current.ai?.type !== 'image-generator') {
+      if (!isCanvasWorkflowGeneratorType(current.ai?.type)) {
         runStatus.set(nodeId, 'success');
         completedCount += 1;
         publishWorkflowProgress();
         return;
       }
-      if (getCanvasAiSuccessfulOutputs(current).some(isCanvasAiImageOutputReadyForWorkflowDependency)) {
+      if (getCanvasAiSuccessfulOutputs(current).some(isCanvasAiAssetOutputReadyForWorkflowDependency)) {
         runStatus.set(nodeId, 'success');
         completedCount += 1;
         publishWorkflowProgress();
@@ -1203,7 +1218,7 @@ export const runCanvasWorkflowModuleNodeImpl = async (ctx: Pick<canvasWorkflowRu
         requireLocalImageOutputs: true,
       });
       const latest = runtimeItems.find(item => item.id === nodeId);
-      if (getCanvasAiSuccessfulOutputs(latest).some(isCanvasAiImageOutputReadyForWorkflowDependency)) {
+      if (getCanvasAiSuccessfulOutputs(latest).some(isCanvasAiAssetOutputReadyForWorkflowDependency)) {
         runStatus.set(nodeId, 'success');
         completedCount += 1;
         updateModuleAi({
@@ -1309,6 +1324,7 @@ export const runCanvasWorkflowModuleNodeImpl = async (ctx: Pick<canvasWorkflowRu
     });
     return publishWorkflowResult('success', finalOutputs);
     } finally {
+      endDiagnostic();
       releaseCanvasAiRun(canvasAiRunTokensRef.current, runKey, runToken);
       await waitForCanvasBackgroundPatches(runCanvasId);
       markCanvasRunNodeSettled(runCanvasId, targetId);
@@ -1470,19 +1486,14 @@ export const addCanvasDroppedTemplateJsonSourcesImpl = async (ctx: Pick<canvasWo
 
 };
 
-export const addCanvasDroppedFilesImpl = async (ctx: Pick<canvasWorkflowRuntimeActionContext, 'addCanvasImageItems' | 'createCanvasImageItemFromFile' | 'createCanvasVideoItemFromPath' | 'lastCanvasDropAtRef' | 'lastCanvasDroppedPathsKeyRef'>, files: FileList | File[], client?: { x: number; y: number }) => {
-  const { addCanvasImageItems, createCanvasImageItemFromFile, createCanvasVideoItemFromPath, lastCanvasDropAtRef, lastCanvasDroppedPathsKeyRef } = ctx;
+export const addCanvasDroppedFilesImpl = async (ctx: Pick<canvasWorkflowRuntimeActionContext, 'addCanvasImageItems' | 'createCanvasImageItemFromFile' | 'createCanvasVideoItemFromPath' | 'createCanvasAudioItemFromPath' | 'lastCanvasDropAtRef' | 'lastCanvasDroppedPathsKeyRef'>, files: FileList | File[], client?: { x: number; y: number }) => {
+  const { addCanvasImageItems, createCanvasImageItemFromFile, createCanvasVideoItemFromPath, createCanvasAudioItemFromPath, lastCanvasDropAtRef, lastCanvasDroppedPathsKeyRef } = ctx;
     const allFiles = Array.from(files || []);
     const templateFiles = allFiles.filter(file => isCanvasTemplateJsonFileName(file.name));
     const imageFiles = allFiles.filter(file => file.type.startsWith('image/') || isCanvasImageFileName(file.name));
     const videoFiles = allFiles.filter(file => file.type.startsWith('video/') || isCanvasVideoFileName(file.name));
-    if (templateFiles.length === 0 && imageFiles.length === 0 && videoFiles.length === 0) return false;
-
-    const mediaFiles = [...imageFiles, ...videoFiles];
-    if (mediaFiles.length > 0) {
-      lastCanvasDroppedPathsKeyRef.current = mediaFiles.map(file => `${file.name}:${file.size}:${file.lastModified}`).join('\n');
-      lastCanvasDropAtRef.current = Date.now();
-    }
+    const audioFiles = allFiles.filter(file => file.type.startsWith('audio/') || isCanvasAudioFileName(file.name));
+    if (templateFiles.length === 0 && imageFiles.length === 0 && videoFiles.length === 0 && audioFiles.length === 0) return false;
 
     // Local JSON files are handled by the native path event. Do not call
     // File.text() here: image-bearing workflow JSON can contain tens of
@@ -1490,33 +1501,49 @@ export const addCanvasDroppedFilesImpl = async (ctx: Pick<canvasWorkflowRuntimeA
     // renderer before Rust can cache the embedded image.
     const handledTemplates = templateFiles.length > 0;
 
-    const createdImages = await Promise.all(imageFiles.map((file, index) => createCanvasImageItemFromFile(file, index, client)));
-    const imageItems = createdImages.filter((item): item is CanvasImageItem => !!item);
-    const videoPaths = videoFiles
-      .map(file => (file as File & { path?: string }).path || '')
-      .filter(Boolean);
-    const createdVideos = await Promise.all(videoPaths.map((path, index) => createCanvasVideoItemFromPath(path, imageItems.length + index, client)));
-    const videoItems = createdVideos.filter((item): item is CanvasImageItem => !!item);
-    const nextItems = [...imageItems, ...videoItems];
+    const mediaFiles = [...imageFiles, ...videoFiles, ...audioFiles];
+    const previousKeys = Date.now() - lastCanvasDropAtRef.current < 700
+      ? lastCanvasDroppedPathsKeyRef.current.split('\n').map(key => key.toLowerCase()) : [];
+    const created = await Promise.all(mediaFiles.map(async (file, index) => {
+      const path = normalizeLocalDragPath((file as File & { path?: string }).path);
+      const name = file.name.toLowerCase();
+      if (previousKeys.some(key => key === path.toLowerCase() || key === `dom-media:${name}` || (!path && key.split(/[\\/]/).pop() === name))) return null;
+      if (imageFiles.includes(file)) return createCanvasImageItemFromFile(file, index, client);
+      if (!path) return null; // The native drop event supplies the local path.
+      return audioFiles.includes(file)
+        ? createCanvasAudioItemFromPath(path, index, client)
+        : createCanvasVideoItemFromPath(path, index, client);
+    }));
+    const nextItems = created.filter((item): item is CanvasImageItem => !!item);
+    if (nextItems.length > 0) {
+      lastCanvasDroppedPathsKeyRef.current = created.flatMap((item, index) => item
+        ? [normalizeLocalDragPath((mediaFiles[index] as File & { path?: string }).path) || `dom-media:${mediaFiles[index].name}`] : []).join('\n');
+      lastCanvasDropAtRef.current = Date.now();
+    }
     addCanvasImageItems(nextItems);
-    return handledTemplates || nextItems.length > 0;
+    return handledTemplates || nextItems.length > 0 || [...videoFiles, ...audioFiles].some(file => !(file as File & { path?: string }).path);
 
 };
 
-export const addCanvasDroppedPathsImpl = async (ctx: Pick<canvasWorkflowRuntimeActionContext, 'addCanvasDroppedTemplateJsonSources' | 'addCanvasImageItems' | 'createCanvasImageItemFromPath' | 'createCanvasVideoItemFromPath' | 'lastCanvasDropAtRef' | 'lastCanvasDroppedPathsKeyRef' | 'showToast'>, paths: string[], client?: { x: number; y: number }) => {
-  const { addCanvasDroppedTemplateJsonSources, addCanvasImageItems, createCanvasImageItemFromPath, createCanvasVideoItemFromPath, lastCanvasDropAtRef, lastCanvasDroppedPathsKeyRef, showToast } = ctx;
+export const addCanvasDroppedPathsImpl = async (ctx: Pick<canvasWorkflowRuntimeActionContext, 'addCanvasDroppedTemplateJsonSources' | 'addCanvasImageItems' | 'createCanvasImageItemFromPath' | 'createCanvasVideoItemFromPath' | 'createCanvasAudioItemFromPath' | 'lastCanvasDropAtRef' | 'lastCanvasDroppedPathsKeyRef' | 'showToast'>, paths: string[], client?: { x: number; y: number }) => {
+  const { addCanvasDroppedTemplateJsonSources, addCanvasImageItems, createCanvasImageItemFromPath, createCanvasVideoItemFromPath, createCanvasAudioItemFromPath, lastCanvasDropAtRef, lastCanvasDroppedPathsKeyRef, showToast } = ctx;
     let cleanPaths = Array.from(new Set((paths || []).map(normalizeLocalDragPath).filter(Boolean)));
     if (cleanPaths.length === 0) return;
 
     const now = Date.now();
     const recentDrop = now - lastCanvasDropAtRef.current < 700;
     const initialKey = cleanPaths.join('\n');
+    let mediaIndexOffset = 0;
     if (initialKey === lastCanvasDroppedPathsKeyRef.current && recentDrop) return;
     if (recentDrop) {
       // A DOM drop may already have handled media files from the same gesture.
       // Keep the JSON path so the native importer can safely extract embedded
       // images, while avoiding duplicate image/video nodes.
-      cleanPaths = cleanPaths.filter(isCanvasTemplateJsonFileName);
+      const handled = new Set(lastCanvasDroppedPathsKeyRef.current.split('\n').map(key => key.toLowerCase()));
+      const beforeFilter = cleanPaths.length;
+      cleanPaths = cleanPaths.filter(path => isCanvasTemplateJsonFileName(path)
+        || (!handled.has(path.toLowerCase()) && !handled.has(`dom-media:${path.split(/[\\/]/).pop()?.toLowerCase()}`)));
+      mediaIndexOffset = beforeFilter - cleanPaths.length;
       if (cleanPaths.length === 0) return;
     }
     const key = cleanPaths.join('\n');
@@ -1548,12 +1575,14 @@ export const addCanvasDroppedPathsImpl = async (ctx: Pick<canvasWorkflowRuntimeA
 
     const created = await Promise.all(mediaPaths.map((path, index) => (
       isCanvasVideoFileName(path)
-        ? createCanvasVideoItemFromPath(path, index, client)
-        : createCanvasImageItemFromPath(path, index, client)
+        ? createCanvasVideoItemFromPath(path, index + mediaIndexOffset, client)
+        : isCanvasAudioFileName(path)
+          ? createCanvasAudioItemFromPath(path, index + mediaIndexOffset, client)
+          : createCanvasImageItemFromPath(path, index + mediaIndexOffset, client)
     )));
     const mediaItems = created.filter((item): item is CanvasImageItem => !!item);
     addCanvasImageItems(mediaItems);
-    if (!handledTemplates && mediaItems.length === 0) showToast('无限画布只接收图片或视频');
+    if (!handledTemplates && mediaItems.length === 0) showToast('无限画布支持图片、视频或音频');
     else if (mediaItems.length > 0 && mediaItems.length !== mediaPaths.length) {
       showToast(`已添加 ${mediaItems.length} 个媒体，${mediaPaths.length - mediaItems.length} 个文件暂未显示`);
     }
@@ -1569,7 +1598,7 @@ export const createDrawerMediaCanvasNodeImpl = async (ctx: Pick<canvasWorkflowRu
     const sourceAsset = source.path && rawSource === source.path && !/^(?:asset:|file:|blob:|data:|https?:)/i.test(rawSource)
       ? convertFileSrc(rawSource)
       : rawSource;
-    const mediaLabel = source.type === 'video' ? '视频' : '图片';
+    const mediaLabel = source.type === 'video' ? '视频' : source.type === 'file' ? '音频' : '图片';
     if (!sourceAsset) {
       if (options.toast !== false) showToast(`${mediaLabel}源丢失，无法添加到画布`);
       return '';
@@ -1591,7 +1620,7 @@ export const createDrawerMediaCanvasNodeImpl = async (ctx: Pick<canvasWorkflowRu
     const pos = getCanvasDropPosition(options.dropIndex || 0, client);
     const canvasId = makeCanvasNodeId(item.id, source.type);
     const preview = getCanvasDrawerMediaPreviewSource(source);
-    const size = source.type === 'video'
+    const size = source.type === 'file' ? { width: 320, height: 112 } : source.type === 'video'
       ? preview ? await readImageDisplaySize(preview) : { width: 320, height: 180 }
       : await readImageDisplaySize(sourceAsset);
     const canvasItem = {

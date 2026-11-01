@@ -3,9 +3,9 @@ import { CalendarDays,ChevronLeft,ChevronRight,Clock,Download,File as FileIcon,F
 import BufferItemCard from '../../../components/BufferItemCard';
 import { DrawerAssetGrid } from '../../../components/drawer/DrawerAssetGrid';
 import { RoundedSelect } from '../../../components/RoundedSelect';
-import { platformShortcutLabel } from '../../../platform/capabilities';
 import { SCHEDULE_PRIORITY_OPTIONS,formatCalendarPreviewTitle,formatScheduleDateLabel,getCalendarDayMeta,getLocalDateKey,normalizeSchedulePriority,startOfLocalDay } from '../../calendarModel';
 import { isProbablyUrl } from '../../dragData';
+import { getImagePreviewGallery } from '../../mediaSources';
 import type { BufferItem, FloatingNoteSnapshot } from '../../../types';
 import type { CalendarScheduleEvent } from '../../calendarModel';
 
@@ -40,7 +40,7 @@ export function DrawerAssetContent({ scope }: { scope: DrawerAssetContentScope }
                               onClick={createBlankFloatingNote}
                               disabled={isCreatingBlankNote}
                               className="inline-flex items-center gap-1.5 rounded-[16px] bg-amber-100 px-3 py-2 text-[11px] font-bold text-amber-700 transition-colors hover:bg-amber-200 dark:bg-amber-900/35 dark:text-amber-300 dark:hover:bg-amber-900/55"
-                              title={`快捷键：${platformShortcutLabel(noteShortcut)}`}
+                              title={`快捷键：${noteShortcut}`}
                             >
                               <Plus className="h-3.5 w-3.5" />
                               新增
@@ -346,13 +346,13 @@ export function DrawerAssetContent({ scope }: { scope: DrawerAssetContentScope }
                       <Download className="w-7 h-7 opacity-70" />
                       <div className="space-y-2 text-center">
                         <p className="text-xs font-bold text-stone-500 dark:text-stone-400">把灵感先丢进抽屉</p>
-                        <p className="text-[11px] leading-5">拖入文件/图片/网页图 · {platformShortcutLabel(snipShortcut)} 截图 · {platformShortcutLabel(textShortcut)} 快速记录 · {platformShortcutLabel(searchShortcut)} 搜索</p>
+                        <p className="text-[11px] leading-5">拖入文件/图片/网页图 · {snipShortcut} 截图 · {textShortcut} 快速记录 · {searchShortcut} 搜索</p>
                         <p className="text-[11px] leading-5">
-                          <span className="rounded-full bg-amber-100/70 px-2 py-0.5 font-mono font-black text-amber-700 dark:bg-amber-400/12 dark:text-amber-200">{platformShortcutLabel(canvasShortcut)}</span>
+                          <span className="rounded-full bg-amber-100/70 px-2 py-0.5 font-mono font-black text-amber-700 dark:bg-amber-400/12 dark:text-amber-200">{canvasShortcut}</span>
                           <span className="ml-1.5">进入画布</span>
                         </p>
-                        <p className="text-[11px] leading-5">侧边小条：悬停展开，按住左键经过不触发，{platformShortcutLabel('Ctrl + 左键')}可移动位置。</p>
-                        <p className="text-[11px] leading-5">悬浮方块：默认右下角，悬停 0.8s 展开，左键拖动位置，{platformShortcutLabel(triggerShortcut)} 切换入口。</p>
+                        <p className="text-[11px] leading-5">侧边小条：悬停展开，按住左键经过不触发，Ctrl + 左键可移动位置。</p>
+                        <p className="text-[11px] leading-5">悬浮方块：默认右下角，悬停 0.8s 展开，左键拖动位置，{triggerShortcut} 切换入口。</p>
                       </div>
                     </div>
                   )}
@@ -371,7 +371,7 @@ export function DrawerAssetContent({ scope }: { scope: DrawerAssetContentScope }
                             : '试试切到“全部”、清空搜索，或把素材拖到当前文件夹。'}
                         </p>
                         <p className="text-[11px] leading-5">
-                          也可以按 <span className="rounded-full bg-amber-100/70 px-2 py-0.5 font-mono font-black text-amber-700 dark:bg-amber-400/12 dark:text-amber-200">{platformShortcutLabel(canvasShortcut)}</span> 进入画布整理参考。
+                          也可以按 <span className="rounded-full bg-amber-100/70 px-2 py-0.5 font-mono font-black text-amber-700 dark:bg-amber-400/12 dark:text-amber-200">{canvasShortcut}</span> 进入画布整理参考。
                         </p>
                         <p className="text-[11px] leading-5">常用：右上角星标固定、备注便于搜索，多选可批量导出/移动/删除。</p>
                       </div>
@@ -433,7 +433,10 @@ export function DrawerAssetContent({ scope }: { scope: DrawerAssetContentScope }
                                     pushDrawerUndoSnapshot(item.isQuickAccess ? '取消快速访问' : '固定快速访问');
                                     setDrawerItemQuickAccess(item, !item.isQuickAccess);
                                   }}
-                                  onImageClick={() => openSelectedImagePreview(item)}
+                                  onImageClick={() => {
+                                    const gallery = getImagePreviewGallery(displayItems, item.id);
+                                    openSelectedImagePreview(item, gallery || undefined);
+                                  }}
                                   onVideoClick={() => {
                                     if (item.path) openSelectedVideoPreview({ url: convertFileSrc(item.path), path: item.path });
                                   }}
@@ -494,7 +497,7 @@ export function DrawerAssetContent({ scope }: { scope: DrawerAssetContentScope }
                   )}
                   {!isUtilityActiveTab && displayItems.length > 0 && (
                     <div className="mt-4 mb-1 rounded-[22px] bg-stone-50/70 dark:bg-stone-900/30 border border-stone-200/60 dark:border-stone-700/60 px-3 py-2 text-[11px] leading-5 text-stone-500 dark:text-stone-400">
-                      提示：拖入文件/图片/网页图添加素材；{platformShortcutLabel(canvasShortcut)} 进入画布；{platformShortcutLabel(triggerShortcut)} 切换触发入口。
+                      提示：拖入文件/图片/网页图添加素材；{canvasShortcut} 进入画布；{triggerShortcut} 切换触发入口。
                     </div>
                   )}
 </>

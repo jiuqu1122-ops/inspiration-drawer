@@ -12,10 +12,13 @@ use crate::repositories::sqlite_asset_repository::SqliteAssetRepository;
 
 fn repository(app_handle: &tauri::AppHandle) -> Result<Box<dyn AssetRepository>, String> {
     if should_use_sqlite(app_handle) {
-        Ok(Box::new(SqliteAssetRepository::new(open_connection(
-            app_handle,
-        )?)))
+        Ok(Box::new(
+            SqliteAssetRepository::new(open_connection(app_handle)?)
+                .with_memory_notifier(app_handle.clone()),
+        ))
     } else {
+        // JSON command writes stay read-only. Do not pre-delete SQLite memory:
+        // legacy save_items cannot participate in the original-source transaction.
         Ok(Box::new(JsonAssetRepository::new(app_handle.clone())))
     }
 }
@@ -69,7 +72,9 @@ pub fn import_eagle_assets_batch(
     if !should_use_sqlite(&app_handle) {
         return Err("Eagle database import requires SQLite storage mode".to_string());
     }
-    SqliteAssetRepository::new(open_connection(&app_handle)?).import_eagle_assets_batch(request)
+    SqliteAssetRepository::new(open_connection(&app_handle)?)
+        .with_memory_notifier(app_handle.clone())
+        .import_eagle_assets_batch(request)
 }
 
 pub fn finish_eagle_import(

@@ -3,6 +3,7 @@ import { Play } from 'lucide-react';
 
 type CanvasAiRunButtonProps = {
   disabled: boolean;
+  recoveryRequired?: boolean;
   isWorking: boolean;
   isFrameInterpolation: boolean;
   isEnhancement: boolean;
@@ -20,6 +21,7 @@ type CanvasAiRunButtonProps = {
 
 export function CanvasAiRunButton({
   disabled,
+  recoveryRequired,
   isWorking,
   isFrameInterpolation,
   isEnhancement,
@@ -34,7 +36,7 @@ export function CanvasAiRunButton({
   onPointerDown,
   onClick,
 }: CanvasAiRunButtonProps) {
-  const label = isFrameInterpolation
+  const label = recoveryRequired ? '恢复原任务' : isFrameInterpolation
     ? (isWorking ? `补帧中 ${workingElapsedText}` : hasResults ? '再次补帧' : '补帧')
     : isEnhancement
       ? (isVideoEnhancement
@@ -63,7 +65,7 @@ export function CanvasAiRunButton({
     >
       <Play className={`h-4 w-4 fill-current ${isWorking ? 'animate-pulse' : ''}`} />
       {label}
-      {!isWorking && creditLabel && (
+      {!isWorking && !recoveryRequired && creditLabel && (
         <span className="whitespace-nowrap text-[10px] font-bold text-amber-600 dark:text-amber-300">
           · {creditLabel}
         </span>

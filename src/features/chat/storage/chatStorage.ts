@@ -28,13 +28,23 @@ export const deleteChatConversation = (id: string) => (
   invoke<boolean>('chat_delete_conversation', { id })
 );
 
+export const deleteChatConversations = async (ids: string[], onFailure?: (id: string, error: unknown) => void) => {
+  const deleted: string[] = [];
+  for (const id of [...new Set(ids)]) {
+    try { if (await deleteChatConversation(id)) deleted.push(id); }
+    catch (error) { onFailure?.(id, error); }
+  }
+  return deleted;
+};
+
 export const listChatMessages = (
   conversationId: string,
-  options: { beforeCreatedAt?: number; limit?: number } = {},
+  options: { beforeCreatedAt?: number; beforeId?: string; limit?: number } = {},
 ) => invoke<ChatMessagePage>('chat_list_messages', {
   options: {
     conversationId,
     beforeCreatedAt: options.beforeCreatedAt,
+    beforeId: options.beforeId,
     limit: options.limit || 50,
   },
 });

@@ -6,6 +6,7 @@ export type CanvasGeneratedListEntry = {
   canvasItem: CanvasImageItem;
   item: BufferItem;
   ai?: NonNullable<CanvasImageItem['ai']>;
+  source?: 'canvas' | 'chat' | 'workflow';
 };
 
 export type ImageThumbnailFileResult = {
@@ -40,6 +41,7 @@ export type CanvasAiOutputThumbnailJob = {
   canvasItemId?: string;
   outputIndex?: number;
   outputId?: string;
+  clientRequestId?: string;
   matchSources?: string[];
   drawerItemId?: string;
   source: string;

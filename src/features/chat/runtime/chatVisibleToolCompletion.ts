@@ -5,6 +5,7 @@ import {
   type ChatToolCall,
 } from '../model/chatTypes';
 import { finalizeChatMessageState } from './chatThinkingRuntime';
+import { presentationInterruptedMessage, shouldContinuePresentationAfterMedia } from '../presentations/presentationTurn';
 
 export type ChatVisibleToolCompletion = {
   content: string;
@@ -75,8 +76,12 @@ export const summarizeCompletedVisibleToolCalls = (
 export const finalizeOrphanedStreamingChatMessage = (
   message: ChatMessage,
   now = Date.now(),
+  presentationText: string | null = null,
 ): ChatMessage => {
   if (message.role !== 'assistant' || message.status !== 'streaming') return message;
+  if (shouldContinuePresentationAfterMedia(presentationText, message.toolCalls)) return finalizeChatMessageState({
+    ...message, content: [message.content.trim(), presentationInterruptedMessage(message.toolCalls)].filter(Boolean).join('\n\n'),
+  }, 'error', now, 'PPT 生成中断，已有配图已保留');
   const completion = summarizeCompletedVisibleToolCalls(message.toolCalls);
   if (!completion) {
     return finalizeChatMessageState({

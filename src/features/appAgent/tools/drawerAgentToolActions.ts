@@ -258,7 +258,7 @@ if (name === 'analyze_inspiration') {
             undoLastDrawerChange();
           }
         } else if (action === 'minimize') {
-          await appWindow.minimize();
+          await invoke('diagnostic_minimize_window');
         } else if (action === 'toggle_maximize') {
           await appWindow.toggleMaximize();
         } else {

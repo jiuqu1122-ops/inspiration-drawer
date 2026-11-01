@@ -1,7 +1,7 @@
 import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { listen } from '@tauri-apps/api/event';
-import { cursorPosition } from '@tauri-apps/api/window';
+import { currentMonitor,cursorPosition,getCurrentWindow } from '@tauri-apps/api/window';
 import { File as FileIcon,Film,FolderOpen,Image as ImageIcon,Link,Type } from 'lucide-react';
 import React from 'react';
 import { flushSync } from 'react-dom';
@@ -13,12 +13,20 @@ import { type CanvasImageItem } from '../canvasModel';
 import { clamp } from '../common';
 import { getFileExtension,isProbablyUrl } from '../dragData';
 import { MAX_DRAWER_HEIGHT,MAX_DRAWER_WIDTH,MIN_DRAWER_HEIGHT,MIN_DRAWER_WIDTH } from '../drawerPrefs';
-import { deleteFloatingNoteSnapshot,floatingNoteStorageKey,forgetOpenFloatingNoteLabel,getStableFloatingNoteImageFields,readFloatingNoteSnapshot } from '../floatingNotes';
+import { deleteFloatingNoteSnapshot,floatingNoteStorageKey,forgetOpenFloatingNoteLabel,readFloatingNoteSnapshot } from '../floatingNotes';
 import { acquireTimedLocalLock,localLockKeyPart } from '../localLock';
 import { LruCache } from '../lruCache';
 import { getPreviewOriginalSource,getPreviewPlaceholderSource } from '../mediaSources';
 import { markLaunchIntroDoneThisPage } from '../startup';
 import { EDGE_WIDTH,type TriggerMode } from '../triggerModel';
+import {
+  bindDrawerResizePointerEvents,
+  createDrawerResizeSession,
+  createLatestResizeQueue,
+  type DrawerPhysicalBounds,
+  type DrawerResizeGeometry,
+  type DrawerResizeSession,
+} from './drawerResizeSession';
 
 type windowSnipActionContext = { selectedImageOriginalCacheRef: React.RefObject<LruCache<string, string>>; setSelectedImageGallery: React.Dispatch<React.SetStateAction<{ items: BufferItem[]; index: number; } | null>>; selectedImageReturnToCanvasRef: React.RefObject<boolean>; setSelectedImage: React.Dispatch<React.SetStateAction<string | null>>; selectedImageGallery: { items: BufferItem[]; index: number; } | null; items: BufferItem[]; index: number; openSelectedImagePreview: (sourceOrItem: string | BufferItem, options?: { fromCanvas?: boolean; galleryItems?: BufferItem[]; galleryIndex?: number; }) => void; isCanvasModeRef: React.RefObject<boolean>; closeTimerRef: React.RefObject<any>; idleAutoCloseTimerRef: React.RefObject<any>; startupAutoCloseSuppressedRef: React.RefObject<boolean>; isPointerInsideDrawerRef: React.RefObject<boolean>; setIsOpen: React.Dispatch<React.SetStateAction<boolean>>; setIsPinned: React.Dispatch<React.SetStateAction<boolean>>; isPinnedRef: React.RefObject<boolean>; setDrawerState: React.Dispatch<React.SetStateAction<"closed" | "pre_open" | "open" | "closing">>; isCanvasWorkbenchActiveRef: React.RefObject<boolean>; drawerWidthRef: React.RefObject<number>; drawerHeightRef: React.RefObject<number>; triggerModeRef: React.RefObject<TriggerMode>; canvasSurfaceRef: React.RefObject<HTMLDivElement | null>; restoreCanvasAfterMediaPreview: () => void; selectedVideoReturnToCanvasRef: React.RefObject<boolean>; setSelectedVideo: React.Dispatch<React.SetStateAction<{ url: string; path: string; fromCanvas?: boolean; } | null>>; imageSourceToDataUrl: (source: string, optimizeForAi?: boolean) => Promise<string>; copyImageDataUrlToSystemClipboard: (dataUrl: string) => Promise<void>; wait: (ms: number) => Promise<unknown>; pendingBoundsRef: React.RefObject<{ width: number; height: number; anchor?: "left" | "right"; } | null>; boundsFrameRef: React.RefObject<number | null>; snipMode: { active: boolean; bg: string; }; active: boolean; isSnipSessionActive: boolean; boundsInvokeInFlightRef: React.RefObject<boolean>; boundsSyncRequestedRef: React.RefObject<boolean>; width: number; anchor: "left" | "right" | undefined; height: number; applyWindowBounds: (width: number, height: number, anchor?: "left" | "right") => void; stateRef: React.RefObject<{ isOpen: boolean; isPinned: boolean; showTextInput: boolean; isSearchActive: boolean; isAntiTouchMode: boolean; }>; isAntiTouchMode: boolean; enforceAntiTouchClosed: (showFeedback?: boolean) => void; snipModeActiveRef: React.RefObject<boolean>; snipCaptureInFlightRef: React.RefObject<boolean>; isGlobalMouseDown: React.RefObject<boolean>; isDraggingTitleRef: React.RefObject<boolean>; setIsDraggingTitle: React.Dispatch<React.SetStateAction<boolean>>; isResizingState: React.RefObject<boolean>; setIsSnipSessionActive: React.Dispatch<React.SetStateAction<boolean>>; isOpen: boolean | undefined; isPinned: boolean | undefined; isCanvasMode: boolean | undefined; drawerState: "closed" | "pre_open" | "open" | "closing"; snipRestoreDrawerRef: React.RefObject<{ isOpen: boolean; isPinned: boolean; isCanvasMode: boolean; } | null>; setSelection: React.Dispatch<React.SetStateAction<{ x: number; y: number; w: number; h: number; } | null>>; setSnipMode: React.Dispatch<React.SetStateAction<{ active: boolean; bg: string; }>>; showToast: (message: string) => void; snipExitInFlightRef: React.RefObject<boolean>; isMouseDown: React.RefObject<boolean>; appWindow: import('@tauri-apps/api/window').Window; markShortcutReveal: () => void; setActiveTab: React.Dispatch<React.SetStateAction<DrawerTabType>>; scheduleIdleAutoClose: (delay?: number) => void; selection: { x: number; y: number; w: number; h: number; } | null; w: number; h: number; exitSnip: (reopen?: boolean) => Promise<void>; playSnipShutterSound: () => void; screenshotAutoPinNoteRef: React.RefObject<boolean>; createAssetId: () => `${string}-${string}-${string}-${string}-${string}`; getSnipPlaceholderUrl: () => string; activeFolderId: string; x: number; y: number; createFloatingNote: (item: BufferItem, options?: { topmost?: boolean; x?: number; y?: number; width?: number; height?: number; silent?: boolean; }) => Promise<{ noteLabel: string; snapshot: FloatingNoteSnapshot; } | null | undefined>; emitFloatingNoteUpdated: (label: string, snapshot: FloatingNoteSnapshot) => Promise<void>; refreshNoteManager: () => void; pushDrawerUndoSnapshot: (label: string, options?: { shareImmutableItems?: boolean; }) => void; setItems: React.Dispatch<React.SetStateAction<BufferItem[]>>; copyLocalImageToClipboard: (path: string) => Promise<void>; revealDrawerAfterSnipCopy: () => Promise<void>; finishSnipWindowSession: (_restoreTrigger?: boolean) => Promise<void>; handledSnipPathsRef: React.RefObject<Map<string, number>>; resetSnipSessionState: () => void; activeFolderIdRef: React.RefObject<string>; enqueueAutoAiTaggingForItems: (incomingItems: BufferItem[]) => void; createCanvasImageItemFromPath: (originalPath: string, index?: number, client?: { x: number; y: number; }) => Promise<CanvasImageItem | null>; addCanvasImageItems: (nextItems: CanvasImageItem[]) => void; recoverSnipWindowFromMain: (restoreDrawer: boolean) => Promise<void>; handleSnipWindowCaptured: (payload: any) => Promise<void>; drawerResizeAnchorRef: React.RefObject<"left" | "right">; setDrawerWidth: React.Dispatch<React.SetStateAction<number>>; setDrawerHeight: React.Dispatch<React.SetStateAction<number>>; shouldBlockAutoClose: () => boolean; finishResize: (anchor?: "left" | "right") => void; acceptCloudflaredDisclaimer: () => void; CLOUDFLARED_DISCLAIMER_ACCEPTED_STORAGE_KEY: "drawer_cloudflared_disclaimer_accepted"; declineCloudflaredDisclaimer: () => void; startupAutoCloseTimerRef: React.RefObject<any>; showLaunchIntroRef: React.RefObject<boolean>; isSplashVisibleRef: React.RefObject<boolean>; setShowLaunchIntro: React.Dispatch<React.SetStateAction<boolean>>; setIsSplashVisible: React.Dispatch<React.SetStateAction<boolean>>; canvasItemsRef: React.RefObject<CanvasImageItem[]>; generateCanvasWorkflowModuleNode: (targetId: string) => Promise<void>; generateCanvasAiGeneratorNode: (targetId: string) => Promise<void>; canvasRunButtonPointerRef: React.RefObject<{ targetId: string; at: number; } | null>; runCanvasAiNodeFromControl: (targetId: string) => void; targetId: string | undefined; at: number; clearIdleAutoClose: () => void; setIsSelectMode: React.Dispatch<React.SetStateAction<boolean>>; setSelectedIds: React.Dispatch<React.SetStateAction<string[]>>; lastSelectedDrawerItemIdRef: React.RefObject<string | null>; drawerPanelInteractionHoldUntilRef: React.RefObject<number>; lastDrawerPointerDownAtRef: React.RefObject<number>; isDrawerActive: boolean; shouldBlockIdleAutoClose: () => boolean; requestAutoCloseDrawer: () => void; isCursorInsideDrawerWindow: () => Promise<boolean>; selectedImagePanRef: React.RefObject<{ x: number; y: number; }>; setSelectedImagePan: React.Dispatch<React.SetStateAction<{ x: number; y: number; }>>; previewDragActiveRef: React.RefObject<boolean>; isMainWorkbenchActiveRef: React.RefObject<boolean>; folderRailHeight: number; setFolderRailHeight: React.Dispatch<React.SetStateAction<number>>; isFolderSidebarLayout: boolean; drawerFolderSidebarWidth: number; DRAWER_FOLDER_SIDEBAR_MAX_WIDTH: 320; DRAWER_FOLDER_SIDEBAR_MIN_WIDTH: 250; setDrawerFolderSidebarWidth: React.Dispatch<React.SetStateAction<number>>; };
 
@@ -231,38 +239,111 @@ export const copyLocalImageToClipboardImpl = async (ctx: Pick<windowSnipActionCo
 
 };
 
-export const applyWindowBoundsImpl = (ctx: Pick<windowSnipActionContext, 'applyWindowBounds' | 'boundsFrameRef' | 'boundsInvokeInFlightRef' | 'boundsSyncRequestedRef' | 'isSnipSessionActive' | 'pendingBoundsRef' | 'snipMode'>, width: number, height: number, anchor: 'left' | 'right' = 'right') => {
-  const { applyWindowBounds, boundsFrameRef, boundsInvokeInFlightRef, boundsSyncRequestedRef, isSnipSessionActive, pendingBoundsRef, snipMode } = ctx;
-    pendingBoundsRef.current = { width, height, anchor };
-    if (boundsFrameRef.current !== null) return;
+type DrawerBoundsRequest =
+  | { kind: 'ordinary'; width: number; height: number; anchor: 'left' | 'right' }
+  | { kind: 'anchored'; bounds: DrawerPhysicalBounds; scaleFactor: number };
 
-    boundsFrameRef.current = requestAnimationFrame(() => {
-      boundsFrameRef.current = null;
-      const next = pendingBoundsRef.current;
-      if (!next || snipMode.active || isSnipSessionActive) return;
-      pendingBoundsRef.current = null;
-
-      if (boundsInvokeInFlightRef.current) {
-        pendingBoundsRef.current = next;
-        boundsSyncRequestedRef.current = true;
-        return;
-      }
-
-      const mainWidth = next.width > MIN_DRAWER_WIDTH + EDGE_WIDTH ? next.width - EDGE_WIDTH : next.width;
-      boundsInvokeInFlightRef.current = true;
-      invoke(next.anchor === 'left' ? 'resize_drawer_from_right' : 'resize_drawer', {
-        width: clamp(mainWidth, MIN_DRAWER_WIDTH, MAX_DRAWER_WIDTH),
-        height: clamp(next.height, MIN_DRAWER_HEIGHT, MAX_DRAWER_HEIGHT),
-      }).catch(() => {}).finally(() => {
-        boundsInvokeInFlightRef.current = false;
-        if (boundsSyncRequestedRef.current) {
-          boundsSyncRequestedRef.current = false;
-          const latest = pendingBoundsRef.current;
-          if (latest) applyWindowBounds(latest.width, latest.height, latest.anchor);
-        }
+// One lane per main WebView, shared with ordinary height/right-handle resizing.
+// Do not allow an ordinary effect to overwrite an anchored gesture's final frame.
+let lastAnchoredSize: { width: number; height: number } | null = null;
+const drawerBoundsQueue = createLatestResizeQueue<DrawerBoundsRequest>({
+  scheduleFrame: (callback) => requestAnimationFrame(callback),
+  cancelFrame: (id) => cancelAnimationFrame(id),
+  equals: (a, b) => {
+    if (a.kind === 'ordinary' && b.kind === 'ordinary') {
+      return a.width === b.width && a.height === b.height && a.anchor === b.anchor;
+    }
+    if (a.kind === 'anchored' && b.kind === 'anchored') {
+      return a.bounds.rightAnchorPx === b.bounds.rightAnchorPx
+        && a.bounds.topAnchorPx === b.bounds.topAnchorPx
+        && a.bounds.widthPx === b.bounds.widthPx && a.bounds.heightPx === b.bounds.heightPx;
+    }
+    return false;
+  },
+  apply: async (request) => {
+    if (request.kind === 'anchored') {
+      // Contract: ALL FOUR arguments are integer physical pixels. The backend
+      // must perform ONE atomic bounds update, not setPosition + setSize.
+      await invoke('resize_drawer_anchored', { ...request.bounds });
+      lastAnchoredSize = {
+        width: request.bounds.widthPx / request.scaleFactor,
+        height: request.bounds.heightPx / request.scaleFactor,
+      };
+    } else {
+      await invoke(request.anchor === 'left' ? 'resize_drawer_from_right' : 'resize_drawer', {
+        width: request.width,
+        height: request.height,
       });
-    });
+      lastAnchoredSize = null;
+    }
+  },
+  onError: (error) => console.warn('drawer native resize failed:', error),
+});
 
+type DrawerGestureContext = Pick<windowSnipActionContext,
+  'drawerHeightRef' | 'drawerWidthRef' | 'finishResize' | 'isGlobalMouseDown'
+  | 'isResizingState' | 'setDrawerState' | 'setIsOpen'>;
+
+let activeDrawerResize: {
+  session: DrawerResizeSession;
+  owner: DrawerGestureContext;
+  unbind: () => void;
+  finishing: boolean;
+  aborting: boolean;
+} | null = null;
+
+const readDrawerResizeGeometry = async (): Promise<DrawerResizeGeometry> => {
+  const appWindow = getCurrentWindow();
+  const [position, size, scaleFactor, monitor] = await Promise.all([
+    appWindow.outerPosition(), appWindow.outerSize(), appWindow.scaleFactor(), currentMonitor(),
+  ]);
+  if (!monitor) throw new Error('Cannot determine drawer resize monitor');
+  if (![position.x, position.y, size.width, size.height, scaleFactor].every(Number.isFinite)
+    || scaleFactor <= 0 || size.width <= 0 || size.height <= 0) {
+    throw new Error('Invalid native drawer resize geometry');
+  }
+  return { position, size, scaleFactor, workArea: monitor.workArea };
+};
+
+let drawerResizeCancellation: Promise<void> | null = null;
+
+/** Await before snip/workbench geometry changes, and call on App unmount.
+ * Removes capture/listeners immediately, discards queued writes, then waits for
+ * any unavoidable native call/geometry read already in flight. No React setters.
+ */
+export const cancelDrawerResize = (): Promise<void> => {
+  if (drawerResizeCancellation) return drawerResizeCancellation;
+  drawerResizeCancellation = (async () => {
+    const active = activeDrawerResize;
+    if (active) {
+      active.aborting = true;
+      active.unbind();
+      active.owner.isResizingState.current = false;
+      active.owner.isGlobalMouseDown.current = false;
+      await active.session.cancel();
+      if (activeDrawerResize === active) activeDrawerResize = null;
+    }
+    drawerBoundsQueue.discardPending();
+    await drawerBoundsQueue.flush().catch(() => {});
+    drawerBoundsQueue.discardPending(); // Invalidate deduplication after external mode changes.
+    lastAnchoredSize = null;
+  })().finally(() => { drawerResizeCancellation = null; });
+  return drawerResizeCancellation;
+};
+
+/** Also use this guard for App effects which call open_drawer/move the window. */
+export const isDrawerResizeActive = () => activeDrawerResize !== null || drawerResizeCancellation !== null;
+
+export const applyWindowBoundsImpl = (ctx: Pick<windowSnipActionContext, 'applyWindowBounds' | 'boundsFrameRef' | 'boundsInvokeInFlightRef' | 'boundsSyncRequestedRef' | 'isSnipSessionActive' | 'pendingBoundsRef' | 'snipMode'>, width: number, height: number, anchor: 'left' | 'right' = 'right') => {
+  if (ctx.snipMode.active || ctx.isSnipSessionActive || isDrawerResizeActive()) return;
+  // Every caller includes the edge strip. Always subtract it, including at the
+  // exact minimum (the old strict comparison produced a 20px jump there).
+  const mainWidth = clamp(width - EDGE_WIDTH, MIN_DRAWER_WIDTH, MAX_DRAWER_WIDTH);
+  const mainHeight = clamp(height, MIN_DRAWER_HEIGHT, MAX_DRAWER_HEIGHT);
+  if (anchor === 'right' && lastAnchoredSize
+    && Math.abs(width - EDGE_WIDTH - lastAnchoredSize.width) < 0.001
+    && Math.abs(height - lastAnchoredSize.height) < 0.001) return;
+  drawerBoundsQueue.enqueue({ kind: 'ordinary', width: mainWidth, height: mainHeight, anchor });
 };
 
 export const startSnipImpl = async (ctx: Pick<windowSnipActionContext, 'closeTimerRef' | 'drawerHeightRef' | 'drawerState' | 'drawerWidthRef' | 'enforceAntiTouchClosed' | 'idleAutoCloseTimerRef' | 'isCanvasMode' | 'isDraggingTitleRef' | 'isGlobalMouseDown' | 'isOpen' | 'isPinned' | 'isPinnedRef' | 'isResizingState' | 'setIsDraggingTitle' | 'setIsSnipSessionActive' | 'setSelection' | 'setSnipMode' | 'showToast' | 'snipCaptureInFlightRef' | 'snipModeActiveRef' | 'snipRestoreDrawerRef' | 'stateRef' | 'triggerModeRef'>) => {
@@ -314,10 +395,9 @@ export const startSnipImpl = async (ctx: Pick<windowSnipActionContext, 'closeTim
 
     // Freeze the desktop before the transparent selection window is shown. A persistent
     // transparent/topmost window can make hardware-decoded video disappear from later
-    // desktop captures. The frozen frame stays stable however long selection takes.
+    // desktop captures. The frozen frame stays in memory; the overlay itself stays light.
     void restore;
-    frozenBackgroundPath = await invoke<string>('capture_screen_to_file');
-    await invoke('show_snip_window', { backgroundPath: frozenBackgroundPath });
+    await invoke('capture_screen_to_file');
 
     const prepareChrome = null;
 
@@ -351,7 +431,7 @@ export const startSnipImpl = async (ctx: Pick<windowSnipActionContext, 'closeTim
 };
 
 export const exitSnipImpl = async (ctx: Pick<windowSnipActionContext, 'appWindow' | 'drawerHeightRef' | 'drawerWidthRef' | 'enforceAntiTouchClosed' | 'isMouseDown' | 'setDrawerState' | 'setIsOpen' | 'setIsPinned' | 'setSelection' | 'setSnipMode' | 'snipCaptureInFlightRef' | 'snipExitInFlightRef' | 'snipModeActiveRef' | 'stateRef' | 'triggerModeRef'>, reopen: boolean = false) => {
-  const { appWindow, drawerHeightRef, drawerWidthRef, enforceAntiTouchClosed, isMouseDown, setDrawerState, setIsOpen, setIsPinned, setSelection, setSnipMode, snipCaptureInFlightRef, snipExitInFlightRef, snipModeActiveRef, stateRef, triggerModeRef } = ctx;
+  const { drawerHeightRef, drawerWidthRef, enforceAntiTouchClosed, isMouseDown, setDrawerState, setIsOpen, setIsPinned, setSelection, setSnipMode, snipCaptureInFlightRef, snipExitInFlightRef, snipModeActiveRef, stateRef, triggerModeRef } = ctx;
   snipExitInFlightRef.current = true;
   setSelection(null);
   isMouseDown.current = false;
@@ -390,7 +470,7 @@ export const exitSnipImpl = async (ctx: Pick<windowSnipActionContext, 'appWindow
       setSnipMode({ active: false, bg: '' });
     });
     snipModeActiveRef.current = false;
-    await appWindow.show().catch((err) => {
+    await invoke('diagnostic_show_window').catch((err) => {
       console.warn('show main after snip failed:', err);
     });
     snipExitInFlightRef.current = false;
@@ -405,7 +485,7 @@ export const exitSnipImpl = async (ctx: Pick<windowSnipActionContext, 'appWindow
 
     await invoke('close_drawer', { mode: triggerModeRef.current }).catch(async (err) => {
       console.warn('close_drawer after snip failed:', err);
-      await appWindow.hide().catch(() => {});
+      await invoke('diagnostic_hide_window').catch(() => {});
       await invoke('show_edge', { height: drawerHeightRef.current, mode: triggerModeRef.current }).catch((edgeErr) => {
         console.warn('show_edge after snip failed:', edgeErr);
       });
@@ -520,7 +600,9 @@ export const confirmSnipImpl = async (ctx: Pick<windowSnipActionContext, 'active
         ...latestSnapshot,
         name: item.name,
         content: item.content,
-        ...getStableFloatingNoteImageFields(item),
+        path: item.path,
+        url: item.url,
+        thumbnail: item.thumbnail,
         updatedAt: Date.now(),
       };
       snipNoteTarget = { ...target, snapshot: next };
@@ -886,6 +968,44 @@ export const handleTogglePinImpl = (ctx: Pick<windowSnipActionContext, 'isPinned
 
 export const finishResizeImpl = (ctx: Pick<windowSnipActionContext, 'applyWindowBounds' | 'closeTimerRef' | 'drawerHeightRef' | 'drawerResizeAnchorRef' | 'drawerWidthRef' | 'isGlobalMouseDown' | 'isPointerInsideDrawerRef' | 'isResizingState' | 'setDrawerHeight' | 'setDrawerWidth' | 'setIsOpen' | 'shouldBlockAutoClose'>, anchor: 'left' | 'right' = 'right') => {
   const { applyWindowBounds, closeTimerRef, drawerHeightRef, drawerResizeAnchorRef, drawerWidthRef, isGlobalMouseDown, isPointerInsideDrawerRef, isResizingState, setDrawerHeight, setDrawerWidth, setIsOpen, shouldBlockAutoClose } = ctx;
+    const active = activeDrawerResize;
+    if (active && active.owner.isResizingState === isResizingState) {
+      if (active.finishing || active.aborting) return;
+      active.finishing = true;
+      active.unbind();
+      void (async () => {
+        try {
+          await active.session.finish();
+        } catch (error) {
+          console.warn('drawer resize final flush failed:', error);
+          // Never fall back to an unanchored resize on error. Reconcile UI state
+          // with the actual native rect if the last write could not be applied.
+          await active.session.cancel();
+          if (active.aborting) return;
+          try {
+            const geometry = await readDrawerResizeGeometry();
+            if (active.aborting) return;
+            drawerWidthRef.current = geometry.size.width / geometry.scaleFactor;
+            drawerHeightRef.current = geometry.size.height / geometry.scaleFactor;
+          } catch { /* Keep last known dimensions if the window is disappearing. */ }
+        }
+        if (activeDrawerResize !== active || active.aborting) return;
+        // Keep the guard until the final native request has completed. Persist
+        // quantized dimensions without re-clamping a small monitor's work area.
+        drawerResizeAnchorRef.current = 'right';
+        setDrawerWidth(drawerWidthRef.current);
+        setDrawerHeight(drawerHeightRef.current);
+        isResizingState.current = false;
+        isGlobalMouseDown.current = false;
+        activeDrawerResize = null;
+        invoke('set_topmost', { topmost: true }).catch(() => {});
+        if (!isPointerInsideDrawerRef.current && !shouldBlockAutoClose()) {
+          if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+          closeTimerRef.current = setTimeout(() => setIsOpen(false), 180);
+        }
+      })();
+      return;
+    }
     const nextWidth = clamp(drawerWidthRef.current, MIN_DRAWER_WIDTH, MAX_DRAWER_WIDTH);
     const nextHeight = clamp(drawerHeightRef.current, MIN_DRAWER_HEIGHT, MAX_DRAWER_HEIGHT);
     drawerWidthRef.current = nextWidth;
@@ -906,36 +1026,58 @@ export const finishResizeImpl = (ctx: Pick<windowSnipActionContext, 'applyWindow
 
 };
 
+const startAnchoredDrawerResize = (ctx: DrawerGestureContext, event: React.PointerEvent, resizeHeight: boolean) => {
+  if (event.button !== 0 || event.isPrimary === false || ctx.isResizingState.current || isDrawerResizeActive()) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const target = event.currentTarget;
+  const startX = event.screenX;
+  const startY = event.screenY;
+  ctx.isResizingState.current = true;
+  ctx.isGlobalMouseDown.current = true;
+  ctx.setIsOpen(true);
+  ctx.setDrawerState('open');
+  let sessionScaleFactor = 1;
+  const session = createDrawerResizeSession({
+    queue: {
+      enqueue: (bounds) => drawerBoundsQueue.enqueue({ kind: 'anchored', bounds, scaleFactor: sessionScaleFactor }),
+      flush: () => drawerBoundsQueue.flush(),
+      discardPending: () => drawerBoundsQueue.discardPending(),
+    },
+    readGeometry: readDrawerResizeGeometry,
+    limits: {
+      minWidth: MIN_DRAWER_WIDTH, maxWidth: MAX_DRAWER_WIDTH,
+      minHeight: MIN_DRAWER_HEIGHT, maxHeight: MAX_DRAWER_HEIGHT,
+    },
+    onBounds: (bounds, scaleFactor) => {
+      sessionScaleFactor = scaleFactor;
+      ctx.drawerWidthRef.current = bounds.widthPx / scaleFactor;
+      ctx.drawerHeightRef.current = bounds.heightPx / scaleFactor;
+    },
+  });
+  const active = { session, owner: ctx, unbind: () => {}, finishing: false, aborting: false };
+  activeDrawerResize = active;
+  const move = (pointer: PointerEvent) => session.move(pointer.screenX - startX, resizeHeight ? pointer.screenY - startY : 0);
+  active.unbind = bindDrawerResizePointerEvents({
+    target, eventWindow: window, eventDocument: document, pointerId: event.pointerId,
+    cursor: resizeHeight ? 'nesw-resize' : 'ew-resize',
+    onMove: move,
+    onFinish: (pointer) => {
+      if (pointer) move(pointer);
+      ctx.finishResize();
+    },
+    onAbort: () => { void cancelDrawerResize(); },
+  });
+  void session.ready.catch((error: unknown) => {
+    if (activeDrawerResize !== active || active.finishing || active.aborting) return;
+    console.warn('drawer resize geometry unavailable:', error);
+    // Uses the same failure/teardown path as an error during final flushing.
+    ctx.finishResize();
+  });
+};
+
 export const startResizingWidthImpl = (ctx: Pick<windowSnipActionContext, 'applyWindowBounds' | 'drawerHeightRef' | 'drawerWidthRef' | 'finishResize' | 'isGlobalMouseDown' | 'isResizingState' | 'setDrawerState' | 'setIsOpen'>, e: React.PointerEvent) => {
-  const { applyWindowBounds, drawerHeightRef, drawerWidthRef, finishResize, isGlobalMouseDown, isResizingState, setDrawerState, setIsOpen } = ctx;
-    e.preventDefault();
-    e.stopPropagation();
-    isResizingState.current = true;
-    isGlobalMouseDown.current = true;
-    setIsOpen(true);
-    setDrawerState('open');
-
-    const startX = e.screenX;
-    const startWidth = drawerWidthRef.current;
-    const startHeight = drawerHeightRef.current;
-
-    const onMove = (me: PointerEvent) => {
-      const nextWidth = clamp(startWidth - (me.screenX - startX), MIN_DRAWER_WIDTH, MAX_DRAWER_WIDTH);
-      drawerWidthRef.current = nextWidth;
-      applyWindowBounds(nextWidth + EDGE_WIDTH, startHeight);
-    };
-
-    const cleanup = () => {
-      document.removeEventListener('pointermove', onMove);
-      document.removeEventListener('pointerup', cleanup);
-      document.removeEventListener('pointercancel', cleanup);
-      finishResize();
-    };
-
-    document.addEventListener('pointermove', onMove);
-    document.addEventListener('pointerup', cleanup);
-    document.addEventListener('pointercancel', cleanup);
-
+  startAnchoredDrawerResize(ctx, e, false);
 };
 
 export const startResizingHeightImpl = (ctx: Pick<windowSnipActionContext, 'applyWindowBounds' | 'drawerHeightRef' | 'drawerWidthRef' | 'finishResize' | 'isGlobalMouseDown' | 'isResizingState' | 'setDrawerState' | 'setIsOpen'>, e: React.PointerEvent) => {
@@ -971,38 +1113,7 @@ export const startResizingHeightImpl = (ctx: Pick<windowSnipActionContext, 'appl
 };
 
 export const startResizingCornerImpl = (ctx: Pick<windowSnipActionContext, 'applyWindowBounds' | 'drawerHeightRef' | 'drawerWidthRef' | 'finishResize' | 'isGlobalMouseDown' | 'isResizingState' | 'setDrawerState' | 'setIsOpen'>, e: React.PointerEvent) => {
-  const { applyWindowBounds, drawerHeightRef, drawerWidthRef, finishResize, isGlobalMouseDown, isResizingState, setDrawerState, setIsOpen } = ctx;
-    e.preventDefault();
-    e.stopPropagation();
-    isResizingState.current = true;
-    isGlobalMouseDown.current = true;
-    setIsOpen(true);
-    setDrawerState('open');
-
-    const startX = e.screenX;
-    const startY = e.screenY;
-    const startWidth = drawerWidthRef.current;
-    const startHeight = drawerHeightRef.current;
-
-    const onMove = (me: PointerEvent) => {
-      const nextWidth = clamp(startWidth - (me.screenX - startX), MIN_DRAWER_WIDTH, MAX_DRAWER_WIDTH);
-      const nextHeight = clamp(startHeight + (me.screenY - startY), MIN_DRAWER_HEIGHT, MAX_DRAWER_HEIGHT);
-      drawerWidthRef.current = nextWidth;
-      drawerHeightRef.current = nextHeight;
-      applyWindowBounds(nextWidth + EDGE_WIDTH, nextHeight);
-    };
-
-    const cleanup = () => {
-      document.removeEventListener('pointermove', onMove);
-      document.removeEventListener('pointerup', cleanup);
-      document.removeEventListener('pointercancel', cleanup);
-      finishResize();
-    };
-
-    document.addEventListener('pointermove', onMove);
-    document.addEventListener('pointerup', cleanup);
-    document.addEventListener('pointercancel', cleanup);
-
+  startAnchoredDrawerResize(ctx, e, true);
 };
 
 export const startResizingRightCornerImpl = (ctx: Pick<windowSnipActionContext, 'applyWindowBounds' | 'drawerHeightRef' | 'drawerWidthRef' | 'finishResize' | 'isGlobalMouseDown' | 'isResizingState' | 'setDrawerState' | 'setIsOpen'>, e: React.PointerEvent) => {

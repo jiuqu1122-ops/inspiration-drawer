@@ -52,7 +52,7 @@ export const recoverCanvasAiNodeWithUsableResults = (
   });
   const expectedOutputCount = Math.max(
     1,
-    Math.round(Number(canvasItem.ai.count) || outputs.length)
+    Math.round(Number(canvasItem.ai.imageExpectedOutputCount ?? canvasItem.ai.count) || outputs.length)
   );
   const allOutputsSucceeded = outputs.length >= expectedOutputCount && outputs.every(output => (
     output.status === 'success' && hasCanvasAiOutputUsableSource(output)
@@ -91,6 +91,8 @@ export const buildCanvasAiOutputRemoteResultPatch = (source: string) => {
  * them. A remote preview URL is not enough because it may still require an
  * authenticated download or expire before the next provider reads it.
  */
+export const isCanvasAiAssetOutputReadyForWorkflowDependency = (output?: CanvasAiGeneratedOutput | null) => output?.status === 'success' && (output.assetType === 'audio' || output.assetType === 'video' || output.mediaType === 'video' ? !!String(output.path || output.url || '').trim() : !!String(output.path || '').trim());
+
 export const isCanvasAiImageOutputReadyForWorkflowDependency = (
   output?: CanvasAiGeneratedOutput | null,
 ) => output?.status === 'success' && !!String(output.path || '').trim();

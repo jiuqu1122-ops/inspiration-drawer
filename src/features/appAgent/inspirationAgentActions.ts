@@ -162,10 +162,19 @@ export const buildCanvasAgentSelectedItemsImpl = (ctx: Pick<inspirationAgentActi
         || (item.type === 'image' || item.type === 'video'
           ? getCanvasItemNavSource(item)
           : '');
+      const workflowRecord = canvasItem.ai?.type === 'workflow'
+        && canvasItem.ai.workflow
+        && typeof canvasItem.ai.workflow === 'object'
+        ? canvasItem.ai.workflow as Record<string, unknown>
+        : undefined;
+      const workflowLabel = String(workflowRecord?.label || canvasItem.ai?.presetLabel || '').trim();
+      const itemName = String(item.name || '').trim();
       items.push({
         id,
         sourceItemId: item.sourceItemId,
-        name: item.name || canvasItem.ai?.presetLabel || getCanvasAiNodeTitle(canvasItem.ai) || `选中素材 ${index + 1}`,
+        name: canvasItem.ai?.type === 'workflow'
+          ? workflowLabel || itemName.replace(/^工作流\s*/, '') || '未命名工作流'
+          : itemName || canvasItem.ai?.presetLabel || getCanvasAiNodeTitle(canvasItem.ai) || `选中素材 ${index + 1}`,
         type: String(canvasItem.ai?.type || item.type),
         thumbnail: thumbnail || undefined,
         status: canvasItem.ai?.status,

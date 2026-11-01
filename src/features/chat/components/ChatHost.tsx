@@ -1,3 +1,4 @@
+import { useDesignMemoryConversationRequest } from '../../designMemory/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { blobToDataUrl } from '../../../utils/canvasImageData';
@@ -14,12 +15,22 @@ import {
 } from '../runtime/canvasWorkflowProgress';
 import { useChatRuntime, type UseChatRuntimeOptions } from '../runtime/useChatRuntime';
 import { ChatView, type ChatViewProps } from './ChatView';
+import { useCloudAccount } from '../../cloudAccountContext';
+import { getWorkflowChatBinding, saveWorkflowChatBinding } from '../storage/workflowChatStorage';
+import type { WorkflowResultCardData } from '../../agentModel';
+import { createCanvasWorkflowSnapshot, workflowSnapshotHash } from '../attachments/chatWorkflowAttachments';
 
 export type ChatHostProps = Omit<ChatViewProps, 'runtime'> & {
   visible: boolean;
+  canvasId?: string;
+  imageQualities?: string[];
   model: string;
   serverManagedChannelFailover?: boolean;
+  cloudWalletMode?: boolean;
   runtimeImageModel?: string;
+  runtimeImageModelOptions?: UseChatRuntimeOptions['imageModelOptions'];
+  runtimeImageAspectRatioOptions?: string[];
+  runtimeImageResolutionOptions?: string[];
   approvalMode?: UseChatRuntimeOptions['approvalMode'];
   executeTool: UseChatRuntimeOptions['executeTool'];
   onNotice?: UseChatRuntimeOptions['onNotice'];
@@ -31,6 +42,18 @@ export type ChatHostProps = Omit<ChatViewProps, 'runtime'> & {
 };
 
 const prepareChatAttachment = async (attachment: PendingChatAttachment) => {
+  if (attachment.type === 'workflow') {
+    const source = attachment.path.trim();
+    if (!source || /^workflow:\/\//i.test(source)) return attachment;
+    const payload = await invoke<unknown>('read_canvas_template_json', { path: source });
+    const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+    const workflow = Array.isArray(record.workflows) ? record.workflows[0] : record;
+    const workflowRecord = workflow && typeof workflow === 'object' ? workflow as Record<string, unknown> : {};
+    const nodes = Array.isArray(workflowRecord.nodes) ? workflowRecord.nodes : [];
+    const snapshot = createCanvasWorkflowSnapshot(nodes, String(workflowRecord.label || source.split(/[\\/]/).pop() || '导入工作流'), 'file');
+    const structureHash = workflowSnapshotHash(snapshot);
+    return { ...attachment, path: `workflow://${structureHash}`, metadataJson: JSON.stringify({ snapshot, structureHash, raw: payload }) };
+  }
   if (attachment.type !== 'image') return attachment;
   const source = attachment.path.trim();
   if (!source || !/^(?:https?:|data:|blob:|asset:)/i.test(source)) return attachment;
@@ -63,9 +86,15 @@ const prepareChatAttachment = async (attachment: PendingChatAttachment) => {
 
 export function ChatHost({
   visible,
+  canvasId = 'default',
+  imageQualities = [],
   model,
   serverManagedChannelFailover,
+  cloudWalletMode,
   runtimeImageModel,
+  runtimeImageModelOptions,
+  runtimeImageAspectRatioOptions,
+  runtimeImageResolutionOptions,
   approvalMode,
   executeTool,
   onNotice,
@@ -79,10 +108,13 @@ export function ChatHost({
   imageResolution,
   ...viewProps
 }: ChatHostProps) {
+  const { scheduleQuotaRefresh } = useCloudAccount();
   const canvasChatVisible = useCanvasChatVisibility();
   const canvasWorkflowResult = useCanvasWorkflowProgress();
   const workflowConversationRequest = useCanvasWorkflowConversationRequest();
   const resolvedVisible = viewProps.variant === 'canvas' ? canvasChatVisible : visible;
+  const [imageQuality, setImageQuality] = useState('');
+  const effectiveImageQuality = imageQualities.includes(imageQuality) ? imageQuality : imageQualities[0] || '';
   const runtime = useChatRuntime({
     model,
     modelOptions: viewProps.modelOptions,
@@ -90,6 +122,10 @@ export function ChatHost({
     imageModel: runtimeImageModel || imageModel,
     imageAspectRatio,
     imageResolution: imageResolution || undefined,
+    imageModelOptions: runtimeImageModelOptions,
+    imageAspectRatioOptions: runtimeImageAspectRatioOptions,
+    imageResolutionOptions: runtimeImageResolutionOptions,
+    imageQuality: effectiveImageQuality,
     approvalMode,
     executeTool,
     onNotice,
@@ -97,30 +133,70 @@ export function ChatHost({
     onBatchStarted,
     onBatchMediaReady,
     onBatchCompleted,
+    cloudWalletMode: cloudWalletMode ?? serverManagedChannelFailover === true,
+    onWalletSettlementComplete: scheduleQuotaRefresh,
     prepareAttachment: prepareChatAttachment,
     createVisionAttachmentResolver: createChatVisionAttachmentResolver,
   });
+  const memoryConversationRequest = useDesignMemoryConversationRequest();
+  const handledMemoryRequestRef = useRef(0);
+  useEffect(() => {
+    if (!memoryConversationRequest || runtime.loading || memoryConversationRequest.variant !== viewProps.variant
+      || handledMemoryRequestRef.current === memoryConversationRequest.sequence) return;
+    handledMemoryRequestRef.current = memoryConversationRequest.sequence;
+    runtime.selectConversation(memoryConversationRequest.conversationId);
+  }, [memoryConversationRequest, runtime.loading, runtime.selectConversation, viewProps.variant]);
   const [viewMounted, setViewMounted] = useState(resolvedVisible);
   const [workflowConversationId, setWorkflowConversationId] = useState('');
+  const [savedWorkflowResult, setSavedWorkflowResult] = useState<WorkflowResultCardData | undefined>();
+  const restoredWorkflowCanvasRef = useRef('');
+  const activeWorkflowBindingRef = useRef<{ canvasId: string; nodeId: string } | null>(null);
+  useEffect(() => {
+    if (viewProps.variant !== 'canvas' || runtime.loading || restoredWorkflowCanvasRef.current === canvasId) return;
+    restoredWorkflowCanvasRef.current = canvasId;
+    const binding = getWorkflowChatBinding(canvasId);
+    setWorkflowConversationId(binding?.conversationId || '');
+    setSavedWorkflowResult(binding?.result);
+    activeWorkflowBindingRef.current = binding || null;
+    if (binding && runtime.conversations.some(item => item.id === binding.conversationId)) runtime.selectConversation(binding.conversationId);
+  }, [canvasId, runtime.loading, viewProps.variant]);
   const handledWorkflowConversationRequestRef = useRef('');
 
   useEffect(() => {
     if (
       viewProps.variant !== 'canvas'
       || !workflowConversationRequest
+      || workflowConversationRequest.canvasId !== canvasId
       || workflowConversationRequest.id === handledWorkflowConversationRequestRef.current
     ) return;
     handledWorkflowConversationRequestRef.current = workflowConversationRequest.id;
+    const binding = getWorkflowChatBinding(canvasId, workflowConversationRequest.nodeId);
+    activeWorkflowBindingRef.current = workflowConversationRequest;
+    if (binding && runtime.conversations.some(item => item.id === binding.conversationId)) {
+      setWorkflowConversationId(binding.conversationId);
+      runtime.selectConversation(binding.conversationId);
+      return;
+    }
     setWorkflowConversationId('');
     void runtime.newConversation(workflowConversationRequest.title)
       .then(conversation => {
-        if (conversation) setWorkflowConversationId(conversation.id);
+        if (conversation) {
+          saveWorkflowChatBinding({ canvasId, nodeId: workflowConversationRequest.nodeId, conversationId: conversation.id });
+          if (activeWorkflowBindingRef.current?.canvasId === canvasId) setWorkflowConversationId(conversation.id);
+        }
       })
       .catch(error => {
         handledWorkflowConversationRequestRef.current = '';
         onNotice?.(`创建工作流会话失败：${String(error)}`);
       });
-  }, [onNotice, runtime.newConversation, viewProps.variant, workflowConversationRequest]);
+  }, [canvasId, onNotice, runtime.newConversation, viewProps.variant, workflowConversationRequest, runtime.conversations]);
+
+  useEffect(() => {
+    const binding = activeWorkflowBindingRef.current;
+    if (!binding || !workflowConversationId || !canvasWorkflowResult || canvasWorkflowResult.workflowNodeId !== binding.nodeId) return;
+    saveWorkflowChatBinding({ ...binding, conversationId: workflowConversationId, result: canvasWorkflowResult });
+    setSavedWorkflowResult(canvasWorkflowResult);
+  }, [canvasWorkflowResult, workflowConversationId]);
 
   useEffect(() => {
     if (resolvedVisible) {
@@ -161,9 +237,12 @@ export function ChatHost({
       imageModel={imageModel}
       imageAspectRatio={imageAspectRatio}
       imageResolution={imageResolution}
+      imageQuality={effectiveImageQuality}
+      imageQualityOptions={imageQualities.map(value => ({ value, label: value }))}
+      onImageQualityChange={setImageQuality}
       workflowResult={viewProps.variant === 'canvas'
         ? workflowConversationId === runtime.activeConversationId
-          ? canvasWorkflowResult
+          ? savedWorkflowResult
           : undefined
         : viewProps.workflowResult}
     />

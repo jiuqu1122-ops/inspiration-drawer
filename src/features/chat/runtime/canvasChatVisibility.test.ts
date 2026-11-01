@@ -10,6 +10,7 @@ import {
 describe('canvas chat visibility', () => {
   afterEach(() => {
     setCanvasChatVisibility(false);
+    setCanvasChatSidebarWidth(480);
     vi.restoreAllMocks();
   });
 
@@ -33,5 +34,22 @@ describe('canvas chat visibility', () => {
     setCanvasChatSidebarWidth(536);
     expect(listener).not.toHaveBeenCalled();
     unsubscribe();
+  });
+
+  it('keeps document-flow panels clear of the canvas chat by updating margin-right', () => {
+    const panel = {
+      dataset: { canvasChatMarginBase: '0' },
+      style: { marginRight: '' },
+    };
+    vi.stubGlobal('document', {
+      querySelectorAll: (selector: string) => (
+        selector.includes('data-canvas-chat-margin-base') ? [panel] : []
+      ),
+    });
+    setCanvasChatSidebarWidth(520);
+    setCanvasChatVisibility(true);
+    expect(panel.style.marginRight).toBe('520px');
+    setCanvasChatVisibility(false);
+    expect(panel.style.marginRight).toBe('0px');
   });
 });

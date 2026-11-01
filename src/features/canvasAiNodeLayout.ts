@@ -23,6 +23,17 @@ export const CANVAS_AI_LOCAL_TOOL_PROGRESS_PANEL_HEIGHT = 142;
 export const CANVAS_AI_MAX_OUTPUT_COUNT = 64;
 export const CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS = 64;
 
+export const getCanvasImageGeneratorMainColumnWidth = (options?: {
+  imageControlsWidth?: number;
+  imageRulePanelExpanded?: boolean;
+}) => {
+  const panelWidth = options?.imageRulePanelExpanded ? CANVAS_IMAGE_RULE_PANEL_WIDTH : CANVAS_IMAGE_RULE_COLLAPSED_WIDTH;
+  const measuredWidth = options?.imageControlsWidth;
+  const controlsWidth = typeof measuredWidth === 'number' && Number.isFinite(measuredWidth) ? measuredWidth : 0;
+  return Math.max(CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH,
+    controlsWidth - panelWidth - CANVAS_IMAGE_RULE_PANEL_GAP - 32);
+};
+
 export const parseCanvasAspectRatioValue = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
   const [rawW, rawH] = String(aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO)
     .split(/[:x×]/i)
@@ -62,12 +73,32 @@ export const getCanvasAiOutputTileLayout = (options?: {
   };
 };
 
+export const CANVAS_AI_PROMPT_COLLAPSED_HEIGHT = 108;
+export const CANVAS_AI_PROMPT_EDIT_MIN_HEIGHT = 180;
+
+/** One source of truth for both the editor and its surrounding node. */
+export const getCanvasAiPromptEditLayout = (
+  collapsedDesignSize: { width: number; height: number },
+  requestedPromptHeight: number,
+) => {
+  const promptHeight = Number.isFinite(requestedPromptHeight)
+    ? Math.max(CANVAS_AI_PROMPT_EDIT_MIN_HEIGHT, requestedPromptHeight)
+    : CANVAS_AI_PROMPT_EDIT_MIN_HEIGHT;
+  const extraHeight = promptHeight - CANVAS_AI_PROMPT_COLLAPSED_HEIGHT;
+  return {
+    promptHeight,
+    extraHeight,
+    width: collapsedDesignSize.width,
+    height: collapsedDesignSize.height + extraHeight,
+  };
+};
+
 export const getCanvasAiPromptAutoHeight = (
   promptText = '',
   width = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH,
   expanded = false
 ) => {
-  if (!expanded) return 108;
+  if (!expanded) return CANVAS_AI_PROMPT_COLLAPSED_HEIGHT;
   const text = promptText.trim();
   const charsPerLine = Math.max(26, Math.floor((width - 44) / 14));
   const visualLines = text
@@ -76,7 +107,7 @@ export const getCanvasAiPromptAutoHeight = (
       0
     ))
     : 3;
-  return clamp(visualLines * 28 + 24, 180, 320);
+  return clamp(visualLines * 28 + 24, CANVAS_AI_PROMPT_EDIT_MIN_HEIGHT, 320);
 };
 
 export const getCanvasAiNodeAutoSize = (options?: {
@@ -93,17 +124,20 @@ export const getCanvasAiNodeAutoSize = (options?: {
   showLocalMediaProgress?: boolean;
   imageRulePanelExpanded?: boolean;
   imageFusion?: boolean;
+  imageControlsWidth?: number;
   internalSlotCount?: number;
 }) => {
   const isWorkflow = options?.type === 'workflow';
   const isVideo = options?.type === 'video-generator';
+  const imageMainWidth = getCanvasImageGeneratorMainColumnWidth(options);
+  const imageExtraWidth = imageMainWidth - CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH;
   const width = isWorkflow
     ? CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH
     : isVideo
       ? CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH
       : options?.imageRulePanelExpanded
-        ? CANVAS_IMAGE_GENERATOR_NODE_WITH_RULES_WIDTH
-        : CANVAS_IMAGE_GENERATOR_NODE_COLLAPSED_RULES_WIDTH;
+        ? CANVAS_IMAGE_GENERATOR_NODE_WITH_RULES_WIDTH + imageExtraWidth
+        : CANVAS_IMAGE_GENERATOR_NODE_COLLAPSED_RULES_WIDTH + imageExtraWidth;
   const outputCount = clamp(
     Math.round(Number(options?.outputCount || options?.count) || CANVAS_AI_DEFAULT_COUNT),
     1,
@@ -111,7 +145,7 @@ export const getCanvasAiNodeAutoSize = (options?: {
   );
   const outputLayout = options?.showOutputPreview
     ? getCanvasAiOutputTileLayout({
-      width: !isWorkflow && !isVideo ? CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH : width,
+      width: !isWorkflow && !isVideo ? imageMainWidth : width,
       aspectRatio: options?.aspectRatio,
       outputCount,
       isWorkflow,
@@ -128,7 +162,7 @@ export const getCanvasAiNodeAutoSize = (options?: {
         : CANVAS_AI_LOCAL_TOOL_PANEL_HEIGHT
       : getCanvasAiPromptAutoHeight(
         options?.promptText,
-        !isWorkflow && !isVideo ? CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH : width,
+        !isWorkflow && !isVideo ? imageMainWidth : width,
         !!options?.promptExpanded
       );
   const inputHeight = 52;

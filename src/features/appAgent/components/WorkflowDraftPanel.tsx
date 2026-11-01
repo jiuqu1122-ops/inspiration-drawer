@@ -4,7 +4,7 @@ import type { WorkflowRecipeDraft, WorkflowOutputSpec, WorkflowLanguage } from '
 interface WorkflowDraftPanelProps {
   draft: WorkflowRecipeDraft;
   onUpdate: (patch: Partial<WorkflowRecipeDraft>) => void;
-  onSave: () => void;
+  onSave: () => Promise<void>;
   onDiscard: () => void;
 }
 
@@ -124,6 +124,17 @@ function AddNodeForm({ onAdd, onCancel }: { onAdd: (spec: WorkflowOutputSpec) =>
 export function WorkflowDraftPanel({ draft, onUpdate, onSave, onDiscard }: WorkflowDraftPanelProps) {
   const [expandedOutputId, setExpandedOutputId] = useState<string | null>(null);
   const [showAddNode, setShowAddNode] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (isSaving) return;
+    setIsSaving(true);
+    try {
+      await onSave();
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   const toggleOutput = (id: string) => {
     onUpdate({
@@ -356,13 +367,15 @@ export function WorkflowDraftPanel({ draft, onUpdate, onSave, onDiscard }: Workf
         {/* ── Footer ──────────────────────────────────────── */}
         <div className="shrink-0 px-4 py-3 border-t border-stone-200 flex gap-2 bg-stone-50">
           <button
-            onClick={onSave}
-            className="flex-1 h-9 rounded-[12px] bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white text-xs font-semibold transition-colors shadow-sm shadow-blue-500/20"
+            onClick={() => void handleSave()}
+            disabled={isSaving}
+            className="flex-1 h-9 rounded-[12px] bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white text-xs font-semibold transition-colors shadow-sm shadow-blue-500/20 disabled:cursor-wait disabled:opacity-60"
           >
-            保存为工作流
+            {isSaving ? '保存中…' : '保存为工作流'}
           </button>
           <button
             onClick={onDiscard}
+            disabled={isSaving}
             className="h-9 px-3 rounded-[12px] border border-stone-200 text-stone-500 hover:text-stone-700 hover:border-stone-300 hover:bg-white text-xs transition-colors"
           >
             关闭

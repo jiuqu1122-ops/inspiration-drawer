@@ -1,3 +1,5 @@
+// MODEL_CATALOG_STABILITY_PATCH_V1
+import { beginCatalogRefresh, cancelCatalogRefresh } from '../modelCatalogRefresh';
 import { invoke } from '@tauri-apps/api/core';
 import { emitTo,listen } from '@tauri-apps/api/event';
 import React from 'react';
@@ -9,19 +11,42 @@ import type { AiGatewayKind } from '../agentModel';
 import { getCanvasAiEndpointForModels,isCanvasAiRemoteModelProvider } from '../../utils/canvasAiConfig';
 import { NEW_API_SEEDANCE_2_MODEL,XAIS_CHAT_VIDEO_MODEL_DEFAULT,getCanvasAiVideoModelCandidates } from '../canvasAiImage';
 import { type CanvasAiCredentialSource,type CanvasAiProvider,type CanvasImageItem } from '../canvasModel';
-import { cacheSuccessfulAiCatalog,getCachedAiCatalog,reconcileStaleCanvasAiModels } from '../aiModelCapabilities';
+import { getAiCatalogModels,getDefaultAiCatalogModelId,hasServerAiCatalog } from '../aiModelCapabilities';
+import { refreshWalletMediaCatalog } from '../walletMediaCatalog';
 
 type settingsEffectContext = { isCanvasMode: boolean; updateCanvasItemsImmediate: (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => CanvasImageItem[]; canvasAiCredentialSource: CanvasAiCredentialSource; canvasAiCloudImageModels: CloudImageModelsResult | null; isDrawerAgentOpen: boolean; canvasAiModelRefreshSignatureRef: React.RefObject<string>; canvasAiUsesCloudImageModels: boolean; effectiveCanvasAiProvider: CanvasAiProvider; isCanvasAiLicenseManaged: boolean; canvasAiApiKey: string; canvasAiNewApiVideoKey: string; effectiveCanvasAiEndpoint: string; canvasAiEndpoint: string; effectiveCanvasAiGatewayKind: AiGatewayKind; effectiveCanvasAiApiProvider: string; effectiveCanvasAiModel: string; canvasAiHeadersText: string; refreshCanvasAiOpenAiModels: (silent?: boolean) => Promise<void>; setCanvasAiCloudImageModels: React.Dispatch<React.SetStateAction<CloudImageModelsResult | null>>; startupAutoCloseTimerRef: React.RefObject<any>; idleAutoCloseTimerRef: React.RefObject<any>; setShortcut: React.Dispatch<React.SetStateAction<string>>; setSnipShortcut: React.Dispatch<React.SetStateAction<string>>; setTextShortcut: React.Dispatch<React.SetStateAction<string>>; setSearchShortcut: React.Dispatch<React.SetStateAction<string>>; setTriggerShortcut: React.Dispatch<React.SetStateAction<string>>; setNoteShortcut: React.Dispatch<React.SetStateAction<string>>; setCanvasShortcut: React.Dispatch<React.SetStateAction<string>>; setIsAutoStart: React.Dispatch<React.SetStateAction<boolean>>; setLocalIP: React.Dispatch<React.SetStateAction<string>>; setMobilePairUrl: React.Dispatch<React.SetStateAction<string>>; refreshLicenseStatus: (silent?: boolean) => Promise<void>; cloudStartupSyncStartedRef: React.RefObject<boolean>; refreshCloudAccount: (silent?: boolean) => Promise<CloudAccountSummary>; showWebImageCollector: boolean; webImageCollectorPanelRef: React.RefObject<HTMLDivElement | null>; closeWebImageCollector: () => void; handleLocalVisionModelProgress: (progress: { stage?: string; message: string; progress?: number; }) => void; checkLocalVisionModelStatus: (options?: { silent?: boolean; }) => Promise<boolean>; showSettings: boolean; setShowSettings: React.Dispatch<React.SetStateAction<boolean>>; folderContextMenu: FolderContextMenuState | null; setFolderContextMenu: React.Dispatch<React.SetStateAction<FolderContextMenuState | null>>; stateRef: React.RefObject<{ isOpen: boolean; isPinned: boolean; showTextInput: boolean; isSearchActive: boolean; isAntiTouchMode: boolean; }>; isAntiTouchMode: boolean; enforceAntiTouchClosed: (showFeedback?: boolean) => void; toggleTriggerMode: () => void; setIsDark: React.Dispatch<React.SetStateAction<boolean>>; showToast: (message: string) => void; isDrawerAiClassificationMode: boolean; setActiveDrawerAiClassificationLabel: React.Dispatch<React.SetStateAction<string>>; activeDrawerAiClassificationLabel: string; drawerAiClassificationGroups: AiClassificationGroup[]; };
 
 export const runSettingsEffect01 = (ctx: Pick<settingsEffectContext, 'canvasAiCloudImageModels' | 'canvasAiCredentialSource' | 'isCanvasMode' | 'updateCanvasItemsImmediate'>) => {
   const { canvasAiCloudImageModels, canvasAiCredentialSource, isCanvasMode, updateCanvasItemsImmediate } = ctx;
     if (!isCanvasMode) return;
+    const usesServerCatalog = canvasAiCredentialSource === 'wallet'
+      && hasServerAiCatalog(canvasAiCloudImageModels);
+    const serverVideoCatalog = usesServerCatalog
+      ? getAiCatalogModels(canvasAiCloudImageModels, 'video')
+      : [];
+    const serverDefaultVideoModel = usesServerCatalog
+      ? getDefaultAiCatalogModelId(canvasAiCloudImageModels!, 'video')
+      : '';
     updateCanvasItemsImmediate(previous => {
       let changed = false;
       const next = previous.map(item => {
         if (item.ai?.type !== 'video-generator'
           || item.ai.provider !== 'xais-chat'
           || item.ai.model !== XAIS_CHAT_VIDEO_MODEL_DEFAULT) return item;
+        if (usesServerCatalog) {
+          if (!serverDefaultVideoModel || serverVideoCatalog.length === 0) return item;
+          changed = true;
+          return {
+            ...item,
+            ai: {
+              ...item.ai,
+              model: serverDefaultVideoModel,
+              credentialSource: canvasAiCredentialSource,
+              providerChannelId: undefined,
+              providerCandidates: undefined,
+            },
+          };
+        }
         const candidates = getCanvasAiVideoModelCandidates(
           NEW_API_SEEDANCE_2_MODEL,
           canvasAiCredentialSource,
@@ -84,31 +109,17 @@ export const runSettingsEffect03 = (ctx: Pick<settingsEffectContext, 'canvasAiUs
   const { canvasAiUsesCloudImageModels, effectiveCanvasAiProvider, isCanvasMode, setCanvasAiCloudImageModels, updateCanvasItemsImmediate } = ctx;
     if (!isCanvasMode || !canvasAiUsesCloudImageModels) return;
     let disposed = false;
+    let inFlight = false;
+    let catalogTicket: ReturnType<typeof beginCatalogRefresh> | undefined;
     const refreshCloudPricing = () => {
-      void invoke<CloudImageModelsResult>('get_cloud_image_models', {
-        provider: effectiveCanvasAiProvider,
-      }).then((result) => {
-        if (disposed) return;
-        const channels = (result.channels || []).map(channel => ({
-          ...channel,
-          models: Array.from(new Set([
-            ...(channel.models || []).map(model => model.trim()).filter(Boolean),
-            ...(String(channel.defaultModel || '').trim() ? [String(channel.defaultModel).trim()] : []),
-          ])),
-        }));
-        const snapshot = cacheSuccessfulAiCatalog({
-          ...result,
-          channels,
-          models: Array.from(new Set([
-            ...(result.models || []).map(model => model.trim()).filter(Boolean),
-            ...channels.flatMap(channel => channel.models),
-          ])),
-          pricing: result.pricing ?? getCachedAiCatalog()?.pricing,
-        });
-        setCanvasAiCloudImageModels(snapshot);
-        updateCanvasItemsImmediate(previous => reconcileStaleCanvasAiModels(previous, snapshot));
-      }).catch(() => {
-        // Keep the last known pricing while temporarily offline.
+      if (disposed || inFlight) return;
+      inFlight = true;
+      const ticket = beginCatalogRefresh(setCanvasAiCloudImageModels);
+      catalogTicket = ticket;
+      void refreshWalletMediaCatalog({ provider: effectiveCanvasAiProvider, setCatalog: setCanvasAiCloudImageModels, updateItems: updateCanvasItemsImmediate }, ticket).catch(() => {
+        // Keep the last known catalog and pricing while temporarily offline.
+      }).finally(() => {
+        inFlight = false;
       });
     };
     refreshCloudPricing();
@@ -117,6 +128,7 @@ export const runSettingsEffect03 = (ctx: Pick<settingsEffectContext, 'canvasAiUs
     const interval = window.setInterval(refreshCloudPricing, 5 * 60_000);
     return () => {
       disposed = true;
+      cancelCatalogRefresh(catalogTicket);
       window.removeEventListener('focus', onFocus);
       window.clearInterval(interval);
     };
@@ -148,7 +160,6 @@ export const runSettingsEffect05 = (ctx: Pick<settingsEffectContext, 'cloudStart
     invoke('get_auto_start').then((res: any) => setIsAutoStart(!!res)).catch(()=>{});
     invoke('get_local_ip').then((res: any) => setLocalIP(String(res || ''))).catch(()=>{});
     invoke('get_mobile_pair_url').then((res: any) => setMobilePairUrl(String(res || ''))).catch(()=>{});
-    invoke('set_topmost', { topmost: true }).catch(()=>{});
     void refreshLicenseStatus(true);
     if (!cloudStartupSyncStartedRef.current) {
       cloudStartupSyncStartedRef.current = true;

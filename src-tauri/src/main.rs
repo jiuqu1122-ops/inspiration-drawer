@@ -2,16 +2,25 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent;
+mod canvas_background;
+mod canvas_view_state;
 mod ai_credentials;
 mod ai_gateway;
+mod image_input;
+mod drawer_bounds;
 mod browser_extension;
 mod commands;
 mod db;
 mod license;
+mod snip_desktop;
 mod native_drag;
 mod native_drop;
 mod platform;
 mod repositories;
+mod recharge;
+mod reference_upload;
+mod renderer_diagnostics;
+use renderer_diagnostics::{window_action, WindowAction};
 mod services;
 mod update_cache;
 mod virtual_drop;
@@ -39,7 +48,7 @@ use std::time::{Duration, Instant, SystemTime};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    Emitter, LogicalPosition, LogicalSize, Manager, Monitor, PhysicalPosition, WebviewUrl,
+    Emitter, LogicalPosition, LogicalSize, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder,
 };
 use tauri_plugin_updater::UpdaterExt;
@@ -70,6 +79,8 @@ static ANTI_TOUCH_LOCKED: AtomicU16 = AtomicU16::new(0);
 static MAIN_WORKBENCH_ACTIVE: AtomicBool = AtomicBool::new(false);
 static POST_INSTALL_LAUNCH_PENDING: AtomicBool = AtomicBool::new(false);
 static SNIP_BACKGROUND_PATH: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static SNIP_FROZEN_DESKTOP: OnceLock<Mutex<Option<crate::snip_desktop::FrozenSnipDesktop>>> =
+    OnceLock::new();
 const POST_INSTALL_LAUNCH_MARKER: &str = ".inspiration-drawer-post-install";
 
 fn store_snip_background_path(path: String) {
@@ -87,6 +98,47 @@ fn take_snip_background_path(preferred: Option<String>) -> Option<String> {
     preferred
         .filter(|value| !value.trim().is_empty())
         .or(stored)
+}
+
+fn store_snip_frozen_desktop(desktop: crate::snip_desktop::FrozenSnipDesktop) {
+    if let Ok(mut current) = SNIP_FROZEN_DESKTOP.get_or_init(|| Mutex::new(None)).lock() {
+        *current = Some(desktop);
+    }
+}
+
+fn take_snip_frozen_desktop() -> Option<crate::snip_desktop::FrozenSnipDesktop> {
+    SNIP_FROZEN_DESKTOP
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|mut current| current.take())
+}
+
+fn clear_snip_frozen_frame() {
+    if let Ok(mut current) = SNIP_FROZEN_DESKTOP.get_or_init(|| Mutex::new(None)).lock() {
+        *current = None;
+    }
+}
+
+fn save_snip_png_fast(
+    path: &std::path::Path,
+    image: &screenshots::image::RgbaImage,
+) -> Result<(), String> {
+    let file = File::create(path).map_err(|e| e.to_string())?;
+    let writer = BufWriter::new(file);
+    let encoder = screenshots::image::codecs::png::PngEncoder::new_with_quality(
+        writer,
+        screenshots::image::codecs::png::CompressionType::Fast,
+        screenshots::image::codecs::png::FilterType::NoFilter,
+    );
+    screenshots::image::ImageEncoder::write_image(
+        encoder,
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        screenshots::image::ColorType::Rgba8,
+    )
+    .map_err(|e| e.to_string())
 }
 
 struct CloudflaredShare {
@@ -490,7 +542,9 @@ fn normalize_proxy_endpoint(value: &str) -> Option<String> {
     }
 
     let mut selected = raw.to_string();
-    if raw.contains('=') {
+    if raw.split_once('=').is_some_and(|(key, _)| {
+        matches!(key.trim().to_ascii_lowercase().as_str(), "https" | "http" | "socks" | "socks5")
+    }) {
         let mut https_value = None;
         let mut http_value = None;
         let mut socks_value = None;
@@ -619,12 +673,9 @@ fn windows_system_proxy() -> Option<String> {
 }
 
 fn env_proxy() -> Option<String> {
-    std::env::var("HTTPS_PROXY")
-        .or_else(|_| std::env::var("https_proxy"))
-        .or_else(|_| std::env::var("HTTP_PROXY"))
-        .or_else(|_| std::env::var("http_proxy"))
-        .ok()
-        .and_then(|value| normalize_proxy_endpoint(&value))
+    ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"]
+        .iter()
+        .find_map(|name| std::env::var(name).ok().and_then(|value| normalize_proxy_endpoint(&value)))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -646,7 +697,10 @@ impl ProxySource {
     }
 
     fn allows_direct_fallback(self) -> bool {
-        matches!(self, Self::WindowsSystem | Self::Environment)
+        matches!(
+            self,
+            Self::RequestExplicit | Self::AppConfigured | Self::WindowsSystem | Self::Environment
+        )
     }
 }
 
@@ -724,8 +778,10 @@ pub(crate) fn describe_reqwest_error(error: &reqwest::Error) -> String {
         "超时"
     } else if error.is_connect() {
         "连接/DNS/TLS/代理"
-    } else if error.is_request() {
+    } else if error.is_builder() {
         "构造请求"
+    } else if error.is_request() {
+        "发送请求"
     } else if error.is_body() {
         "传输响应体"
     } else if error.is_decode() {
@@ -817,15 +873,35 @@ pub(crate) fn build_async_http_client(
     explicit_proxy: Option<&str>,
     timeout_secs: u64,
 ) -> Result<reqwest::Client, String> {
+    build_async_http_client_for_route(effective_proxy_route(app_handle, explicit_proxy).as_ref(), timeout_secs)
+}
+
+fn build_async_http_client_for_route(
+    route: Option<&EffectiveProxy>,
+    timeout_secs: u64,
+) -> Result<reqwest::Client, String> {
+    build_async_http_client_for_route_with_redirects(route, timeout_secs, true)
+}
+
+fn build_async_http_client_for_route_with_redirects(
+    route: Option<&EffectiveProxy>,
+    timeout_secs: u64,
+    follow_redirects: bool,
+) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
+        .no_proxy()
         .user_agent(APP_USER_AGENT)
-        .redirect(Policy::limited(10))
-        .connect_timeout(Duration::from_secs(20))
+        .redirect(if follow_redirects { Policy::limited(10) } else { Policy::none() })
+        .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(timeout_secs));
 
-    if let Some(proxy) = effective_proxy(app_handle, explicit_proxy) {
-        let proxy = reqwest::Proxy::all(&proxy).map_err(|e| format!("代理配置无效：{e}"))?;
-        builder = builder.proxy(proxy);
+    if !follow_redirects {
+        builder = builder.retry(reqwest::retry::never());
+    }
+
+    if let Some(route) = route {
+        let proxy = reqwest::Proxy::all(&route.endpoint).map_err(|e| format!("代理配置无效：{e}"))?;
+        builder = builder.proxy(proxy.no_proxy(reqwest::NoProxy::from_env()));
     }
 
     builder
@@ -838,17 +914,75 @@ pub(crate) fn build_async_http_clients_with_direct_fallback(
     explicit_proxy: Option<&str>,
     timeout_secs: u64,
 ) -> Result<(reqwest::Client, Option<reqwest::Client>), String> {
+    build_async_http_clients_with_direct_fallback_policy(app_handle, explicit_proxy, timeout_secs, true)
+}
+
+/// A connect error on these clients cannot follow an already-delivered POST:
+/// redirects and reqwest's internal protocol retries are both disabled.
+pub(crate) fn build_music_post_http_clients_with_direct_fallback(
+    app_handle: Option<&tauri::AppHandle>,
+    explicit_proxy: Option<&str>,
+    timeout_secs: u64,
+) -> Result<(reqwest::Client, Option<reqwest::Client>), String> {
+    build_async_http_clients_with_direct_fallback_policy(app_handle, explicit_proxy, timeout_secs, false)
+}
+
+pub(crate) fn build_wallet_task_submit_http_clients_with_direct_fallback(
+    app_handle: Option<&tauri::AppHandle>,
+    explicit_proxy: Option<&str>,
+    timeout_secs: u64,
+) -> Result<(reqwest::Client, Option<reqwest::Client>), String> {
+    build_async_http_clients_with_direct_fallback_policy(
+        app_handle,
+        explicit_proxy,
+        timeout_secs,
+        false,
+    )
+}
+
+fn build_async_http_clients_with_direct_fallback_policy(
+    app_handle: Option<&tauri::AppHandle>,
+    explicit_proxy: Option<&str>,
+    timeout_secs: u64,
+    follow_redirects: bool,
+) -> Result<(reqwest::Client, Option<reqwest::Client>), String> {
+    struct CachedClients {
+        key: [u8; 32],
+        created_at: Instant,
+        clients: (reqwest::Client, Option<reqwest::Client>),
+    }
+    static CACHE: OnceLock<Mutex<Vec<CachedClients>>> = OnceLock::new();
     let route = effective_proxy_route(app_handle, explicit_proxy);
-    let client = build_async_http_client(app_handle, explicit_proxy, timeout_secs)?;
+    let mut hash = Sha256::new();
+    hash.update(timeout_secs.to_le_bytes());
+    hash.update([u8::from(follow_redirects)]);
+    if let Some(route) = &route {
+        hash.update(route.endpoint.as_bytes());
+    }
+    hash.update([0]);
+    hash.update(std::env::var("NO_PROXY").or_else(|_| std::env::var("no_proxy")).unwrap_or_default().as_bytes());
+    let key: [u8; 32] = hash.finalize().into();
+    let mut cache = CACHE.get_or_init(|| Mutex::new(Vec::new()))
+        .lock().unwrap_or_else(|error| error.into_inner());
+    cache.retain(|entry| entry.created_at.elapsed() < Duration::from_secs(300));
+    if let Some(entry) = cache.iter().find(|entry| entry.key == key) {
+        return Ok(entry.clients.clone());
+    }
+    let client = build_async_http_client_for_route_with_redirects(route.as_ref(), timeout_secs, follow_redirects)?;
     let direct_client = if route
         .as_ref()
         .is_some_and(|value| value.source.allows_direct_fallback())
     {
-        build_direct_async_http_client(timeout_secs).ok()
+        Some(build_direct_async_http_client_with_redirects(timeout_secs, follow_redirects)?)
     } else {
         None
     };
-    Ok((client, direct_client))
+    let clients = (client, direct_client);
+    if cache.len() >= 8 {
+        cache.remove(0);
+    }
+    cache.push(CachedClients { key, created_at: Instant::now(), clients: clients.clone() });
+    Ok(clients)
 }
 
 fn build_direct_http_client(timeout_secs: u64) -> Result<Client, String> {
@@ -862,20 +996,62 @@ fn build_direct_http_client(timeout_secs: u64) -> Result<Client, String> {
         .map_err(|e| format!("初始化直连网络客户端失败：{}", e))
 }
 
-fn build_direct_async_http_client(timeout_secs: u64) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+fn build_direct_async_http_client_with_redirects(timeout_secs: u64, follow_redirects: bool) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
         .user_agent(APP_USER_AGENT)
-        .redirect(Policy::limited(10))
-        .connect_timeout(Duration::from_secs(20))
+        .redirect(if follow_redirects { Policy::limited(10) } else { Policy::none() })
+        .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(timeout_secs))
-        .no_proxy()
-        .build()
+        .no_proxy();
+    if !follow_redirects {
+        builder = builder.retry(reqwest::retry::never());
+    }
+    builder.build()
         .map_err(|e| format!("初始化异步直连网络客户端失败：{e}"))
 }
 
 #[cfg(test)]
 mod network_compatibility_tests {
-    use super::{redact_network_error_detail, should_retry_without_proxy, ProxySource};
+    use super::{normalize_proxy_endpoint, redact_network_error_detail, should_retry_without_proxy, ProxySource};
+
+    #[test]
+    fn proxy_passwords_with_equals_are_not_protocol_lists() {
+        assert_eq!(normalize_proxy_endpoint("http://user:pass=word@127.0.0.1:7890"), Some("http://user:pass=word@127.0.0.1:7890".to_string()));
+        assert_eq!(normalize_proxy_endpoint("http=127.0.0.1:8080;https=127.0.0.1:7890"), Some("http://127.0.0.1:7890".to_string()));
+        assert_eq!(normalize_proxy_endpoint("http=http://127.0.0.1:8080;https=http://127.0.0.1:7890"), Some("http://127.0.0.1:7890".to_string()));
+    }
+
+    #[test]
+    fn repeated_cloud_client_lookups_reuse_the_same_http_connection() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let url = format!("http://{address}/reference");
+        let server = std::thread::spawn(move || {
+            // Both requests must arrive on this one connection.
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            for _ in 0..2 {
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    assert_eq!(stream.read(&mut byte).unwrap(), 1);
+                    request.push(byte[0]);
+                }
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").unwrap();
+            }
+        });
+        tauri::async_runtime::block_on(async {
+            for _ in 0..2 {
+                let (_, direct) = super::build_async_http_clients_with_direct_fallback(None, Some(&format!("http://{address}")), 2).unwrap();
+                let response = direct.unwrap().get(&url).send().await.unwrap();
+                assert_eq!(response.bytes().await.unwrap().as_ref(), b"ok");
+            }
+        });
+        server.join().unwrap();
+    }
 
     #[test]
     fn only_automatic_proxy_connect_errors_allow_direct_fallback() {
@@ -887,11 +1063,11 @@ mod network_compatibility_tests {
             Some(ProxySource::Environment),
             true
         ));
-        assert!(!should_retry_without_proxy(
+        assert!(should_retry_without_proxy(
             Some(ProxySource::RequestExplicit),
             true
         ));
-        assert!(!should_retry_without_proxy(
+        assert!(should_retry_without_proxy(
             Some(ProxySource::AppConfigured),
             true
         ));
@@ -932,6 +1108,343 @@ struct ReferenceUploadTicket {
     upload_url: String,
     method: String,
     headers: HashMap<String, String>,
+    #[serde(default)]
+    expires_at: Option<String>,
+}
+
+fn reference_upload_headers(values: &HashMap<String, String>, upload_bytes: usize) -> Option<reqwest::header::HeaderMap> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    for (name, value) in values {
+        let name = reqwest::header::HeaderName::from_bytes(name.as_bytes()).ok()?;
+        let value = reqwest::header::HeaderValue::from_str(value).ok()?;
+        if name == reqwest::header::TRANSFER_ENCODING || (name == reqwest::header::CONTENT_LENGTH
+            && value.to_str().ok().and_then(|value| value.parse::<usize>().ok()) != Some(upload_bytes)) {
+            return None;
+        }
+        headers.insert(name, value);
+    }
+    headers.insert(reqwest::header::CONTENT_LENGTH, reqwest::header::HeaderValue::from(upload_bytes));
+    Some(headers)
+}
+
+fn is_valid_reference_upload_object_key(value: &str) -> bool {
+    value
+        .strip_prefix("reference-images/")
+        .is_some_and(|filename| {
+            !filename.is_empty()
+                && filename.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+                })
+        })
+}
+
+fn parse_reference_upload_ticket(body: &str) -> Result<ReferenceUploadTicket, String> {
+    let ticket: ReferenceUploadTicket =
+        serde_json::from_str(body).map_err(|_| "上传授权响应无效".to_string())?;
+    if !ticket.method.eq_ignore_ascii_case("PUT")
+        || !is_valid_reference_upload_object_key(&ticket.object_key)
+    {
+        return Err("上传授权参数无效".to_string());
+    }
+    Ok(ticket)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReferenceUploadOperation {
+    PrepareReference,
+    UploadTicket,
+    SignedPut,
+    LegacyReferenceUpload,
+}
+
+impl ReferenceUploadOperation {
+    fn code(self) -> &'static str {
+        match self {
+            Self::PrepareReference => "prepare_reference",
+            Self::UploadTicket => "upload_ticket",
+            Self::SignedPut => "signed_put",
+            Self::LegacyReferenceUpload => "legacy_reference_upload",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::PrepareReference => "准备参考图失败",
+            Self::UploadTicket => "获取上传凭证失败",
+            Self::SignedPut => "上传图片文件失败",
+            Self::LegacyReferenceUpload => "参考图兼容上传失败",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReferenceUploadFailureReason {
+    Transport(commands::license::CloudTransportFailure),
+    HttpStatus(u16),
+    InvalidResponse,
+    InvalidTicket,
+    CredentialsUnavailable,
+    UnsupportedImage,
+    LocalPreparation,
+    TaskTerminated,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReferenceUploadFailure {
+    reference_index: Option<usize>,
+    operation: ReferenceUploadOperation,
+    reason: ReferenceUploadFailureReason,
+}
+
+impl ReferenceUploadFailure {
+    fn new(
+        reference_index: Option<usize>,
+        operation: ReferenceUploadOperation,
+        reason: ReferenceUploadFailureReason,
+    ) -> Self {
+        Self {
+            reference_index,
+            operation,
+            reason,
+        }
+    }
+
+    fn transport(
+        reference_index: Option<usize>,
+        operation: ReferenceUploadOperation,
+        failure: commands::license::CloudTransportFailure,
+    ) -> Self {
+        Self::new(
+            reference_index,
+            operation,
+            ReferenceUploadFailureReason::Transport(failure),
+        )
+    }
+
+    fn message(self) -> String {
+        let detail = match self.reason {
+            ReferenceUploadFailureReason::Transport(failure) => {
+                let mut detail = failure.category.label().to_string();
+                if failure.fallback_attempted {
+                    detail.push_str("（已尝试备用网络路径）");
+                }
+                detail
+            }
+            ReferenceUploadFailureReason::HttpStatus(status) => match self.operation {
+                ReferenceUploadOperation::SignedPut => {
+                    format!("对象存储返回 HTTP {status}")
+                }
+                _ => format!("服务器返回 HTTP {status}"),
+            },
+            ReferenceUploadFailureReason::InvalidResponse => "服务器响应无效".to_string(),
+            ReferenceUploadFailureReason::InvalidTicket => "上传凭证参数无效".to_string(),
+            ReferenceUploadFailureReason::CredentialsUnavailable => {
+                "登录凭证不可用，请重新登录".to_string()
+            }
+            ReferenceUploadFailureReason::UnsupportedImage => "仅支持可读取的图片文件".to_string(),
+            ReferenceUploadFailureReason::LocalPreparation => "无法读取或处理本地图片".to_string(),
+            ReferenceUploadFailureReason::TaskTerminated => "上传任务异常终止".to_string(),
+        };
+        format!("{}：{detail}", self.operation.title())
+    }
+}
+
+fn format_reference_upload_failures(failures: &[ReferenceUploadFailure]) -> String {
+    if failures.is_empty() {
+        return "参考图上传失败".to_string();
+    }
+    if failures.len() == 1 {
+        return failures[0].message();
+    }
+
+    let mut sorted = failures.to_vec();
+    sorted.sort_by_key(|failure| failure.reference_index.unwrap_or(usize::MAX));
+    let details = sorted
+        .into_iter()
+        .map(|failure| match failure.reference_index {
+            Some(index) => format!("- 1 张（参考图 {}）：{}", index + 1, failure.message()),
+            None => format!("- 1 张：{}", failure.message()),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{} 张参考图上传失败：\n{details}", failures.len())
+}
+
+#[cfg(test)]
+mod reference_upload_contract_tests {
+    use super::{
+        format_reference_upload_failures, parse_reference_upload_ticket, ReferenceUploadFailure,
+        ReferenceUploadFailureReason, ReferenceUploadOperation,
+    };
+    use crate::commands::license::{CloudTransportErrorCategory, CloudTransportFailure};
+
+    #[test]
+    fn signed_upload_headers_have_one_correct_content_length() {
+        let mut values = std::collections::HashMap::from([
+            ("Content-Length".to_string(), "12".to_string()),
+            ("Content-Type".to_string(), "image/png".to_string()),
+        ]);
+        let headers = super::reference_upload_headers(&values, 12).unwrap();
+        assert_eq!(headers.get_all(reqwest::header::CONTENT_LENGTH).iter().count(), 1);
+        assert_eq!(headers[reqwest::header::CONTENT_TYPE], "image/png");
+        values.insert("Content-Length".to_string(), "13".to_string());
+        assert!(super::reference_upload_headers(&values, 12).is_none());
+        values.remove("Content-Length");
+        values.insert("Transfer-Encoding".to_string(), "chunked".to_string());
+        assert!(super::reference_upload_headers(&values, 12).is_none());
+    }
+
+    fn transport_failure(
+        index: Option<usize>,
+        operation: ReferenceUploadOperation,
+        category: CloudTransportErrorCategory,
+    ) -> ReferenceUploadFailure {
+        ReferenceUploadFailure::transport(
+            index,
+            operation,
+            CloudTransportFailure {
+                category,
+                fallback_attempted: false,
+                request_not_sent: false,
+            },
+        )
+    }
+
+    #[test]
+    fn parses_reference_image_object_key_from_ticket_response() {
+        let ticket = parse_reference_upload_ticket(
+            r#"{
+                "objectKey":"reference-images/12d2e7bb-6e3f-4ba0-bdb0-b82023a67e23.png",
+                "uploadUrl":"https://storage.example.test/signed-upload",
+                "method":"PUT",
+                "headers":{"Content-Type":"image/png"}
+            }"#,
+        )
+        .expect("valid upload ticket");
+
+        assert_eq!(
+            ticket.object_key,
+            "reference-images/12d2e7bb-6e3f-4ba0-bdb0-b82023a67e23.png"
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_reference_image_object_key() {
+        let result = parse_reference_upload_ticket(
+            r#"{
+                "objectKey":"reference-images/../secret.png",
+                "uploadUrl":"https://storage.example.test/signed-upload",
+                "method":"PUT",
+                "headers":{}
+            }"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn upload_ticket_tls_failure_has_ticket_stage() {
+        let message = transport_failure(
+            Some(0),
+            ReferenceUploadOperation::UploadTicket,
+            CloudTransportErrorCategory::Tls,
+        )
+        .message();
+        assert_eq!(message, "获取上传凭证失败：TLS 连接失败");
+    }
+
+    #[test]
+    fn upload_ticket_http_401_has_ticket_stage() {
+        let message = ReferenceUploadFailure::new(
+            Some(0),
+            ReferenceUploadOperation::UploadTicket,
+            ReferenceUploadFailureReason::HttpStatus(401),
+        )
+        .message();
+        assert_eq!(message, "获取上传凭证失败：服务器返回 HTTP 401");
+    }
+
+    #[test]
+    fn signed_put_reset_has_file_upload_stage() {
+        let message = transport_failure(
+            Some(0),
+            ReferenceUploadOperation::SignedPut,
+            CloudTransportErrorCategory::ConnectionReset,
+        )
+        .message();
+        assert_eq!(message, "上传图片文件失败：连接被重置");
+    }
+
+    #[test]
+    fn signed_put_http_403_and_413_name_object_storage() {
+        for status in [403, 413] {
+            let message = ReferenceUploadFailure::new(
+                Some(0),
+                ReferenceUploadOperation::SignedPut,
+                ReferenceUploadFailureReason::HttpStatus(status),
+            )
+            .message();
+            assert_eq!(
+                message,
+                format!("上传图片文件失败：对象存储返回 HTTP {status}")
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_failure_has_compatibility_stage() {
+        let message = transport_failure(
+            None,
+            ReferenceUploadOperation::LegacyReferenceUpload,
+            CloudTransportErrorCategory::ConnectionReset,
+        )
+        .message();
+        assert_eq!(message, "参考图兼容上传失败：连接被重置");
+    }
+
+    #[test]
+    fn multiple_failures_include_count_stage_and_reference_number() {
+        let failures = vec![
+            transport_failure(
+                Some(0),
+                ReferenceUploadOperation::UploadTicket,
+                CloudTransportErrorCategory::ConnectionReset,
+            ),
+            transport_failure(
+                Some(2),
+                ReferenceUploadOperation::SignedPut,
+                CloudTransportErrorCategory::Timeout,
+            ),
+        ];
+        let message = format_reference_upload_failures(&failures);
+        assert!(message.starts_with("2 张参考图上传失败："));
+        assert!(message.contains("参考图 1）：获取上传凭证失败：连接被重置"));
+        assert!(message.contains("参考图 3）：上传图片文件失败：请求超时"));
+    }
+
+    #[test]
+    fn formatted_failures_never_expose_request_secrets_or_local_paths() {
+        let secret_ticket_body = r#"{
+            "token":"secret-token",
+            "uploadUrl":"https://storage.example.test/file?X-Amz-Signature=secret-signature",
+            "path":"C:\\Users\\private\\reference.png"
+        }"#;
+        assert!(parse_reference_upload_ticket(secret_ticket_body).is_err());
+        let message = ReferenceUploadFailure::new(
+            Some(0),
+            ReferenceUploadOperation::UploadTicket,
+            ReferenceUploadFailureReason::InvalidResponse,
+        )
+        .message();
+        for secret in [
+            "secret-token",
+            "https://",
+            "X-Amz-Signature",
+            "secret-signature",
+            "C:\\Users\\private",
+        ] {
+            assert!(!message.contains(secret));
+        }
+    }
 }
 
 fn media_download_redirect_policy() -> Policy {
@@ -976,13 +1489,18 @@ fn build_direct_media_download_http_client(timeout_secs: u64) -> Result<Client, 
 fn should_prefer_direct_generated_image_download(url: &str) -> bool {
     reqwest::Url::parse(url)
         .ok()
-        .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
-        .is_some_and(|host| {
-            host == "api.unmind.art"
-                || host == "inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com"
-                || host.ends_with(".oss-cn-hongkong.aliyuncs.com")
-                || host == "adobe.yrzsai.com"
-                || host == "xaisp3.oss-ap-southeast-1.aliyuncs.com"
+        .is_some_and(|parsed| {
+            parsed
+                .host_str()
+                .is_some_and(|host| {
+                    host.eq_ignore_ascii_case("api.unmind.art")
+                        || host.eq_ignore_ascii_case("adobe.yrzsai.com")
+                        || host.eq_ignore_ascii_case("xaisp3.oss-ap-southeast-1.aliyuncs.com")
+                        || host.ends_with(".oss-cn-hongkong.aliyuncs.com")
+                        || host.ends_with(".myqcloud.com")
+                })
+                || parsed.path().starts_with("/generated-images/")
+                || parsed.path().starts_with("/generated-videos/")
         })
 }
 
@@ -1008,11 +1526,7 @@ fn is_wallet_ai_video_result_url(value: &str) -> bool {
 
 fn generated_oss_result_key(value: &str) -> Option<String> {
     let url = Url::parse(value).ok()?;
-    if url.scheme() != "https"
-        || !url.host_str().is_some_and(|host| {
-            host.eq_ignore_ascii_case("inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com")
-        })
-    {
+    if url.scheme() != "https" {
         return None;
     }
     let key = url.path().strip_prefix("/generated-images/")?;
@@ -1025,11 +1539,7 @@ fn generated_oss_result_key(value: &str) -> Option<String> {
 
 fn generated_oss_video_result_key(value: &str) -> Option<String> {
     let url = Url::parse(value).ok()?;
-    if url.scheme() != "https"
-        || !url.host_str().is_some_and(|host| {
-            host.eq_ignore_ascii_case("inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com")
-        })
-    {
+    if url.scheme() != "https" {
         return None;
     }
     let key = url.path().strip_prefix("/generated-videos/")?;
@@ -1050,9 +1560,6 @@ fn is_wallet_ai_image_result_source(value: &str) -> bool {
 fn validate_generated_image_oss_url(value: &str) -> Result<String, String> {
     let url = Url::parse(value).map_err(|_| "OSS 签名地址格式无效".to_string())?;
     let allowed = url.scheme() == "https"
-        && url.host_str().is_some_and(|host| {
-            host.eq_ignore_ascii_case("inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com")
-        })
         && (url.path().starts_with("/generated-images/")
             || url.path().starts_with("/generated-videos/"));
     if !allowed {
@@ -1089,35 +1596,16 @@ fn image_result_json_url(value: &str) -> Result<Url, String> {
 }
 
 fn resolve_ai_image_result_url_with_client(
-    client: &Client,
+    _client: &Client,
     source: &str,
-    access_token: &str,
+    _access_token: &str,
 ) -> Result<String, String> {
     if !is_wallet_ai_image_result_source(source) {
         return Ok(source.trim().to_string());
     }
-    let endpoint = image_result_json_url(source)?;
-    let response = client
-        .get(endpoint)
-        .bearer_auth(access_token)
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", "1")
-        .send()
-        .map_err(|error| format!("获取 OSS 图片地址失败：{error}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "获取 OSS 图片地址失败，HTTP 状态码：{}",
-            response.status()
-        ));
-    }
-    let body = response
-        .json::<serde_json::Value>()
-        .map_err(|_| "OSS 图片地址响应格式无效".to_string())?;
-    let signed_url = body
-        .get("url")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| "OSS 图片地址响应缺少 url".to_string())?;
-    validate_generated_image_oss_url(signed_url)
+    let mut endpoint = image_result_json_url(source)?;
+    endpoint.set_query(None);
+    Ok(endpoint.to_string())
 }
 
 fn resolve_ai_image_result_url_blocking(
@@ -1152,18 +1640,15 @@ fn resolve_ai_image_result_url_blocking(
 
 #[tauri::command]
 async fn resolve_ai_image_result_url(
-    app_handle: tauri::AppHandle,
+    _app_handle: tauri::AppHandle,
     url: String,
 ) -> Result<String, String> {
     if !is_wallet_ai_image_result_source(url.trim()) {
         return Ok(url.trim().to_string());
     }
-    let access_token = commands::license::cloud_access_token(&app_handle).await?;
-    tauri::async_runtime::spawn_blocking(move || {
-        resolve_ai_image_result_url_blocking(&app_handle, url.trim(), &access_token)
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    let mut endpoint = image_result_json_url(url.trim())?;
+    endpoint.set_query(None);
+    Ok(endpoint.to_string())
 }
 
 #[cfg(test)]
@@ -1370,7 +1855,7 @@ mod ai_image_result_url_tests {
     }
 
     #[test]
-    fn only_accepts_https_signed_urls_from_the_generated_media_bucket() {
+    fn accepts_https_generated_media_paths_independent_of_storage_provider() {
         let signed = "https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/generated-images/a.png?token=a%2Bb";
         assert_eq!(
             validate_generated_image_oss_url(signed).expect("allowed signed URL"),
@@ -1382,7 +1867,11 @@ mod ai_image_result_url_tests {
             video
         );
         assert!(validate_generated_image_oss_url(
-            "https://evil.example/generated-images/a.png?token=x"
+            "https://inspirationdrawer-1475663212.cos.ap-singapore.myqcloud.com/generated-images/a.png?token=x"
+        )
+        .is_ok());
+        assert!(validate_generated_image_oss_url(
+            "https://evil.example/reference-images/a.png?token=x"
         )
         .is_err());
         assert!(validate_generated_image_oss_url(
@@ -1392,7 +1881,7 @@ mod ai_image_result_url_tests {
     }
 
     #[test]
-    fn prefers_direct_connections_for_api_and_hong_kong_oss() {
+    fn prefers_direct_connections_for_api_and_object_storage() {
         assert!(should_prefer_direct_generated_image_download(
             "https://api.unmind.art/v1/ai/image-results/a.png"
         ));
@@ -1401,6 +1890,9 @@ mod ai_image_result_url_tests {
         ));
         assert!(should_prefer_direct_generated_image_download(
             "https://another.oss-cn-hongkong.aliyuncs.com/a.png"
+        ));
+        assert!(should_prefer_direct_generated_image_download(
+            "https://inspirationdrawer-1475663212.cos.ap-singapore.myqcloud.com/client-assets/rife.zip"
         ));
     }
 
@@ -1836,13 +2328,13 @@ fn download_url_to_file_with_client(
 const RIFE_ENGINE_VERSION: &str = "20221029";
 const RIFE_ENGINE_DIR_NAME: &str = "rife-ncnn-vulkan-20221029-windows";
 const RIFE_ENGINE_ASSET_URL: &str =
-    "https://api.unmind.art/v1/ai/client-assets/rife-ncnn-vulkan-20221029-windows-lite.zip";
+    "https://inspirationdrawer-1475663212.cos.ap-singapore.myqcloud.com/client-assets/rife-ncnn-vulkan-20221029-windows-lite.zip";
 const RIFE_ENGINE_ASSET_FALLBACK_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-rife-20221029/rife-ncnn-vulkan-20221029-windows-lite.zip";
 const RIFE_ENGINE_SHA256: &str = "A4DA55EC5629DBD5E9C6594D96225308325FC39A3DF67CD8E77010207525CE77";
 const RIFE_ENGINE_ZIP_SIZE: u64 = 123_750_542;
 const FFMPEG_TOOLS_DIR_NAME: &str = "ffmpeg-tools-n8.1-win64-gpl";
 const FFMPEG_TOOLS_ASSET_URL: &str =
-    "https://api.unmind.art/v1/ai/client-assets/ffmpeg-tools-n8.1-win64-gpl.zip";
+    "https://inspirationdrawer-1475663212.cos.ap-singapore.myqcloud.com/client-assets/ffmpeg-tools-n8.1-win64-gpl.zip";
 const FFMPEG_TOOLS_ASSET_FALLBACK_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-rife-20221029/ffmpeg-tools-n8.1-win64-gpl.zip";
 const FFMPEG_TOOLS_SHA256: &str =
     "D4B1D805749E6FA174E4BE158E844AD93BACBF23C2C68EDD473EEBE96B09CA63";
@@ -1856,7 +2348,7 @@ const REALESRGAN_SAFE_FINAL_MAX_EDGE: u32 = 4_096;
 const REALESRGAN_SAFE_FINAL_MAX_PIXELS: u64 = 16_000_000;
 const REALESRGAN_ENGINE_DIR_NAME: &str = "realesrgan-ncnn-vulkan-20220424-windows";
 const REALESRGAN_ENGINE_ASSET_URL: &str =
-    "https://api.unmind.art/v1/ai/client-assets/realesrgan-ncnn-vulkan-20220424-windows.zip";
+    "https://inspirationdrawer-1475663212.cos.ap-singapore.myqcloud.com/client-assets/realesrgan-ncnn-vulkan-20220424-windows.zip";
 const REALESRGAN_ENGINE_ASSET_FALLBACK_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-realesrgan-20220424/realesrgan-ncnn-vulkan-20220424-windows.zip";
 const REALESRGAN_ENGINE_SHA256: &str =
     "ABC02804E17982A3BE33675E4D471E91EA374E65B70167ABC09E31ACB412802D";
@@ -2184,16 +2676,8 @@ fn sha256_bytes_upper(bytes: &[u8]) -> String {
 }
 
 fn app_update_manifest_endpoints_from_config() -> Result<Vec<Url>, String> {
-    #[cfg(target_os = "macos")]
-    let (config_name, config_source) = (
-        "tauri.macos.conf.json",
-        include_str!("../tauri.macos.conf.json"),
-    );
-    #[cfg(not(target_os = "macos"))]
-    let (config_name, config_source) = ("tauri.conf.json", include_str!("../tauri.conf.json"));
-
-    let config: serde_json::Value = serde_json::from_str(config_source)
-        .map_err(|e| format!("manifest 格式不符合预期：读取 {config_name} 失败: {e}"))?;
+    let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+        .map_err(|e| format!("manifest 格式不符合预期：读取 tauri.conf.json 失败: {e}"))?;
     let endpoints = config
         .get("plugins")
         .and_then(|plugins| plugins.get("updater"))
@@ -2391,7 +2875,6 @@ fn preferred_app_update_platform_keys(raw_json: &serde_json::Value) -> Vec<Strin
     }
     keys
 }
-
 fn collect_app_update_sources(
     raw_json: &serde_json::Value,
     fallback_url: Option<&Url>,
@@ -3285,7 +3768,7 @@ async fn check_and_install_app_update_mirrors(
     let sources = collect_app_update_sources(&raw_json, None);
 
     if sources.is_empty() {
-        let message = "manifest 格式不符合预期：更新配置没有当前平台可用的下载地址 urls / platforms.<current-platform>.url / url".to_string();
+        let message = "manifest 格式不符合预期：更新配置没有可用下载地址 urls / platforms.windows-x86_64.url / url".to_string();
         emit_app_update_progress_detail(
             &app_handle,
             &progress_id,
@@ -3850,7 +4333,7 @@ fn download_engine_archive_from_sources(
     }
 
     Err(format!(
-        "{display_name} 下载失败，已尝试 OSS 主源和备用源：\n{}",
+        "{display_name} 下载失败，已尝试主源和备用源：\n{}",
         failures
             .iter()
             .map(|failure| format!("- {failure}"))
@@ -3872,7 +4355,7 @@ fn download_rife_engine_archive(
         "connecting-rife",
         "downloading-rife",
         &[
-            ("OSS 主源", RIFE_ENGINE_ASSET_URL),
+            ("COS 主源", RIFE_ENGINE_ASSET_URL),
             ("GitHub 备用源", RIFE_ENGINE_ASSET_FALLBACK_URL),
         ],
         RIFE_ENGINE_ZIP_SIZE,
@@ -3893,7 +4376,7 @@ fn download_realesrgan_engine_archive(
         "connecting-realesrgan",
         "downloading-realesrgan",
         &[
-            ("OSS 主源", REALESRGAN_ENGINE_ASSET_URL),
+            ("COS 主源", REALESRGAN_ENGINE_ASSET_URL),
             ("GitHub 备用源", REALESRGAN_ENGINE_ASSET_FALLBACK_URL),
         ],
         REALESRGAN_ENGINE_ZIP_SIZE,
@@ -3947,7 +4430,7 @@ fn download_ffmpeg_tools_archive(
         "connecting-ffmpeg-tools",
         "downloading-ffmpeg-tools",
         &[
-            ("OSS 主源", FFMPEG_TOOLS_ASSET_URL),
+            ("COS 主源", FFMPEG_TOOLS_ASSET_URL),
             ("GitHub 备用源", FFMPEG_TOOLS_ASSET_FALLBACK_URL),
         ],
         FFMPEG_TOOLS_ZIP_SIZE,
@@ -5080,22 +5563,6 @@ fn realesrgan_safe_input_dimensions(width: u32, height: u32) -> (u32, u32, bool)
     (next_width, next_height, true)
 }
 
-fn save_dynamic_image_with_format(
-    image: &screenshots::image::DynamicImage,
-    output: &Path,
-    output_format: &str,
-) -> Result<(), String> {
-    let file = File::create(output).map_err(|e| e.to_string())?;
-    let mut writer = BufWriter::new(file);
-    let format = match output_format {
-        "jpg" => screenshots::image::ImageFormat::Jpeg,
-        _ => screenshots::image::ImageFormat::Png,
-    };
-    image
-        .write_to(&mut writer, format)
-        .map_err(|e| e.to_string())
-}
-
 fn run_local_image_resize(
     input: &Path,
     output: &Path,
@@ -5103,13 +5570,7 @@ fn run_local_image_resize(
     target_height: u32,
     output_format: &str,
 ) -> Result<(), String> {
-    let image = screenshots::image::open(input).map_err(|e| e.to_string())?;
-    let resized = image.resize_exact(
-        target_width.max(1),
-        target_height.max(1),
-        screenshots::image::imageops::FilterType::Lanczos3,
-    );
-    save_dynamic_image_with_format(&resized, output, output_format)
+    image_input::resize_image(input, output, target_width, target_height, output_format)
 }
 
 #[tauri::command]
@@ -6297,36 +6758,34 @@ fn run_realesrgan_image_enhancement_impl(
     let resize_mode = normalize_realesrgan_resize_mode(resize_mode);
     let output_format = normalize_realesrgan_image_format(output_format);
     let progress_id_ref = progress_id.as_deref();
-    let status = ensure_realesrgan_engine_installed(&app_handle, progress_id_ref)?;
-    let engine_dir = PathBuf::from(&status.engine_dir);
-    let exe_path = PathBuf::from(&status.exe_path);
-    if !exe_path.is_file() {
-        return Err("Real-ESRGAN 引擎不可用，请先安装引擎".to_string());
-    }
-
     let source =
         local_path_from_url_like(&input_path).unwrap_or_else(|| PathBuf::from(&input_path));
-    if !source.is_file() {
-        return Err(format!(
-            "找不到要增强的图片: {}",
-            display_local_path(&source)
-        ));
-    }
 
-    let base_dir = realesrgan_engine_base_dir()?;
+    // Validate by content before downloading/installing an engine. Cached images
+    // may have no suffix, or a suffix that disagrees with their actual encoding.
+    let (source_width, source_height) = image_input::dimensions(&source)?;
+    let base_dir = realesrgan_engine_base_dir()
+        .map_err(|_| "图片增强[准备目录]：无法访问本地引擎目录".to_string())?;
     let work_root = base_dir.join("_work");
     let outputs_dir = base_dir.join("outputs");
-    fs::create_dir_all(&work_root).map_err(|e| format!("创建 Real-ESRGAN 工作目录失败: {}", e))?;
+    fs::create_dir_all(&work_root)
+        .map_err(|_| "图片增强[准备目录]：无法创建工作目录，请检查写入权限".to_string())?;
     fs::create_dir_all(&outputs_dir)
-        .map_err(|e| format!("创建 Real-ESRGAN 输出目录失败: {}", e))?;
+        .map_err(|_| "图片增强[准备目录]：无法创建输出目录，请检查写入权限".to_string())?;
 
-    let run_id = format!("{}_{}", now_millis_u64(), std::process::id());
+    static NEXT_IMAGE_RUN_ID: AtomicU64 = AtomicU64::new(0);
+    let run_id = format!(
+        "{}_{}_{}",
+        now_millis_u64(),
+        std::process::id(),
+        NEXT_IMAGE_RUN_ID.fetch_add(1, Ordering::Relaxed)
+    );
     let work_dir = work_root.join(run_id);
-    fs::create_dir_all(&work_dir).map_err(|e| format!("创建图片增强临时目录失败: {}", e))?;
+    fs::create_dir_all(&work_dir)
+        .map_err(|_| "图片增强[准备目录]：无法创建临时目录，请检查写入权限".to_string())?;
+    let mut pending_output = None;
 
     let result = (|| -> Result<RealEsrganEnhancementResult, String> {
-        let (source_width, source_height) =
-            screenshots::image::image_dimensions(&source).map_err(|e| e.to_string())?;
         let requested_target_width = if resize_mode == "keep" {
             source_width
         } else {
@@ -6337,15 +6796,43 @@ fn run_realesrgan_image_enhancement_impl(
         } else {
             checked_image_scale_dimension(source_height, scale)?
         };
-        let (target_width, target_height, clamped_final_size) = realesrgan_fit_dimensions_to_limit(
+        let (target_width, target_height, _) = realesrgan_fit_dimensions_to_limit(
             requested_target_width,
             requested_target_height,
             REALESRGAN_SAFE_FINAL_MAX_EDGE,
             REALESRGAN_SAFE_FINAL_MAX_PIXELS,
         );
-
-        let (safe_input_width, safe_input_height, needs_pre_resize) =
+        let (safe_input_width, safe_input_height, _) =
             realesrgan_safe_input_dimensions(source_width, source_height);
+        let realesrgan_input_path = work_dir.join("source_input.png");
+        emit_rife_engine_progress(
+            &app_handle,
+            progress_id_ref,
+            "preparing-image-input",
+            "识别并准备原图",
+            0,
+            0,
+        );
+        // Always decode and normalize to an 8-bit RGB/RGBA PNG, including small
+        // inputs. Do this before engine installation to reject corrupt inputs.
+        image_input::prepare_png(
+            &source,
+            &realesrgan_input_path,
+            safe_input_width,
+            safe_input_height,
+        )?;
+
+        let status = ensure_realesrgan_engine_installed(&app_handle, progress_id_ref).map_err(
+            |_| {
+                "图片增强[引擎准备]：无法安装或读取 Real-ESRGAN 引擎，请检查网络和写入权限后重试"
+                    .to_string()
+            },
+        )?;
+        let engine_dir = PathBuf::from(&status.engine_dir);
+        let exe_path = PathBuf::from(&status.exe_path);
+        if !exe_path.is_file() {
+            return Err("图片增强[引擎准备]：Real-ESRGAN 引擎不可用，请重新安装引擎".to_string());
+        }
         let source_stem = source
             .file_stem()
             .and_then(|value| value.to_str())
@@ -6355,32 +6842,10 @@ fn run_realesrgan_image_enhancement_impl(
             "{}_realesrgan_{}x_{}.{}",
             source_stem, scale, resize_mode, output_format
         )));
-        let needs_post_resize = resize_mode == "keep"
-            || scale < REALESRGAN_NATIVE_SCALE
-            || needs_pre_resize
-            || clamped_final_size;
-        let realesrgan_input_path = if needs_pre_resize {
-            let prepared_path = work_dir.join("source_safe_input.png");
-            run_local_image_resize(
-                &source,
-                &prepared_path,
-                safe_input_width,
-                safe_input_height,
-                "png",
-            )?;
-            prepared_path
-        } else {
-            source.clone()
-        };
-        let enhanced_path = if needs_post_resize {
-            work_dir.join(format!(
-                "enhanced_{}x.{}",
-                REALESRGAN_NATIVE_SCALE, output_format
-            ))
-        } else {
-            output_path.clone()
-        };
-
+        pending_output = Some(output_path.clone());
+        // Keep alpha throughout engine execution. Convert to the requested
+        // format only after resizing; JPEG cannot represent transparency.
+        let enhanced_path = work_dir.join("enhanced_4x.png");
         emit_rife_engine_progress(
             &app_handle,
             progress_id_ref,
@@ -6395,22 +6860,28 @@ fn run_realesrgan_image_enhancement_impl(
             &realesrgan_input_path,
             &enhanced_path,
             &mode,
+            "png",
+        )
+        .map_err(|error| image_input::engine_error(&error))?;
+        if !enhanced_path.is_file() {
+            return Err("图片增强[引擎输出]：引擎未生成有效图片，请重试或检查显卡驱动".to_string());
+        }
+        run_local_image_resize(
+            &enhanced_path,
+            &output_path,
+            target_width,
+            target_height,
             &output_format,
-        )?;
-
-        if needs_post_resize {
-            run_local_image_resize(
-                &enhanced_path,
-                &output_path,
-                target_width,
-                target_height,
-                &output_format,
-            )?;
-        }
-
-        if !output_path.is_file() {
-            return Err("图片增强完成，但没有生成输出图片".to_string());
-        }
+        )
+        .map_err(|error| {
+            if error.contains("[保存结果]") {
+                error
+            } else {
+                "图片增强[引擎输出]：无法解码引擎输出，请重试或重新安装引擎".to_string()
+            }
+        })?;
+        let (output_width, output_height) = image_input::dimensions(&output_path)
+            .map_err(|_| "图片增强[校验结果]：输出图片无效，请重新增强".to_string())?;
         emit_rife_engine_progress(
             &app_handle,
             progress_id_ref,
@@ -6427,13 +6898,18 @@ fn run_realesrgan_image_enhancement_impl(
             resize_mode,
             output_format,
             fps: None,
-            width: None,
-            height: None,
+            width: Some(output_width),
+            height: Some(output_height),
             preview: false,
             processed_duration_sec: None,
         })
     })();
 
+    if result.is_err() {
+        if let Some(path) = pending_output {
+            let _ = fs::remove_file(path);
+        }
+    }
     let _ = fs::remove_dir_all(&work_dir);
     result
 }
@@ -6460,7 +6936,7 @@ async fn run_realesrgan_image_enhancement(
         )
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|_| "图片增强[后台任务]：处理任务异常中断，请重试".to_string())?
 }
 
 #[tauri::command]
@@ -8756,6 +9232,15 @@ fn is_supported_drop_media_path(path: &Path) -> bool {
             | "mkv"
             | "webm"
             | "m4v"
+            | "mp3"
+            | "wav"
+            | "aac"
+            | "flac"
+            | "m4a"
+            | "ogg"
+            | "opus"
+            | "aiff"
+            | "wma"
     )
 }
 
@@ -8957,13 +9442,13 @@ fn read_canvas_template_json_impl(
     if !normalized.is_file() {
         return Err("画布模板 JSON 文件不存在".to_string());
     }
-    let is_json = normalized
+    let is_workflow_document = normalized
         .extension()
         .and_then(|extension| extension.to_str())
-        .map(|extension| extension.eq_ignore_ascii_case("json"))
+        .map(|extension| matches!(extension.to_ascii_lowercase().as_str(), "json" | "workflow" | "canvas"))
         .unwrap_or(false);
-    if !is_json {
-        return Err("画布模板文件必须是 JSON 格式".to_string());
+    if !is_workflow_document {
+        return Err("工作流文件必须是 JSON、.workflow 或 .canvas 格式".to_string());
     }
     let metadata = fs::metadata(&normalized).map_err(|error| error.to_string())?;
     if metadata.len() > MAX_CANVAS_TEMPLATE_JSON_BYTES {
@@ -10424,6 +10909,9 @@ fn load_canvas_state(app_handle: tauri::AppHandle) -> Result<serde_json::Value, 
         let mut value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
         compact_items_payload(&mut value);
         if canvas_state_item_count(&value) > 0 {
+            if let Ok(view) = fs::read_to_string(get_user_data_dir(&app_handle).join("drawer_canvas_view.json")) {
+                if let Ok(view) = serde_json::from_str::<serde_json::Value>(&view) { canvas_view_state::merge_view(&mut value, &view); }
+            }
             return Ok(value);
         }
         if let Some(recovered) = recover_canvas_state_from_sqlite_or_backup(&app_handle)? {
@@ -10655,15 +11143,27 @@ fn ensure_recovered_canvas_size(state: &mut serde_json::Value) {
     });
 }
 
-#[tauri::command]
-fn save_canvas_state(
-    app_handle: tauri::AppHandle,
+// Full snapshots remain authoritative; no viewport-only merge can erase items.
+// Preserve command order while moving compaction, serialization and disk IO off
+// the native window loop (drag/minimize/maximize must not wait for a canvas save).
+fn canvas_state_writer() -> &'static canvas_background::CanvasTaskQueue {
+    static WRITER: canvas_background::CanvasTaskQueue = canvas_background::CanvasTaskQueue::new();
+    &WRITER
+}
+
+fn saved_canvas_identity() -> &'static std::sync::Mutex<Option<String>> {
+    static IDENTITY: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    &IDENTITY
+}
+
+fn write_full_canvas_state_locked(
+    app_handle: &tauri::AppHandle,
     mut state: serde_json::Value,
 ) -> Result<(), String> {
-    let path = get_user_data_dir(&app_handle).join("drawer_canvas.json");
+    let path = get_user_data_dir(app_handle).join("drawer_canvas.json");
     compact_items_payload(&mut state);
     if canvas_state_item_count(&state) == 0
-        && has_recoverable_canvas_state(&app_handle).unwrap_or(false)
+        && has_recoverable_canvas_state(app_handle).unwrap_or(false)
     {
         let backup_path = path.with_file_name(format!(
             "drawer_canvas.empty-save-blocked.{}.json",
@@ -10674,7 +11174,38 @@ fn save_canvas_state(
         return Ok(());
     }
     let content = serde_json::to_string(&state).map_err(|e| e.to_string())?;
-    fs::write(path, content).map_err(|e| e.to_string())
+    fs::write(path, content).map_err(|e| e.to_string())?;
+    *saved_canvas_identity().lock().map_err(|error| error.to_string())? = state.get("activeCanvasId").and_then(serde_json::Value::as_str).map(str::to_owned);
+    Ok(())
+}
+
+#[tauri::command]
+async fn save_canvas_state(
+    app_handle: tauri::AppHandle,
+    state: serde_json::Value,
+) -> Result<(), String> {
+    let writer = canvas_state_writer();
+    let ticket = writer.issue();
+    tauri::async_runtime::spawn_blocking(move || writer.run(ticket, || write_full_canvas_state_locked(&app_handle, state)))
+    .await
+    .map_err(|error| format!("画布状态后台保存失败: {error}"))?
+}
+
+#[tauri::command]
+async fn save_canvas_view_state(app_handle: tauri::AppHandle, view: serde_json::Value) -> Result<bool, String> {
+    if !canvas_view_state::valid_view(&view) { return Err("无效的画布视图参数".to_string()); }
+    let writer = canvas_state_writer();
+    let ticket = writer.issue();
+    tauri::async_runtime::spawn_blocking(move || writer.run(ticket, || {
+        let identity = saved_canvas_identity().lock().map_err(|error| error.to_string())?;
+        if identity.as_deref() != view.get("activeCanvasId").and_then(serde_json::Value::as_str) { return Ok(false); }
+        let path = get_user_data_dir(&app_handle).join("drawer_canvas_view.json");
+        let encoded = serde_json::to_vec(&view).map_err(|error| error.to_string())?;
+        fs::write(path, encoded).map_err(|error| error.to_string())?;
+        Ok(true)
+    }))
+    .await
+    .map_err(|error| format!("画布视图后台保存失败: {error}"))?
 }
 
 fn has_recoverable_canvas_state(app_handle: &tauri::AppHandle) -> Result<bool, String> {
@@ -12340,153 +12871,219 @@ async fn create_r2_public_image_urls(
     .map_err(|e| e.to_string())?
 }
 
+async fn upload_wallet_reference_image(
+    app_handle: &tauri::AppHandle,
+    access_token: &str,
+    index: usize,
+    object: R2PreparedObject,
+) -> Result<(usize, String), ReferenceUploadFailure> {
+    let extension = object.ext.trim().trim_start_matches('.');
+    let filename = format!("reference-{}.{}", index + 1, extension);
+    let upload_bytes = object.bytes.len();
+    let ticket_body = serde_json::json!({
+        "filename": filename,
+        "mime": object.content_type,
+        "sizeBytes": upload_bytes,
+    });
+    let ticket_response = commands::license::send_cloud_request_detailed(
+        app_handle,
+        Duration::from_secs(120),
+        "POST",
+        Some(commands::license::CloudRequestLogContext {
+            operation: ReferenceUploadOperation::UploadTicket.code(),
+            upload_bytes,
+        }),
+        |client| {
+            client
+                .post(format!(
+                    "{INSPIRATION_SPACE_API_BASE_URL}/v1/ai/reference-images/upload-ticket"
+                ))
+                .bearer_auth(access_token)
+                .header("x-client-version", env!("CARGO_PKG_VERSION"))
+                .header("x-wallet-protocol", "1")
+                .json(&ticket_body)
+        },
+    )
+    .await
+    .map_err(|failure| {
+        ReferenceUploadFailure::transport(
+            Some(index),
+            ReferenceUploadOperation::UploadTicket,
+            failure,
+        )
+    })?;
+    let ticket_status = ticket_response.status();
+    if !ticket_status.is_success() {
+        return Err(ReferenceUploadFailure::new(
+            Some(index),
+            ReferenceUploadOperation::UploadTicket,
+            ReferenceUploadFailureReason::HttpStatus(ticket_status.as_u16()),
+        ));
+    }
+    let server_time = ticket_response.headers().get(reqwest::header::DATE)
+        .and_then(|value| value.to_str().ok()).and_then(|value| chrono::DateTime::parse_from_rfc2822(value).ok());
+    let ticket_response_body = ticket_response.text().await.map_err(|error| {
+        ReferenceUploadFailure::transport(
+            Some(index),
+            ReferenceUploadOperation::UploadTicket,
+            commands::license::CloudTransportFailure::from_reqwest(&error, false, false),
+        )
+    })?;
+    let ticket = parse_reference_upload_ticket(&ticket_response_body).map_err(|detail| {
+        let reason = if detail == "上传授权响应无效" {
+            ReferenceUploadFailureReason::InvalidResponse
+        } else {
+            ReferenceUploadFailureReason::InvalidTicket
+        };
+        ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::UploadTicket, reason)
+    })?;
+    let upload_url = reqwest::Url::parse(ticket.upload_url.trim()).map_err(|_| {
+        ReferenceUploadFailure::new(
+            Some(index),
+            ReferenceUploadOperation::UploadTicket,
+            ReferenceUploadFailureReason::InvalidTicket,
+        )
+    })?;
+    if upload_url.scheme() != "https" {
+        return Err(ReferenceUploadFailure::new(
+            Some(index),
+            ReferenceUploadOperation::UploadTicket,
+            ReferenceUploadFailureReason::InvalidTicket,
+        ));
+    }
+
+    let headers = reference_upload_headers(&ticket.headers, upload_bytes).ok_or_else(||
+        ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::UploadTicket, ReferenceUploadFailureReason::InvalidTicket))?;
+    // Use server time for expiry math; the user's Windows clock may be wrong.
+    let remaining_seconds = ticket.expires_at.as_deref().and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .zip(server_time).map(|(expires, now)| (expires - now).num_seconds().saturating_sub(30).max(0) as u64)
+        .unwrap_or(240).min(240);
+    let upload_deadline = Instant::now() + Duration::from_secs(remaining_seconds);
+    // Retrying PUT overwrites the same object with the exact same bytes and
+    // signature. Never acquire a new ticket or replay a generation POST here.
+    for attempt in 0..3 {
+        let remaining = upload_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(ReferenceUploadFailure::transport(Some(index), ReferenceUploadOperation::SignedPut,
+                commands::license::CloudTransportFailure { category: commands::license::CloudTransportErrorCategory::Timeout, fallback_attempted: false, request_not_sent: false }));
+        }
+        let response = tokio::time::timeout(remaining, commands::license::send_cloud_request_detailed(
+            app_handle,
+            Duration::from_secs(120),
+            "PUT",
+            Some(commands::license::CloudRequestLogContext {
+                operation: ReferenceUploadOperation::SignedPut.code(), upload_bytes,
+            }),
+            |client| client.put(upload_url.clone()).headers(headers.clone()).body(object.bytes.clone()),
+        )).await.unwrap_or_else(|_| Err(commands::license::CloudTransportFailure {
+            category: commands::license::CloudTransportErrorCategory::Timeout, fallback_attempted: false,
+            request_not_sent: false,
+        }));
+        let (failure, retryable, retry_after) = match response {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() { return Ok((index, ticket.object_key)); }
+                let retry_after = response.headers().get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok()).and_then(|value| value.parse::<u64>().ok())
+                    .map(|seconds| Duration::from_secs(seconds.min(30)));
+                (ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::SignedPut,
+                    ReferenceUploadFailureReason::HttpStatus(status.as_u16())),
+                 matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504), retry_after)
+            }
+            Err(failure) => (ReferenceUploadFailure::transport(Some(index), ReferenceUploadOperation::SignedPut, failure),
+                failure.category.is_retryable(), None),
+        };
+        if attempt == 2 || !retryable { return Err(failure); }
+        crate::renderer_diagnostics::record(app_handle, "main", "reference_upload_retry", serde_json::json!({
+            "operation": "signed_put", "attempt": attempt + 2, "uploadBytes": upload_bytes,
+        }));
+        tokio::time::sleep(retry_after.unwrap_or(Duration::from_millis(500 << attempt))
+            .min(upload_deadline.saturating_duration_since(Instant::now()))).await;
+    }
+    unreachable!("bounded upload attempts return a result")
+}
+
+async fn prepare_and_upload_wallet_reference(
+    app_handle: tauri::AppHandle,
+    original_token: String,
+    index: usize,
+    source: String,
+) -> Result<(usize, String), ReferenceUploadFailure> {
+    // Bound decoding, compression, memory and network work across ALL nodes.
+    let permit = reference_upload::uploads().acquire().await;
+    let object = tauri::async_runtime::spawn_blocking(move || source_to_r2_object(&source))
+        .await.map_err(|_| ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::PrepareReference, ReferenceUploadFailureReason::TaskTerminated))?
+        .map_err(|_| ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::PrepareReference, ReferenceUploadFailureReason::LocalPreparation))?;
+    if !object.content_type.starts_with("image/") {
+        return Err(ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::PrepareReference, ReferenceUploadFailureReason::UnsupportedImage));
+    }
+    // A queued upload may start after the access token expires. Refresh it,
+    // but never publish references under an account switched while waiting.
+    let token = commands::license::cloud_access_token(&app_handle).await
+        .map_err(|_| ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::UploadTicket, ReferenceUploadFailureReason::CredentialsUnavailable))?;
+    if token != original_token && !commands::license::cloud_tokens_same_account(&original_token, &token) {
+        return Err(ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::UploadTicket, ReferenceUploadFailureReason::CredentialsUnavailable));
+    }
+    let key = reference_upload::cache_key(&token, &object.content_type, &object.bytes);
+    reference_upload::uploads().run(key, || async move {
+        let _permit = permit;
+        upload_wallet_reference_image(&app_handle, &token, index, object).await.map(|(_, key)| key)
+    }).await.map(|key| (index, key)).map_err(|mut failure| {
+        failure.reference_index = Some(index);
+        failure
+    })
+}
+
 #[tauri::command]
 async fn upload_wallet_reference_images(
     app_handle: tauri::AppHandle,
     sources: Vec<String>,
 ) -> Result<Vec<String>, String> {
     let command_started_at = Instant::now();
-    if sources.is_empty() {
-        return Err("没有需要上传的参考图".to_string());
+    if sources.is_empty() || sources.len() > 32 {
+        return Err("invalid_request: 参考图数量必须为 1–32 张".to_string());
     }
-    let access_token = commands::license::cloud_access_token(&app_handle).await?;
+    let source_count = sources.len();
+    let access_token = commands::license::cloud_access_token(&app_handle).await.map_err(|_| {
+        ReferenceUploadFailure::new(None, ReferenceUploadOperation::UploadTicket, ReferenceUploadFailureReason::CredentialsUnavailable).message()
+    })?;
     let token_ready_at = Instant::now();
-    let timing_app_handle = app_handle.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let prepared = sources
-            .iter()
-            .take(32)
-            .map(|source| {
-                let object = source_to_r2_object(source)?;
-                if !object.content_type.starts_with("image/") {
-                    return Err("钱包参考图上传仅支持图片".to_string());
-                }
-                Ok(object)
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let references_prepared_at = Instant::now();
-        let ticket_client = reqwest::blocking::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|error| format!("参考图授权连接初始化失败：{error}"))?;
-        let upload_client = reqwest::blocking::Client::builder()
-            .no_proxy()
-            .redirect(Policy::none())
-            .timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|error| format!("参考图直传连接初始化失败：{error}"))?;
-        let upload_one = |index: usize, object: R2PreparedObject| -> Result<(usize, String), String> {
-            let extension = object.ext.trim().trim_start_matches('.');
-            let filename = format!("reference-{}.{}", index + 1, extension);
-            let ticket_response = ticket_client
-                .post(format!(
-                    "{INSPIRATION_SPACE_API_BASE_URL}/v1/ai/reference-images/upload-ticket"
-                ))
-                .bearer_auth(&access_token)
-                .header("x-client-version", env!("CARGO_PKG_VERSION"))
-                .header("x-wallet-protocol", "1")
-                .json(&serde_json::json!({
-                    "filename": filename,
-                    "mime": object.content_type.clone(),
-                    "sizeBytes": object.bytes.len(),
-                }))
-                .send()
-                .map_err(|error| format!("参考图上传授权失败：{error}"))?;
-            let ticket_status = ticket_response.status();
-            let ticket_body = ticket_response
-                .text()
-                .map_err(|error| format!("读取参考图上传授权响应失败：{error}"))?;
-            if !ticket_status.is_success() {
-                return Err(format!(
-                    "参考图上传授权失败（HTTP {}）：{}",
-                    ticket_status.as_u16(),
-                    ticket_body
-                ));
+    let mut indexed_object_keys = Vec::with_capacity(source_count);
+    let mut failures = Vec::new();
+    let mut pending = sources.into_iter().enumerate();
+    loop {
+        let batch = pending.by_ref().take(reference_upload::CONCURRENCY).collect::<Vec<_>>();
+        if batch.is_empty() { break; }
+        let handles = batch.into_iter().map(|(index, source)| {
+            let app = app_handle.clone();
+            let token = access_token.clone();
+            (index, tauri::async_runtime::spawn(prepare_and_upload_wallet_reference(app, token, index, source)))
+        }).collect::<Vec<_>>();
+        for (index, handle) in handles {
+            match handle.await {
+                Ok(Ok(value)) => indexed_object_keys.push(value),
+                Ok(Err(failure)) => failures.push(failure),
+                Err(_) => failures.push(ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::PrepareReference, ReferenceUploadFailureReason::TaskTerminated)),
             }
-            let ticket: ReferenceUploadTicket = serde_json::from_str(&ticket_body)
-                .map_err(|error| format!("参考图上传授权响应无效：{error}"))?;
-            if ticket.method.to_ascii_uppercase() != "PUT"
-                || !ticket.object_key.starts_with("reference-images/")
-            {
-                return Err("参考图上传授权参数无效".to_string());
-            }
-            let upload_url = reqwest::Url::parse(ticket.upload_url.trim())
-                .map_err(|error| format!("参考图上传 URL 无效：{error}"))?;
-            if upload_url.scheme() != "https" {
-                return Err("参考图上传 URL 必须使用 HTTPS".to_string());
-            }
-            let mut request = upload_client
-                .put(upload_url)
-                .header(reqwest::header::CONTENT_LENGTH, object.bytes.len())
-                .body(object.bytes);
-            for (name, value) in ticket.headers {
-                request = request.header(name, value);
-            }
-            let response = request
-                .send()
-                .map_err(|error| format!("参考图直传 COS 失败：{error}"))?;
-            let status = response.status();
-            if !status.is_success() {
-                return Err(format!("参考图直传 COS 失败（HTTP {}）", status.as_u16()));
-            }
-            Ok((index, ticket.object_key))
-        };
-        let mut indexed_object_keys = Vec::with_capacity(prepared.len());
-        let mut pending = prepared.into_iter().enumerate();
-        loop {
-            let batch = pending.by_ref().take(4).collect::<Vec<_>>();
-            if batch.is_empty() {
-                break;
-            }
-            let results = thread::scope(|scope| {
-                let upload_one = &upload_one;
-                batch
-                    .into_iter()
-                    .map(|(index, object)| scope.spawn(move || upload_one(index, object)))
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .map(|handle| {
-                        handle
-                            .join()
-                            .map_err(|_| "参考图直传任务异常终止".to_string())?
-                    })
-                    .collect::<Result<Vec<_>, String>>()
-            })?;
-            indexed_object_keys.extend(results);
         }
-        indexed_object_keys.sort_by_key(|(index, _)| *index);
-        eprintln!(
-            "[wallet_reference_upload_timing] count={} tokenMs={} localPreparationMs={} uploadMs={} totalMs={}",
-            indexed_object_keys.len(),
-            token_ready_at.duration_since(command_started_at).as_millis(),
-            references_prepared_at.duration_since(token_ready_at).as_millis(),
-            references_prepared_at.elapsed().as_millis(),
-            command_started_at.elapsed().as_millis(),
-        );
-        let _ = append_ai_debug_log(
-            timing_app_handle,
-            "canvas-image-timing".to_string(),
-            serde_json::json!({
-                "at": chrono::Utc::now().to_rfc3339(),
-                "label": "walletReferenceUpload",
-                "value": {
-                    "count": indexed_object_keys.len(),
-                    "tokenMs": token_ready_at.duration_since(command_started_at).as_millis(),
-                    "localPreparationMs": references_prepared_at.duration_since(token_ready_at).as_millis(),
-                    "uploadMs": references_prepared_at.elapsed().as_millis(),
-                    "totalMs": command_started_at.elapsed().as_millis(),
-                },
-            })
-            .to_string(),
-        );
-        Ok(indexed_object_keys
-            .into_iter()
-            .map(|(_, object_key)| object_key)
-            .collect())
-    })
-    .await
-    .map_err(|error| format!("参考图直传任务失败：{error}"))?
+        // Failed references must not be silently dropped or change image order.
+        // Let the current batch finish, then stop spending bandwidth on this run.
+        if !failures.is_empty() { break; }
+    }
+    indexed_object_keys.sort_by_key(|(index, _)| *index);
+    crate::renderer_diagnostics::record(&app_handle, "main", "reference_upload_completed", serde_json::json!({
+        "requested": source_count, "uploaded": indexed_object_keys.len(), "failed": failures.len(),
+        "globalConcurrency": reference_upload::CONCURRENCY, "elapsedMs": command_started_at.elapsed().as_millis() as u64,
+    }));
+    let _ = append_ai_debug_log(app_handle, "canvas-image-timing".to_string(), serde_json::json!({
+        "at": chrono::Utc::now().to_rfc3339(), "label": "walletReferenceUpload", "value": {
+            "count": indexed_object_keys.len(), "failed": failures.len(), "requested": source_count,
+            "tokenMs": token_ready_at.duration_since(command_started_at).as_millis(),
+            "uploadMs": token_ready_at.elapsed().as_millis(), "totalMs": command_started_at.elapsed().as_millis(),
+        },
+    }).to_string());
+    if !failures.is_empty() { return Err(format_reference_upload_failures(&failures)); }
+    Ok(indexed_object_keys.into_iter().map(|(_, key)| key).collect())
 }
 
 #[tauri::command]
@@ -12497,53 +13094,122 @@ async fn create_oss_public_image_urls(
     if sources.is_empty() {
         return Err("没有需要上传到 OSS 的本地参考图".to_string());
     }
-    let images = tauri::async_runtime::spawn_blocking(move || {
+    let prepared_images = tauri::async_runtime::spawn_blocking(move || {
         use base64::{engine::general_purpose, Engine as _};
         sources
             .iter()
             .take(13)
             .enumerate()
             .map(|(index, source)| {
-                let object = source_to_r2_object(source)?;
+                let object = source_to_r2_object(source).map_err(|_| {
+                    ReferenceUploadFailure::new(
+                        Some(index),
+                        ReferenceUploadOperation::PrepareReference,
+                        ReferenceUploadFailureReason::LocalPreparation,
+                    )
+                })?;
                 if !object.content_type.starts_with("image/") {
-                    return Err("OSS 参考图桥接仅支持图片".to_string());
+                    return Err(ReferenceUploadFailure::new(
+                        Some(index),
+                        ReferenceUploadOperation::PrepareReference,
+                        ReferenceUploadFailureReason::UnsupportedImage,
+                    ));
                 }
-                Ok(OssReferenceImageUpload {
-                    filename: format!("reference-{}.{}", index, object.ext),
-                    mime: object.content_type,
-                    data: general_purpose::STANDARD.encode(object.bytes),
-                })
+                let byte_length = object.bytes.len();
+                Ok((
+                    OssReferenceImageUpload {
+                        filename: format!("reference-{}.{}", index, object.ext),
+                        mime: object.content_type,
+                        data: general_purpose::STANDARD.encode(object.bytes),
+                    },
+                    byte_length,
+                ))
             })
-            .collect::<Result<Vec<_>, String>>()
+            .collect::<Result<Vec<_>, ReferenceUploadFailure>>()
     })
     .await
-    .map_err(|error| error.to_string())??;
+    .map_err(|_| {
+        ReferenceUploadFailure::new(
+            None,
+            ReferenceUploadOperation::PrepareReference,
+            ReferenceUploadFailureReason::TaskTerminated,
+        )
+        .message()
+    })?
+    .map_err(|failure| failure.message())?;
 
-    let access_token = commands::license::cloud_access_token(&app_handle).await?;
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|error| format!("OSS 参考图连接初始化失败：{error}"))?;
-    let response = client
-        .post("https://api.unmind.art/v1/ai/reference-images")
-        .bearer_auth(access_token)
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", "1")
-        .json(&serde_json::json!({ "images": images }))
-        .send()
+    let access_token = commands::license::cloud_access_token(&app_handle)
         .await
-        .map_err(|error| format!("OSS 参考图上传失败：{error}"))?;
+        .map_err(|_| {
+            ReferenceUploadFailure::new(
+                None,
+                ReferenceUploadOperation::LegacyReferenceUpload,
+                ReferenceUploadFailureReason::CredentialsUnavailable,
+            )
+            .message()
+        })?;
+    let upload_bytes = prepared_images
+        .iter()
+        .map(|(_, byte_length)| *byte_length)
+        .sum();
+    let images = prepared_images
+        .into_iter()
+        .map(|(image, _)| image)
+        .collect::<Vec<_>>();
+    let request_body = serde_json::json!({ "images": images });
+    let response = commands::license::send_cloud_request_detailed(
+        &app_handle,
+        Duration::from_secs(120),
+        "POST",
+        Some(commands::license::CloudRequestLogContext {
+            operation: ReferenceUploadOperation::LegacyReferenceUpload.code(),
+            upload_bytes,
+        }),
+        |client| {
+            client
+                .post(format!(
+                    "{INSPIRATION_SPACE_API_BASE_URL}/v1/ai/reference-images"
+                ))
+                .bearer_auth(&access_token)
+                .header("x-client-version", env!("CARGO_PKG_VERSION"))
+                .header("x-wallet-protocol", "1")
+                .json(&request_body)
+        },
+    )
+    .await
+    .map_err(|failure| {
+        ReferenceUploadFailure::transport(
+            None,
+            ReferenceUploadOperation::LegacyReferenceUpload,
+            failure,
+        )
+        .message()
+    })?;
     let status = response.status();
-    let body = response.text().await.map_err(|error| error.to_string())?;
     if !status.is_success() {
-        return Err(format!(
-            "OSS 参考图上传失败（{}）：{}",
-            status.as_u16(),
-            body
-        ));
+        return Err(ReferenceUploadFailure::new(
+            None,
+            ReferenceUploadOperation::LegacyReferenceUpload,
+            ReferenceUploadFailureReason::HttpStatus(status.as_u16()),
+        )
+        .message());
     }
-    serde_json::from_str(&body).map_err(|error| format!("OSS 参考图响应无效：{error}"))
+    let body = response.text().await.map_err(|error| {
+        ReferenceUploadFailure::transport(
+            None,
+            ReferenceUploadOperation::LegacyReferenceUpload,
+            commands::license::CloudTransportFailure::from_reqwest(&error, false, false),
+        )
+        .message()
+    })?;
+    serde_json::from_str(&body).map_err(|_| {
+        ReferenceUploadFailure::new(
+            None,
+            ReferenceUploadOperation::LegacyReferenceUpload,
+            ReferenceUploadFailureReason::InvalidResponse,
+        )
+        .message()
+    })
 }
 
 #[tauri::command]
@@ -12558,20 +13224,23 @@ async fn delete_oss_public_image_urls(
         return Err("OSS 临时分享 ID 无效".to_string());
     }
     let access_token = commands::license::cloud_access_token(&app_handle).await?;
-    let response = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|error| error.to_string())?
-        .delete(format!(
-            "https://api.unmind.art/v1/ai/reference-images/{share_id}"
-        ))
-        .bearer_auth(access_token)
-        .header("x-client-version", env!("CARGO_PKG_VERSION"))
-        .header("x-wallet-protocol", "1")
-        .send()
-        .await
-        .map_err(|error| format!("OSS 临时参考图清理失败：{error}"))?;
+    let response = commands::license::send_cloud_request(
+        &app_handle,
+        Duration::from_secs(30),
+        "DELETE",
+        None,
+        |client| {
+            client
+                .delete(format!(
+                    "{INSPIRATION_SPACE_API_BASE_URL}/v1/ai/reference-images/{share_id}"
+                ))
+                .bearer_auth(&access_token)
+                .header("x-client-version", env!("CARGO_PKG_VERSION"))
+                .header("x-wallet-protocol", "1")
+        },
+    )
+    .await
+    .map_err(|message| format!("OSS 临时参考图清理失败：{message}"))?;
     if response.status().is_success() {
         Ok(())
     } else {
@@ -16446,63 +17115,25 @@ fn capture_screen_area(
 #[tauri::command]
 async fn capture_screen_to_file(
     app_handle: tauri::AppHandle,
-    window: WebviewWindow,
+    _window: WebviewWindow,
 ) -> Result<String, String> {
+    let handle = app_handle.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let current_monitor = window
-            .current_monitor()
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "no current monitor".to_string())?;
-        let monitor_pos = current_monitor.position();
-        let screens = screenshots::Screen::all().map_err(|e| e.to_string())?;
-        if screens.is_empty() {
-            return Err("no screen available".to_string());
+        // Freeze every connected display before the overlay appears. Dual-screen
+        // users need to snip a monitor that does not contain the drawer window,
+        // and a later live capture through the overlay can return a black frame
+        // on hardware-decoded video.
+        if let Some(snip) = handle.get_webview_window("snip") {
+            let _ = window_action(&snip, WindowAction::Hide, "capture_screen_to_file");
         }
-        let screen = screens
-            .iter()
-            .find(|s| s.display_info.x == monitor_pos.x && s.display_info.y == monitor_pos.y)
-            .unwrap_or(&screens[0])
-            .clone();
-
-        // Freeze exactly what the user can currently see, including the drawer. Keeping
-        // the transparent selection window above a hardware-accelerated video can make
-        // DWM return a black frame after a short delay, so every later crop uses this
-        // initial frame instead of capturing the live desktop again.
-        if let Some(snip) = app_handle.get_webview_window("snip") {
-            let _ = snip.hide();
-        }
-        let image = screen.capture().map_err(|e| e.to_string())?;
-        let out_dir = read_web_image_cache_dir(&app_handle);
-        fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
-        let file_name = format!(
-            "drawer_snip_background_{}.png",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| e.to_string())?
-                .as_millis()
-        );
-        let out_path = out_dir.join(file_name);
-        let file = File::create(&out_path).map_err(|e| e.to_string())?;
-        let writer = BufWriter::new(file);
-        let encoder = screenshots::image::codecs::png::PngEncoder::new_with_quality(
-            writer,
-            screenshots::image::codecs::png::CompressionType::Fast,
-            screenshots::image::codecs::png::FilterType::NoFilter,
-        );
-        screenshots::image::ImageEncoder::write_image(
-            encoder,
-            image.as_raw(),
-            image.width(),
-            image.height(),
-            screenshots::image::ColorType::Rgba8,
-        )
-        .map_err(|e| e.to_string())?;
-        let saved_path = out_path.to_string_lossy().to_string();
-        store_snip_background_path(saved_path.clone());
-        Ok(saved_path)
+        let desktop = crate::snip_desktop::capture_all_screens()?;
+        store_snip_frozen_desktop(desktop);
+        Ok::<(), String>(())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    show_snip_window(app_handle, None)?;
+    Ok(String::new())
 }
 
 fn crop_image_file_to_file_impl(
@@ -16627,7 +17258,7 @@ async fn capture_screen_area_absolute_to_file(
         let physical_w = (width * scale).round().max(1.0) as u32;
         let physical_h = (height * scale).round().max(1.0) as u32;
 
-        window.hide().map_err(|e| e.to_string())?;
+        window_action(&window, WindowAction::Hide, "capture_screen_area_absolute_to_file").map_err(|e| e.to_string())?;
         let _ = window.set_position(LogicalPosition::new(-32000.0, -32000.0));
         std::thread::sleep(std::time::Duration::from_millis(16));
 
@@ -16665,7 +17296,7 @@ async fn capture_snip_selection_to_file(
         let physical_w = (width * scale_x).round().max(1.0) as u32;
         let physical_h = (height * scale_y).round().max(1.0) as u32;
 
-        window.hide().map_err(|e| e.to_string())?;
+        window_action(&window, WindowAction::Hide, "capture_snip_selection_to_file").map_err(|e| e.to_string())?;
         let _ = window.set_position(LogicalPosition::new(-32000.0, -32000.0));
         std::thread::sleep(std::time::Duration::from_millis(16));
 
@@ -16704,7 +17335,7 @@ async fn capture_snip_window_selection_to_file(
         let physical_w = (width * scale_x).round().max(1.0) as u32;
         let physical_h = (height * scale_y).round().max(1.0) as u32;
 
-        snip.hide().map_err(|e| e.to_string())?;
+        window_action(&snip, WindowAction::Hide, "capture_snip_window_selection_to_file").map_err(|e| e.to_string())?;
         let _ = snip.set_position(LogicalPosition::new(-32000.0, -32000.0));
         std::thread::sleep(std::time::Duration::from_millis(16));
 
@@ -16738,19 +17369,12 @@ async fn complete_snip_selection(
     background_path: Option<String>,
 ) -> Result<(), String> {
     let background_path = take_snip_background_path(background_path);
+    let frozen_desktop = take_snip_frozen_desktop();
     let snip = app_handle
         .get_webview_window("snip")
         .ok_or_else(|| "snip window not found".to_string())?;
-    let window_pos = snip.outer_position().map_err(|e| e.to_string())?;
-    let window_size = snip.outer_size().map_err(|e| e.to_string())?;
-    let scale_x = window_size.width as f64 / viewport_width.max(1.0);
-    let scale_y = window_size.height as f64 / viewport_height.max(1.0);
-    let physical_x = window_pos.x + (x * scale_x).round() as i32;
-    let physical_y = window_pos.y + (y * scale_y).round() as i32;
-    let physical_w = (width * scale_x).round().max(1.0) as u32;
-    let physical_h = (height * scale_y).round().max(1.0) as u32;
 
-    let _ = snip.hide();
+    let _ = window_action(&snip, WindowAction::Hide, "complete_snip_selection");
     let _ = snip.set_position(LogicalPosition::new(-32000.0, -32000.0));
     if let Some(main) = app_handle.get_webview_window("main") {
         let _ = main.set_ignore_cursor_events(false);
@@ -16760,8 +17384,29 @@ async fn complete_snip_selection(
     let app_for_capture = app_handle.clone();
     let frozen_background_path = background_path.clone();
     let capture_result = tauri::async_runtime::spawn_blocking(move || {
-        if let Some(path) = frozen_background_path.as_deref() {
-            let result = crop_image_file_to_file_impl(
+        let result = if let Some(desktop) = frozen_desktop {
+            let cropped = crate::snip_desktop::crop_from_screens(
+                &desktop,
+                x,
+                y,
+                width,
+                height,
+                viewport_width,
+                viewport_height,
+            );
+            let out_dir = read_web_image_cache_dir(&app_for_capture);
+            fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+            let out_path = unique_file_path(out_dir.join(format!(
+                "drawer_snip_area_{}.png",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| e.to_string())?
+                    .as_millis()
+            )));
+            save_snip_png_fast(&out_path, &cropped)?;
+            Ok(out_path.to_string_lossy().to_string())
+        } else if let Some(path) = frozen_background_path.as_deref() {
+            crop_image_file_to_file_impl(
                 &app_for_capture,
                 path,
                 x,
@@ -16771,18 +17416,14 @@ async fn complete_snip_selection(
                 viewport_width,
                 viewport_height,
                 None,
-            );
-            remove_snip_background_file(&app_for_capture, Some(path));
-            result
-        } else {
-            capture_physical_area_to_file(
-                Some(&app_for_capture),
-                physical_x,
-                physical_y,
-                physical_w,
-                physical_h,
             )
+        } else {
+            Err("snip frame missing".to_string())
+        };
+        if let Some(path) = frozen_background_path.as_deref() {
+            remove_snip_background_file(&app_for_capture, Some(path));
         }
+        result
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -16844,7 +17485,7 @@ fn capture_screen_area_to_file_impl(
     let physical_h = (height * scale).round().max(1.0) as u32;
 
     // 先隐藏并移走全屏截图窗口，避免 DWM 还没完成 hide 时把选区框截进去。
-    window.hide().map_err(|e| e.to_string())?;
+    window_action(&window, WindowAction::Hide, "capture_screen_area_to_file_impl").map_err(|e| e.to_string())?;
     let _ = window.set_position(LogicalPosition::new(-32000.0, -32000.0));
     std::thread::sleep(std::time::Duration::from_millis(16));
 
@@ -17220,7 +17861,7 @@ fn position_side_edge(
     edge.set_position(LogicalPosition::new(edge_x, edge_y))
         .map_err(|e| e.to_string())?;
     edge.set_always_on_top(true).ok();
-    edge.show().map_err(|e| e.to_string())?;
+    window_action(&edge, WindowAction::Show, "position_side_edge").map_err(|e| e.to_string())?;
     let _ = height;
     Ok(())
 }
@@ -17269,7 +17910,7 @@ fn position_float_edge(
     edge.set_position(LogicalPosition::new(next_x, next_y))
         .map_err(|e| e.to_string())?;
     edge.set_always_on_top(true).ok();
-    edge.show().map_err(|e| e.to_string())?;
+    window_action(&edge, WindowAction::Show, "position_float_edge").map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -17287,7 +17928,7 @@ fn position_edge(
     );
     if is_anti_touch_locked() || suppress_for_drawer {
         if let Some(edge) = app_handle.get_webview_window("edge") {
-            let _ = edge.hide();
+            let _ = window_action(&edge, WindowAction::Hide, "position_edge");
         }
         return Ok(());
     }
@@ -17330,7 +17971,7 @@ fn hide_edge(app_handle: tauri::AppHandle) -> Result<(), String> {
     let edge = app_handle
         .get_webview_window("edge")
         .ok_or_else(|| "edge window not found".to_string())?;
-    edge.hide().map_err(|e| e.to_string())
+    window_action(&edge, WindowAction::Hide, "hide_edge").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -17346,16 +17987,20 @@ fn show_snip_window(
         .get_webview_window("main")
         .or_else(|| app_handle.get_webview_window("edge"))
         .ok_or_else(|| "anchor window not found".to_string())?;
-    let monitor = anchor
-        .current_monitor()
-        .map_err(|e| e.to_string())?
-        .or_else(|| {
-            anchor
-                .available_monitors()
-                .ok()
-                .and_then(|mut monitors| monitors.pop())
-        })
-        .ok_or_else(|| "no current monitor".to_string())?;
+    let desktop = crate::snip_desktop::DesktopRect::union_bounds(
+        anchor
+            .available_monitors()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .map(|monitor| {
+                let pos = monitor.position();
+                let size = monitor.size();
+                (pos.x, pos.y, size.width, size.height)
+            }),
+    )
+    .ok_or_else(|| "no current monitor".to_string())?;
+    let desktop_position = PhysicalPosition::new(desktop.x, desktop.y);
+    let desktop_size = PhysicalSize::new(desktop.width, desktop.height);
 
     if let Some(main) = main.as_ref() {
         let _ = main.set_ignore_cursor_events(true);
@@ -17365,20 +18010,20 @@ fn show_snip_window(
     snip.set_ignore_cursor_events(false).ok();
     snip.set_always_on_top(true).ok();
     snip.set_shadow(false).ok();
-    snip.set_position(*monitor.position())
+    snip.set_position(desktop_position)
         .map_err(|e| e.to_string())?;
-    snip.set_size(*monitor.size()).map_err(|e| e.to_string())?;
+    snip.set_size(desktop_size).map_err(|e| e.to_string())?;
     let _ = snip.emit(
         "snip-reset",
         serde_json::json!({ "backgroundPath": background_path }),
     );
-    snip.show().map_err(|e| e.to_string())?;
+    window_action(&snip, WindowAction::Show, "show_snip_window").map_err(|e| e.to_string())?;
     let _ = snip.set_focus();
 
     #[cfg(target_os = "windows")]
     {
         use winapi::um::winuser::{
-            SetForegroundWindow, SetWindowPos, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+            SetForegroundWindow, SetWindowPos, HWND_TOPMOST, SWP_SHOWWINDOW,
         };
 
         if let Ok(hwnd) = snip.hwnd() {
@@ -17387,11 +18032,11 @@ fn show_snip_window(
                 SetWindowPos(
                     hwnd,
                     HWND_TOPMOST,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                    desktop.x,
+                    desktop.y,
+                    desktop.width as i32,
+                    desktop.height as i32,
+                    SWP_SHOWWINDOW,
                 );
                 SetForegroundWindow(hwnd);
             }
@@ -17407,7 +18052,7 @@ fn show_snip_window(
 #[tauri::command]
 fn hide_snip_window(app_handle: tauri::AppHandle) -> Result<(), String> {
     if let Some(snip) = app_handle.get_webview_window("snip") {
-        let _ = snip.hide();
+        let _ = window_action(&snip, WindowAction::Hide, "hide_snip_window");
         let _ = snip.set_position(LogicalPosition::new(-32000.0, -32000.0));
     }
     if let Some(main) = app_handle.get_webview_window("main") {
@@ -17427,10 +18072,11 @@ fn recover_after_snip(
     background_path: Option<String>,
 ) -> Result<(), String> {
     let background_path = take_snip_background_path(background_path);
+    clear_snip_frozen_frame();
     remove_snip_background_file(&app_handle, background_path.as_deref());
     let _ = width;
     if let Some(snip) = app_handle.get_webview_window("snip") {
-        let _ = snip.hide();
+        let _ = window_action(&snip, WindowAction::Hide, "recover_after_snip");
         let _ = snip.set_position(LogicalPosition::new(-32000.0, -32000.0));
     }
     if let Some(main) = app_handle.get_webview_window("main") {
@@ -17440,7 +18086,7 @@ fn recover_after_snip(
     if restore_drawer {
         if let Some(main) = app_handle.get_webview_window("main") {
             apply_main_workbench_mode(&main);
-            let _ = main.show();
+            let _ = window_action(&main, WindowAction::Show, "recover_after_snip");
             let _ = main.emit("drawer-opened", ());
         }
     } else {
@@ -17463,10 +18109,10 @@ fn open_drawer(
 ) -> Result<(), String> {
     if POST_INSTALL_LAUNCH_PENDING.load(Ordering::Acquire) {
         if let Some(main) = app_handle.get_webview_window("main") {
-            let _ = main.hide();
+            let _ = window_action(&main, WindowAction::Hide, "open_drawer");
         }
         if let Some(edge) = app_handle.get_webview_window("edge") {
-            let _ = edge.hide();
+            let _ = window_action(&edge, WindowAction::Hide, "open_drawer");
         }
         return Ok(());
     }
@@ -17474,10 +18120,10 @@ fn open_drawer(
     if is_anti_touch_locked() && !is_startup_close_locked() {
         if let Some(main) = app_handle.get_webview_window("main") {
             let _ = main.emit("drawer-closed", ());
-            let _ = main.hide();
+            let _ = window_action(&main, WindowAction::Hide, "open_drawer");
         }
         if let Some(edge) = app_handle.get_webview_window("edge") {
-            let _ = edge.hide();
+            let _ = window_action(&edge, WindowAction::Hide, "open_drawer");
         }
         return Ok(());
     }
@@ -17489,10 +18135,10 @@ fn open_drawer(
 
     if is_main_workbench_active() {
         apply_main_workbench_mode(&main);
-        main.show().map_err(|e| e.to_string())?;
+        window_action(&main, WindowAction::Show, "open_drawer").map_err(|e| e.to_string())?;
         let _ = main.emit("drawer-opened", ());
         if let Some(edge_window) = edge {
-            let _ = edge_window.hide();
+            let _ = window_action(&edge_window, WindowAction::Hide, "open_drawer");
         }
         return Ok(());
     }
@@ -17634,12 +18280,12 @@ fn open_drawer(
     main.set_position(LogicalPosition::new(x, y))
         .map_err(|e| e.to_string())?;
     apply_main_workbench_mode(&main);
-    main.show().map_err(|e| e.to_string())?;
+    window_action(&main, WindowAction::Show, "open_drawer").map_err(|e| e.to_string())?;
     let _ = main.emit("drawer-opened", ());
 
     // 抽屉打开期间隐藏 edge，避免移动主体时经过触发器又重新展开。
     if let Some(edge_window) = edge {
-        let _ = edge_window.hide();
+        let _ = window_action(&edge_window, WindowAction::Hide, "open_drawer");
     }
 
     Ok(())
@@ -17687,13 +18333,13 @@ fn close_drawer(app_handle: tauri::AppHandle, mode: Option<String>) -> Result<()
     // 任何旧的 edge 预热、mouseleave 或定时器触发 close_drawer，都不能真的 hide 主窗口。
     if is_startup_close_locked() {
         apply_main_workbench_mode(&main);
-        main.show().map_err(|e| e.to_string())?;
+        window_action(&main, WindowAction::Show, "close_drawer").map_err(|e| e.to_string())?;
         let _ = main.emit("drawer-opened", ());
         return Ok(());
     }
 
     let _ = main.emit("drawer-closed", ());
-    main.hide().map_err(|e| e.to_string())?;
+    window_action(&main, WindowAction::Hide, "close_drawer").map_err(|e| e.to_string())?;
     position_edge(app_handle, height, mode, None, None).ok();
     Ok(())
 }
@@ -17739,6 +18385,19 @@ fn get_drawer_right_edge(app_handle: tauri::AppHandle) -> Result<f64, String> {
             .to_logical::<f64>(factor);
         Ok(pos.x + size.width)
     }
+}
+
+#[tauri::command]
+fn resize_drawer_anchored(
+    app_handle: tauri::AppHandle,
+    right_anchor_px: i32,
+    top_anchor_px: i32,
+    width_px: i32,
+    height_px: i32,
+) -> Result<(), String> {
+    let window = app_handle.get_webview_window("main").ok_or("main window not found")?;
+    let bounds = drawer_bounds::anchored_rect(right_anchor_px, top_anchor_px, width_px, height_px)?;
+    drawer_bounds::apply(&window, bounds)
 }
 
 #[tauri::command]
@@ -17984,7 +18643,6 @@ fn build_hidden_note_window(
     let builder = builder.drag_and_drop(false);
     builder.build().map_err(|e| e.to_string())
 }
-
 #[tauri::command]
 fn prewarm_note_window(app_handle: tauri::AppHandle, label: Option<String>) -> Result<(), String> {
     let label = label.unwrap_or_else(|| "note_1".to_string());
@@ -18071,7 +18729,7 @@ fn show_note_window_impl(
         }
     }
 
-    note.show().map_err(|e| e.to_string())?;
+    window_action(&note, WindowAction::Show, "show_note_window_impl").map_err(|e| e.to_string())?;
     let _ = note.set_focus();
     Ok(())
 }
@@ -18084,13 +18742,13 @@ fn hide_note_window(app_handle: tauri::AppHandle, label: String) -> Result<(), S
         return Ok(());
     };
 
-    note.hide().map_err(|e| e.to_string())?;
+    window_action(&note, WindowAction::Hide, "hide_note_window").map_err(|e| e.to_string())?;
     if can_prewarm_note_window(&label)? {
         return Ok(());
     }
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(160));
-        let _ = note.close();
+        let _ = window_action(&note, WindowAction::Close, "hide_note_window");
     });
     Ok(())
 }
@@ -18517,7 +19175,7 @@ async fn inspiration_space_list(
     if !normalized_kind.is_empty()
         && !matches!(
             normalized_kind.as_str(),
-            "NODE_PRESET" | "WORKFLOW" | "PROMPT"
+            "NODE_PRESET" | "WORKFLOW" | "PROMPT" | "AGENT"
         )
     {
         return Err("灵感空间资源类型无效".to_string());
@@ -18607,12 +19265,19 @@ fn current_or_default_drawer_size(app: &tauri::AppHandle) -> (f64, f64) {
         .unwrap_or((400.0, 800.0))
 }
 
-fn request_force_rescue(app: &tauri::AppHandle) {
+fn request_force_rescue(app: &tauri::AppHandle, reason: &'static str) {
+    renderer_diagnostics::record(app, "main", "main_reopen_requested", serde_json::json!({"reason": reason}));
     set_startup_close_lock(0);
     ANTI_TOUCH_LOCKED.store(0, Ordering::Relaxed);
 
     let (width, height) = current_or_default_drawer_size(app);
-    let _ = open_drawer(app.clone(), width, height, None);
+    let opened = open_drawer(app.clone(), width, height, None);
+    renderer_diagnostics::record(app, "main", "main_reopen_drawer_layout", serde_json::json!({"reason": reason, "ok": opened.is_ok()}));
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = renderer_diagnostics::restore_main_window(&main, reason);
+    } else {
+        renderer_diagnostics::record(app, "main", "main_reopen_window_missing", serde_json::json!({"reason": reason}));
+    }
     let _ = app.emit("force-rescue", ());
 }
 
@@ -18658,8 +19323,9 @@ fn schedule_startup_edge_rescue(app: tauri::AppHandle) {
 
 fn main() {
     tauri::Builder::default()
+        .manage(renderer_diagnostics::DiagnosticState::default())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            request_force_rescue(app);
+            request_force_rescue(app, "second_instance_launch");
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
@@ -18676,6 +19342,10 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             platform::get_platform_capabilities,
+            renderer_diagnostics::record_renderer_diagnostic,
+            renderer_diagnostics::diagnostic_minimize_window,
+            renderer_diagnostics::diagnostic_show_window,
+            renderer_diagnostics::diagnostic_hide_window,
             load_items,
             commands::assets::list_assets,
             commands::assets::get_asset_by_id,
@@ -18702,6 +19372,7 @@ fn main() {
             commands::assets::get_tag_asset_counts,
             commands::assets::get_inspiration_analysis_counts,
             commands::assets::get_asset_thumbnails,
+            commands::canvas::reorder_canvases,
             commands::canvas::list_canvases,
             commands::canvas::list_deleted_canvases,
             commands::canvas::get_canvas,
@@ -18769,6 +19440,7 @@ fn main() {
             save_folders,
             load_canvas_state,
             save_canvas_state,
+            save_canvas_view_state,
             append_ai_debug_log,
             load_ai_analysis_config,
             save_ai_analysis_config,
@@ -18856,10 +19528,15 @@ fn main() {
             commands::license::verify_email_registration,
             commands::license::sync_email_license,
             commands::license::get_cloud_account,
+            commands::license::create_cloud_recharge_session,
+            commands::license::bind_cloud_referral,
             commands::license::get_cloud_credit_usage,
             commands::license::redeem_credit_code,
+            commands::license::generate_cloud_music,
+            commands::license::get_cloud_music_generation_by_request,
             commands::license::generate_cloud_images,
             commands::license::get_cloud_image_generation_by_request,
+            commands::license::recover_cloud_image_generation,
             commands::license::get_cloud_image_models,
             commands::license::generate_cloud_videos,
             commands::license::get_cloud_video_status,
@@ -18898,6 +19575,18 @@ fn main() {
             get_drawer_right_edge,
             resize_drawer,
             resize_drawer_at_right,
+            resize_drawer_anchored,
+            commands::design_memory::design_memory_get_settings,
+            commands::design_memory::design_memory_set_enabled,
+            commands::design_memory::design_memory_acquire_lease,
+            commands::design_memory::design_memory_upsert,
+            commands::design_memory::design_memory_recall,
+            commands::design_memory::design_memory_list,
+            commands::design_memory::design_memory_correct,
+            commands::design_memory::design_memory_delete,
+            commands::design_memory::design_memory_clear,
+            commands::design_memory::design_memory_delete_source,
+
             resize_drawer_from_right,
             position_edge,
             show_edge,
@@ -18909,6 +19598,8 @@ fn main() {
             prewarm_note_window,
             show_note_window,
             hide_note_window,
+            recharge::open_credit_recharge_window,
+            recharge::close_credit_recharge_window,
             move_current_window_by,
             resize_current_window,
             animate_current_window_resize,
@@ -18919,12 +19610,12 @@ fn main() {
             inspiration_space_submit,
         ])
         .setup(|app| {
+            renderer_diagnostics::init(app.handle());
             #[cfg(target_os = "macos")]
             {
                 let menu = Menu::default(app.handle())?;
                 app.set_menu(menu)?;
             }
-
             if platform::capabilities().auto_updater {
                 update_cache::cleanup_update_cache_on_startup(app.handle());
             }
@@ -18968,7 +19659,7 @@ fn main() {
                 let _ = snip.set_shadow(false);
                 let _ = snip.set_always_on_top(true);
                 let _ = snip.set_min_size(Some(tauri::LogicalSize::new(1.0, 1.0)));
-                let _ = snip.hide();
+                let _ = window_action(&snip, WindowAction::Hide, "main");
             }
 
             if let Err(err) = platform::init_native_drop(app) {
@@ -18995,7 +19686,7 @@ fn main() {
                     .show_menu_on_left_click(false)
                     .on_menu_event(|app, event| match event.id().as_ref() {
                         "open_drawer" => {
-                            request_force_rescue(app);
+                            request_force_rescue(app, "tray_open_menu");
                         }
                         "toggle_trigger" => {
                             let _ = app.emit("tray-toggle-trigger-mode", ());
@@ -19016,7 +19707,7 @@ fn main() {
                         } = event
                         {
                             let app = tray.app_handle();
-                            request_force_rescue(&app);
+                            request_force_rescue(&app, "tray_left_click");
                         }
                     })
                     .build(app);
@@ -19026,4 +19717,39 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+
+#[cfg(test)]
+mod canvas_audio_drop_tests {
+    use super::{collect_drop_media_paths, is_supported_drop_media_path};
+    use std::{fs, path::Path, time::{SystemTime, UNIX_EPOCH}};
+
+    #[test]
+    fn native_drop_accepts_audio_and_keeps_existing_media_extensions() {
+        for extension in ["MP3", "wav", "aac", "flac", "m4a", "ogg", "opus", "aiff", "wma", "png", "mp4"] {
+            assert!(is_supported_drop_media_path(Path::new(&format!("song.{extension}"))));
+        }
+        assert!(!is_supported_drop_media_path(Path::new("document.pdf")));
+    }
+
+    #[test]
+    fn folder_drop_collects_audio_recursively_and_deduplicates_direct_paths() {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("inspiration-audio-drop-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(root.join("nested")).unwrap();
+        let audio = root.join("music.MP3");
+        let nested = root.join("nested").join("music.flac");
+        let image = root.join("image.png");
+        let text = root.join("ignore.txt");
+        for file in [&audio, &nested, &image, &text] { fs::write(file, b"fixture").unwrap(); }
+        let mut actual = collect_drop_media_paths(vec![root.to_string_lossy().into_owned(), audio.to_string_lossy().into_owned()]).unwrap();
+        actual.sort();
+        let mut expected = vec![audio.to_string_lossy().into_owned(), nested.to_string_lossy().into_owned(), image.to_string_lossy().into_owned()];
+        expected.sort();
+        assert_eq!(actual, expected);
+        for file in [&audio, &nested, &image, &text] { fs::remove_file(file).unwrap(); }
+        fs::remove_dir(root.join("nested")).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
 }

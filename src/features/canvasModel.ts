@@ -65,6 +65,14 @@ export type CanvasImageItem = {
   canvasGroup?: CanvasGroup;
   /** Stable slot used while a Chat batch progressively fills a canvas group. */
   chatBatchSlot?: CanvasChatBatchSlot;
+  /** Origin metadata for a media node inserted from a completed normal Chat generation. */
+  chatGeneratedMedia?: {
+    mediaId: string;
+    assetId?: string;
+    mediaType: 'image' | 'video';
+    prompt?: string;
+    generatedAt: number;
+  };
   workflowGroup?: unknown;
   /**
    * Runtime-only ordered assets for an expanded internal slot node. The
@@ -74,8 +82,8 @@ export type CanvasImageItem = {
   workflowBridge?: {
     type: 'reference-image';
     label?: string;
-    externalInputTypes?: Array<'image' | 'text' | 'video'>;
-    outputType?: 'image' | 'image[]' | 'text' | 'video' | 'video[]';
+    externalInputTypes?: Array<'image' | 'text' | 'video' | 'audio'>;
+    outputType?: 'image' | 'image[]' | 'text' | 'video' | 'video[]' | 'audio' | 'audio[]';
   };
 };
 
@@ -132,6 +140,7 @@ export type NewApiImageProtocol =
   | 'async_task';
 
 export type CanvasAiItemType =
+  | 'music-generator'
   | 'image-generator'
   | 'video-generator'
   | 'frame-interpolation'
@@ -142,6 +151,7 @@ export type CanvasAiItemType =
   | 'workflow';
 
 export type CanvasAiGeneratedOutput = {
+  assetType?: 'image' | 'video' | 'audio';
   id: string;
   taskId?: string;
   clientRequestId?: string;
@@ -152,7 +162,7 @@ export type CanvasAiGeneratedOutput = {
   thumbnail?: string;
   name?: string;
   prompt?: string;
-  status?: 'working' | 'success' | 'error';
+  status?: 'working' | 'success' | 'error' | 'recovery';
   cacheStatus?: 'pending' | 'ready' | 'failed';
   error?: string;
   generatedAt?: number;
@@ -195,6 +205,15 @@ export type CanvasRifeEngineProgress = {
 };
 
 export type CanvasAiItemData = {
+  /** Pending music receipts are recovered by GET; never submit another paid POST. */
+  musicClientRequestId?: string;
+  musicChargedCredits?: string;
+  imageClientRequestId?: string;
+  imageExpectedOutputCount?: number;
+  imageOutputMode?: 'single_asset' | 'multiple_assets';
+  /** Intrinsic footer width in design pixels; independent of canvas zoom. */
+  imageControlsWidth?: number;
+  quality?: string;
   type: CanvasAiItemType;
   provider?: CanvasAiProvider;
   providerChannelId?: string;
@@ -259,7 +278,7 @@ export type CanvasAiItemData = {
   enhancementEstimate?: CanvasRifeInterpolationEstimate;
   enhancementEstimateKey?: string;
   enhancementProgress?: CanvasRifeEngineProgress;
-  status?: 'idle' | 'working' | 'success' | 'error';
+  status?: 'idle' | 'working' | 'success' | 'error' | 'recovery';
   error?: string;
   generatedAt?: number;
   outputs?: CanvasAiGeneratedOutput[];

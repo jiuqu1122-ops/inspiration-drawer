@@ -1,3 +1,4 @@
+import { isCanvasWorkflowGeneratorType } from '../../canvasAiRuntime';
 import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import React from 'react';
@@ -20,13 +21,14 @@ import { isCanvasAudioFileName } from '../../../utils/localMediaPaths';
 import { NEW_API_VIDEO_MODEL_DEFAULT,debugXaisImage2,getCanvasAiReferencePublicationMaxUrlLength,getCanvasAiVideoModelCandidates,getCanvasAiVideoProviderForModel,isOpenAiLikeCanvasAiProvider,normalizeNewApiVideoDurationForModel,orderCanvasAiReferenceSources,resolveCanvasAiReferenceProvider,supportsCanvasAiImageResolution } from '../../canvasAiImage';
 import { getCanvasAiNodeAutoSize } from '../../canvasAiNodeLayout';
 import { type CanvasAiProvider,type CanvasImageItem,type CanvasItemBox,type CanvasWorkflowRuntime } from '../../canvasModel';
-import { publishCanvasReferencesInOrder } from '../../canvasReferencePublication';
 import { getCanvasTemplateImportCandidates } from '../../canvasTemplateImport';
 import { type CanvasWorkflowNodeTemplate,type CanvasWorkflowTemplate } from '../../canvasTemplates';
 import type { CanvasWorkflowUserInputConfig } from '../../canvasWorkflowUserInput';
 import { getCanvasWorkflowInternalSlotNodes,isExternalReferenceImageBridge,normalizeCanvasWorkflowRuntime } from '../../canvasWorkflowInternalSlots';
 import { embedCanvasWorkflowFixedImages,materializeCanvasWorkflowInstance } from '../../canvasWorkflowPortableImages';
 import { normalizeDesignAgentConfig } from '../../designAgentNode';
+import { formatReferenceUploadError,isReferenceUploadErrorText } from '../../referenceUploadError';
+import { canvasImageReferencesDisabled, isCanvasImageReferenceSource } from '../../canvasImageReferencePolicy';
 
 type canvasInputsActionContext = { kind: "oss" | "cloudflared" | "r2"; id: string; CLOUDFLARED_DISCLAIMER_ACCEPTED_STORAGE_KEY: "drawer_cloudflared_disclaimer_accepted"; showUpdateLogRef: React.RefObject<boolean>; setShowUpdateLog: React.Dispatch<React.SetStateAction<boolean>>; getLatestFileCacheDir: () => Promise<string>; urls: string[]; shareId: string; getCanvasAiErrorSummary: (error?: string | null) => string; isCanvasAiLicenseManaged: boolean; effectiveCanvasAiProvider: CanvasAiProvider; canvasAiProvider: CanvasAiProvider; canvasAiApiKey: string; effectiveCanvasAiEndpoint: string; canvasAiEndpoint: string; effectiveCanvasAiGatewayKind: AiGatewayKind; effectiveCanvasAiApiProvider: string; canvasAiApiProvider: string; effectiveCanvasAiModel: string; canvasAiHeadersText: string; canvasItemsRef: React.RefObject<CanvasImageItem[]>; getCanvasImageInputBufferItemsForNode: (canvasItem: CanvasImageItem, sourceItems?: CanvasImageItem[]) => BufferItem[]; prepareCanvasAiInputSource: (item: BufferItem, mode?: "stable" | "remote-first", delivery?: "auto" | "direct" | "remote-only", referenceFormat?: "any" | "jpeg") => Promise<{ source: string; remoteFallback: string | undefined; usedRemoteFirst: boolean; warning?: undefined; } | { source: string; remoteFallback: string | undefined; warning: unknown; usedRemoteFirst: boolean; }>; usedRemoteFirst: boolean; warning: {}; source: string; remoteFallback: string | undefined; publishLocalAiInputs: (sources: string[], preference?: "cloudflared-first" | "hosted-first" | "oss-only", maxUrlLength?: number) => Promise<{ urls: string[]; shareIds: TemporaryReferenceShare[]; }>; stopTemporaryReferenceShares: (shares: TemporaryReferenceShare[]) => Promise<void>; shareIds: TemporaryReferenceShare[]; uploadXaisReferenceInputs: (sources: string[], provider: CanvasAiProvider) => Promise<string[]>; uploadWalletReferenceInputs: (sources: string[]) => Promise<string[]>; updateCanvasItemsImmediate: (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => CanvasImageItem[]; setIsCanvasWorkflowManagerOpen: React.Dispatch<React.SetStateAction<boolean>>; canvasAiPromptPresets: CanvasAiPromptPreset[]; openCanvasPresetEditor: () => void; setCanvasPresetEditorMode: React.Dispatch<React.SetStateAction<"create" | "manage">>; setCanvasPresetEditingId: React.Dispatch<React.SetStateAction<string>>; applyCanvasPresetDraft: (preset?: CanvasAiPromptPreset | null) => void; setSelectedCanvasPresetDeleteIds: React.Dispatch<React.SetStateAction<string[]>>; setIsCanvasPresetEditorOpen: React.Dispatch<React.SetStateAction<boolean>>; canvasPresetNameDraft: string; canvasPresetPromptDraft: string; showToast: (message: string) => void; canvasPresetEditorMode: "create" | "manage"; canvasPresetEditingId: string; setCustomCanvasAiPromptPresets: React.Dispatch<React.SetStateAction<CanvasAiPromptPreset[]>>; updateCanvasNodesForPreset: (preset: CanvasAiPromptPreset) => void; closeCanvasPresetEditor: () => void; setHiddenBuiltInCanvasAiPromptPresetIds: React.Dispatch<React.SetStateAction<string[]>>; setCanvasPresetNameDraft: React.Dispatch<React.SetStateAction<string>>; setCanvasPresetPromptDraft: React.Dispatch<React.SetStateAction<string>>; chooseCanvasTemplateImportFiles: () => Promise<string[]>; getCanvasTemplateImportPayload: (rawValue: unknown) => { presets: CanvasAiPromptPreset[]; workflows: { builtin: boolean; id: string; label: string; hint: string; nodes: CanvasWorkflowNodeTemplate[]; userInput?: CanvasWorkflowUserInputConfig; createdAt?: number; }[]; workflowInstances: { workflow: { builtin: boolean; id: string; label: string; hint: string; nodes: CanvasWorkflowNodeTemplate[]; userInput?: CanvasWorkflowUserInputConfig; createdAt?: number; }; runtime: CanvasWorkflowRuntime; }[]; }; presets: CanvasAiPromptPreset[]; workflows: { builtin: boolean; id: string; label: string; hint: string; nodes: CanvasWorkflowNodeTemplate[]; userInput?: CanvasWorkflowUserInputConfig; createdAt?: number; }[]; workflowInstances: { workflow: { builtin: boolean; id: string; label: string; hint: string; nodes: CanvasWorkflowNodeTemplate[]; userInput?: CanvasWorkflowUserInputConfig; createdAt?: number; }; runtime: CanvasWorkflowRuntime; }[]; canvasWorkflowTemplates: CanvasWorkflowTemplate[]; materializeImportedCanvasWorkflows: (workflows: CanvasWorkflowTemplate[]) => Promise<CanvasWorkflowTemplate[]>; setCustomCanvasWorkflows: React.Dispatch<React.SetStateAction<CanvasWorkflowTemplate[]>>; setCanvasWorkflowEditingId: React.Dispatch<React.SetStateAction<string>>; setCanvasWorkflowNameDraft: React.Dispatch<React.SetStateAction<string>>; setCanvasWorkflowHintDraft: React.Dispatch<React.SetStateAction<string>>; isCanvasModeRef: React.RefObject<boolean>; enterCanvasMode: () => void; getCanvasDropPosition: (index?: number, client?: { x: number; y: number; }) => { x: number; y: number; }; buildCanvasWorkflowModuleNode: (workflow: CanvasWorkflowTemplate, pos: { x: number; y: number; }, inputIds?: string[]) => CanvasImageItem | null; x: number; y: number; appendCanvasItems: (nextItems: CanvasImageItem[], label: string, select?: boolean) => number; imageSourceToDataUrl: (source: string, optimizeForAi?: boolean) => Promise<string>; selectedCanvasPresetDeleteIds: string[]; setConfirmDialog: React.Dispatch<React.SetStateAction<ConfirmDialogState>>; deleteCanvasAiPromptPresetIds: (presetIds: string[]) => void; closeConfirmDialog: () => void; createAssetId: () => `${string}-${string}-${string}-${string}-${string}`; canvasAiUnifiedImageModelOptions: RoundedSelectOption[]; getCanvasAiResolvedModel: (provider: CanvasAiProvider, model?: string | null, mediaType?: "image" | "video") => string; makeCanvasNodeId: (seed: string, kind?: string) => string; buildCanvasAiGeneratorNode: (pos: { x: number; y: number; }, preset?: CanvasAiPromptPreset, inputIds?: string[], mediaType?: "image" | "video") => CanvasImageItem; getSelectedCanvasImageFusionInputIds: () => string[]; getCanvasItemsBounds: (ids: string[]) => CanvasItemBox | null; buildCanvasImageFusionNode: (pos: { x: number; y: number; }, inputIds?: string[]) => CanvasImageItem; updateCanvasSelection: (ids: string[]) => void; getSelectedCanvasAiInputIds: () => string[]; getSelectedFrameInterpolationInputIds: () => string[]; buildCanvasFrameInterpolationNode: (pos: { x: number; y: number; }, inputIds?: string[]) => CanvasImageItem; getSelectedEnhancementInputIds: (mediaType: "image" | "video") => string[]; buildCanvasEnhancementNode: (pos: { x: number; y: number; }, mediaType: "image" | "video", inputIds?: string[]) => CanvasImageItem; };
 
@@ -162,10 +164,15 @@ export const uploadWalletReferenceInputsImpl = async (ctx: Record<never, never>,
   const {  } = ctx;
     const cleanSources = sources.map(source => source.trim()).filter(Boolean).slice(0, 32);
     if (cleanSources.length === 0) return [] as string[];
-    const objectKeys = await invoke<string[]>('upload_wallet_reference_images', { sources: cleanSources });
+    let objectKeys: string[];
+    try {
+      objectKeys = await invoke<string[]>('upload_wallet_reference_images', { sources: cleanSources });
+    } catch (error) {
+      throw new Error(formatReferenceUploadError(error));
+    }
     const output = (objectKeys || []).map(value => value.trim()).filter(value => value.startsWith('reference-images/'));
     if (output.length !== cleanSources.length) {
-      throw new Error(`Wallet reference upload returned ${output.length} objects for ${cleanSources.length} inputs.`);
+      throw new Error('上传图片文件失败：服务器响应无效');
     }
     return output;
 
@@ -367,43 +374,24 @@ export const getCanvasImageInputsForNodeImpl = async (ctx: Pick<canvasInputsActi
       } else if (requireRemoteInputs) {
         try {
           if (portableWalletReferences) {
-            try {
-              const objectKeys = await uploadWalletReferenceInputs(localSources);
-              assignPreparedSources(objectKeys);
-            } catch (directUploadError) {
-              console.warn('钱包参考图直传失败，回退到兼容上传接口:', directUploadError);
-              const fallbackPublished = await publishCanvasReferencesInOrder(
-                localSources,
-                sources => publishLocalAiInputs(
-                  sources,
-                  'oss-only',
-                  getCanvasAiReferencePublicationMaxUrlLength(portableWalletReferences, provider),
-                ),
-                stopTemporaryReferenceShares,
-              );
-              if (fallbackPublished.urls.length !== localSources.length) {
-                await stopTemporaryReferenceShares(fallbackPublished.shareIds);
-                throw new Error(`Legacy reference upload returned ${fallbackPublished.urls.length} URLs for ${localSources.length} inputs.`);
-              }
-              assignPreparedSources(fallbackPublished.urls);
-              temporaryShareIds.push(...fallbackPublished.shareIds);
-            }
+            const objectKeys = await uploadWalletReferenceInputs(localSources);
+            assignPreparedSources(objectKeys);
           } else {
-          const publicationMaxUrlLength = getCanvasAiReferencePublicationMaxUrlLength(
-            portableWalletReferences,
-            provider,
-          );
-          const published = await publishLocalAiInputs(
-            localSources,
-            publicationPreference,
-            publicationMaxUrlLength,
-          );
-          if (published.urls.length !== localSources.length) {
-            await stopTemporaryReferenceShares(published.shareIds);
-            throw new Error(`公网图床返回 ${published.urls.length} 张参考图，预期 ${localSources.length} 张。`);
-          }
-          assignPreparedSources(published.urls);
-          temporaryShareIds.push(...published.shareIds);
+            const publicationMaxUrlLength = getCanvasAiReferencePublicationMaxUrlLength(
+              portableWalletReferences,
+              provider,
+            );
+            const published = await publishLocalAiInputs(
+              localSources,
+              publicationPreference,
+              publicationMaxUrlLength,
+            );
+            if (published.urls.length !== localSources.length) {
+              await stopTemporaryReferenceShares(published.shareIds);
+              throw new Error(`公网图床返回 ${published.urls.length} 张参考图，预期 ${localSources.length} 张。`);
+            }
+            assignPreparedSources(published.urls);
+            temporaryShareIds.push(...published.shareIds);
           }
         } catch (err) {
           preparationErrors.push(getCanvasAiErrorSummary(err instanceof Error ? err.message : String(err)));
@@ -482,6 +470,10 @@ export const getCanvasImageInputsForNodeImpl = async (ctx: Pick<canvasInputsActi
     }
 
     if (inputImageItems.length > 0 && resultByInputIndex.size < inputImageItems.length) {
+      const stagedUploadError = preparationErrors.find(isReferenceUploadErrorText);
+      if (stagedUploadError) {
+        throw new Error(stagedUploadError);
+      }
       const hint = delivery === 'remote-only'
         ? 'img2 模型需要公网参考图 URL，请确认 cloudflared 可用或使用公网图片'
         : delivery === 'direct'
@@ -847,7 +839,7 @@ export const deleteSelectedCanvasPromptPresetsImpl = (ctx: Pick<canvasInputsActi
 
 };
 
-export const buildCanvasAiGeneratorNodeImpl = (ctx: Pick<canvasInputsActionContext, 'canvasAiProvider' | 'canvasAiUnifiedImageModelOptions' | 'createAssetId' | 'getCanvasAiResolvedModel' | 'makeCanvasNodeId'> & {
+export const buildCanvasAiGeneratorNodeImpl = (ctx: Pick<canvasInputsActionContext, 'canvasItemsRef' | 'showToast' | 'canvasAiProvider' | 'canvasAiUnifiedImageModelOptions' | 'createAssetId' | 'getCanvasAiResolvedModel' | 'makeCanvasNodeId'> & {
   canvasAiCloudImageModels: CloudImageModelsResult | null;
   canvasAiCredentialSource: 'wallet' | 'local';
   canvasAiUnifiedVideoModelOptions: RoundedSelectOption[];
@@ -901,7 +893,7 @@ export const buildCanvasAiGeneratorNodeImpl = (ctx: Pick<canvasInputsActionConte
       createdAt: Date.now(),
       isQuickAccess: false,
     };
-    return {
+    const node: CanvasImageItem = {
       id: makeCanvasNodeId(itemId, 'ai'),
       item,
       x: pos.x,
@@ -939,6 +931,12 @@ export const buildCanvasAiGeneratorNodeImpl = (ctx: Pick<canvasInputsActionConte
         status: 'idle',
       },
     };
+    if (canvasImageReferencesDisabled(node, ctx)) {
+      const sources = ctx.canvasItemsRef.current;
+      node.inputs = node.inputs?.filter(id => !isCanvasImageReferenceSource(sources.find(source => source.id === id), sources));
+      if (node.inputs?.length !== new Set(inputIds).size) ctx.showToast('当前模型不支持参考图，已保留源素材，仅连接文字输入');
+    }
+    return node;
 
 };
 
@@ -951,7 +949,8 @@ export const buildCanvasImageFusionNodeImpl = (ctx: Pick<canvasInputsActionConte
       })
       .slice(0, 2);
     const canvasItem = buildCanvasAiGeneratorNode(pos, undefined, validInputIds);
-    const fusion = assignCanvasImageFusionInputs({ enabled: true }, [], validInputIds);
+    const acceptedInputIds = validInputIds.filter(id => (canvasItem.inputs || []).includes(id));
+    const fusion = assignCanvasImageFusionInputs({ enabled: true }, [], acceptedInputIds);
     const nodeSize = getCanvasAiNodeAutoSize({
       type: 'image-generator',
       aspectRatio: canvasItem.ai?.aspectRatio,
@@ -1247,7 +1246,7 @@ export const instantiateCanvasWorkflowTemplateItemsImpl = (ctx: Pick<canvasInput
     const nextItems = cleanWorkflow.nodes.map((node, index) => {
       const nextBufferId = createAssetId();
       const nextCanvasId = idMap.get(node.id) || makeCanvasNodeId(nextBufferId, node.ai?.type === 'image-generator' ? 'ai' : 'workflow');
-      const isAiGenerator = node.ai?.type === 'image-generator';
+      const isAiGenerator = isCanvasWorkflowGeneratorType(node.ai?.type);
       const isExternalInputPort = isWorkflowExternalInputPort(node);
       const isAgentTextNode = node.item.type === 'text' && node.textMode !== 'plain' && !node.ai && !isExternalInputPort;
       const provider = normalizeCanvasAiProvider(node.ai?.provider || canvasAiProvider);
@@ -1302,7 +1301,7 @@ export const instantiateCanvasWorkflowTemplateItemsImpl = (ctx: Pick<canvasInput
         ai: isAiGenerator
           ? {
             ...cloneDrawerValue(node.ai || {}),
-            type: 'image-generator' as const,
+            type: node.ai?.type || 'image-generator',
             provider,
             model: node.ai?.model || getCanvasAiDefaultModel(provider),
             imagePolicy: createCanvasImagePolicy({

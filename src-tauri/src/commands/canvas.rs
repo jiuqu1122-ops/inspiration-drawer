@@ -4,6 +4,23 @@ use crate::repositories::asset_repository::ViewportOptions;
 use crate::repositories::canvas_repository::CanvasScope;
 
 #[tauri::command]
+pub fn reorder_canvases(
+    app_handle: tauri::AppHandle,
+    project_id: Option<String>,
+    library_id: Option<String>,
+    ids: Vec<String>,
+) -> Result<Vec<Value>, String> {
+    crate::services::canvas_service::reorder_canvases(
+        app_handle,
+        CanvasScope {
+            project_id,
+            library_id,
+        },
+        ids,
+    )
+}
+
+#[tauri::command]
 pub fn list_canvases(
     app_handle: tauri::AppHandle,
     project_id: Option<String>,
@@ -172,20 +189,42 @@ pub fn get_canvas_nodes_in_viewport(
     crate::services::canvas_service::get_canvas_nodes_in_viewport(app_handle, options)
 }
 
-#[tauri::command]
-pub fn update_canvas_nodes(
-    app_handle: tauri::AppHandle,
-    canvas_id: String,
-    nodes: Vec<Value>,
-) -> Result<usize, String> {
-    crate::services::canvas_service::update_canvas_nodes(app_handle, canvas_id, nodes)
+fn canvas_node_writer() -> &'static crate::canvas_background::CanvasTaskQueue {
+    static WRITER: crate::canvas_background::CanvasTaskQueue =
+        crate::canvas_background::CanvasTaskQueue::new();
+    &WRITER
 }
 
 #[tauri::command]
-pub fn patch_canvas_nodes(
+pub async fn update_canvas_nodes(
     app_handle: tauri::AppHandle,
     canvas_id: String,
     nodes: Vec<Value>,
 ) -> Result<usize, String> {
-    crate::services::canvas_service::patch_canvas_nodes(app_handle, canvas_id, nodes)
+    let writer = canvas_node_writer();
+    let ticket = writer.issue();
+    tauri::async_runtime::spawn_blocking(move || {
+        writer.run(ticket, || {
+            crate::services::canvas_service::update_canvas_nodes(app_handle, canvas_id, nodes)
+        })
+    })
+    .await
+    .map_err(|error| format!("画布节点后台同步失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn patch_canvas_nodes(
+    app_handle: tauri::AppHandle,
+    canvas_id: String,
+    nodes: Vec<Value>,
+) -> Result<usize, String> {
+    let writer = canvas_node_writer();
+    let ticket = writer.issue();
+    tauri::async_runtime::spawn_blocking(move || {
+        writer.run(ticket, || {
+            crate::services::canvas_service::patch_canvas_nodes(app_handle, canvas_id, nodes)
+        })
+    })
+    .await
+    .map_err(|error| format!("画布节点后台增量保存失败：{error}"))?
 }

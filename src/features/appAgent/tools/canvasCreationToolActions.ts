@@ -14,10 +14,10 @@ import { getDrawerFolderPathName } from '../../folderModel';
 import { buildProductDesignPipelineAnalysisPrompt,buildProductDesignPipelineGeneratorPrompt,expandProductStyleSearchTerms,extractExplicitProductStyleTerms,filterExplicitStyleReferences,mapInspirationRoleToGeneratorRole,selectProductDesignReferencesByAxis,type ProductDesignSelectedReference } from '../../productDesignPipeline';
 import { searchDrawerInspirations,type DrawerSearchInspirationsInput,type InspirationCandidate,type InspirationProfile } from '../inspirationMemory';
 
-type canvasCreationToolContext = { AUTO_INSPIRATION_ANALYSIS_ENABLED: true; addDrawerMediaItemToCanvas: (itemId: string, client?: { x: number; y: number; }) => Promise<boolean>; analyzeDrawerInspirationWithLlm: (input: { itemId: string; imageSource?: string; existingProfile?: InspirationProfile; userTags?: string[]; userNotes?: string[]; forceRefresh?: boolean; }) => Promise<InspirationProfile>; appendCanvasItems: (nextItems: CanvasImageItem[], label: string, select?: boolean) => number; buildCanvasAiGeneratorNode: (pos: { x: number; y: number; }, preset?: CanvasAiPromptPreset, inputIds?: string[], mediaType?: "image" | "video") => CanvasImageItem; buildCanvasEnhancementNode: (pos: { x: number; y: number; }, mediaType: "image" | "video", inputIds?: string[]) => CanvasImageItem; buildCanvasFrameInterpolationNode: (pos: { x: number; y: number; }, inputIds?: string[]) => CanvasImageItem; canvasAiPromptPresets: CanvasAiPromptPreset[]; canvasItemsRef: React.RefObject<CanvasImageItem[]>; canvasScaleRef: React.RefObject<number>; canvasSelectedIdsRef: React.RefObject<string[]>; canvasSurfaceRef: React.RefObject<HTMLDivElement | null>; collectAgentBoundNodeIds: (value: unknown) => string[]; createAssetId: () => `${string}-${string}-${string}-${string}-${string}`; createCanvasTextItemFromContent: (content: string, index?: number, client?: { x: number; y: number; }) => CanvasImageItem | null; createDrawerMediaCanvasNode: (itemId: string, client?: { x: number; y: number; }, options?: { reuseExisting?: boolean; select?: boolean; toast?: boolean; label?: string; dropIndex?: number; }) => Promise<string>; duplicateCanvasItems: (ids?: string[], client?: { x: number; y: number; }) => number; enterCanvasMode: () => void; executionUserRequest: string; fitCanvasViewToItems: (ids?: string[]) => boolean; foldersRef: React.RefObject<Folder[]>; generateCanvasAiGeneratorNode: (targetId: string) => Promise<void>; generateCanvasWorkflowModuleNode: (targetId: string) => Promise<void>; getCanvasDropPosition: (index?: number, client?: { x: number; y: number; }) => { x: number; y: number; }; getCanvasItemsBounds: (ids: string[]) => CanvasItemBox | null; getSelectedCanvasAiInputIds: () => string[]; getSelectedEnhancementInputIds: (mediaType: "image" | "video") => string[]; getSelectedFrameInterpolationInputIds: () => string[]; hasSelectionSnapshot: boolean; isCanvasModeRef: React.RefObject<boolean>; itemsRef: React.RefObject<BufferItem[]>; makeCanvasNodeId: (seed: string, kind?: string) => string; pushCanvasUndoSnapshot: (label: string, options?: { layoutOnly?: boolean; shareImmutableItems?: boolean; }) => void; removeCanvasConnection: (targetId: string, sourceId: string, label?: string) => boolean; removeCanvasItemsByIds: (ids: string[], label?: string) => number; retrieveDrawerInspirationCandidates: (input: DrawerSearchInspirationsInput) => Promise<InspirationCandidate[]>; runCanvasTextAgentNode: (targetId: string) => Promise<void>; scheduleCanvasFocusItemById: (id?: string | null) => void; setCustomCanvasAiPromptPresets: React.Dispatch<React.SetStateAction<CanvasAiPromptPreset[]>>; showToast: (message: string) => void; snapshotSelectedIds: string[]; snapshotSurface: "canvas" | "drawer"; undoLastCanvasChange: () => boolean; updateCanvasItemsImmediate: (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => CanvasImageItem[]; updateCanvasNodesForPreset: (preset: CanvasAiPromptPreset) => void; updateCanvasSelection: (ids: string[]) => void; zoomCanvasAt: (clientX: number, clientY: number, deltaY: number) => void; };
+type canvasCreationToolContext = { AUTO_INSPIRATION_ANALYSIS_ENABLED: true; addDrawerMediaItemToCanvas: (itemId: string, client?: { x: number; y: number; }) => Promise<boolean>; analyzeDrawerInspirationWithLlm: (input: { itemId: string; imageSource?: string; existingProfile?: InspirationProfile; userTags?: string[]; userNotes?: string[]; forceRefresh?: boolean; }) => Promise<InspirationProfile>; appendCanvasItems: (nextItems: CanvasImageItem[], label: string, select?: boolean) => number; buildCanvasAiGeneratorNode: (pos: { x: number; y: number; }, preset?: CanvasAiPromptPreset, inputIds?: string[], mediaType?: "image" | "video") => CanvasImageItem; buildCanvasEnhancementNode: (pos: { x: number; y: number; }, mediaType: "image" | "video", inputIds?: string[]) => CanvasImageItem; buildCanvasFrameInterpolationNode: (pos: { x: number; y: number; }, inputIds?: string[]) => CanvasImageItem; buildCanvasImageFusionNode: (pos: { x: number; y: number; }, inputIds?: string[]) => CanvasImageItem; canvasAiPromptPresets: CanvasAiPromptPreset[]; canvasItemsRef: React.RefObject<CanvasImageItem[]>; canvasScaleRef: React.RefObject<number>; canvasSelectedIdsRef: React.RefObject<string[]>; canvasSurfaceRef: React.RefObject<HTMLDivElement | null>; collectAgentBoundNodeIds: (value: unknown) => string[]; createAssetId: () => `${string}-${string}-${string}-${string}-${string}`; createCanvasTextItemFromContent: (content: string, index?: number, client?: { x: number; y: number; }) => CanvasImageItem | null; createDrawerMediaCanvasNode: (itemId: string, client?: { x: number; y: number; }, options?: { reuseExisting?: boolean; select?: boolean; toast?: boolean; label?: string; dropIndex?: number; }) => Promise<string>; duplicateCanvasItems: (ids?: string[], client?: { x: number; y: number; }) => number; enterCanvasMode: () => void; executionUserRequest: string; fitCanvasViewToItems: (ids?: string[]) => boolean; foldersRef: React.RefObject<Folder[]>; generateCanvasAiGeneratorNode: (targetId: string) => Promise<void>; generateCanvasWorkflowModuleNode: (targetId: string) => Promise<void>; getCanvasDropPosition: (index?: number, client?: { x: number; y: number; }) => { x: number; y: number; }; getCanvasItemsBounds: (ids: string[]) => CanvasItemBox | null; getSelectedCanvasAiInputIds: () => string[]; getSelectedCanvasImageFusionInputIds: () => string[]; getSelectedEnhancementInputIds: (mediaType: "image" | "video") => string[]; getSelectedFrameInterpolationInputIds: () => string[]; hasSelectionSnapshot: boolean; isCanvasModeRef: React.RefObject<boolean>; itemsRef: React.RefObject<BufferItem[]>; makeCanvasNodeId: (seed: string, kind?: string) => string; pushCanvasUndoSnapshot: (label: string, options?: { layoutOnly?: boolean; shareImmutableItems?: boolean; }) => void; removeCanvasConnection: (targetId: string, sourceId: string, label?: string) => boolean; removeCanvasItemsByIds: (ids: string[], label?: string) => number; retrieveDrawerInspirationCandidates: (input: DrawerSearchInspirationsInput) => Promise<InspirationCandidate[]>; runCanvasTextAgentNode: (targetId: string) => Promise<void>; scheduleCanvasFocusItemById: (id?: string | null) => void; setCustomCanvasAiPromptPresets: React.Dispatch<React.SetStateAction<CanvasAiPromptPreset[]>>; showToast: (message: string) => void; snapshotSelectedIds: string[]; snapshotSurface: "canvas" | "drawer"; undoLastCanvasChange: () => boolean; updateCanvasItemsImmediate: (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => CanvasImageItem[]; updateCanvasNodesForPreset: (preset: CanvasAiPromptPreset) => void; updateCanvasSelection: (ids: string[]) => void; zoomCanvasAt: (clientX: number, clientY: number, deltaY: number) => void; };
 
-export const executeCanvasCreationTool = async (ctx: Pick<canvasCreationToolContext, 'AUTO_INSPIRATION_ANALYSIS_ENABLED' | 'addDrawerMediaItemToCanvas' | 'analyzeDrawerInspirationWithLlm' | 'appendCanvasItems' | 'buildCanvasAiGeneratorNode' | 'buildCanvasEnhancementNode' | 'buildCanvasFrameInterpolationNode' | 'canvasAiPromptPresets' | 'canvasItemsRef' | 'canvasScaleRef' | 'canvasSelectedIdsRef' | 'canvasSurfaceRef' | 'collectAgentBoundNodeIds' | 'createAssetId' | 'createCanvasTextItemFromContent' | 'createDrawerMediaCanvasNode' | 'duplicateCanvasItems' | 'enterCanvasMode' | 'executionUserRequest' | 'fitCanvasViewToItems' | 'foldersRef' | 'generateCanvasAiGeneratorNode' | 'generateCanvasWorkflowModuleNode' | 'getCanvasDropPosition' | 'getCanvasItemsBounds' | 'getSelectedCanvasAiInputIds' | 'getSelectedEnhancementInputIds' | 'getSelectedFrameInterpolationInputIds' | 'hasSelectionSnapshot' | 'isCanvasModeRef' | 'itemsRef' | 'makeCanvasNodeId' | 'pushCanvasUndoSnapshot' | 'removeCanvasConnection' | 'removeCanvasItemsByIds' | 'retrieveDrawerInspirationCandidates' | 'runCanvasTextAgentNode' | 'scheduleCanvasFocusItemById' | 'setCustomCanvasAiPromptPresets' | 'showToast' | 'snapshotSelectedIds' | 'snapshotSurface' | 'undoLastCanvasChange' | 'updateCanvasItemsImmediate' | 'updateCanvasNodesForPreset' | 'updateCanvasSelection' | 'zoomCanvasAt'>, name: string, args: Record<string, unknown>, _execution: AgentToolExecutionContext | undefined) => {
-  const { AUTO_INSPIRATION_ANALYSIS_ENABLED, addDrawerMediaItemToCanvas, analyzeDrawerInspirationWithLlm, appendCanvasItems, buildCanvasAiGeneratorNode, buildCanvasEnhancementNode, buildCanvasFrameInterpolationNode, canvasAiPromptPresets, canvasItemsRef, canvasScaleRef, canvasSelectedIdsRef, canvasSurfaceRef, collectAgentBoundNodeIds, createAssetId, createCanvasTextItemFromContent, createDrawerMediaCanvasNode, duplicateCanvasItems, enterCanvasMode, executionUserRequest, fitCanvasViewToItems, foldersRef, generateCanvasAiGeneratorNode, generateCanvasWorkflowModuleNode, getCanvasDropPosition, getCanvasItemsBounds, getSelectedCanvasAiInputIds, getSelectedEnhancementInputIds, getSelectedFrameInterpolationInputIds, hasSelectionSnapshot, isCanvasModeRef, itemsRef, makeCanvasNodeId, pushCanvasUndoSnapshot, removeCanvasConnection, removeCanvasItemsByIds, retrieveDrawerInspirationCandidates, runCanvasTextAgentNode, scheduleCanvasFocusItemById, setCustomCanvasAiPromptPresets, showToast, snapshotSelectedIds, snapshotSurface, undoLastCanvasChange, updateCanvasItemsImmediate, updateCanvasNodesForPreset, updateCanvasSelection, zoomCanvasAt } = ctx;
+export const executeCanvasCreationTool = async (ctx: Pick<canvasCreationToolContext, 'AUTO_INSPIRATION_ANALYSIS_ENABLED' | 'addDrawerMediaItemToCanvas' | 'analyzeDrawerInspirationWithLlm' | 'appendCanvasItems' | 'buildCanvasAiGeneratorNode' | 'buildCanvasEnhancementNode' | 'buildCanvasFrameInterpolationNode' | 'buildCanvasImageFusionNode' | 'canvasAiPromptPresets' | 'canvasItemsRef' | 'canvasScaleRef' | 'canvasSelectedIdsRef' | 'canvasSurfaceRef' | 'collectAgentBoundNodeIds' | 'createAssetId' | 'createCanvasTextItemFromContent' | 'createDrawerMediaCanvasNode' | 'duplicateCanvasItems' | 'enterCanvasMode' | 'executionUserRequest' | 'fitCanvasViewToItems' | 'foldersRef' | 'generateCanvasAiGeneratorNode' | 'generateCanvasWorkflowModuleNode' | 'getCanvasDropPosition' | 'getCanvasItemsBounds' | 'getSelectedCanvasAiInputIds' | 'getSelectedCanvasImageFusionInputIds' | 'getSelectedEnhancementInputIds' | 'getSelectedFrameInterpolationInputIds' | 'hasSelectionSnapshot' | 'isCanvasModeRef' | 'itemsRef' | 'makeCanvasNodeId' | 'pushCanvasUndoSnapshot' | 'removeCanvasConnection' | 'removeCanvasItemsByIds' | 'retrieveDrawerInspirationCandidates' | 'runCanvasTextAgentNode' | 'scheduleCanvasFocusItemById' | 'setCustomCanvasAiPromptPresets' | 'showToast' | 'snapshotSelectedIds' | 'snapshotSurface' | 'undoLastCanvasChange' | 'updateCanvasItemsImmediate' | 'updateCanvasNodesForPreset' | 'updateCanvasSelection' | 'zoomCanvasAt'>, name: string, args: Record<string, unknown>, _execution: AgentToolExecutionContext | undefined) => {
+  const { AUTO_INSPIRATION_ANALYSIS_ENABLED, addDrawerMediaItemToCanvas, analyzeDrawerInspirationWithLlm, appendCanvasItems, buildCanvasAiGeneratorNode, buildCanvasEnhancementNode, buildCanvasFrameInterpolationNode, buildCanvasImageFusionNode, canvasAiPromptPresets, canvasItemsRef, canvasScaleRef, canvasSelectedIdsRef, canvasSurfaceRef, collectAgentBoundNodeIds, createAssetId, createCanvasTextItemFromContent, createDrawerMediaCanvasNode, duplicateCanvasItems, enterCanvasMode, executionUserRequest, fitCanvasViewToItems, foldersRef, generateCanvasAiGeneratorNode, generateCanvasWorkflowModuleNode, getCanvasDropPosition, getCanvasItemsBounds, getSelectedCanvasAiInputIds, getSelectedCanvasImageFusionInputIds, getSelectedEnhancementInputIds, getSelectedFrameInterpolationInputIds, hasSelectionSnapshot, isCanvasModeRef, itemsRef, makeCanvasNodeId, pushCanvasUndoSnapshot, removeCanvasConnection, removeCanvasItemsByIds, retrieveDrawerInspirationCandidates, runCanvasTextAgentNode, scheduleCanvasFocusItemById, setCustomCanvasAiPromptPresets, showToast, snapshotSelectedIds, snapshotSurface, undoLastCanvasChange, updateCanvasItemsImmediate, updateCanvasNodesForPreset, updateCanvasSelection, zoomCanvasAt } = ctx;
 if (name === 'canvas_manage') {
         const action = String(args.action || '');
         if (!isCanvasModeRef.current) enterCanvasMode();
@@ -695,10 +695,12 @@ if (name === 'canvas_manage') {
         const toolType = args.toolType === 'frame-interpolation'
           || args.toolType === 'image-enhancement'
           || args.toolType === 'video-enhancement'
+          || args.toolType === 'image-fusion'
           ? args.toolType
           : '';
-        if (!toolType) throw new Error('请选择补帧、图增强或视增强');
-        const mediaType = toolType === 'image-enhancement' ? 'image' : 'video';
+        if (!toolType) throw new Error('请选择补帧、图增强、视增强或溶图');
+        const isImageFusion = toolType === 'image-fusion';
+        const mediaType = toolType === 'image-enhancement' || isImageFusion ? 'image' : 'video';
         const isFrameInterpolation = toolType === 'frame-interpolation';
         const isValidInput = (source?: CanvasImageItem | null) => (
           isFrameInterpolation
@@ -707,34 +709,43 @@ if (name === 'canvas_manage') {
               ? canUseCanvasItemAsVideoEnhancementInput(source)
               : canUseCanvasItemAsImageEnhancementInput(source)
         );
+        const maxInputs = isImageFusion ? 2 : 1;
         const requestedInputs = Array.isArray(args.inputIds)
-          ? args.inputIds.map(String).filter(id => isValidInput(canvasItemsRef.current.find(item => item.id === id))).slice(0, 1)
+          ? args.inputIds.map(String).filter(id => isValidInput(canvasItemsRef.current.find(item => item.id === id))).slice(0, maxInputs)
           : [];
-        const selectedInputs = isFrameInterpolation
-          ? getSelectedFrameInterpolationInputIds()
-          : getSelectedEnhancementInputIds(mediaType);
+        const selectedInputs = isImageFusion
+          ? getSelectedCanvasImageFusionInputIds()
+          : isFrameInterpolation
+            ? getSelectedFrameInterpolationInputIds()
+            : getSelectedEnhancementInputIds(mediaType);
         const hasCanvasSelectionSnapshot = hasSelectionSnapshot && snapshotSurface === 'canvas';
         const snapshotInputIds = hasCanvasSelectionSnapshot
-          ? snapshotSelectedIds.filter(id => isValidInput(canvasItemsRef.current.find(item => item.id === id))).slice(0, 1)
+          ? snapshotSelectedIds.filter(id => isValidInput(canvasItemsRef.current.find(item => item.id === id))).slice(0, maxInputs)
           : [];
         const inputIds = requestedInputs.length > 0
           ? requestedInputs
           : (hasCanvasSelectionSnapshot ? snapshotInputIds : selectedInputs);
-        if (args.autoRun === true && inputIds.length === 0) {
-          throw new Error(mediaType === 'video' ? '请先选择视频素材或视频生成结果' : '请先选择图片素材或图片生成结果');
+        if (args.autoRun === true && (isImageFusion ? inputIds.length !== 2 : inputIds.length === 0)) {
+          throw new Error(isImageFusion
+            ? '请先选择正好两张图片素材或图片生成结果'
+            : mediaType === 'video' ? '请先选择视频素材或视频生成结果' : '请先选择图片素材或图片生成结果');
         }
         const inputBounds = inputIds.length > 0 ? getCanvasItemsBounds(inputIds) : null;
         const pos = inputBounds
           ? { x: inputBounds.x + inputBounds.width + 72, y: inputBounds.y }
           : getCanvasDropPosition(0);
-        const node = isFrameInterpolation
-          ? buildCanvasFrameInterpolationNode(pos, inputIds)
-          : buildCanvasEnhancementNode(pos, mediaType, inputIds);
-        const label = isFrameInterpolation
-          ? '补帧'
-          : mediaType === 'video'
-            ? '视频增强'
-            : '图片增强';
+        const node = isImageFusion
+          ? buildCanvasImageFusionNode(pos, inputIds)
+          : isFrameInterpolation
+            ? buildCanvasFrameInterpolationNode(pos, inputIds)
+            : buildCanvasEnhancementNode(pos, mediaType, inputIds);
+        const label = isImageFusion
+          ? '溶图'
+          : isFrameInterpolation
+            ? '补帧'
+            : mediaType === 'video'
+              ? '视频增强'
+              : '图片增强';
         if (appendCanvasItems([node], 'Agent 创建' + label + '节点') <= 0) throw new Error('创建' + label + '节点失败');
         updateCanvasSelection([node.id]);
         if (args.autoRun === true) {

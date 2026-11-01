@@ -1,8 +1,8 @@
-import { ArrowUp, Check, ChevronDown, Globe2, LoaderCircle, Paperclip, SlidersHorizontal, Square, X } from 'lucide-react';
+import { ArrowUp, Check, ChevronDown, FileJson, Globe2, LoaderCircle, Paperclip, SlidersHorizontal, Square, Workflow, X } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useRef, useState } from 'react';
 import type { ChatImageModelOption, PendingChatAttachment } from '../model/chatTypes';
-import { createChatId } from '../model/chatTypes';
+import { createPendingChatAttachments, SUPPORTED_CHAT_LOCAL_FILE_EXTENSIONS } from '../attachments/chatLocalFileAttachments';
 import { isAutomaticChatModel } from '../runtime/chatModelSelection';
 import { ChatAttachmentList } from './ChatAttachmentList';
 import { ChatImageSettings } from './ChatImageSettings';
@@ -43,11 +43,15 @@ export function ChatComposer({
   imageAspectRatio,
   imageAspectRatioOptions,
   onImageAspectRatioChange,
+  imageQuality,
+  imageQualityOptions,
+  onImageQualityChange,
   imageResolution,
   imageResolutionOptions,
   onImageResolutionChange,
   webSearchEnabled,
   onWebSearchEnabledChange,
+  onChooseWorkflow,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -68,17 +72,23 @@ export function ChatComposer({
   imageAspectRatio: string;
   imageAspectRatioOptions: ChatImageModelOption[];
   onImageAspectRatioChange: (value: string) => void;
+  imageQuality?: string;
+  imageQualityOptions?: ChatImageModelOption[];
+  onImageQualityChange?: (quality: string) => void;
   imageResolution: string;
   imageResolutionOptions: ChatImageModelOption[];
   onImageResolutionChange: (value: string) => void;
   webSearchEnabled: boolean;
   onWebSearchEnabledChange: (value: boolean) => void;
+  onChooseWorkflow?: () => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [imageSettingsOpen, setImageSettingsOpen] = useState(false);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const attachmentMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!modelOpen) return;
     const close = (event: PointerEvent) => {
@@ -95,18 +105,28 @@ export function ChatComposer({
       window.removeEventListener('keydown', onKeyDown);
     };
   }, [modelOpen]);
+  useEffect(() => {
+    if (!attachmentMenuOpen) return;
+    const close = (event: PointerEvent) => {
+      if (!attachmentMenuRef.current?.contains(event.target as Node)) setAttachmentMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setAttachmentMenuOpen(false); };
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('keydown', onKeyDown);
+    return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('keydown', onKeyDown); };
+  }, [attachmentMenuOpen]);
   const addPaths = (paths: string[]) => {
-    const known = new Set(attachments.map(item => item.path));
-    const added = paths.filter(path => path && !known.has(path)).slice(0, 6 - attachments.length).map(path => ({
-      id: createChatId('chat-attachment'),
-      type: /\.(?:png|jpe?g|webp|gif|bmp|avif)$/i.test(path) ? 'image' : 'file',
-      path,
-      mimeType: /\.png$/i.test(path) ? 'image/png' : /\.webp$/i.test(path) ? 'image/webp' : 'image/jpeg',
-    } satisfies PendingChatAttachment));
+    const added = createPendingChatAttachments(paths, attachments, 6);
     onAttachmentsChange([...attachments, ...added]);
   };
   const chooseFiles = async () => {
-    const selected = await open({ multiple: true, filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'] }] });
+    const selected = await open({
+      multiple: true,
+      filters: [{
+        name: '图片、工作流和文档',
+        extensions: [...SUPPORTED_CHAT_LOCAL_FILE_EXTENSIONS],
+      }],
+    });
     if (!selected) return;
     addPaths(Array.isArray(selected) ? selected : [selected]);
   };
@@ -119,12 +139,13 @@ export function ChatComposer({
       onDrop={event => {
         event.preventDefault();
         setDragging(false);
+        if (Array.from(event.dataTransfer.files).some(file => /\.md$/i.test(file.name))) return;
         addPaths(Array.from(event.dataTransfer.files)
           .map(file => (file as File & { path?: string }).path || '')
           .filter(Boolean));
       }}
     >
-      {dragging && <div className="chat-composer__drop">松开以添加图片</div>}
+      {dragging && <div className="chat-composer__drop">松开以添加文件或导入智能体</div>}
       <ChatAttachmentList attachments={attachments} onRemove={id => onAttachmentsChange(attachments.filter(item => item.id !== id))} />
       <textarea
         ref={textareaRef}
@@ -151,6 +172,9 @@ export function ChatComposer({
             aspectRatio={imageAspectRatio}
             aspectRatioOptions={imageAspectRatioOptions}
             onAspectRatioChange={onImageAspectRatioChange}
+            quality={imageQuality}
+            qualityOptions={imageQualityOptions}
+            onQualityChange={onImageQualityChange}
             resolution={imageResolution}
             resolutionOptions={imageResolutionOptions}
             onResolutionChange={onImageResolutionChange}
@@ -160,7 +184,13 @@ export function ChatComposer({
       )}
       <div className="chat-composer__footer">
         <div className="chat-composer__tools">
-          <button type="button" onClick={() => void chooseFiles()} title="上传图片"><Paperclip size={15} /></button>
+          <div className="chat-attachment-picker" ref={attachmentMenuRef}>
+            <button type="button" onClick={() => setAttachmentMenuOpen(value => !value)} aria-haspopup="menu" aria-expanded={attachmentMenuOpen} title="添加附件"><Paperclip size={15} /></button>
+            {attachmentMenuOpen && <div className="chat-attachment-menu" role="menu" aria-label="添加附件">
+              <button type="button" role="menuitem" onClick={() => { setAttachmentMenuOpen(false); void chooseFiles(); }}><FileJson size={14} /><span>本地文件</span></button>
+              <button type="button" role="menuitem" onClick={() => { setAttachmentMenuOpen(false); onChooseWorkflow?.(); }}><Workflow size={14} /><span>画布工作流</span></button>
+            </div>}
+          </div>
           <button
             type="button"
             className={`chat-capability-toggle ${webSearchEnabled ? 'is-active' : ''}`}

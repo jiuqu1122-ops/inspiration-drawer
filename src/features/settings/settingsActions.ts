@@ -1,7 +1,8 @@
+// MODEL_CATALOG_STABILITY_PATCH_V1
+import { beginCatalogRefresh, isCurrentCatalogRefresh, cancelCatalogRefresh } from '../modelCatalogRefresh';
 import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import React from 'react';
-import { getCachedPlatformCapabilities,unsupportedPlatformMessage } from '../../platform/capabilities';
 import { BufferItem,Folder } from '../../types';
 import type { DrawerTabType,FolderContextMenuState } from '../../types/drawer';
 import type { CloudImageModelsResult } from '../../types/license';
@@ -12,7 +13,8 @@ import type { AgentApiBalanceResult,AgentApiConnectionResult,AgentCanvasToolExec
 import { NEW_API_SEEDANCE_2_FAST_MODEL,NEW_API_SEEDANCE_2_MODEL,NEW_API_VIDEO_MODEL_DEFAULT,NEW_API_VIDEO_MODEL_OPTIONS,XAIS_CHAT_VIDEO_MODEL_DEFAULT,getCanvasAiVideoModelOptionValue,isOpenAiLikeCanvasAiProvider,normalizeXaisImage2Model } from '../canvasAiImage';
 import { type CanvasAiCreditPricing } from '../canvasGenerationCredits';
 import { type CanvasAiProvider,type CanvasImageItem } from '../canvasModel';
-import { cacheSuccessfulAiCatalog,getAiCatalogModels,getCachedAiCatalog,reconcileStaleCanvasAiModels } from '../aiModelCapabilities';
+import { cacheSuccessfulAiCatalog,getAiCatalogModels,getCachedAiCatalog } from '../aiModelCapabilities';
+import { reconcileCanvasAiModelsWithCatalog } from '../canvasWalletVideoModelContext';
 import { clamp } from '../common';
 import { type TriggerMode } from '../triggerModel';
 import { type AiAnalysisConfig } from '../visionAnalysisConfig';
@@ -117,6 +119,10 @@ export const refreshCanvasAiOpenAiModelsImpl = async (ctx: Pick<settingsCatalogA
       ? 'cloud-wallet-image-models'
       : isCanvasAiLicenseManaged ? 'managed' : apiKeys.join('\n');
     canvasAiModelRefreshSignatureRef.current = `${provider}\n${effectiveCanvasAiGatewayKind}\n${effectiveCanvasAiApiProvider}\n${endpoint}\n${keySignature}\n${effectiveCanvasAiModel}\n${canvasAiHeadersText}`;
+    const catalogTicket = canvasAiUsesCloudImageModels
+      ? beginCatalogRefresh(setCanvasAiCloudImageModels)
+      : undefined;
+    const loadingTicket = beginCatalogRefresh(setIsRefreshingCanvasAiOpenAiModels);
     setIsRefreshingCanvasAiOpenAiModels(true);
     setCanvasAiOpenAiModelError('');
     try {
@@ -178,6 +184,9 @@ export const refreshCanvasAiOpenAiModelsImpl = async (ctx: Pick<settingsCatalogA
           }
           return models;
         })();
+      // An older slow refresh may finish after a newer manual/focus response.
+      // Reject it before caching, reconciling nodes, or emitting model changes.
+      if (catalogTicket && !isCurrentCatalogRefresh(catalogTicket)) return;
       const rawModels = successfulModels.map(model => model.trim()).filter(Boolean);
       const normalized = detectedProvider === 'xais-chat'
         ? sortCanvasAiModelsForProvider(detectedProvider, Array.from(new Set(rawModels
@@ -200,7 +209,7 @@ export const refreshCanvasAiOpenAiModelsImpl = async (ctx: Pick<settingsCatalogA
         setCanvasAiCloudImageModels(snapshot);
         if (getAiCatalogModels(snapshot, 'image').length > 0
           || getAiCatalogModels(snapshot, 'video').length > 0) {
-          updateCanvasItemsImmediate(previous => reconcileStaleCanvasAiModels(previous, snapshot));
+          updateCanvasItemsImmediate(previous => reconcileCanvasAiModelsWithCatalog(previous, snapshot));
         }
       } else if (detectedProvider === 'xais-chat') {
         setCanvasAiXaisModels(normalized);
@@ -274,6 +283,7 @@ export const refreshCanvasAiOpenAiModelsImpl = async (ctx: Pick<settingsCatalogA
       }
       if (!silent) showToast(normalized.length > 0 ? `已刷新 ${normalized.length} 个模型` : '没有读取到可用模型');
     } catch (err: any) {
+      if (catalogTicket && !isCurrentCatalogRefresh(catalogTicket)) return;
       const msg = String(err || '刷新模型列表失败');
       if (canvasAiUsesCloudImageModels) {
         setCanvasAiCloudImageModels(current => current || getCachedAiCatalog());
@@ -281,7 +291,10 @@ export const refreshCanvasAiOpenAiModelsImpl = async (ctx: Pick<settingsCatalogA
       setCanvasAiOpenAiModelError(msg);
       if (!silent) showToast('刷新模型列表失败');
     } finally {
-      setIsRefreshingCanvasAiOpenAiModels(false);
+      if (isCurrentCatalogRefresh(loadingTicket)) {
+        setIsRefreshingCanvasAiOpenAiModels(false);
+        cancelCatalogRefresh(loadingTicket);
+      }
     }
 
 };
@@ -832,10 +845,6 @@ export const toggleDrawerWorkbenchModeImpl = (ctx: Pick<settingsActionContext, '
 
 export const toggleAutoStartSettingImpl = async (ctx: Pick<settingsActionContext, 'isAutoStart' | 'isAutoStartChanging' | 'setIsAutoStart' | 'setIsAutoStartChanging' | 'showToast'>) => {
   const { isAutoStart, isAutoStartChanging, setIsAutoStart, setIsAutoStartChanging, showToast } = ctx;
-    if (getCachedPlatformCapabilities()?.autoStart === false) {
-      showToast(unsupportedPlatformMessage('开机自动启动'));
-      return;
-    }
     if (isAutoStartChanging) return;
     const previous = isAutoStart;
     const next = !isAutoStart;

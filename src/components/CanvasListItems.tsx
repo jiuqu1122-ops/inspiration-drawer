@@ -29,6 +29,7 @@ export type CanvasListItemProps = {
   canDelete: boolean;
   isSwitching: boolean;
   isMenuOpen: boolean;
+  onReorder?: (sourceId: string, targetId: string) => void;
   onOpen: (canvasId: string) => void;
   onOpenMenu: (canvasId: string) => void;
   onToggleMenu: (canvasId: string) => void;
@@ -43,18 +44,45 @@ export const CanvasListItem = React.memo(function CanvasListItem({
   isSwitching,
   isMenuOpen,
   onOpen,
+  onReorder,
   onOpenMenu,
   onToggleMenu,
   onDelete,
   renderMenu,
 }: CanvasListItemProps) {
+  const reordered = React.useRef(false);
+  const cleanup = React.useRef<(() => void) | undefined>(undefined);
+  React.useEffect(() => () => cleanup.current?.(), []);
+  const beginReorder = (event: React.PointerEvent) => {
+    if (!onReorder || event.button !== 0 || (event.target as HTMLElement).closest('button')?.title !== canvas.name) return;
+    cleanup.current?.();
+    reordered.current = false;
+    let armed = false;
+    const timer = window.setTimeout(() => { armed = true; }, 350);
+    const move = (next: PointerEvent) => {
+      if (next.pointerId !== event.pointerId) return;
+      if (!armed && Math.hypot(next.clientX - event.clientX, next.clientY - event.clientY) > 8) { stop(); return; }
+      if (armed) next.preventDefault();
+    };
+    const finish = (next: PointerEvent) => {
+      if (next.pointerId !== event.pointerId) return;
+      const target = document.elementFromPoint(next.clientX, next.clientY)?.closest('[data-canvas-order-id]')?.getAttribute('data-canvas-order-id');
+      if (armed && target && target !== canvas.id) { reordered.current = true; onReorder(canvas.id, target); }
+      stop();
+    };
+    const stop = () => { window.clearTimeout(timer); document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', finish); document.removeEventListener('pointercancel', stop); cleanup.current = undefined; };
+    document.addEventListener('pointermove', move, { passive: false });
+    document.addEventListener('pointerup', finish);
+    document.addEventListener('pointercancel', stop);
+    cleanup.current = stop;
+  };
   return (
-    <div className="group/canvas w-full shrink-0" data-canvas-list-item="true" data-active={isActive ? 'true' : 'false'}>
+    <div className="group/canvas w-full shrink-0" data-canvas-list-item="true" data-canvas-order-id={canvas.id} onPointerDown={beginReorder} data-active={isActive ? 'true' : 'false'}>
       <div className="relative">
         <button
           type="button"
           disabled={isSwitching}
-          onClick={() => onOpen(canvas.id)}
+          onClick={() => { if (!reordered.current) onOpen(canvas.id); reordered.current = false; }}
           onContextMenu={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -104,6 +132,7 @@ export const CanvasListItem = React.memo(function CanvasListItem({
   && previous.canDelete === next.canDelete
   && previous.isSwitching === next.isSwitching
   && previous.isMenuOpen === next.isMenuOpen
+  && previous.onReorder === next.onReorder
   && previous.onOpen === next.onOpen
   && previous.onOpenMenu === next.onOpenMenu
   && previous.onToggleMenu === next.onToggleMenu

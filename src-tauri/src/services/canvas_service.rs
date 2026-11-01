@@ -11,6 +11,10 @@ fn repository(app_handle: &tauri::AppHandle) -> Result<Box<dyn CanvasRepository>
     )?)))
 }
 
+pub fn reorder_canvases(app_handle: tauri::AppHandle, scope: CanvasScope, ids: Vec<String>) -> Result<Vec<Value>, String> {
+    repository(&app_handle)?.reorder_canvases(scope, ids)
+}
+
 pub fn list_canvases(
     app_handle: tauri::AppHandle,
     scope: CanvasScope,

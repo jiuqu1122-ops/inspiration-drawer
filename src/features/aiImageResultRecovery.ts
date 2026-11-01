@@ -1,6 +1,4 @@
 const AI_IMAGE_RESULT_API_HOST = 'api.unmind.art';
-const GENERATED_IMAGE_OSS_HOST = 'inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com';
-const GENERATED_VIDEO_OSS_HOST = GENERATED_IMAGE_OSS_HOST;
 const RESULT_KEY_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/;
 
 function resultKeyFromPath(pathname: string, prefix: string) {
@@ -17,12 +15,11 @@ function getStableAiResultSource(
   value: string | null | undefined,
   apiPrefix: string,
   ossPrefix: string,
-  ossHost: string,
 ) {
   const source = String(value || '').trim();
   if (!source) return null;
   try {
-    const url = new URL(source);
+  const url = new URL(source);
     if (url.protocol !== 'https:') return null;
     const host = url.hostname.toLowerCase();
     const apiKey = host === AI_IMAGE_RESULT_API_HOST
@@ -31,9 +28,10 @@ function getStableAiResultSource(
     if (apiKey) {
       return `https://${AI_IMAGE_RESULT_API_HOST}${apiPrefix}${apiKey}`;
     }
-    const ossKey = host === ossHost
-      ? resultKeyFromPath(url.pathname, ossPrefix)
-      : '';
+    // The object-store host is deliberately not part of the durable identity.
+    // The API may redirect this URL to Aliyun, Tencent COS, S3, or another
+    // backend over the lifetime of a result.
+    const ossKey = resultKeyFromPath(url.pathname, ossPrefix);
     if (ossKey) {
       return `https://${AI_IMAGE_RESULT_API_HOST}${apiPrefix}${ossKey}`;
     }
@@ -48,7 +46,6 @@ export function getStableAiImageResultSource(value?: string | null) {
     value,
     '/v1/ai/image-results/',
     '/generated-images/',
-    GENERATED_IMAGE_OSS_HOST,
   );
 }
 
@@ -57,7 +54,6 @@ export function getStableAiVideoResultSource(value?: string | null) {
     value,
     '/v1/ai/video-results/',
     '/generated-videos/',
-    GENERATED_VIDEO_OSS_HOST,
   );
 }
 

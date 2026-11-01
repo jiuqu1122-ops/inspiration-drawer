@@ -1,9 +1,12 @@
+import { DesignMemorySettingsPanel } from '../../designMemory';
+import { indexExistingDesignMemory } from '../indexExistingDesignMemory';
+import { invoke } from '@tauri-apps/api/core';
 import { AnimatePresence,motion } from 'framer-motion';
-import { ArrowUp,CalendarDays,Check,CheckSquare,ChevronDown,ChevronRight,Download,FolderOpen,History,Image as ImageIcon,Info,Keyboard,LayoutGrid,Lightbulb,Link,LogOut,Minus,Monitor,Move,Palette,Pin,Power,RefreshCw,RotateCcw,Search,Settings,Smartphone,Sparkles,Square,StickyNote,Sun,Trash2,Wallet,X } from 'lucide-react';
+import { ArrowUp,CalendarDays,Check,CheckSquare,ChevronDown,ChevronRight,Copy,Download,FolderOpen,History,Image as ImageIcon,Info,Keyboard,LayoutGrid,Lightbulb,Link,LogOut,Minus,Monitor,Move,Palette,Pin,Power,RefreshCw,RotateCcw,Search,Settings,Smartphone,Sparkles,Square,StickyNote,Sun,Trash2,Type,Wallet,X } from 'lucide-react';
+import { useState } from 'react';
+import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { DrawerAiClassificationBar } from '../../../components/DrawerAiClassificationBar';
 import { DrawerOrganizationPanel } from '../../../components/DrawerOrganizationPanel';
-import { platformShortcutLabel } from '../../../platform/capabilities';
-import { usePlatformCapabilities } from '../../../platform/usePlatformCapabilities';
 import { CANVAS_AI_PROVIDER_SELECT_OPTIONS,getCanvasAiApiKeyPlaceholder,getCanvasAiEndpointPlaceholder,getStoredCanvasAiApiKey,getStoredCanvasAiApiProvider,getStoredCanvasAiEndpoint,getStoredCanvasAiHeadersText,isCanvasAiEndpointVisible,isCanvasAiRemoteModelProvider,normalizeCanvasAiProvider } from '../../../utils/canvasAiConfig';
 import { BrowserExtensionSetup } from '../../browserExtension/BrowserExtensionSetup';
 import { formatCreditAmount } from '../../cloudCreditUsage';
@@ -14,6 +17,9 @@ import { CanvasSearchResults } from '../CanvasSearchResults';
 import { CANVAS_SEARCH_CANDIDATE_LIMIT } from '../useDrawerSearch';
 import type { BufferItem } from '../../../types';
 import type { DrawerTabType } from '../../../types/drawer';
+import { APP_FONT_SIZE_OPTIONS } from '../../../utils/appFontScale';
+import { useAppFontSize } from '../../preferences/AppFontSizeContext';
+import { requestOpenCreditRecharge } from '../../recharge/CreditRechargeOverlay';
 
 export type DrawerHeaderAndSettingsScope = Record<string, any> & {
   displayItems: BufferItem[];
@@ -25,16 +31,53 @@ export type DrawerHeaderAndSettingsScope = Record<string, any> & {
 };
 
 export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSettingsScope }) {
+  const { appFontSize, setAppFontSize } = useAppFontSize();
+  const [referralInviteCodeDraft, setReferralInviteCodeDraft] = useState('');
+  const [isReferralBinding, setIsReferralBinding] = useState(false);
+  const [isRedemptionExpanded, setIsRedemptionExpanded] = useState(false);
   const { activateSearch, activeDrawerAiClassificationLabel, activeFolderId, activeSettingCategory, activeTab, addCanvasSearchMediaCandidate, agentCustomApiKey, agentCustomBaseUrl, agentCustomProvider, agentCustomSaving, agentModels, agentModelsLoading, appVersion, assignDrawerImageToCanvasWorkflowSlot, autoAiAnalysisProgress, calendarNotificationsEnabled, cancelByokCustomization, canvasAgent, canvasAiApiKey, canvasAiCanRefreshModels, canvasAiCredentialSource, canvasAiEndpoint, canvasAiHasApiCredential, canvasAiHeadersText, canvasAiNewApiVideoKey, canvasAiOpenAiModelError, canvasAiProvider, canvasAiRemoteModelCount, canvasAiRemoteModelEmptyHint, canvasAiUsesCloudImageModels, canvasAiXaisBalance, canvasAiXaisBalanceText, canvasDrawerSourceItemIds, canvasSearchCandidateLimit, canvasSearchMediaResults, canvasShortcut, canvasWorkflowSlotPickTarget, checkCanvasAiXaisBalance, checkLocalVisionModelStatus, cloudAccount, cloudAccountSyncError, confirmCloudAccountLogout, connectSelectedCanvasItemsToGenerator, creditRedemptionCode, creditRedemptionError, displayItems, DRAWER_TOOL_BUTTON_BASE_CLASS, drawerAiAnalysisSummary, drawerAiClassificationDimension, drawerAiClassificationGroups, drawerClassificationView, drawerScopedItems, eagleImportMode, eagleImportStatus, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiProvider, enterCanvasMode, folders, handleAppUpdatePromptClick, handleExportSelectedItems, handleRecordShortcut, handleTogglePin, hasLocalXaisAccount, importFromEagle, importFromEagleLibrary, installOllamaSilently, isAutoStart, isAutoStartChanging, isByokUnlocked, isCanvasAiLicenseManaged, isCanvasChromeHidden, isCanvasMode, isCanvasWorkbenchActive, isCanvasWorkbenchMode, isCheckingAppUpdate, isCloudAccountLoading, isCloudAccountLoggingOut, isDark, isDrawerAiClassificationMode, isDrawerWorkbenchActive, isDrawerWorkbenchMode, isFolderSidebarLayout, isInstallingOllama, isLicenseLoading, isLocalVisionModelChecking, isMainWorkbenchActive, isMobileConnected, isPinned, isRecording, isRecordingCanvas, isRecordingNote, isRecordingSearch, isRecordingSnip, isRecordingText, isRecordingTrigger, isRedeemingCredits, isRefreshingCanvasAiOpenAiModels, isSearchActive, isSelectMode, isTestingCanvasAiConnection, items, lastSelectedDrawerItemIdRef, LICENSE_EDITION_LABELS, LICENSE_STATE_LABELS, licenseAiAccess, licenseStatus, localVisionModelDownload, localVisionModelLastError, managedCanvasAiProviderLabel, normalizedDeferredSearchQuery, noteShortcut, openCloudCreditUsage, openOllamaDownloadPage, redeemCloudCredits, refreshCanvasAiOpenAiModels, refreshCloudAccount, refreshVisibleBalances, requestDeleteDrawerItems, requestExitCanvasMode, retryLocalVisionModelDownload, runCanvasWorkbenchWindowAction, runDrawerWorkbenchWindowAction, saveAgentCustomApi, screenshotAutoPinNote, searchInputRef, searchQuery, searchShortcut, selectedCanvasAiGenerator, selectedCanvasConnectableCount, selectedIds, setActiveDrawerAiClassificationLabel, setActiveSettingCategory, setActiveTab, setAgentCustomApiKey, setAgentCustomBaseUrl, setAgentCustomProvider, setCanvasAiApiKey, setCanvasAiApiProvider, setCanvasAiCredentialSource, setCanvasAiEndpoint, setCanvasAiHeadersText, setCanvasAiNewApiVideoKey, setCanvasAiProvider, setCanvasSearchCandidateLimit, setCanvasShortcut, setCanvasWorkflowSlotPickTarget, setCreditRedemptionCode, setCreditRedemptionError, setDrawerAiClassificationDimension, setDrawerClassificationView, setEagleImportMode, setIsDark, setIsRecording, setIsRecordingCanvas, setIsRecordingNote, setIsRecordingSearch, setIsRecordingSnip, setIsRecordingText, setIsRecordingTrigger, setIsSearchActive, setIsSelectMode, setNoteShortcut, setSearchQuery, setSearchShortcut, setSelectedIds, setShortcut, setShowAboutSoftware, setShowMoveFolderModal, setShowQR, setShowSettings, setShowStoragePath, setSnipShortcut, setTextShortcut, setTriggerShortcut, shortcut, shouldShowLegacyAiSettings, showAppUpdatePromptArrow, showSettings, showToast, snipShortcut, startDrawerTitleDrag, switchAgentFundingSource, TABS, testCanvasAiConnection, textShortcut, toggleAutoStartSetting, toggleCalendarNotificationsSetting, toggleCanvasWorkbenchMode, toggleDrawerSidebarLayout, toggleDrawerWorkbenchMode, toggleScreenshotAutoPinNoteSetting, toggleSettings, toggleTriggerMode, triggerMode, triggerShortcut, webImageCacheDir } = scope;
-  const platformCapabilities = usePlatformCapabilities();
-  const isMacDesktopWindow = platformCapabilities?.platform === 'macos';
+  // The account panel is server-membership based; retain these scope fields for legacy callers.
+  void isLicenseLoading;
+  void LICENSE_EDITION_LABELS;
+  void LICENSE_STATE_LABELS;
+
+  const copyReferralInviteCode = async () => {
+    const code = cloudAccount?.referral?.inviteCode;
+    if (!code) return;
+    try {
+      await writeText(code);
+      showToast('邀请码已复制');
+    } catch (error) {
+      console.warn('复制邀请码失败:', error);
+      showToast('邀请码复制失败');
+    }
+  };
+  const bindReferralInviteCode = async () => {
+    const code = referralInviteCodeDraft.trim().toUpperCase();
+    if (code.length < 6) {
+      showToast('请输入有效的邀请码');
+      return;
+    }
+    try {
+      setIsReferralBinding(true);
+      await invoke('bind_cloud_referral', { inviteCode: code });
+      setReferralInviteCodeDraft('');
+      await refreshCloudAccount(true);
+      showToast('邀请码绑定成功，双方奖励已到账');
+    } catch (error) {
+      const message = String(error || '邀请码绑定失败').replace(/^[a-z_]+:\s*/i, '').trim();
+      showToast(message || '邀请码绑定失败');
+    } finally {
+      setIsReferralBinding(false);
+    }
+  };
   return (
 <>
 {/* 🌟 标题栏区域：安全的动态拖拽魔法 */}
                 <div
                   data-drawer-header="true"
                   data-canvas-header={isCanvasMode ? 'true' : undefined}
-                  className={isCanvasMode && isCanvasChromeHidden ? 'hidden' : 'min-h-16 px-5 border-b border-stone-200/70 dark:border-stone-800 flex flex-nowrap justify-between items-center gap-4 bg-white dark:bg-stone-950 relative cursor-move z-20'}
+                  className={isCanvasMode && isCanvasChromeHidden ? 'hidden' : 'min-h-16 px-5 border-b border-stone-200/70 dark:border-stone-800 flex flex-nowrap justify-between items-center gap-4 bg-white dark:bg-stone-950 relative cursor-move z-[100041]'}
                   onPointerDown={startDrawerTitleDrag}
                 >
                   <h2 data-drawer-title="true" className="flex h-9 min-w-[140px] max-w-full items-center gap-2 text-[18px] font-semibold tracking-[-0.02em] leading-none text-stone-900 pointer-events-none relative dark:text-stone-100">
@@ -87,7 +130,7 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                   {/* 右侧按钮组：按钮本身不拖动，按钮之间的空白仍可拖动 */}
                   <div data-drawer-tools="true" data-canvas-header-tools={isCanvasMode ? 'true' : undefined} className="z-[100] flex flex-nowrap items-center justify-end gap-2 flex-1 min-w-[180px] max-w-full">
 
-                    {isDrawerWorkbenchActive && !isMacDesktopWindow && (
+                    {isDrawerWorkbenchActive && (
                       <div
                         data-no-drag="true"
                         data-drawer-window-controls="true"
@@ -169,7 +212,7 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                       <>
                         {isCanvasMode && (
                           <>
-                          {isCanvasWorkbenchActive && !isMacDesktopWindow && (
+                          {isCanvasWorkbenchActive && (
                             <div
                               data-no-drag="true"
                               data-canvas-window-controls="true"
@@ -233,7 +276,7 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                             <button
                               onClick={enterCanvasMode}
                               className={`flex items-center gap-1 text-xs font-medium ${DRAWER_TOOL_BUTTON_BASE_CLASS} hover:bg-cyan-50 hover:text-cyan-600 dark:hover:bg-cyan-400/12 dark:hover:text-cyan-200`}
-                              title={`进入生图画布 (${platformShortcutLabel(canvasShortcut)})`}
+                              title={`进入生图画布 (${canvasShortcut})`}
                             >
                               <LayoutGrid className="w-3.5 h-3.5" />
                               <span>生图</span>
@@ -251,7 +294,7 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                           data-drawer-search-trigger="true"
                           data-canvas-header-search={isCanvasMode ? 'true' : undefined}
                           className="group/search relative inline-flex h-9 w-[184px] items-center rounded-[9px] border border-stone-200 bg-white text-[12px] transition-[background-color,border-color] duration-200 hover:border-stone-300 dark:border-stone-700 dark:bg-stone-900 dark:hover:border-stone-600"
-                          title={platformShortcutLabel(isCanvasMode ? '搜索图片 (Ctrl+F)' : '搜索 (Ctrl+F)')}
+                          title={isCanvasMode ? '搜索图片 (Ctrl+F)' : '搜索 (Ctrl+F)'}
                         >
                           <Search className="pointer-events-none absolute left-3 h-3.5 w-3.5 text-stone-400" />
                           <input
@@ -396,7 +439,7 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                     <motion.div
                       initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.15, ease: "easeOut" }}
                       data-drawer-settings-panel="true"
-                      className="bg-stone-50/95 dark:bg-stone-900/95 backdrop-blur-md border-b border-stone-200/50 dark:border-stone-800/50 overflow-hidden relative z-[99] will-change-transform" onMouseDown={e => e.stopPropagation()}
+                      className="bg-stone-50/95 dark:bg-stone-900/95 backdrop-blur-md border-b border-stone-200/50 dark:border-stone-800/50 overflow-hidden relative z-[100065] will-change-transform" onMouseDown={e => e.stopPropagation()}
                     >
                       <div data-settings-scroll="true" className="p-3 space-y-2 max-h-[60vh] overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600 [&::-webkit-scrollbar-thumb]:rounded-full">
 
@@ -415,6 +458,29 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                                       {isDark ? '切换浅色' : '切换深色'}
                                     </button>
                                   </div>
+                                  <div data-app-font-size-setting="true" className="flex items-center justify-between gap-3 rounded-[16px] border border-transparent px-2.5 py-2">
+                                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                                      <Type className="h-3.5 w-3.5 text-blue-500" /> 界面字号
+                                    </span>
+                                    <div role="group" aria-label="界面字号" className="flex items-center gap-1.5">
+                                      {APP_FONT_SIZE_OPTIONS.map(option => (
+                                        <button
+                                          key={option.value}
+                                          type="button"
+                                          data-app-font-size-option="true"
+                                          data-active={appFontSize === option.value ? 'true' : 'false'}
+                                          aria-pressed={appFontSize === option.value}
+                                          onClick={() => setAppFontSize(option.value)}
+                                          className="min-w-[48px] rounded-full border border-stone-200 bg-white px-2.5 py-1.5 text-[10px] font-semibold text-stone-600 transition-colors dark:border-stone-600 dark:bg-stone-900 dark:text-stone-300"
+                                        >
+                                          {option.label}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                  <p className="px-2.5 text-[10px] leading-relaxed text-stone-400 dark:text-stone-500">
+                                    小号为当前默认；字号限制在 100%–120%，不会缩放图片和画布。
+                                  </p>
                                   <button
                                     type="button"
                                     onClick={toggleDrawerSidebarLayout}
@@ -452,31 +518,31 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                                 <div data-settings-section-content="true" className="px-3 pb-3 pt-1 flex flex-col gap-2.5 border-t border-stone-100 dark:border-stone-700/50">
                                   <div className="flex items-center justify-between pt-1">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">防误触模式</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecording ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecording(true); setIsRecordingSnip(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecording) handleRecordShortcut(e, (s: string) => { setShortcut(s); setIsRecording(false); }, 'update-shortcut'); }} onBlur={() => setIsRecording(false)}>{isRecording ? '请按键...' : platformShortcutLabel(shortcut)}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecording ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecording(true); setIsRecordingSnip(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecording) handleRecordShortcut(e, (s: string) => { setShortcut(s); setIsRecording(false); }, 'update-shortcut'); }} onBlur={() => setIsRecording(false)}>{isRecording ? '请按键...' : shortcut}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">极速截图</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingSnip ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingSnip(true); setIsRecording(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingSnip) handleRecordShortcut(e, (s: string) => { setSnipShortcut(s); setIsRecordingSnip(false); }, 'update-snip-shortcut'); }} onBlur={() => setIsRecordingSnip(false)}>{isRecordingSnip ? '请按键...' : platformShortcutLabel(snipShortcut)}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingSnip ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingSnip(true); setIsRecording(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingSnip) handleRecordShortcut(e, (s: string) => { setSnipShortcut(s); setIsRecordingSnip(false); }, 'update-snip-shortcut'); }} onBlur={() => setIsRecordingSnip(false)}>{isRecordingSnip ? '请按键...' : snipShortcut}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">快速记录灵感</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingText ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingText(true); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingText) handleRecordShortcut(e, (s: string) => { setTextShortcut(s); setIsRecordingText(false); }, 'update-text-shortcut'); }} onBlur={() => setIsRecordingText(false)}>{isRecordingText ? '请按键...' : platformShortcutLabel(textShortcut)}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingText ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingText(true); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingText) handleRecordShortcut(e, (s: string) => { setTextShortcut(s); setIsRecordingText(false); }, 'update-text-shortcut'); }} onBlur={() => setIsRecordingText(false)}>{isRecordingText ? '请按键...' : textShortcut}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">全局搜索唤出</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingSearch ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingSearch(true); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingSearch) handleRecordShortcut(e, (s: string) => { setSearchShortcut(s); setIsRecordingSearch(false); }, 'update-search-shortcut'); }} onBlur={() => setIsRecordingSearch(false)}>{isRecordingSearch ? '请按键...' : platformShortcutLabel(searchShortcut)}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingSearch ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingSearch(true); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingSearch) handleRecordShortcut(e, (s: string) => { setSearchShortcut(s); setIsRecordingSearch(false); }, 'update-search-shortcut'); }} onBlur={() => setIsRecordingSearch(false)}>{isRecordingSearch ? '请按键...' : searchShortcut}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">切换触发入口</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingTrigger ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingTrigger(true); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingTrigger) handleRecordShortcut(e, (s: string) => { setTriggerShortcut(s); setIsRecordingTrigger(false); }, 'update-trigger-shortcut'); }} onBlur={() => setIsRecordingTrigger(false)}>{isRecordingTrigger ? '请按键...' : platformShortcutLabel(triggerShortcut)}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingTrigger ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingTrigger(true); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingTrigger) handleRecordShortcut(e, (s: string) => { setTriggerShortcut(s); setIsRecordingTrigger(false); }, 'update-trigger-shortcut'); }} onBlur={() => setIsRecordingTrigger(false)}>{isRecordingTrigger ? '请按键...' : triggerShortcut}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">新增便签</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingNote ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingNote(true); setIsRecordingTrigger(false); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingNote) handleRecordShortcut(e, (s: string) => { setNoteShortcut(s); setIsRecordingNote(false); }, 'update-note-shortcut'); }} onBlur={() => setIsRecordingNote(false)}>{isRecordingNote ? '请按键...' : platformShortcutLabel(noteShortcut)}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingNote ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingNote(true); setIsRecordingTrigger(false); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingNote) handleRecordShortcut(e, (s: string) => { setNoteShortcut(s); setIsRecordingNote(false); }, 'update-note-shortcut'); }} onBlur={() => setIsRecordingNote(false)}>{isRecordingNote ? '请按键...' : noteShortcut}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">切换无限画布</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingCanvas ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingCanvas(true); setIsRecordingNote(false); setIsRecordingTrigger(false); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); }} onKeyDown={(e) => { if (isRecordingCanvas) handleRecordShortcut(e, (s: string) => { setCanvasShortcut(s); setIsRecordingCanvas(false); }, 'update-canvas-shortcut'); }} onBlur={() => setIsRecordingCanvas(false)}>{isRecordingCanvas ? '请按键...' : platformShortcutLabel(canvasShortcut)}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingCanvas ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingCanvas(true); setIsRecordingNote(false); setIsRecordingTrigger(false); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); }} onKeyDown={(e) => { if (isRecordingCanvas) handleRecordShortcut(e, (s: string) => { setCanvasShortcut(s); setIsRecordingCanvas(false); }, 'update-canvas-shortcut'); }} onBlur={() => setIsRecordingCanvas(false)}>{isRecordingCanvas ? '请按键...' : canvasShortcut}</button>
                                   </div>
                                 </div>
                               </motion.div>
@@ -920,135 +986,111 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                         </div>
                         )}
 
+                        <div data-settings-section="true" data-active={activeSettingCategory === 'design-memory' ? 'true' : 'false'} className="overflow-hidden rounded-[18px] border border-stone-200/80 bg-white dark:border-stone-700/70 dark:bg-stone-800">
+                          <button type="button" data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'design-memory' ? '' : 'design-memory')} className="flex w-full items-center justify-between px-4 py-3.5 text-left transition-colors hover:bg-stone-50 dark:hover:bg-stone-700/50">
+                            <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><History className="h-4 w-4 text-stone-500" /> 设计记忆</span>
+                            <ChevronDown className={`h-4 w-4 text-stone-400 transition-transform ${activeSettingCategory === 'design-memory' ? 'rotate-180' : ''}`} />
+                          </button>
+                          {activeSettingCategory === 'design-memory' && (
+                            <div data-settings-section-content="true" className="border-t border-stone-100 px-3 py-3 dark:border-stone-700/50">
+                              <DesignMemorySettingsPanel onIndexExisting={indexExistingDesignMemory} onOpenSource={scope.openDesignMemorySource} />
+                            </div>
+                          )}
+                        </div>
+
                         <div data-settings-section="true" data-active={activeSettingCategory === 'license' ? 'true' : 'false'} className="overflow-hidden rounded-[18px] border border-stone-200/80 bg-white dark:border-stone-700/70 dark:bg-stone-800">
                           <button data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'license' ? '' : 'license')} className="flex w-full items-center justify-between px-4 py-3.5 transition-colors hover:bg-stone-50 dark:hover:bg-stone-700/50">
-                            <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><Wallet className="h-4 w-4 text-stone-500 dark:text-stone-400"/> 账号额度</span>
-                            <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'license' ? 'rotate-180' : ''}`} />
+                            <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><Wallet className="h-4 w-4 text-stone-500 dark:text-stone-400"/> 账号与额度</span>
+                            <ChevronDown className={`h-4 w-4 text-stone-400 transition-transform ${activeSettingCategory === 'license' ? 'rotate-180' : ''}`} />
                           </button>
                           <AnimatePresence>
                             {activeSettingCategory === 'license' && (
-                              <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
-                                <div data-settings-section-content="true" className="flex flex-col gap-3 border-t border-stone-100 bg-stone-50/35 p-3 dark:border-stone-700/50 dark:bg-stone-900/15">
-                                  <div className="rounded-[14px] bg-white px-3.5 py-3 dark:bg-stone-900/45">
-                                    <div className="flex items-start justify-between gap-4">
-                                      <div className="min-w-0">
-                                        <div className="text-[9px] font-semibold text-stone-400 dark:text-stone-500">当前账号</div>
-                                        <div className="mt-1 truncate text-[12px] font-bold text-stone-800 dark:text-stone-100">
-                                          {cloudAccount?.displayName || licenseStatus?.customer || '-'}
-                                        </div>
-                                        {cloudAccount?.email && (
-                                          <div className="mt-0.5 truncate text-[10px] text-stone-400 dark:text-stone-500">{cloudAccount.email}</div>
-                                        )}
-                                      </div>
-                                      <span className="shrink-0 rounded-[8px] bg-stone-100 px-2.5 py-1 text-[9px] font-bold text-stone-600 dark:bg-stone-800 dark:text-stone-300">
-                                        {isLicenseLoading ? '读取中' : LICENSE_STATE_LABELS[licenseStatus?.state || 'unlicensed']}
-                                      </span>
+                              <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: 'easeOut' }} className="overflow-hidden will-change-transform">
+                                <div data-settings-section-content="true" className="border-t border-stone-100 px-4 pb-3 pt-4 dark:border-stone-700/50">
+                                  <div className="flex flex-col gap-3 min-[460px]:flex-row min-[460px]:items-start min-[460px]:justify-between">
+                                    <div className="min-w-0">
+                                      <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-stone-400 dark:text-stone-500">当前账号</div>
+                                      <div className="mt-1 truncate text-[13px] font-bold text-stone-800 dark:text-stone-100">{cloudAccount?.displayName || licenseStatus?.customer || '—'}</div>
+                                      <div className="mt-0.5 truncate text-[10px] text-stone-400 dark:text-stone-500">{cloudAccount?.email || '未同步邮箱'}</div>
                                     </div>
-                                    <div className="mt-3 grid grid-cols-2 gap-3 border-t border-stone-100 pt-2.5 text-[10px] dark:border-stone-800">
-                                      <div>
-                                        <div className="text-stone-400 dark:text-stone-500">版本</div>
-                                        <div className="mt-0.5 font-semibold text-stone-700 dark:text-stone-200">{licenseStatus?.edition ? LICENSE_EDITION_LABELS[licenseStatus.edition] : '-'}</div>
-                                      </div>
-                                      <div>
-                                        <div className="text-stone-400 dark:text-stone-500">到期时间</div>
-                                        <div className="mt-0.5 font-semibold tabular-nums text-stone-700 dark:text-stone-200">{licenseStatus?.expire_at || '-'}</div>
+                                    <div className="min-w-0 min-[460px]:text-right">
+                                      <div className="text-[10px] font-bold text-stone-700 dark:text-stone-200">{isCloudAccountLoading ? '读取中…' : cloudAccount?.membership?.plan.name || '普通用户'}</div>
+                                      <div className="mt-1 text-[9px] tabular-nums text-stone-400 dark:text-stone-500">
+                                        {cloudAccount?.membership?.expiresAt ? `有效期至 ${new Date(cloudAccount.membership.expiresAt).toLocaleDateString('zh-CN')}` : '无会员期限'}
                                       </div>
                                     </div>
                                   </div>
 
-                                  <div className="rounded-[14px] border border-stone-200/80 bg-white p-3.5 dark:border-stone-700/70 dark:bg-stone-900/45">
+                                  <div className="mt-4 border-t border-stone-100 pt-4 dark:border-stone-700/60">
                                     <div className="flex items-center justify-between gap-3">
-                                      <span className="flex items-center gap-1.5 text-[10px] font-semibold text-stone-500 dark:text-stone-400">
-                                        <Wallet className="h-3.5 w-3.5" /> 可用积分
-                                      </span>
-                                      <button
-                                        type="button"
-                                        onClick={() => void refreshCloudAccount()}
-                                        disabled={isCloudAccountLoading}
-                                        className="grid h-7 w-7 place-items-center rounded-[8px] text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:cursor-wait disabled:opacity-45 dark:hover:bg-stone-800 dark:hover:text-stone-200"
-                                        title="刷新账号额度"
-                                        aria-label="刷新账号额度"
-                                      >
+                                      <span className="text-[10px] font-semibold text-stone-500 dark:text-stone-400">可用积分</span>
+                                      <button type="button" onClick={() => void refreshCloudAccount()} disabled={isCloudAccountLoading} className="grid h-7 w-7 place-items-center rounded-[8px] text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:cursor-wait disabled:opacity-45 dark:hover:bg-stone-700 dark:hover:text-stone-200" title="刷新账号额度" aria-label="刷新账号额度">
                                         <RefreshCw className={`h-3.5 w-3.5 ${isCloudAccountLoading ? 'animate-spin' : ''}`} />
                                       </button>
                                     </div>
                                     <div className="mt-1 flex items-baseline gap-1.5">
-                                      <span className="text-[22px] font-black leading-none tracking-[-0.03em] tabular-nums text-stone-900 dark:text-stone-50">
-                                        {isCloudAccountLoading ? '读取中…' : cloudAccount ? formatCreditAmount(cloudAccount.wallet.availableCredits) : '—'}
-                                      </span>
-                                      {!isCloudAccountLoading && cloudAccount && (
-                                        <span className="text-[9px] font-semibold text-stone-400 dark:text-stone-500">积分</span>
-                                      )}
+                                      <span className="text-[28px] font-black leading-none tracking-[-0.04em] tabular-nums text-stone-900 dark:text-stone-50">{isCloudAccountLoading ? '读取中…' : cloudAccount ? formatCreditAmount(cloudAccount.wallet.availableCredits) : '—'}</span>
+                                      {!isCloudAccountLoading && cloudAccount && <span className="text-[9px] font-semibold text-stone-400 dark:text-stone-500">积分</span>}
                                     </div>
-                                    {cloudAccountSyncError && (
-                                      <div className="mt-2 truncate text-[9px] font-semibold text-amber-600 dark:text-amber-300" title={cloudAccountSyncError}>
-                                        同步失败，显示最近一次成功余额
-                                      </div>
-                                    )}
-                                    <button
-                                      type="button"
-                                      onClick={openCloudCreditUsage}
-                                      disabled={!cloudAccount || isCloudAccountLoading}
-                                      className="group mt-3 flex min-h-9 w-full items-center justify-between gap-2 rounded-[10px] bg-stone-50 px-2.5 py-2 text-left transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-stone-800/70 dark:hover:bg-stone-800"
-                                    >
-                                      <span className="flex min-w-0 items-center gap-2 text-[10px] font-semibold text-stone-700 dark:text-stone-200">
-                                        <History className="h-3.5 w-3.5 shrink-0 text-stone-400" />
-                                        积分使用明细
-                                      </span>
-                                      <span className="flex shrink-0 items-center gap-0.5 text-[9px] font-medium text-stone-400 transition-colors group-hover:text-stone-600 dark:group-hover:text-stone-300">
-                                        最近 50 条
-                                        <ChevronRight className="h-3 w-3" />
-                                      </span>
-                                    </button>
-                                    <div className="mt-3 text-[9px] font-semibold text-stone-400 dark:text-stone-500">兑换额度</div>
-                                    <div className="mt-1.5 flex gap-1.5">
-                                      <input
-                                        value={creditRedemptionCode}
-                                        onChange={event => {
-                                          setCreditRedemptionCode(event.target.value.toUpperCase());
-                                          setCreditRedemptionError('');
-                                        }}
-                                        onKeyDown={event => {
-                                          if (event.key === 'Enter' && !isRedeemingCredits) void redeemCloudCredits();
-                                        }}
-                                        placeholder="输入额度兑换码"
-                                        className="min-w-0 flex-1 rounded-[10px] border border-stone-200 bg-transparent px-3 py-1.5 text-[11px] font-medium text-stone-700 outline-none transition focus:border-stone-400 focus:ring-2 focus:ring-stone-200/70 dark:border-stone-700 dark:text-stone-100 dark:focus:border-stone-500 dark:focus:ring-stone-700/60"
-                                      />
-                                      <button
-                                        type="button"
-                                        onClick={() => void redeemCloudCredits()}
-                                        disabled={isRedeemingCredits || (creditRedemptionCode.trim().length < 10 && creditRedemptionCode.trim().toLowerCase() !== 'undesign')}
-                                        className="shrink-0 rounded-[10px] bg-stone-900 px-3 py-1.5 text-[10px] font-bold text-white transition-colors hover:bg-stone-700 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-45 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white"
-                                      >
-                                        {isRedeemingCredits ? '兑换中' : '兑换'}
+                                    {cloudAccountSyncError && <div className="mt-2 truncate text-[9px] font-semibold text-amber-600 dark:text-amber-300" title={cloudAccountSyncError}>同步失败，显示最近一次成功余额</div>}
+                                    <div className="mt-4 grid grid-cols-2 gap-2">
+                                      <button type="button" onClick={requestOpenCreditRecharge} disabled={!cloudAccount || isCloudAccountLoading} className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-[10px] bg-blue-600 px-3 text-[10px] font-bold text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-45">
+                                        <Wallet className="h-3.5 w-3.5" /> 充值积分
                                       </button>
-                                      {isByokUnlocked && (
-                                        <button
-                                          type="button"
-                                          onClick={() => void cancelByokCustomization()}
-                                          className="shrink-0 rounded-[12px] border border-stone-200 bg-white px-3 py-1.5 text-[10px] font-black text-stone-600 transition hover:bg-stone-50 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300"
-                                        >
-                                          取消自定义
+                                      <button type="button" onClick={openCloudCreditUsage} disabled={!cloudAccount || isCloudAccountLoading} className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-[10px] border border-stone-200 px-3 text-[10px] font-bold text-stone-600 transition-colors hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-45 dark:border-stone-600 dark:text-stone-300 dark:hover:bg-stone-700">
+                                        <History className="h-3.5 w-3.5" /> 使用明细
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {cloudAccount?.referral?.inviteCode && (
+                                    <div className="mt-4 border-t border-stone-100 pt-3 dark:border-stone-700/60">
+                                      <div className="flex min-h-8 items-center gap-2">
+                                        <span className="shrink-0 text-[10px] font-semibold text-stone-500 dark:text-stone-400">邀请有礼</span>
+                                        <code className="min-w-0 flex-1 truncate text-right text-[11px] font-bold tracking-[0.12em] text-stone-700 dark:text-stone-200">{cloudAccount.referral.inviteCode}</code>
+                                        <button type="button" onClick={() => void copyReferralInviteCode()} className="inline-flex h-7 shrink-0 items-center gap-1 rounded-[8px] px-2 text-[9px] font-bold text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-800 dark:text-stone-400 dark:hover:bg-stone-700 dark:hover:text-stone-100" title="复制邀请码">
+                                          <Copy className="h-3 w-3" /> 复制
                                         </button>
+                                      </div>
+                                      {cloudAccount.referral.bound ? (
+                                        <p className="mt-1 text-[9px] leading-4 text-stone-400 dark:text-stone-500">已绑定邀请关系，邀请码不能更换。</p>
+                                      ) : cloudAccount.referral.canBind !== true ? (
+                                        <p className="mt-1 text-[9px] leading-4 text-amber-600 dark:text-amber-300">已生图或获得过积分，当前账号不能再绑定邀请码。</p>
+                                      ) : (
+                                        <div className="mt-2 flex gap-1.5">
+                                          <input value={referralInviteCodeDraft} onChange={event => setReferralInviteCodeDraft(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 16))} onKeyDown={event => { if (event.key === 'Enter' && !isReferralBinding) void bindReferralInviteCode(); }} maxLength={16} autoComplete="off" placeholder="输入好友邀请码" className="min-w-0 flex-1 rounded-[9px] border border-stone-200 bg-transparent px-3 py-1.5 text-[10px] font-medium tracking-[0.08em] text-stone-700 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-stone-600 dark:text-stone-100" />
+                                          <button type="button" onClick={() => void bindReferralInviteCode()} disabled={isReferralBinding || referralInviteCodeDraft.trim().length < 6} className="shrink-0 rounded-[9px] bg-stone-900 px-3 py-1.5 text-[10px] font-bold text-white transition-colors hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-stone-100 dark:text-stone-900">{isReferralBinding ? '绑定中…' : '绑定'}</button>
+                                        </div>
                                       )}
                                     </div>
-                                    {creditRedemptionError && (
-                                      <div className="text-[10px] leading-4 text-red-500 dark:text-red-300">{creditRedemptionError}</div>
-                                    )}
+                                  )}
+
+                                  <div className="mt-3 border-t border-stone-100 pt-2 dark:border-stone-700/60">
+                                    <button type="button" onClick={() => setIsRedemptionExpanded(value => !value)} aria-expanded={isRedemptionExpanded} className="flex min-h-8 w-full items-center justify-between gap-3 rounded-[8px] px-1 text-left text-[10px] font-semibold text-stone-500 transition-colors hover:text-stone-800 dark:text-stone-400 dark:hover:text-stone-100">
+                                      <span>使用兑换码</span>
+                                      <span className="flex items-center gap-1 text-[9px] font-medium text-stone-400">{isRedemptionExpanded ? '收起' : ''}<ChevronRight className={`h-3.5 w-3.5 transition-transform ${isRedemptionExpanded ? 'rotate-90' : ''}`} /></span>
+                                    </button>
+                                    <AnimatePresence initial={false}>
+                                      {isRedemptionExpanded && (
+                                        <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+                                          <div className="flex gap-1.5 pt-2">
+                                            <input value={creditRedemptionCode} onChange={event => { setCreditRedemptionCode(event.target.value.toUpperCase()); setCreditRedemptionError(''); }} onKeyDown={event => { if (event.key === 'Enter' && !isRedeemingCredits) void redeemCloudCredits(); }} placeholder="输入额度兑换码" className="min-w-0 flex-1 rounded-[9px] border border-stone-200 bg-transparent px-3 py-1.5 text-[10px] font-medium text-stone-700 outline-none transition focus:border-stone-400 focus:ring-2 focus:ring-stone-200/70 dark:border-stone-600 dark:text-stone-100" />
+                                            <button type="button" onClick={() => void redeemCloudCredits()} disabled={isRedeemingCredits || (creditRedemptionCode.trim().length < 10 && creditRedemptionCode.trim().toLowerCase() !== 'undesign')} className="shrink-0 rounded-[9px] bg-stone-900 px-3 py-1.5 text-[10px] font-bold text-white transition-colors hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-stone-100 dark:text-stone-900">{isRedeemingCredits ? '兑换中' : '兑换'}</button>
+                                            {isByokUnlocked && <button type="button" onClick={() => void cancelByokCustomization()} className="shrink-0 rounded-[9px] border border-stone-200 px-3 py-1.5 text-[10px] font-bold text-stone-600 transition hover:bg-stone-50 dark:border-stone-600 dark:text-stone-300 dark:hover:bg-stone-700">取消自定义</button>}
+                                          </div>
+                                          {creditRedemptionError && <div className="pt-1 text-[10px] leading-4 text-red-500 dark:text-red-300">{creditRedemptionError}</div>}
+                                        </motion.div>
+                                      )}
+                                    </AnimatePresence>
                                   </div>
 
                                   {licenseStatus?.valid && licenseStatus.needs_email_registration === false && (
-                                    <button
-                                      type="button"
-                                      onClick={confirmCloudAccountLogout}
-                                      disabled={isCloudAccountLoggingOut}
-                                      className="inline-flex min-h-8 self-end items-center justify-center gap-1.5 rounded-[9px] px-2.5 py-1.5 text-[10px] font-semibold text-stone-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-wait disabled:opacity-55 dark:text-stone-500 dark:hover:bg-red-400/10 dark:hover:text-red-300"
-                                    >
-                                      <LogOut className={`h-3.5 w-3.5 ${isCloudAccountLoggingOut ? 'animate-pulse' : ''}`} />
-                                      {isCloudAccountLoggingOut ? '正在退出…' : '退出登录'}
-                                    </button>
+                                    <div className="mt-2 flex justify-end border-t border-stone-100 pt-2 dark:border-stone-700/60">
+                                      <button type="button" onClick={confirmCloudAccountLogout} disabled={isCloudAccountLoggingOut} className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-[9px] px-2.5 py-1.5 text-[10px] font-semibold text-stone-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-wait disabled:opacity-55 dark:text-stone-500 dark:hover:bg-red-400/10 dark:hover:text-red-300">
+                                        <LogOut className={`h-3.5 w-3.5 ${isCloudAccountLoggingOut ? 'animate-pulse' : ''}`} />{isCloudAccountLoggingOut ? '正在退出…' : '退出登录'}
+                                      </button>
+                                    </div>
                                   )}
-
                                 </div>
                               </motion.div>
                             )}
@@ -1066,10 +1108,10 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                                 <div data-settings-section-content="true" className="px-2.5 pb-3 pt-1.5 flex flex-col gap-1.5 border-t border-stone-100 dark:border-stone-700/50">
                                   <button
                                     type="button"
-                                    disabled={isAutoStartChanging || platformCapabilities?.autoStart === false}
+                                    disabled={isAutoStartChanging}
                                     onClick={() => void toggleAutoStartSetting()}
                                     className="group flex min-h-[42px] w-full items-center justify-between gap-3 rounded-[16px] border border-transparent px-2.5 py-2 text-left transition-all hover:border-stone-200/80 hover:bg-stone-50/85 active:scale-[0.995] disabled:cursor-wait disabled:opacity-70 dark:hover:border-stone-600/70 dark:hover:bg-stone-700/50"
-                                    title={platformCapabilities?.autoStart === false ? 'macOS Preview 暂不支持开机自动启动' : '点击切换开机自动启动'}
+                                    title="点击切换开机自动启动"
                                   >
                                     <span className="flex items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300">
                                       <Power className="w-3.5 h-3.5 text-purple-500" /> 开机自动启动

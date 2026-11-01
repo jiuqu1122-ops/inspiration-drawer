@@ -1,5 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
-import { createInspirationChatToolExecutor } from './inspirationChatToolExecutor';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createInspirationChatToolExecutor, resolveChatMediaCanvasInputIds } from './inspirationChatToolExecutor';
+import { getSelectedChatSkill, loadChatSkills } from '../skills/chatSkills';
+
+afterEach(() => vi.unstubAllGlobals());
 
 const context = {
   userText: '执行测试',
@@ -9,6 +12,30 @@ const context = {
 };
 
 describe('inspiration Chat tool executor', () => {
+  it('saves a naturally requested agent into the same library and can activate it', async () => {
+    const values = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    });
+    vi.stubGlobal('window', { dispatchEvent: () => true });
+    const executor = createInspirationChatToolExecutor({
+      executeExistingTool: vi.fn(), generateMedia: vi.fn(), listWorkflowDescriptors: () => [],
+      searchWeb: vi.fn(), createFile: vi.fn(),
+    });
+    const args = { name: '产品设计师', description: '负责产品外观和 CMF', triggers: ['产品外观', 'CMF'], instructions: '先分析需求，再使用 image_gen.imagegen 给出三个方向。\n```python\nprint("unsupported")\n```', activate: true };
+    const executionContext = { ...context, userText: '帮我创建一个产品设计智能体并启用' };
+    const result = await executor('create_agent', args, executionContext) as Record<string, unknown>;
+    expect(result.created).toBe(true);
+    expect(result.activated).toBe(true);
+    expect(loadChatSkills()).toHaveLength(1);
+    expect(getSelectedChatSkill(context.conversationId)?.name).toBe('产品设计师');
+    expect(loadChatSkills()[0].instructions).toContain('generate_image');
+    expect(loadChatSkills()[0].instructions).not.toContain('print("unsupported")');
+    const duplicate = await executor('create_agent', args, executionContext) as Record<string, unknown>;
+    expect(duplicate.created).toBe(false);
+    expect(loadChatSkills()).toHaveLength(1);
+  });
   it('runs the real web-search bridge with a bounded result count', async () => {
     const searchWeb = vi.fn(async () => ({ results: [] }));
     const executor = createInspirationChatToolExecutor({
@@ -67,6 +94,62 @@ describe('inspiration Chat tool executor', () => {
     });
     await executor('generate_image', { prompt: '未来主义建筑' }, context);
     expect(generateMedia).toHaveBeenCalledWith('generate_image', { prompt: '未来主义建筑' });
+  });
+
+  it('keeps video generation on the existing media-generation bridge', async () => {
+    const generateMedia = vi.fn(async () => ({ media: [{ id: 'video-1' }] }));
+    const executor = createInspirationChatToolExecutor({
+      executeExistingTool: vi.fn(),
+      generateMedia,
+      listWorkflowDescriptors: () => [],
+      searchWeb: vi.fn(),
+      createFile: vi.fn(),
+    });
+    await executor('generate_video', { prompt: '产品展示视频' }, context);
+    expect(generateMedia).toHaveBeenCalledWith('generate_video', { prompt: '产品展示视频' });
+  });
+
+  it.each([
+    ['interpolate_video', 'frame-interpolation'],
+    ['enhance_image', 'image-enhancement'],
+    ['enhance_video', 'video-enhancement'],
+    ['fuse_images', 'image-fusion'],
+  ])('maps %s to the shared canvas media executor', async (toolName, toolType) => {
+    const executeExistingTool = vi.fn(async () => ({ ok: true }));
+    const executor = createInspirationChatToolExecutor({
+      executeExistingTool,
+      generateMedia: vi.fn(),
+      listWorkflowDescriptors: () => [],
+      searchWeb: vi.fn(),
+      createFile: vi.fn(),
+      getCanvasItems: () => [],
+      getSelectedCanvasIds: () => [],
+    });
+    await executor(toolName, {}, context);
+    expect(executeExistingTool).toHaveBeenCalledWith(
+      'canvas_create_media_tool',
+      { toolType, inputIds: [], autoRun: true },
+      { userRequest: '执行测试' },
+    );
+  });
+
+  it('resolves a Chat media id by provenance before falling back to the selected valid media', () => {
+    const makeVideo = (id: string): import('../../canvasModel').CanvasImageItem => ({
+      id,
+      item: { id: `${id}-item`, type: 'video', content: id, createdAt: 1 },
+      x: 0, y: 0, width: 320, height: 240,
+    });
+    const generated = {
+      ...makeVideo('chat-video-node'),
+      chatGeneratedMedia: { mediaId: 'chat-video-1', assetId: 'asset-video-1', mediaType: 'video' as const, generatedAt: 2 },
+    };
+    const selected = makeVideo('selected-video-node');
+    expect(resolveChatMediaCanvasInputIds({
+      canvasItems: [selected, generated],
+      selectedIds: [selected.id],
+      toolType: 'frame-interpolation',
+      mediaId: 'chat-video-1',
+    })).toEqual([generated.id]);
   });
 
   it('runs batch image jobs through the existing media generator one image at a time', async () => {
@@ -147,6 +230,26 @@ describe('inspiration Chat tool executor', () => {
       'canvas_apply_workflow',
       'canvas_run_workflow',
     ]);
+  });
+
+  it('creates and saves a workflow without running it', async () => {
+    const executeExistingTool = vi.fn(async () => ({ workflowId: 'workflow-1', nodeId: 'node-1' }));
+    const executor = createInspirationChatToolExecutor({
+      executeExistingTool,
+      generateMedia: vi.fn(),
+      listWorkflowDescriptors: () => [],
+      searchWeb: vi.fn(),
+      createFile: vi.fn(),
+    });
+    const steps = [{ id: 'image-1', type: 'image-generator', label: '主视觉', prompt: '生成产品主视觉' }];
+    await executor('create_workflow', { label: '产品主视觉工作流', steps }, context);
+    expect(executeExistingTool).toHaveBeenCalledWith('canvas_create_workflow', {
+      label: '产品主视觉工作流',
+      hint: undefined,
+      steps,
+      inputIds: [],
+      autoRun: false,
+    }, { userRequest: '执行测试' });
   });
 
   it('adds the active conversation id when creating a file', async () => {

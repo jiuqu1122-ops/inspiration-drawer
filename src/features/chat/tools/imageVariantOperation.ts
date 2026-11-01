@@ -1,11 +1,11 @@
 import type { ChatGeneratedMedia } from '../model/chatTypes';
+import {
+  normalizeImageVariants,
+  type ImageVariantSpec,
+} from './imageVariantNormalization';
 
-export const IMAGE_VARIANT_MAX_COUNT = 4;
-
-export type ImageVariantSpec = {
-  name: string;
-  prompt: string;
-};
+export { IMAGE_VARIANT_MAX_COUNT } from './imageVariantNormalization';
+export type { ImageVariantSpec } from './imageVariantNormalization';
 
 export type ImageVariantItemResult = {
   variantIndex: number;
@@ -26,17 +26,6 @@ export type ImageVariantOperationResult = {
   failed: number;
   cancelled: boolean;
   results: ImageVariantItemResult[];
-};
-
-const normalizeVariants = (value: unknown): ImageVariantSpec[] => {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap(entry => {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
-    const record = entry as Record<string, unknown>;
-    const name = String(record.name || '').trim();
-    const prompt = String(record.prompt || '').trim();
-    return name && prompt ? [{ name, prompt }] : [];
-  }).slice(0, IMAGE_VARIANT_MAX_COUNT);
 };
 
 const cleanMedia = (value: unknown, fallbackPrompt: string): ChatGeneratedMedia[] => {
@@ -86,7 +75,7 @@ export const executeImageVariantOperation = async (input: {
   onProgress?: (progress: ImageVariantOperationResult) => void | Promise<void>;
 }) => {
   const sharedRequirements = String(input.args.sharedRequirements || '').trim();
-  const variants = normalizeVariants(input.args.variants);
+  const variants = normalizeImageVariants(input.args.variants);
   if (variants.length < 2) throw new Error('独立方案生图至少需要两个包含名称和提示词的 variants');
   const referenceImages = Array.isArray(input.args.referenceImages)
     ? input.args.referenceImages.map(String).map(value => value.trim()).filter(Boolean).slice(0, 9)

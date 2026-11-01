@@ -2,7 +2,6 @@ import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import { AnimatePresence,motion } from 'framer-motion';
 import { BookOpen,Compass,File as FileIcon,Film,HardDrive,Image as ImageIcon,Layers,LayoutGrid,Lightbulb,Monitor,Plus,StickyNote,Trash2,Type,X } from 'lucide-react';
 import { SystemQuickAccessIcon } from '../../../components/QuickIcons';
-import { platformShortcutLabel } from '../../../platform/capabilities';
 import type { BufferItem, FloatingNoteSnapshot } from '../../../types';
 import type { DrawerFolderTreeEntry } from '../../folderModel';
 
@@ -78,9 +77,8 @@ export function DrawerSidebar({ scope }: { scope: DrawerSidebarScope }) {
 
                   <div className="my-2 h-px w-full shrink-0 bg-stone-300/75 dark:bg-stone-700/80" />
 
-                  <div data-folder-rail-viewport="true" className="relative w-full shrink-0 overflow-hidden" style={{ height: folderRailHeight }}>
+                  <div className="relative w-full shrink-0 overflow-hidden" style={{ height: folderRailHeight }}>
                     <div
-                      data-folder-rail-scroll="true"
                       className="flex h-full w-full flex-col gap-1 overflow-y-auto overflow-x-hidden pr-0.5 [&::-webkit-scrollbar]:hidden"
                       style={{
                         WebkitMaskImage: visibleFolderRailEntryCount > 7
@@ -300,7 +298,7 @@ export function DrawerSidebar({ scope }: { scope: DrawerSidebarScope }) {
                             onClick={createBlankFloatingNote}
                             disabled={isCreatingBlankNote}
                             className="flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-stone-200 bg-white px-2 text-left text-[12px] font-bold text-stone-700 shadow-none transition-all hover:bg-stone-100 disabled:opacity-55 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200 dark:hover:bg-stone-800"
-                            title={`新增便签（${platformShortcutLabel(noteShortcut)}）`}
+                            title={`新增便签（${noteShortcut}）`}
                           >
                             <Plus className="h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" />
                             <span className="min-w-0 flex-1 truncate">新增便签</span>
@@ -421,9 +419,8 @@ export function DrawerSidebar({ scope }: { scope: DrawerSidebarScope }) {
               <div className="w-6 h-px bg-stone-300 dark:bg-stone-700/80 shrink-0 my-2 rounded-full" />
 
               {/* 文件夹区域：只滚动收纳夹和新建按钮 */}
-              <div data-folder-rail-viewport="true" className="relative w-full shrink-0 overflow-hidden" style={{ height: folderRailHeight }}>
+              <div className="relative w-full shrink-0 overflow-hidden" style={{ height: folderRailHeight }}>
                 <div
-                  data-folder-rail-scroll="true"
                   className="h-full w-full overflow-y-auto overflow-x-hidden flex flex-col items-center space-y-3 [&::-webkit-scrollbar]:hidden px-1 pt-3 pb-8"
                   style={{
                     WebkitMaskImage: visibleFolderRailEntryCount > 4
@@ -615,7 +612,7 @@ export function DrawerSidebar({ scope }: { scope: DrawerSidebarScope }) {
                         type="button"
                         onClick={createBlankFloatingNote}
                         disabled={isCreatingBlankNote}
-                        title={`新增便签（${platformShortcutLabel(noteShortcut)}）`}
+                        title={`新增便签（${noteShortcut}）`}
                         className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-[16px] border border-stone-200 bg-white text-blue-600 shadow-none transition-all hover:scale-105 hover:bg-stone-100 disabled:scale-100 disabled:opacity-55 dark:border-stone-700 dark:bg-stone-900 dark:text-blue-400 dark:hover:bg-stone-800"
                       >
                         <Plus className="h-4 w-4" />

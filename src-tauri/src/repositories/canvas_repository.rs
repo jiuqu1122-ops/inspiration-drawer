@@ -33,6 +33,7 @@ impl CanvasScope {
 }
 
 pub trait CanvasRepository {
+    fn reorder_canvases(&self, scope: CanvasScope, ids: Vec<String>) -> Result<Vec<Value>, String>;
     fn list_canvases(&self, scope: CanvasScope) -> Result<Vec<Value>, String>;
     fn list_deleted_canvases(&self, scope: CanvasScope) -> Result<Vec<Value>, String>;
     fn get_canvas(&self, canvas_id: &str) -> Result<Option<Value>, String>;

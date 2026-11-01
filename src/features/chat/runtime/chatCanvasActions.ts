@@ -10,8 +10,10 @@ import type { AgentApiBalanceResult,AgentApiConnectionResult,AgentCanvasToolExec
 import { truncatePromptToUtf8ByteLimit } from '../../appAgent/imageQuality/imageRulePromptBuilder';
 import { type CanvasImageItem,type CanvasItemBox } from '../../canvasModel';
 import { buildDesignAgentSystemPrompt,normalizeDesignAgentConfig } from '../../designAgentNode';
+import { scheduleCloudAccountQuotaRefresh } from '../../cloudAccountQuotaRefresh';
 import type { ChatGeneratedMedia } from '../model/chatTypes';
 import { runInternalAgentModelRequest } from './agentModelResolution';
+import { acknowledgeChatCompletion, requestChatCompletion } from './chatStream';
 import { createChatBatchCanvasLayout,getChatBatchCanvasSlotSize } from './chatBatchCanvasLayout';
 import type { ChatBatchCompletedPayload,ChatBatchMediaReadyPayload,ChatBatchStartedPayload } from './useChatRuntime';
 
@@ -24,34 +26,47 @@ type AgentOpenAiChatResult = {
   finishReason?: string;
 };
 
-export const addChatMediaToCanvasImpl = async (ctx: Pick<chatAgentActionContext, 'canvasAgent' | 'canvasItemsRef' | 'enterCanvasMode' | 'isCanvasModeRef' | 'scheduleCanvasFocusItemById' | 'showToast'>, media: ChatGeneratedMedia, options: { autoFocus?: boolean } = {}) => {
-  const { canvasAgent, canvasItemsRef, enterCanvasMode, isCanvasModeRef, scheduleCanvasFocusItemById, showToast } = ctx;
+export const addChatMediaToCanvasImpl = async (ctx: Pick<chatAgentActionContext, 'canvasAgent' | 'canvasItemsRef' | 'enterCanvasMode' | 'isCanvasModeRef' | 'scheduleCanvasFocusItemById' | 'showToast' | 'updateCanvasItemsImmediate'>, media: ChatGeneratedMedia, options: { autoFocus?: boolean } = {}) => {
+  const { canvasAgent, canvasItemsRef, enterCanvasMode, isCanvasModeRef, scheduleCanvasFocusItemById, showToast, updateCanvasItemsImmediate } = ctx;
     const assetId = media.assetId || media.id;
     if (!assetId) return;
     try {
-      const existing = canvasItemsRef.current.find(item => (
+      let target = canvasItemsRef.current.find(item => (
         item.item.sourceItemId === assetId || item.item.id === assetId
       ));
-      if (existing) {
-        if (!isCanvasModeRef.current) enterCanvasMode();
-        if (options.autoFocus) scheduleCanvasFocusItemById(existing.id);
-        return;
-      }
-
-      await canvasAgent.executeExternalTool('drawer_manage', {
-        action: 'add_items_to_canvas',
-        targetIds: [assetId],
-      }, { userRequest: options.autoFocus ? 'Chat 生成图片自动加入画布' : '用户点击发送到画布' });
-
-      if (options.autoFocus) {
-        const added = canvasItemsRef.current.find(item => (
+      if (!target) {
+        await canvasAgent.executeExternalTool('drawer_manage', {
+          action: 'add_items_to_canvas',
+          targetIds: [assetId],
+        }, { userRequest: options.autoFocus ? `Chat 生成${media.type === 'video' ? '视频' : '图片'}自动加入画布` : '用户点击发送到画布' });
+        target = canvasItemsRef.current.find(item => (
           item.item.sourceItemId === assetId || item.item.id === assetId
         ));
-        if (added) scheduleCanvasFocusItemById(added.id);
+      }
+
+      if (target) {
+        const targetId = target.id;
+        const generatedAt = Date.now();
+        updateCanvasItemsImmediate(items => items.map(item => item.id === targetId ? {
+          ...item,
+          chatGeneratedMedia: {
+            mediaId: media.id,
+            ...(media.assetId ? { assetId: media.assetId } : {}),
+            mediaType: media.type,
+            ...(media.prompt ? { prompt: media.prompt } : {}),
+            generatedAt,
+          },
+        } : item));
+      }
+
+      if (options.autoFocus) {
+        if (!isCanvasModeRef.current) enterCanvasMode();
+        if (target) scheduleCanvasFocusItemById(target.id);
       }
       if (!options.autoFocus) showToast('已发送到画布');
     } catch (error) {
-      showToast(`${options.autoFocus ? '生成图片自动加入画布失败' : '发送到画布失败'}：${String(error)}`);
+      const mediaLabel = media.type === 'video' ? '视频' : '图片';
+      showToast(`${options.autoFocus ? `生成${mediaLabel}自动加入画布失败` : '发送到画布失败'}：${String(error)}`);
     }
 
 };
@@ -415,23 +430,35 @@ export const runCanvasTextAgentTargetImpl = async (ctx: Pick<chatAgentActionCont
       { role: 'system', content: systemPrompt },
       { role: 'user', content: buildCanvasTextAgentUserContent(userPrompt, preparedReferences, isSeedanceVideoAnalysis) },
     ];
+    const usesCloudWallet = canvasAgent.settings.apiProvider.trim().toLowerCase() === 'unmind-wallet'
+      || canvasAgent.settings.apiCredentialSource === 'cloud_wallet';
     const result = await runInternalAgentModelRequest({
-      savedModel: agentModelRef.current,
+      // Wallet mode resolves this business use-case through the server-owned
+      // CANVAS_TEXT binding. Direct/BYOK keeps its configured provider model.
+      savedModel: usesCloudWallet ? undefined : agentModelRef.current,
       usageContext: 'canvas_text_agent',
       requestId,
       createRequestId: () => 'canvas_text_agent_fallback_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8),
-      request: requestModel => invoke<AgentOpenAiChatResult>('agent_openai_chat', {
-        request: {
-          requestId: requestModel.requestId,
-          model: requestModel.model,
-          usageContext: requestModel.usageContext,
-          messages,
-        },
-      }),
+      request: requestModel => usesCloudWallet
+        ? requestChatCompletion({
+          requestId: requestModel.requestId, model: requestModel.model, usageContext: requestModel.usageContext,
+          messages, tools: [], stream: false, acknowledgeResult: false, preservePreparedMessages: true,
+        })
+        : invoke<AgentOpenAiChatResult>('agent_openai_chat', {
+          request: {
+            requestId: requestModel.requestId,
+            model: requestModel.model,
+            usageContext: requestModel.usageContext,
+            messages,
+          },
+        }),
     });
+    if (usesCloudWallet) scheduleCloudAccountQuotaRefresh();
     const output = String(result.content || '').trim();
     if (!output) throw new Error('Agent API 没有返回可写入的文字结果');
+    if (usesCloudWallet && options.getLatestTarget && !options.getLatestTarget()) throw new Error('原文字节点已不在当前画布，结果尚未写回');
     options.updateTextOutput(output);
+    if (usesCloudWallet) await acknowledgeChatCompletion(requestId);
     if (options.showResultToast !== false) {
       showToast('文字节点已由 Agent 生成结果');
     }

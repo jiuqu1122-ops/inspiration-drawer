@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { getCanvasAiLookupRetryDelay, isCanvasAiLookupTerminalError } from './canvasAiTimedOutRecovery';
 import type { AiGatewayKind } from './agentModel';
 import type {
   CanvasAiCredentialSource,
@@ -7,7 +8,7 @@ import type {
   NewApiImageProtocol,
 } from './canvasModel';
 import type { AiCatalogModel,AiModelCapabilities } from '../types/license';
-import { findAiCatalogModel,getChannelModelCapabilities,getImageAspectRatioOptionsForResolution,mergeAiModelCapabilities,normalizeCapabilityOption,resolveImageModelCapabilities,resolveVideoModelCapabilities,type ResolvedImageModelCapabilities,type ResolvedVideoModelCapabilities } from './aiModelCapabilities';
+import { findAiCatalogModel,getChannelModelCapabilities,getImageAspectRatioOptionsForResolution,mergeAiModelCapabilities,normalizeCapabilityOption,normalizeVideoAspectRatioSelection,normalizeVideoDurationSelection,resolveEffectiveVideoResolution,resolveImageModelCapabilities,resolveVideoModelCapabilities,type ResolvedImageModelCapabilities,type ResolvedVideoModelCapabilities } from './aiModelCapabilities';
 
 export type { NewApiImageProtocol } from './canvasModel';
 
@@ -554,6 +555,7 @@ export type CanvasAiBaseImageOptions = {
   outputFormat?: string;
   count?: number;
   imageCapabilities?: ResolvedImageModelCapabilities;
+  quality?: string;
   videoCapabilities?: ResolvedVideoModelCapabilities;
   headers?: Record<string, string>;
 };
@@ -568,12 +570,15 @@ type CloudImageGenerationResult = {
 export type CloudImageGenerationLookup = {
   status: 'pending' | 'reserved' | 'processing' | 'succeeded' | 'failed' | 'refunded' | string;
   completedAt?: number | null;
+  confirmationRequired?: boolean;
+  recoveryStatus?: string;
   images: string[];
   provider?: string;
   providerChannelId?: string;
   providerChannelName?: string;
   model?: string;
   chargedCredits?: string;
+  error?: { code?: string; message?: string; httpStatus?: number | null } | null;
 };
 
 const CLOUD_WALLET_IMAGE_RECOVERY_POLL_INTERVAL_MS = 2_500;
@@ -595,8 +600,17 @@ const shouldReconcileCloudWalletImageError = (error: unknown) => {
   if (/(?:duplicate_request|request already submitted|already been submitted|璇ョ敓鍥捐姹傚凡缁忔彁浜よ繃)/i.test(message)) {
     return true;
   }
-  return !/(?:invalid_request|license_missing|cloud_account_required|unauthorized|invalid api key|invalid token|insufficient_credits|HTTP\s*4\d\d)/i.test(message);
+  if (/AMBIGUOUS_SUBMIT|IMAGE_TASK_RECOVERY_REQUIRED|IMAGE_RESULT_PERSISTENCE_FAILED/i.test(message)) return true;
+  return !/(?:invalid_request|license_missing|cloud_account_required|unauthorized|invalid api key|invalid token|insufficient_credits|HTTP\s*4\d\d|upstream\s+error\s*:\s*(?:400|401|403|422)\b|图片\s*URL\s*不符合安全策略|Image URL is blocked|IMAGE_TASK_FAILED)/i.test(message);
 };
+
+class CloudWalletImageTerminalError extends Error {
+  readonly code = 'CLOUD_IMAGE_TERMINAL_FAILURE';
+}
+
+class CloudWalletImageConfirmationError extends Error {
+  readonly code = 'IMAGE_TASK_RECOVERY_REQUIRED';
+}
 
 export const getCloudWalletImageLookupImages = (
   lookup?: Pick<CloudImageGenerationLookup, 'status' | 'images'> | null,
@@ -614,6 +628,18 @@ export const getCloudWalletImageGenerationByRequest = async (
   clientRequestId: clientRequestId.trim(),
 });
 
+/** The video status command is deliberately kept as a raw response.  Older
+ * server receipts and newer root envelopes use different nesting, so callers
+ * should pass it through getCloudWalletVideoDeliveredResults before creating
+ * a canvas output. */
+export const getCloudWalletVideoStatus = async (
+  taskId: string,
+  clientRequestId?: string,
+) => invoke<unknown>('get_cloud_video_status', {
+  taskId: taskId.trim(),
+  ...(clientRequestId?.trim() ? { clientRequestId: clientRequestId.trim() } : {}),
+});
+
 type CloudVideoGenerationResult = {
   results: unknown[];
   provider: string;
@@ -625,6 +651,7 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
   const clientRequestId = options.clientRequestId?.trim()
     || `canvas-image-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const model = String(options.model || '').trim();
+  let finished = false;
   try {
     const outputFormat = options.imageCapabilities?.outputFormats.length
       ? normalizeCapabilityOption(
@@ -633,36 +660,32 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
         options.imageCapabilities.outputFormats[0],
       )
       : normalizeOutputFormat(options.outputFormat);
+    const aspectRatio = resolveCloudWalletImageAspectRatio(
+      options.aspectRatio,
+      options.imageCapabilities,
+      options.resolution,
+    );
+    console.info('[cloud_wallet_image_request]', {
+      clientRequestId,
+      model,
+      resolution: options.resolution?.trim() || undefined,
+      aspectRatio,
+    });
     const requestPromise = invoke<CloudImageGenerationResult>('generate_cloud_images', {
       request: {
         clientRequestId,
-        // The channel id is authoritative for wallet routing. New channel
-        // types such as Mikoto and Bigmodel are intentionally omitted here
-        // because the wallet API provider field is legacy protocol metadata.
-        provider: normalizeCloudWalletImageProvider(options.provider),
-        providerChannelId: options.providerChannelId?.trim() || undefined,
         model,
         prompt: options.prompt.trim(),
         negativePrompt: options.negativePrompt?.trim() || undefined,
-        preserveReferenceIdentity: options.preserveReferenceIdentity === true,
         inputImages: (options.inputImages || []).filter(Boolean).slice(
           0,
           options.imageCapabilities?.referenceImageLimit ?? (options.provider === 'new-api' ? 9 : 8),
         ),
-        aspectRatio: (() => {
-          if (options.imageCapabilities?.source !== 'server') {
-            return normalizeCloudWalletImageAspectRatio(options.aspectRatio);
-          }
-          const allowed = getImageAspectRatioOptionsForResolution(
-            options.imageCapabilities,
-            options.resolution,
-          );
-          return allowed.length > 0
-            ? normalizeCapabilityOption(allowed, options.aspectRatio, allowed[0])
-            : normalizeCloudWalletImageAspectRatio(options.aspectRatio);
-        })(),
+        aspectRatio,
         resolution: options.resolution?.trim() || undefined,
         outputFormat,
+        quality: options.imageCapabilities?.supportedQualities.length
+          ? normalizeCapabilityOption(options.imageCapabilities.supportedQualities, options.quality, options.imageCapabilities.supportedQualities[0]) : undefined,
         background: outputFormat.toLowerCase() === 'png'
           && (options.imageCapabilities?.source !== 'server'
             || options.imageCapabilities.supportsTransparentBackground)
@@ -673,6 +696,7 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
     });
     let requestError: unknown = null;
     let requestReturnedUsableImages = false;
+    let terminalError: CloudWalletImageTerminalError | null = null;
     const requestImagesPromise = requestPromise
       .then(result => {
         const images = Array.from(new Set((result.images || [])
@@ -685,41 +709,78 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
         requestError = error;
         return null;
       });
-    const recoveredImagesPromise = (async () => {
+    let recoveryPromise: Promise<string[] | null> | null = null;
+    const startRecovery = (force = false) => {
+      if (!force && recoveryPromise) return recoveryPromise;
+      recoveryPromise = (async () => {
       const deadline = Date.now() + CLOUD_WALLET_IMAGE_RECOVERY_WINDOW_MS;
       await delay(Math.min(1_200, CLOUD_WALLET_IMAGE_RECOVERY_WINDOW_MS));
-      while (!requestReturnedUsableImages && Date.now() <= deadline) {
+      while (!finished && !requestReturnedUsableImages && Date.now() <= deadline) {
+        if (terminalError) throw terminalError;
         if (requestError && !shouldReconcileCloudWalletImageError(requestError)) return null;
         try {
           const lookup = await getCloudWalletImageGenerationByRequest(clientRequestId);
           const images = getCloudWalletImageLookupImages(lookup);
           if (images.length > 0) return images;
+          if (lookup.confirmationRequired && lookup.recoveryStatus === 'manual_confirmation_required') {
+            throw new CloudWalletImageConfirmationError('IMAGE_TASK_RECOVERY_REQUIRED: 图片结果待确认，已停止自动重发。请保留请求 ID 联系管理员恢复原任务。');
+          }
           const status = String(lookup.status || '').trim().toLowerCase();
           if (status === 'failed' || status === 'refunded' || status === 'cancelled' || status === 'canceled') {
-            return null;
+            terminalError = new CloudWalletImageTerminalError(lookup.error?.message?.trim()
+              || (requestError ? getErrorMessage(requestError) : `云端生图任务已${status === 'cancelled' || status === 'canceled' ? '取消' : '失败'}`));
+            throw terminalError;
           }
-        } catch (_) {
-          // The generation row may not exist yet, or the lookup may briefly fail.
+        } catch (error) {
+          if (error instanceof CloudWalletImageTerminalError || error instanceof CloudWalletImageConfirmationError) throw error;
+          if (isCanvasAiLookupTerminalError(error)) return null;
+          // A just-submitted row may not exist yet. Rate limiting and auth
+          // refreshes need a longer pause than normal pending-state polling.
+          const retryDelay = getCanvasAiLookupRetryDelay(error);
+          if (retryDelay > 8_000) {
+            await delay(Math.min(retryDelay, Math.max(0, deadline - Date.now())));
+          }
         }
         const remaining = deadline - Date.now();
         if (remaining <= 0) break;
         await delay(Math.min(CLOUD_WALLET_IMAGE_RECOVERY_POLL_INTERVAL_MS, remaining));
       }
       return null;
-    })();
+      })();
+      return recoveryPromise;
+    };
+    // Start the normal recovery window immediately, but allow one fresh window
+    // after a late POST failure.  This covers an upstream 504 that arrives
+    // after the original 90s reconciliation window without ever re-submitting.
+    const recoveredImagesPromise = startRecovery();
+    let lateRecoveryPromise: Promise<string[] | null> | null = null;
+    const startLateRecovery = () => {
+      if (terminalError) return Promise.reject(terminalError);
+      if (finished || (requestError && !shouldReconcileCloudWalletImageError(requestError))) return Promise.resolve(null);
+      lateRecoveryPromise ||= startRecovery(true);
+      return lateRecoveryPromise;
+    };
     const requestOutcome = requestImagesPromise.then(async images => {
       if (images && images.length > 0) return { images };
       if (requestError && !shouldReconcileCloudWalletImageError(requestError)) throw requestError;
       const recovered = await recoveredImagesPromise;
       if (recovered && recovered.length > 0) return { images: recovered };
-      if (requestError) throw requestError;
+      if (requestError) {
+        const lateRecovery = await startLateRecovery();
+        if (lateRecovery && lateRecovery.length > 0) return { images: lateRecovery };
+        throw requestError;
+      }
       return { images: [] };
     });
     const recoveredOutcome = recoveredImagesPromise.then(async images => {
       if (images && images.length > 0) return { images };
       const requested = await requestImagesPromise;
       if (requested && requested.length > 0) return { images: requested };
-      if (requestError) throw requestError;
+      if (requestError) {
+        const lateRecovery = await startLateRecovery();
+        if (lateRecovery && lateRecovery.length > 0) return { images: lateRecovery };
+        throw requestError;
+      }
       return { images: [] };
     });
     const result = await Promise.race([requestOutcome, recoveredOutcome]);
@@ -728,17 +789,17 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
     return images;
   } catch (error) {
     throw new Error(getErrorMessage(error));
+  } finally {
+    finished = true;
   }
 };
 
 const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
   const clientRequestId = options.clientRequestId?.trim()
     || `canvas-video-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  // The channel id is authoritative, while the provider keeps the server's
-  // capability constraint intact when a node has no persisted channel id.
-  const provider = normalizeCloudWalletVideoProvider(options.provider);
   const requestCount = Math.max(1, Math.min(options.videoCapabilities?.maxOutputs ?? 4, Math.round(options.count || 1)));
-  const isSeedanceLike = isSeedanceLikeVideoModel(options.model);
+  const serverDriven = options.videoCapabilities?.source === 'server';
+  const isSeedanceLike = !serverDriven && isSeedanceLikeVideoModel(options.model);
   const isFirstLastFrame = options.inputMode === 'FLF'
     && (options.videoCapabilities?.firstLastFrame ?? true);
   const inputImages = (options.inputImages || []).filter(Boolean);
@@ -749,70 +810,127 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
     options.inputMode,
     inputImages.length,
     options.videoCapabilities,
+    inputVideos.length,
+    inputAudios.length,
   );
   if (referenceError) throw new Error(referenceError);
   try {
+    // One deadline covers submit plus every status request.  A phase change
+    // must not silently restart the 25-minute generation budget.
+    const generationDeadline = Date.now() + 25 * 60 * 1000;
+    const duration = serverDriven
+      ? normalizeVideoDurationSelection(options.videoCapabilities!, options.duration)
+      : options.duration;
+    const resolution = serverDriven
+      ? resolveEffectiveVideoResolution(options.videoCapabilities!, options.resolution)
+      : options.resolution?.trim() || undefined;
+    if (serverDriven && options.videoCapabilities!.resolutions.length > 0 && !resolution) {
+      throw new Error('该模型未配置默认分辨率，请先选择分辨率');
+    }
+    const aspectRatio = serverDriven
+      ? normalizeVideoAspectRatioSelection(options.videoCapabilities!, options.aspectRatio)
+      : String(options.aspectRatio || '16:9');
     const result = await invoke<CloudVideoGenerationResult>('generate_cloud_videos', {
       request: {
         clientRequestId,
-        provider,
-        providerChannelId: options.providerChannelId?.trim() || undefined,
         model: String(options.model || '').trim(),
         prompt: options.prompt.trim(),
         inputImages: inputImages.slice(0, isFirstLastFrame
           ? 2
-          : options.videoCapabilities?.referenceImages ?? (isSeedanceLike ? 9 : provider === 'xais-chat' ? 13 : 8)),
+          : options.videoCapabilities?.referenceImages ?? (isSeedanceLike ? 9 : 8)),
         inputVideos: !isFirstLastFrame
           ? inputVideos.slice(0, options.videoCapabilities?.referenceVideos ?? (isSeedanceLike ? 3 : 0))
           : [],
         inputAudios: !isFirstLastFrame
           ? inputAudios.slice(0, options.videoCapabilities?.referenceAudios ?? (isSeedanceLike ? 3 : 0))
           : [],
-        aspectRatio: String(options.aspectRatio || '16:9'),
-        resolution: options.resolution?.trim() || undefined,
-        duration: options.duration,
+        ...(aspectRatio ? { aspectRatio } : {}),
+        ...(resolution ? { resolution } : {}),
+        ...(duration !== undefined ? { duration } : {}),
         inputMode: isFirstLastFrame ? 'FLF' : 'REF',
         count: requestCount,
       },
     });
-    const output: string[] = [];
+    const directOutput: string[] = [];
     const taskIds: string[] = [];
+    const taskOutputById = new Map<string, string[]>();
+    const initialTaskStatuses = new Map<string, unknown>();
     for (const item of result.results || []) {
       const taskId = getTaskIdFromResponse(item);
       const currentTask = taskId ? selectCloudWalletVideoTaskPayload(item, taskId) : item;
-      if (isNewApiVideoResultReady(currentTask)) output.push(...collectVideoStrings(currentTask));
-      if (taskId) taskIds.push(taskId);
+      if (isNewApiVideoResultReady(currentTask)) {
+        const ready = collectVideoStrings(currentTask);
+        if (taskId) taskOutputById.set(taskId, ready);
+        else directOutput.push(...ready);
+      }
+      if (taskId) {
+        if (!taskIds.includes(taskId)) taskIds.push(taskId);
+        initialTaskStatuses.set(taskId, currentTask);
+      }
     }
-    if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
-    if (taskIds.length === 0) throw new Error('云端视频渠道没有返回任务 ID 或视频地址');
-    const deadline = Date.now() + 25 * 60 * 1000;
-    for (const taskId of Array.from(new Set(taskIds))) {
-      let lastStatus: unknown = null;
-      while (Date.now() < deadline) {
-        await delay(2500);
-        const statusResponse = await invoke<unknown>('get_cloud_video_status', {
-          taskId,
-          provider,
-          clientRequestId,
-          providerChannelId: options.providerChannelId?.trim() || undefined,
-        });
+    const initialOutput = () => [
+      ...directOutput,
+      ...taskIds.flatMap(id => taskOutputById.get(id) || []),
+    ];
+    if (initialOutput().length >= requestCount) return initialOutput().slice(0, requestCount);
+    if (taskIds.length === 0) {
+      const noTaskOutput = initialOutput();
+      if (noTaskOutput.length > 0) return noTaskOutput.slice(0, requestCount);
+      throw new Error('云端视频渠道没有返回任务 ID 或视频地址');
+    }
+    const taskFailures: string[] = [];
+    for (const taskId of taskIds) {
+      let lastStatus: unknown = initialTaskStatuses.get(taskId) ?? null;
+      while (Date.now() < generationDeadline) {
+        await delay(getCloudVideoPollAfterMs(lastStatus));
+        let statusResponse: unknown;
+        try {
+          statusResponse = await invoke<unknown>('get_cloud_video_status', {
+            taskId,
+            clientRequestId,
+          });
+        } catch (error) {
+          // A transient GET failure does not change the upstream task identity.
+          // Keep polling the same task after its requested backoff; only clear
+          // authentication/validation failures escape as terminal errors.
+          if (!isRetryableServerError(error)) throw error;
+          lastStatus = error;
+          continue;
+        }
         // Some upstream video APIs return a task list instead of one task.
         // Never let a historical task's terminal state or media URLs decide
         // the outcome of the task that this request actually started.
+        const delivered = getCloudWalletVideoDeliveredResults(statusResponse, taskId);
+        if (delivered.length > 0) {
+          lastStatus = statusResponse;
+          taskOutputById.set(taskId, delivered);
+          break;
+        }
         lastStatus = selectCloudWalletVideoTaskPayload(statusResponse, taskId);
         const statusState = getNewApiVideoTaskState(lastStatus);
         if (isNewApiVideoFailureState(statusState)) {
-          throw new Error(getNewApiVideoFailureMessage(lastStatus) || `云端视频任务失败：${taskId}`);
+          taskFailures.push(getNewApiVideoFailureMessage(lastStatus) || `云端视频任务失败：${taskId}`);
+          break;
         }
         if (!isNewApiVideoResultReady(lastStatus)) continue;
-        output.push(...collectVideoStrings(lastStatus));
-        if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
+        const ready = collectVideoStrings(lastStatus)
+          .map(cleanExtractedMediaUrl)
+          .filter(isCloudWalletVideoResultSource);
+        if (ready.length > 0) {
+          taskOutputById.set(taskId, Array.from(new Set(ready)));
+          break;
+        }
       }
       const failure = getNewApiVideoFailureMessage(lastStatus);
-      if (failure) throw new Error(failure);
+      if (failure && !taskFailures.includes(failure)) taskFailures.push(failure);
     }
-    if (output.length === 0) throw new Error('云端视频任务超时或没有返回视频地址');
-    return Array.from(new Set(output)).slice(0, requestCount);
+    const output = initialOutput();
+    if (output.length === 0) {
+      throw new Error(taskFailures.join('；') || '云端视频任务超时或没有返回视频地址');
+    }
+    // URL presentation de-duplication is intentionally not used for completion
+    // accounting: two valid outputs may point at the same CDN URL.
+    return output.slice(0, requestCount);
   } catch (error) {
     throw new Error(getErrorMessage(error));
   }
@@ -969,16 +1087,11 @@ const buildChinesePromptWithOptions = (prompt: string, aspectRatio?: string, res
 };
 
 export const buildCanvasAiIndexedReferencePrompt = (prompt: string, referenceCount: number) => {
-  const cleanPrompt = prompt.trim();
-  const count = Math.max(0, Math.min(9, Math.floor(referenceCount)));
-  if (count < 2) return cleanPrompt;
-  const mapping = Array.from({ length: count }, (_, index) => (
-    `第${index + 1}个附件 = 图${index + 1}（Image ${index + 1}）`
-  )).join('；');
-  return [
-    cleanPrompt,
-    `参考图编号严格按附件顺序绑定：${mapping}。用户提到“图N”或“Image N”时，只能使用第N个附件对应的内容，不要交换、重排或把其他参考图当作图N。`,
-  ].filter(Boolean).join('\n\n');
+  // Generic generation entry points preserve the user's prompt verbatim.
+  // Provider-specific reference numbering belongs in the corresponding
+  // server adapter (Veo keeps its own explicit ingredient semantics).
+  void referenceCount;
+  return prompt.trim();
 };
 
 export const orderCanvasAiReferenceSources = (
@@ -1244,6 +1357,32 @@ export const normalizeCloudWalletImageAspectRatio = (aspectRatio?: string | null
   }, CLOUD_WALLET_IMAGE_ASPECT_RATIOS[0]);
 };
 
+/**
+ * Resolve the wallet payload ratio without silently turning a valid user
+ * selection into the first (usually 1:1) capability entry. Capability data
+ * can be briefly stale while the wallet catalog refreshes; preserving the
+ * normalized standard ratio lets the server validate the original intent.
+ */
+export const resolveCloudWalletImageAspectRatio = (
+  aspectRatio: string | null | undefined,
+  capabilities?: Pick<ResolvedImageModelCapabilities, 'source' | 'aspectRatios' | 'aspectRatiosByResolution'> | null,
+  resolution?: string | null,
+) => {
+  const normalizedRequested = normalizeCloudWalletImageAspectRatio(aspectRatio);
+  if (capabilities?.source !== 'server') return normalizedRequested;
+  const allowed = getImageAspectRatioOptionsForResolution(capabilities, resolution);
+  if (allowed.length === 0) return normalizedRequested;
+  const exact = allowed.find(value => value.toLowerCase() === String(aspectRatio || '').trim().toLowerCase());
+  if (exact) return exact;
+  const normalizedAllowed = allowed.map(value => normalizeCloudWalletImageAspectRatio(value));
+  if (normalizedAllowed.includes(normalizedRequested)) {
+    return allowed[normalizedAllowed.indexOf(normalizedRequested)] || normalizedRequested;
+  }
+  // Do not downgrade a standard ratio to `allowed[0]` when the catalog is
+  // incomplete. A server-side validation error is safer than a wrong shape.
+  return normalizedRequested;
+};
+
 export const gptImage2SizeFromAspectRatio = (aspectRatio?: string, resolution?: string) => {
   const normalizedResolution = normalizeCanvasAiImageResolution(resolution);
   const requestedSize = String(aspectRatio || '').trim().replace(/×/g, 'x');
@@ -1444,10 +1583,36 @@ export const getCanvasAiVideoReferenceSlotLabels = (
   if (isSeedanceLikeVideoModel(model)) {
     return Array.from({ length: slots.imageSlots }, (_, index) => `参考图${index + 1}`);
   }
-  if (getCanvasAiVideoProviderForModel(model) === 'new-api' && !isSora2VideoModel(model)) {
+  if (isVeo31VideoModel(model)) {
     return ['主体', '场景/背景', '风格/纹理'].slice(0, slots.imageSlots);
   }
   return Array.from({ length: slots.imageSlots }, (_, index) => `参考图${index + 1}`);
+};
+
+export const getCanvasAiVideoReferenceSlotDisplayLabel = (
+  inputIndex: number,
+  slots: { mode: CanvasAiVideoInputMode; imageSlots: number; videoSlots: number; audioSlots: number },
+  imageLabels: readonly string[],
+  resolvedCapabilities?: ResolvedVideoModelCapabilities | null,
+) => {
+  if (slots.mode === 'FLF') return inputIndex === 0 ? '首帧' : '尾帧';
+  const videoIndex = inputIndex - slots.imageSlots;
+  const audioIndex = videoIndex - slots.videoSlots;
+  const isVideo = videoIndex >= 0 && videoIndex < slots.videoSlots;
+  const isAudio = audioIndex >= 0 && audioIndex < slots.audioSlots;
+  const baseLabel = isAudio
+    ? `参考音频${audioIndex + 1}`
+    : isVideo
+      ? `参考视频${videoIndex + 1}`
+      : imageLabels[inputIndex] || `参考图${inputIndex + 1}`;
+  const isRequired = resolvedCapabilities?.source === 'server' && (
+    isAudio
+      ? audioIndex < resolvedCapabilities.minReferenceAudios
+      : isVideo
+        ? videoIndex < resolvedCapabilities.minReferenceVideos
+        : inputIndex < resolvedCapabilities.minReferenceImages
+  );
+  return isRequired ? `${baseLabel} · 必需` : baseLabel;
 };
 
 export const validateCanvasAiVideoReferences = (
@@ -1455,10 +1620,37 @@ export const validateCanvasAiVideoReferences = (
   inputMode: CanvasAiVideoInputMode | string | null | undefined,
   imageCount: number,
   resolvedCapabilities?: ResolvedVideoModelCapabilities | null,
+  videoCount = 0,
+  audioCount = 0,
 ) => {
-  const supportsFirstLastFrame = resolvedCapabilities?.firstLastFrame ?? !isSora2VideoModel(model);
+  const supportsFirstLastFrame = resolvedCapabilities?.supportsFirstLastFrame
+    ?? resolvedCapabilities?.firstLastFrame
+    ?? !isSora2VideoModel(model);
+  if (resolvedCapabilities?.source === 'server' && inputMode === 'FLF' && !resolvedCapabilities.firstLastFrame) {
+    return '该模型不支持首尾帧模式，请切换到“参考图”模式';
+  }
   if (inputMode === 'FLF' && supportsFirstLastFrame && imageCount !== 2) {
     return '首尾帧模式需要同时连接首帧和尾帧两张图片；如果只使用一张图片，请切换到“参考图”模式';
+  }
+  if (resolvedCapabilities?.source === 'server' && inputMode !== 'FLF') {
+    if (imageCount < resolvedCapabilities.minReferenceImages) {
+      return `该模型至少需要 ${resolvedCapabilities.minReferenceImages} 张参考图`;
+    }
+    if (imageCount > resolvedCapabilities.referenceImages) {
+      return `该模型最多支持 ${resolvedCapabilities.referenceImages} 张参考图`;
+    }
+    if (videoCount < resolvedCapabilities.minReferenceVideos) {
+      return `该模型至少需要 ${resolvedCapabilities.minReferenceVideos} 个参考视频`;
+    }
+    if (videoCount > resolvedCapabilities.referenceVideos) {
+      return `该模型最多支持 ${resolvedCapabilities.referenceVideos} 个参考视频`;
+    }
+    if (audioCount < resolvedCapabilities.minReferenceAudios) {
+      return `该模型至少需要 ${resolvedCapabilities.minReferenceAudios} 个参考音频`;
+    }
+    if (audioCount > resolvedCapabilities.referenceAudios) {
+      return `该模型最多支持 ${resolvedCapabilities.referenceAudios} 个参考音频`;
+    }
   }
   return '';
 };
@@ -1765,6 +1957,16 @@ export const shouldUseCanvasAiNativeImageBatchRequest = (
   cloudWallet: boolean,
   requestedCount: number,
 ) => requestedCount <= 1 && (provider === 'new-api' || cloudWallet);
+
+export const getCanvasAiImageOutputConcurrency = (
+  _provider: CanvasAiImageProvider,
+  _model: string | null | undefined,
+  requestedCount: number,
+) => {
+  // The caller already resolves the requested job count against model capabilities.
+  // Jobs are independent count: 1 requests, not the provider's per-request n.
+  return Math.max(1, Math.round(Number(requestedCount) || 1));
+};
 
 export const getCanvasAiSlotClientRequestId = (
   clientRequestId: string,
@@ -2222,20 +2424,31 @@ const refreshWalletImageCandidatePriority = async (candidates: CanvasAiModelCand
   }
 };
 
-export const shouldTryNextCanvasAiImageCandidate = (error: unknown) => {
+/** Rate limits are user-visible; do not amplify them with more paid submissions. */
+export const isCanvasAiImageRateLimitError = (error: unknown) => {
   const message = getErrorMessage(error).trim();
-  const statusMatch = message.match(/(?:status[_ ]?code\s*[=:]\s*|HTTP\s+)(\d{3})/i);
+  const statusMatch = message.match(/(?:status[_ ]?code\s*[=:]\s*|HTTP\s+|\()(\d{3})(?:\)|\b)/i);
+  if (statusMatch && Number(statusMatch[1]) === 429) return true;
+  return /rate[_\s-]*limit(?:ed| exceeded)?|too many (?:requests|concurrent)|concurrenc(?:y|ies)[^\n]{0,80}(?:limit|exceed|full)/i.test(message);
+};
+
+export const shouldTryNextCanvasAiImageCandidate = (error: unknown) => {
+  if (isCanvasAiImageRateLimitError(error)) return false;
+  const message = getErrorMessage(error).trim();
+  const statusMatch = message.match(/(?:status[_ ]?code\s*[=:]\s*|HTTP\s+|\()(\d{3})(?:\)|\b)/i);
   const status = statusMatch ? Number(statusMatch[1]) : 0;
-  if ([400, 401, 402, 403, 404, 408, 422, 429, 500, 502, 503, 504, 529].includes(status)) return true;
+  if ([400, 401, 402, 403, 404, 408, 422, 500, 502, 503, 504, 529].includes(status)) return true;
   return /(?:provider_model_family_mismatch|insufficient[_\s-]*(?:credits?|balance)|quota[_\s-]*(?:exceeded|insufficient)|provider_(?:unavailable|auth_failed)|invalid[_\s-]*api[_\s-]*key|authentication failed|unauthorized|forbidden|model[^\n]{0,80}(?:not found|unsupported|unavailable)|(?:not found|unsupported)[^\n]{0,80}model|(?:provided|reference|input) image is not valid|invalid (?:provided|reference|input) image|(?:compute|server|system|service|resource)[_\s-]*(?:busy|overloaded|exhausted|unavailable)|(?:capacity|resources?)[^\n]{0,80}(?:full|busy|exhausted|unavailable|insufficient)|temporarily unavailable|no available (?:worker|resource|capacity)|operation copy failed|copy operation failed|source path does not exist|no such file|file (?:does not exist|not found)|余额不足|额度不足|渠道不可用|渠道鉴权失败|算力(?:紧张|不足|已满)|(?:系统|服务|服务器|资源|渠道)(?:繁忙|拥堵|过载)|暂无可用算力|资源不足|排队已满|源文件不存在|文件(?:复制失败|不存在|未找到))/i.test(message);
 };
 
 export const shouldRetrySameCanvasAiImageCandidate = (error: unknown) => {
+  if (isCanvasAiImageRateLimitError(error)) return false;
   const message = getErrorMessage(error).trim();
-  const statusMatch = message.match(/(?:status[_ ]?code\s*[=:]\s*|HTTP\s+)(\d{3})/i);
+  if (/AMBIGUOUS_SUBMIT|IMAGE_TASK_RECOVERY_REQUIRED|IMAGE_RESULT_PERSISTENCE_FAILED|duplicate_request|结果待确认/i.test(message)) return false;
+  const statusMatch = message.match(/(?:status[_ ]?code\s*[=:]\s*|HTTP\s+|\()(\d{3})(?:\)|\b)/i);
   const status = statusMatch ? Number(statusMatch[1]) : 0;
-  if ([429, 503, 529].includes(status)) return true;
-  return /(?:compute|server|system|service|resource)[_\s-]*(?:busy|overloaded|exhausted|unavailable)|(?:capacity|resources?)[^\n]{0,80}(?:full|busy|exhausted|unavailable|insufficient)|temporarily unavailable|no available (?:worker|resource|capacity)|算力(?:紧张|不足|已满)|(?:系统|服务|服务器|资源|渠道)(?:繁忙|拥堵|过载)|暂无可用算力|资源不足|排队已满/i.test(message);
+  if ([503, 529].includes(status)) return true;
+  return /(?:rate[_\s-]*limit(?:ed| exceeded)?|too many (?:requests|concurrent)|concurrenc(?:y|ies)[^\n]{0,80}(?:limit|exceed|full)|(?:compute|server|system|service|resource)[_\s-]*(?:busy|overloaded|exhausted|unavailable)|(?:capacity|resources?)[^\n]{0,80}(?:full|busy|exhausted|unavailable|insufficient)|temporarily unavailable|no available (?:worker|resource|capacity)|请求过于频繁|并发(?:数|量|请求)?[^\n]{0,40}(?:上限|超限|超过|已满|限制)|算力(?:紧张|不足|已满)|(?:系统|服务|服务器|资源|渠道)(?:繁忙|拥堵|过载)|暂无可用算力|资源不足|排队已满)/i.test(message);
 };
 
 export const getXaisImageModelDisplayName = (model?: string | null) => {
@@ -2437,6 +2650,93 @@ export const collectVideoStrings = (value: unknown, output: string[] = []): stri
   }
 
   return output;
+};
+
+const isCloudWalletVideoResultSource = (value: string) => {
+  const source = cleanExtractedMediaUrl(value);
+  if (/^data:video\//i.test(source)) return true;
+  try {
+    const url = new URL(source);
+    return /\/v1\/ai\/video-results\//i.test(url.pathname)
+      || /\.(?:avi|m4v|mov|mp4|webm)$/i.test(url.pathname);
+  } catch (_) {
+    return false;
+  }
+};
+
+const cloudWalletVideoTaskMatches = (value: Record<string, unknown>, expectedTaskId: string) => {
+  for (const [key, nested] of Object.entries(value)) {
+    const normalized = normalizeVideoTaskFieldKey(key);
+    if (CLOUD_WALLET_VIDEO_TASK_ID_KEYS.has(normalized)
+      && (typeof nested === 'string' || typeof nested === 'number')
+      && String(nested).trim() === expectedTaskId) {
+      return true;
+    }
+    if ((normalized === 'task_ids' || normalized === 'upstream_task_ids') && Array.isArray(nested)
+      && nested.some(item => (typeof item === 'string' || typeof item === 'number') && String(item).trim() === expectedTaskId)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const directCloudWalletVideoSources = (value: Record<string, unknown>) => {
+  const candidates: unknown[] = [];
+  for (const key of ['walletVideoResults', 'video_url', 'videoUrl', 'video', 'videos']) {
+    if (value[key] !== undefined) candidates.push(value[key]);
+  }
+  if (Array.isArray(value.results) && value.results.every(item => typeof item === 'string')) {
+    candidates.push(value.results);
+  }
+  return Array.from(new Set(collectVideoStrings(candidates)
+    .map(cleanExtractedMediaUrl)
+    .filter(isCloudWalletVideoResultSource)));
+};
+
+const findCloudWalletVideoDeliveredResults = (
+  value: unknown,
+  expectedTaskId: string,
+  seen = new Set<object>(),
+  depth = 0,
+): string[] => {
+  if (!value || typeof value !== 'object' || depth > 10 || seen.has(value)) return [];
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return Array.from(new Set(value.flatMap(item => (
+      findCloudWalletVideoDeliveredResults(item, expectedTaskId, seen, depth + 1)
+    ))));
+  }
+  const record = value as Record<string, unknown>;
+  if (cloudWalletVideoTaskMatches(record, expectedTaskId)) {
+    const state = getNewApiVideoTaskState(record);
+    const terminal = !state || isNewApiVideoSuccessState(state);
+    const direct = terminal ? directCloudWalletVideoSources(record) : [];
+    if (direct.length > 0) return direct;
+    if (Array.isArray(record.results)) {
+      const matchingResult = record.results.find(item => (
+        item && typeof item === 'object' && cloudWalletVideoTaskMatches(item as Record<string, unknown>, expectedTaskId)
+      ));
+      if (matchingResult) {
+        const nested = findCloudWalletVideoDeliveredResults(matchingResult, expectedTaskId, seen, depth + 1);
+        if (nested.length > 0) return nested;
+      }
+    }
+  }
+  return Array.from(new Set(Object.values(record).flatMap(nested => (
+    findCloudWalletVideoDeliveredResults(nested, expectedTaskId, seen, depth + 1)
+  ))));
+};
+
+/**
+ * Extract only the result belonging to the requested cloud task.  A result
+ * URL is accepted only when it is stable wallet storage (or an inline/video
+ * file URL), which prevents a task receipt or an upstream status endpoint
+ * from becoming a completed canvas output.
+ */
+export const getCloudWalletVideoDeliveredResults = (value: unknown, taskId: string) => {
+  const expectedTaskId = String(taskId || '').trim();
+  if (!expectedTaskId) return [];
+  return findCloudWalletVideoDeliveredResults(value, expectedTaskId);
 };
 
 const collectXaisWorkerMediaStrings = (value: unknown, mediaType: 'image' | 'video') => (
@@ -3515,7 +3815,7 @@ const CLOUD_WALLET_VIDEO_TASK_ID_KEYS = new Set([
 ]);
 
 const normalizeVideoTaskFieldKey = (value: string) => (
-  value.trim().toLowerCase().replace(/[\s-]+/g, '_')
+  value.trim().replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().replace(/[\s-]+/g, '_')
 );
 
 const findCloudWalletVideoTaskPayload = (
@@ -3623,8 +3923,59 @@ export const getNewApiVideoTaskState = (value: unknown): string => {
     || '';
 };
 
+const findVideoLifecycleValue = (
+  value: unknown,
+  keys: ReadonlySet<string>,
+  seen = new Set<object>(),
+  depth = 0,
+): unknown => {
+  if (!value || typeof value !== 'object' || depth > 8 || seen.has(value)) return undefined;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findVideoLifecycleValue(item, keys, seen, depth + 1);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    const normalizedKey = key.trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (keys.has(normalizedKey)) return nested;
+    const found = findVideoLifecycleValue(nested, keys, seen, depth + 1);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+};
+
+export const getCloudVideoPollAfterMs = (value: unknown, fallback = 2_500) => {
+  if (typeof value === 'string') {
+    const retryHint = value.match(/retry[_-]?after(?:[_-]?ms)?\s*[:=]\s*(\d+)/i);
+    if (retryHint) {
+      const parsedHint = Number(retryHint[1]);
+      if (Number.isFinite(parsedHint)) {
+        const isMilliseconds = /retry[_-]?after[_-]?ms/i.test(retryHint[0]);
+        const milliseconds = isMilliseconds ? parsedHint : parsedHint * 1_000;
+        return Math.max(1_000, Math.min(24 * 60 * 60_000, Math.round(milliseconds)));
+      }
+    }
+  }
+  const candidate = findVideoLifecycleValue(value, new Set([
+    'poll_after_ms', 'pollafterms', 'retry_after_ms', 'retryafterms', 'retry_after', 'retryafter',
+  ]));
+  const parsed = Number(candidate);
+  return Number.isFinite(parsed)
+    ? Math.max(1_000, Math.min(24 * 60 * 60_000, Math.round(parsed)))
+    : fallback;
+};
+
 export const isNewApiVideoResultReady = (value: unknown) => {
   const state = getNewApiVideoTaskState(value);
+  const videoAvailable = findVideoLifecycleValue(value, new Set(['video_available', 'videoavailable']));
+  if (videoAvailable === false) return false;
+  const assetState = normalizeNewApiVideoTaskState(
+    findVideoLifecycleValue(value, new Set(['asset_state', 'assetstate'])),
+  );
+  if (assetState === 'saving' || assetState === 'failed' || assetState === 'expired') return false;
   return !state || isNewApiVideoSuccessState(state);
 };
 
@@ -3749,7 +4100,14 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
     && (options.videoCapabilities ? options.videoCapabilities.referenceAudios > 0 : isSeedance20VideoModel(model))
     ? (options.inputAudios || []).filter(Boolean).slice(0, options.videoCapabilities?.referenceAudios ?? 3)
     : [];
-  const referenceError = validateCanvasAiVideoReferences(model, options.inputMode, inputImages.length, options.videoCapabilities);
+  const referenceError = validateCanvasAiVideoReferences(
+    model,
+    options.inputMode,
+    inputImages.length,
+    options.videoCapabilities,
+    inputVideos.length,
+    inputAudios.length,
+  );
   if (referenceError) throw new Error(referenceError);
   const requestCount = Math.max(1, Math.min(options.videoCapabilities?.maxOutputs ?? 4, Math.round(options.count || 1)));
   const output: string[] = [];
@@ -3806,6 +4164,14 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
 };
 
 export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptions): Promise<string[]> => {
+  if (options.cloudWallet) {
+    return generateCloudWalletImages({
+      ...options,
+      providerChannelId: undefined,
+      providerCandidates: undefined,
+      prepareInputImagesForCandidate: undefined,
+    });
+  }
   if (!options.singleAttempt && options.providerCandidates && options.providerCandidates.length > 0) {
     const prioritizedCandidates = await refreshWalletImageCandidatePriority(options.providerCandidates);
     const candidates = selectCanvasAiImageCandidatesForResolution(
@@ -3849,6 +4215,9 @@ export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptio
           candidateError = error;
           if (attempt === 0 && shouldRetrySameCanvasAiImageCandidate(error)) {
             console.warn('Canvas AI preferred channel is temporarily busy; retrying the same channel', candidate, error);
+            // Clear only a retryable attempt error, not preparation failures.
+            // Otherwise the next iteration's "if (candidateError) break" skips the retry.
+            candidateError = null;
             await delay(1_200);
             continue;
           }
@@ -3865,15 +4234,21 @@ export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptio
   const requestOptions = {
     ...options,
     outputFormat,
-    prompt: buildCanvasAiIndexedReferencePrompt(options.prompt, options.inputImages?.length || 0),
+    prompt: options.prompt.trim(),
   };
-  if (requestOptions.cloudWallet) return generateCloudWalletImages(requestOptions);
   if (requestOptions.provider === 'xais-chat') return generateXaisChatImages(requestOptions);
   if (requestOptions.provider === 'new-api') return generateNewApiImages(requestOptions);
   return generateOpenAiCompatibleImages(requestOptions);
 };
 
 export const generateCanvasAiProviderVideos = async (options: CanvasAiVideoOptions): Promise<string[]> => {
+  if (options.cloudWallet) {
+    return generateCloudWalletVideos({
+      ...options,
+      providerChannelId: undefined,
+      providerCandidates: undefined,
+    });
+  }
   const compatibleCandidates = filterCanvasAiVideoModelCandidates(
     options.model,
     options.providerCandidates,
@@ -3913,7 +4288,6 @@ export const generateCanvasAiProviderVideos = async (options: CanvasAiVideoOptio
       providerCandidates: undefined,
     });
   }
-  if (options.cloudWallet) return generateCloudWalletVideos(options);
   if (options.provider === 'xais-chat') return generateXaisWorkerTaskVideos(options);
   if (options.provider === 'new-api') return generateNewApiVideos(options);
   throw new Error(`当前 Gateway 不支持视频生成：${options.provider}`);

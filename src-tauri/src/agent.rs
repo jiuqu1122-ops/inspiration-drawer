@@ -978,8 +978,11 @@ pub async fn agent_analyze_inspiration(
     )?;
     let payload = build_inspiration_analysis_payload(&request);
     let (submission, use_direct) = submit_wallet_task(
-        &client,
-        direct_client.as_ref(),
+        &app_handle,
+        &WalletTaskSubmitClients::Standard {
+            client: &client,
+            direct_client: direct_client.as_ref(),
+        },
         &access_token,
         &request_id,
         "inspiration_analysis",
@@ -1116,6 +1119,126 @@ fn wallet_submission_allows_direct_retry(
     has_direct_client && is_connect_error && !is_timeout
 }
 
+enum WalletTaskSubmitClients<'a> {
+    Standard {
+        client: &'a reqwest::Client,
+        direct_client: Option<&'a reqwest::Client>,
+    },
+    CanvasTextNoRedirect {
+        client: reqwest::Client,
+        direct_client: Option<reqwest::Client>,
+    },
+}
+
+impl<'a> WalletTaskSubmitClients<'a> {
+    fn for_context(
+        app_handle: &tauri::AppHandle,
+        usage_context: Option<&str>,
+        client: &'a reqwest::Client,
+        direct_client: Option<&'a reqwest::Client>,
+    ) -> Result<Self, String> {
+        if usage_context == Some("canvas_text_agent") {
+            let (client, direct_client) =
+                crate::build_wallet_task_submit_http_clients_with_direct_fallback(
+                    Some(app_handle),
+                    None,
+                    WALLET_TASK_SUBMISSION_TIMEOUT_SECS,
+                )?;
+            Ok(Self::CanvasTextNoRedirect {
+                client,
+                direct_client,
+            })
+        } else {
+            Ok(Self::Standard {
+                client,
+                direct_client,
+            })
+        }
+    }
+
+    fn primary(&self) -> &reqwest::Client {
+        match self {
+            Self::Standard { client, .. } => client,
+            Self::CanvasTextNoRedirect { client, .. } => client,
+        }
+    }
+
+    fn direct(&self) -> Option<&reqwest::Client> {
+        match self {
+            Self::Standard { direct_client, .. } => *direct_client,
+            Self::CanvasTextNoRedirect { direct_client, .. } => direct_client.as_ref(),
+        }
+    }
+
+    fn native_canvas_text(&self, body: &Value) -> bool {
+        matches!(self, Self::CanvasTextNoRedirect { .. })
+            && body.get("type").and_then(Value::as_str) == Some("agent_chat")
+            && body
+                .pointer("/payload/usageContext")
+                .and_then(Value::as_str)
+                == Some("canvas_text_agent")
+    }
+}
+
+async fn send_wallet_task_submission(
+    clients: &WalletTaskSubmitClients<'_>,
+    endpoint: &str,
+    access_token: &str,
+    body: &Value,
+    timeout: Duration,
+) -> Result<(reqwest::Response, bool), String> {
+    let response = clients
+        .primary()
+        .post(endpoint)
+        .timeout(timeout)
+        .bearer_auth(access_token)
+        .json(body)
+        .send()
+        .await;
+    match response {
+        Ok(response) => Ok((response, false)),
+        Err(primary_error) => {
+            // Only this dedicated factory disables redirects and internal
+            // retries, so a connector timeout proves no task POST was sent.
+            // Other Agent requests keep their established timeout policy.
+            let may_retry = if clients.native_canvas_text(body) {
+                clients.direct().is_some()
+                    && !primary_error.is_builder()
+                    && primary_error.is_connect()
+            } else {
+                wallet_submission_allows_direct_retry(
+                    clients.direct().is_some(),
+                    primary_error.is_connect(),
+                    primary_error.is_timeout(),
+                )
+            };
+            if !may_retry {
+                return Err(format!(
+                    "提交后台任务失败：{}",
+                    crate::describe_reqwest_error(&primary_error)
+                ));
+            }
+            let primary_detail = crate::describe_reqwest_error(&primary_error);
+            let response = clients
+                .direct()
+                .expect("direct client checked above")
+                .post(endpoint)
+                .timeout(timeout)
+                .bearer_auth(access_token)
+                .json(body)
+                .send()
+                .await
+                .map_err(|error| {
+                    format!(
+                        "提交后台任务失败：自动代理线路 {primary_detail}；直连重试 {}",
+                        crate::describe_reqwest_error(&error)
+                    )
+                })?;
+            Ok((response, true))
+        }
+    }
+}
+
 fn openai_request_cancelled(cancellations: &Arc<Mutex<HashSet<String>>>, request_id: &str) -> bool {
     cancellations
         .lock()
@@ -1124,8 +1247,8 @@ fn openai_request_cancelled(cancellations: &Arc<Mutex<HashSet<String>>>, request
 }
 
 async fn submit_wallet_task(
-    client: &reqwest::Client,
-    direct_client: Option<&reqwest::Client>,
+    app_handle: &tauri::AppHandle,
+    clients: &WalletTaskSubmitClients<'_>,
     access_token: &str,
     request_id: &str,
     task_type: &str,
@@ -1136,52 +1259,28 @@ async fn submit_wallet_task(
         "requestId": request_id,
         "payload": payload,
     });
-    let response = client
-        .post("https://api.unmind.art/v1/ai/tasks")
-        .timeout(Duration::from_secs(WALLET_TASK_SUBMISSION_TIMEOUT_SECS))
-        .bearer_auth(access_token)
-        .json(&body)
-        .send()
-        .await;
-    let (response, used_direct) = match response {
-        Ok(response) => (response, false),
-        Err(primary_error)
-            if wallet_submission_allows_direct_retry(
-                direct_client.is_some(),
-                primary_error.is_connect(),
-                primary_error.is_timeout(),
-            ) =>
-        {
-            let primary_detail = crate::describe_reqwest_error(&primary_error);
-            let direct_client = direct_client.expect("direct client checked above");
-            let response = direct_client
-                .post("https://api.unmind.art/v1/ai/tasks")
-                .timeout(Duration::from_secs(WALLET_TASK_SUBMISSION_TIMEOUT_SECS))
-                .bearer_auth(access_token)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|direct_error| {
-                    format!(
-                        "提交后台任务失败：自动代理线路 {primary_detail}；直连重试 {}",
-                        crate::describe_reqwest_error(&direct_error)
-                    )
-                })?;
-            (response, true)
-        }
-        Err(error) => {
-            return Err(format!(
-                "提交后台任务失败：{}",
-                crate::describe_reqwest_error(&error)
-            ));
-        }
-    };
+    let (response, used_direct) = send_wallet_task_submission(
+        clients,
+        "https://api.unmind.art/v1/ai/tasks",
+        access_token,
+        &body,
+        Duration::from_secs(WALLET_TASK_SUBMISSION_TIMEOUT_SECS),
+    )
+    .await?;
+    let client = clients.primary();
+    let direct_client = clients.direct();
     let mut status = response.status();
+    crate::commands::license::observe_cloud_auth_rejection(app_handle, access_token, status, "task_submit");
     let mut value = response
         .json::<Value>()
         .await
-        .map_err(|error| format!("读取后台任务提交响应失败：{error}"))?;
-    if wallet_task_submission_allows_legacy_tool_choice_retry(task_type, &payload, status, &value) {
+        .map_err(|error| {
+            crate::commands::license::observe_cloud_response_failure(app_handle, status, "task_submit", &error);
+            format!("读取后台任务提交响应失败：{error}")
+        })?;
+    if !clients.native_canvas_text(&body)
+        && wallet_task_submission_allows_legacy_tool_choice_retry(task_type, &payload, status, &value)
+    {
         let legacy_payload = wallet_task_payload_without_tool_choice(&payload)
             .expect("toolChoice presence checked above");
         let legacy_body = json!({
@@ -1277,6 +1376,13 @@ async fn poll_wallet_task(
 
         tokio_sleep(Duration::from_secs(2)).await;
         poll_count += 1;
+        // A task may outlive the token used for submission. Resolve the current
+        // token before each existing GET, without replaying the task POST.
+        let poll_access_token = crate::commands::license::cloud_access_token(app_handle).await
+            .map_err(|error| WalletTaskPollError::recoverable(format!("后台任务登录状态无法更新：{error}；原任务可能仍在运行")))?;
+        if !crate::commands::license::cloud_tokens_same_account(access_token, &poll_access_token) {
+            return Err(WalletTaskPollError::recoverable("当前账号已切换；原任务仍属于原账号，请切回后接管"));
+        }
         let active_client = if use_direct {
             direct_client.unwrap_or(client)
         } else {
@@ -1285,7 +1391,7 @@ async fn poll_wallet_task(
         let response = active_client
             .get(format!("https://api.unmind.art/v1/ai/tasks/{task_id}"))
             .timeout(Duration::from_secs(15))
-            .bearer_auth(access_token)
+            .bearer_auth(&poll_access_token)
             .send()
             .await;
         let response = match response {
@@ -1298,7 +1404,7 @@ async fn poll_wallet_task(
                 match direct_client
                     .get(format!("https://api.unmind.art/v1/ai/tasks/{task_id}"))
                     .timeout(Duration::from_secs(15))
-                    .bearer_auth(access_token)
+                    .bearer_auth(&poll_access_token)
                     .send()
                     .await
                 {
@@ -1341,6 +1447,10 @@ async fn poll_wallet_task(
             }
         };
         let http_status = response.status();
+        crate::commands::license::observe_cloud_auth_rejection(app_handle, &poll_access_token, http_status, "task_status");
+        if http_status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(WalletTaskPollError::recoverable("云端登录凭证失效（HTTP 401）；请重新登录后接管原任务，勿重复提交"));
+        }
         if wallet_poll_status_is_retryable(http_status) {
             consecutive_errors += 1;
             let delay = wallet_poll_backoff_seconds(consecutive_errors);
@@ -1362,6 +1472,7 @@ async fn poll_wallet_task(
         let value = match response.json::<Value>().await {
             Ok(value) => value,
             Err(error) if http_status.is_success() => {
+                crate::commands::license::observe_cloud_response_failure(app_handle, http_status, "task_status", &error);
                 consecutive_errors += 1;
                 let delay = wallet_poll_backoff_seconds(consecutive_errors);
                 let _ = app_handle.emit(
@@ -1380,7 +1491,10 @@ async fn poll_wallet_task(
                 tokio_sleep(Duration::from_secs(delay)).await;
                 continue;
             }
-            Err(error) => json!({ "message": format!("响应无法解析：{error}") }),
+            Err(error) => {
+                crate::commands::license::observe_cloud_response_failure(app_handle, http_status, "task_status", &error);
+                json!({ "message": format!("响应无法解析：{error}") })
+            },
         };
         if !http_status.is_success() {
             return Err(WalletTaskPollError::terminal(format!(
@@ -2242,69 +2356,23 @@ pub async fn agent_openai_chat(
     validate_chat_request_size(&request)?;
     let settings = read_settings(&app_handle);
     if stored_api_provider(&settings).eq_ignore_ascii_case("unmind-wallet") {
+        let (request, usage_context) = normalize_wallet_agent_request(request);
         let request_id = request.request_id.clone();
-        let usage_context =
-            resolve_agent_usage_context(request.usage_context.as_deref(), &request_id);
         let internal_request = is_internal_agent_usage_context(&usage_context);
-        let requested_specific_model = request
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| !is_automatic_agent_model(value))
-            .unwrap_or(false);
         let mut wallet_request = request.clone();
         wallet_request.model = resolve_wallet_agent_model_for_request(
             wallet_request.model.as_deref(),
             &settings.api_model,
             internal_request,
         );
-        let mut result = agent_wallet_chat(
+        let result = agent_wallet_chat(
             app_handle.clone(),
             wallet_request,
             state.openai_cancellations.clone(),
             state.wallet_tasks.clone(),
             state.wallet_pollers.clone(),
-            None,
         )
         .await;
-        if internal_request
-            && requested_specific_model
-            && result
-                .as_ref()
-                .err()
-                .map(|error| is_unavailable_chat_model_error(error))
-                .unwrap_or(false)
-        {
-            let fallback_request_id = format!("{}_model_fallback_{}", request_id, uuid_like_id());
-            eprintln!(
-                "[agent-model-fallback] context={} saved={} reason=provider_rejected_model fallback=default requestId={}",
-                usage_context,
-                request.model.as_deref().unwrap_or("(empty)"),
-                fallback_request_id
-            );
-            let mut fallback_request = request;
-            fallback_request.request_id = fallback_request_id.clone();
-            fallback_request.model = Some("default".to_string());
-            fallback_request.model = resolve_wallet_agent_model_for_request(
-                fallback_request.model.as_deref(),
-                &settings.api_model,
-                true,
-            );
-            result = agent_wallet_chat(
-                app_handle.clone(),
-                fallback_request,
-                state.openai_cancellations.clone(),
-                state.wallet_tasks.clone(),
-                state.wallet_pollers.clone(),
-                Some(request_id.clone()),
-            )
-            .await;
-            result = match result {
-                Ok(value) => Ok(value),
-                Err(error) => Err(format!("MODEL_FALLBACK_EXHAUSTED: {}", error)),
-            };
-        }
         if let Err(error) = &result {
             emit_chat_stream_error(&app_handle, &request_id, error);
         }
@@ -2537,11 +2605,7 @@ fn is_internal_agent_usage_context(context: &str) -> bool {
     )
 }
 
-fn resolve_agent_usage_context(explicit: Option<&str>, request_id: &str) -> String {
-    let explicit = explicit.map(str::trim).unwrap_or_default();
-    if !explicit.is_empty() {
-        return explicit.to_string();
-    }
+fn inferred_agent_usage_context(request_id: &str) -> Option<&'static str> {
     let normalized_id = request_id.trim().to_ascii_lowercase();
     for (prefix, context) in [
         ("canvas_text_agent_", "canvas_text_agent"),
@@ -2554,10 +2618,48 @@ fn resolve_agent_usage_context(explicit: Option<&str>, request_id: &str) -> Stri
         ("chat-batch-plan-decision-", "system_internal"),
     ] {
         if normalized_id.starts_with(prefix) {
-            return context.to_string();
+            return Some(context);
         }
     }
-    "chat".to_string()
+    None
+}
+
+fn canonical_agent_usage_context(context: &str) -> Option<&'static str> {
+    match context.trim().to_ascii_lowercase().as_str() {
+        "chat" => Some("chat"),
+        "workflow" => Some("workflow"),
+        "canvas_text_agent" => Some("canvas_text_agent"),
+        "inspiration_analysis" => Some("inspiration_analysis"),
+        "three_scene_analysis" => Some("three_scene_analysis"),
+        "prompt_optimization" => Some("prompt_optimization"),
+        "system_internal" => Some("system_internal"),
+        _ => None,
+    }
+}
+
+fn resolve_agent_usage_context(explicit: Option<&str>, request_id: &str) -> String {
+    // A known internal request id is generated by the app at the call site and
+    // is the strongest signal. It must not be downgraded to `chat` by a stale
+    // or partially upgraded frontend, otherwise canvas/workflow LLM nodes are
+    // billed by tokens instead of their fixed node price.
+    inferred_agent_usage_context(request_id)
+        .or_else(|| explicit.and_then(canonical_agent_usage_context))
+        .unwrap_or("chat")
+        .to_string()
+}
+
+fn normalize_wallet_agent_request(
+    mut request: AgentOpenAiChatRequest,
+) -> (AgentOpenAiChatRequest, String) {
+    // Always forward the resolved, canonical context. Older clients may omit
+    // it and request-id inference used to affect only model routing, leaving
+    // the wallet service to treat the same request as token-billed chat. Doing
+    // this once at the wallet boundary also covers canvas LLM nodes executed
+    // from inside a workflow.
+    let usage_context =
+        resolve_agent_usage_context(request.usage_context.as_deref(), &request.request_id);
+    request.usage_context = Some(usage_context.clone());
+    (request, usage_context)
 }
 
 fn resolve_wallet_agent_model_for_request(
@@ -2576,51 +2678,15 @@ fn resolve_wallet_agent_model_for_request(
     resolve_wallet_agent_model(requested, configured)
 }
 
-fn is_unavailable_chat_model_error(error: &str) -> bool {
-    let normalized = error.trim().to_ascii_lowercase();
-    if normalized.is_empty()
-        || normalized.contains("model_fallback_exhausted")
-        || normalized.contains("http 500")
-        || normalized.contains("http 501")
-        || normalized.contains("http 502")
-        || normalized.contains("http 503")
-        || normalized.contains("http 504")
-        || normalized.contains("unauthorized")
-        || normalized.contains("forbidden")
-        || normalized.contains("authentication")
-        || normalized.contains("insufficient balance")
-        || normalized.contains("quota")
-        || normalized.contains("rate limit")
-        || normalized.contains("timeout")
-        || normalized.contains("timed out")
-    {
-        return false;
-    }
-    normalized.contains("model_not_available")
-        || normalized.contains("model_not_found")
-        || normalized.contains("model_disabled")
-        || normalized.contains("unsupported_model")
-        || normalized.contains("stale_model")
-        || normalized.contains("unknown chat model")
-        || normalized.contains("model not found")
-        || normalized.contains("unsupported model")
-        || normalized.contains("disabled model")
-        || normalized.contains("stale chat model")
-        || normalized.contains("model is disabled")
-        || normalized.contains("model was disabled")
-}
-
 async fn agent_wallet_chat(
     app_handle: tauri::AppHandle,
     request: AgentOpenAiChatRequest,
     cancellations: Arc<Mutex<HashSet<String>>>,
     wallet_tasks: Arc<Mutex<HashMap<String, String>>>,
     wallet_pollers: Arc<Mutex<HashSet<String>>>,
-    client_request_id: Option<String>,
 ) -> Result<AgentOpenAiChatResult, String> {
     let provider_request_id = request.request_id.clone();
-    let is_model_fallback = client_request_id.is_some();
-    let request_id = client_request_id.unwrap_or_else(|| provider_request_id.clone());
+    let request_id = provider_request_id.clone();
     let diagnostic_model = request
         .model
         .clone()
@@ -2636,10 +2702,8 @@ async fn agent_wallet_chat(
             tasks.extend(read_pending_wallet_tasks(&app_handle));
         }
     }
-    if !is_model_fallback {
-        if let Ok(mut values) = cancellations.lock() {
-            values.remove(&request_id);
-        }
+    if let Ok(mut values) = cancellations.lock() {
+        values.remove(&request_id);
     }
     let persisted_task_id = wallet_tasks
         .lock()
@@ -2654,6 +2718,12 @@ async fn agent_wallet_chat(
             false,
         )
     } else {
+        let submission_clients = WalletTaskSubmitClients::for_context(
+            &app_handle,
+            request.usage_context.as_deref(),
+            &client,
+            direct_client.as_ref(),
+        )?;
         let mut payload = json!({
             "messages": request.messages,
             "tools": request.tools,
@@ -2668,8 +2738,8 @@ async fn agent_wallet_chat(
             payload["usageContext"] = Value::String(usage_context);
         }
         submit_wallet_task(
-            &client,
-            direct_client.as_ref(),
+            &app_handle,
+            &submission_clients,
             &access_token,
             &provider_request_id,
             "agent_chat",
@@ -2874,10 +2944,14 @@ pub async fn agent_list_openai_models(app_handle: tauri::AppHandle) -> Result<Ve
             }
         };
         let status = response.status();
+        crate::commands::license::observe_cloud_auth_rejection(&app_handle, &access_token, status, "chat_models");
         let value = response
             .json::<Value>()
             .await
-            .map_err(|error| format!("读取钱包模型列表失败：{error}"))?;
+            .map_err(|error| {
+                crate::commands::license::observe_cloud_response_failure(&app_handle, status, "chat_models", &error);
+                format!("读取钱包模型列表失败：{error}")
+            })?;
         if !status.is_success() {
             return Err(format!("钱包模型列表 HTTP {status}"));
         }
@@ -4103,7 +4177,7 @@ mod tests {
     }
 
     #[test]
-    fn only_known_internal_agent_contexts_enable_model_fallback() {
+    fn only_known_internal_agent_contexts_bypass_stale_client_model_defaults() {
         assert!(is_internal_agent_usage_context("workflow"));
         assert!(is_internal_agent_usage_context("three_scene_analysis"));
         assert!(is_internal_agent_usage_context("system_internal"));
@@ -4127,31 +4201,34 @@ mod tests {
         );
         assert_eq!(
             resolve_agent_usage_context(Some("chat"), "workflow-planner-api-123"),
+            "workflow"
+        );
+        assert_eq!(
+            resolve_agent_usage_context(Some(" CANVAS_TEXT_AGENT "), "request-123"),
+            "canvas_text_agent"
+        );
+        assert_eq!(
+            resolve_agent_usage_context(Some("unknown"), "request-123"),
             "chat"
         );
     }
 
     #[test]
-    fn model_unavailable_error_detection_is_narrow() {
-        for error in [
-            "MODEL_NOT_AVAILABLE",
-            "MODEL_DISABLED",
-            "TASK FAILED: Unknown chat model",
-            "model not found",
-            "unsupported model",
-        ] {
-            assert!(is_unavailable_chat_model_error(error), "{error}");
-        }
-        for error in [
-            "HTTP 401 unauthorized",
-            "insufficient balance",
-            "quota exceeded",
-            "request timeout",
-            "Agent API HTTP 500: internal server error",
-            "MODEL_FALLBACK_EXHAUSTED: Unknown chat model",
-        ] {
-            assert!(!is_unavailable_chat_model_error(error), "{error}");
-        }
+    fn wallet_requests_always_forward_the_resolved_usage_context() {
+        let mut request = chat_request_with_content(json!("hello"));
+        request.request_id = "canvas_text_agent_legacy".to_string();
+        request.usage_context = None;
+
+        let (normalized, context) = normalize_wallet_agent_request(request);
+
+        assert_eq!(context, "canvas_text_agent");
+        assert_eq!(
+            normalized.usage_context.as_deref(),
+            Some("canvas_text_agent")
+        );
+
+        let forwarded = normalized.clone();
+        assert_eq!(forwarded.usage_context.as_deref(), Some("canvas_text_agent"));
     }
 
     #[test]
@@ -4296,5 +4373,365 @@ mod tests {
         );
         assert_eq!(normalize_chat_reasoning_effort(Some("ultra")), None);
         assert_eq!(normalize_chat_reasoning_effort(None), None);
+    }
+}
+
+#[cfg(test)]
+mod wallet_text_submit_transport_tests {
+    use super::{send_wallet_task_submission, WalletTaskSubmitClients};
+    use rcgen::generate_simple_self_signed;
+    use rustls::{pki_types::PrivatePkcs8KeyDer, ServerConfig, ServerConnection, StreamOwned};
+    use serde_json::{json, Value};
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::{Arc, Mutex},
+        thread,
+        time::{Duration, Instant},
+    };
+
+    fn body(context: &str) -> Value {
+        json!({ "type": "agent_chat", "requestId": "same-text-task-receipt", "payload": {
+            "usageContext": context, "messages": [{ "role": "user", "content": "fixture" }], "tools": []
+        } })
+    }
+
+    fn read_request(stream: &mut impl Read) -> Vec<u8> {
+        let mut request = Vec::new();
+        loop {
+            let mut buffer = [0; 4096];
+            let read = stream.read(&mut buffer).unwrap();
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if let Some(end) = request
+                .windows(4)
+                .position(|bytes| bytes == b"\r\n\r\n")
+                .map(|index| index + 4)
+            {
+                let length = String::from_utf8_lossy(&request[..end])
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                if request.len() >= end + length {
+                    break;
+                }
+            }
+        }
+        request
+    }
+
+    fn tls_origin(
+        response: Vec<u8>,
+        delay: Duration,
+        write_first: bool,
+    ) -> (
+        String,
+        reqwest::Certificate,
+        Arc<Mutex<Vec<u8>>>,
+        thread::JoinHandle<()>,
+    ) {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let certified = generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let certificate = reqwest::Certificate::from_der(certified.cert.der()).unwrap();
+        let config = Arc::new(
+            ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![certified.cert.der().clone()],
+                    PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()).into(),
+                )
+                .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "https://localhost:{}/v1/ai/tasks",
+            listener.local_addr().unwrap().port()
+        );
+        listener.set_nonblocking(true).unwrap();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let capture = captured.clone();
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let tcp = loop {
+                match listener.accept() {
+                    Ok((tcp, _)) => break tcp,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "origin did not receive a request"
+                        );
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("fixture accept failed: {error}"),
+                }
+            };
+            tcp.set_nonblocking(false).unwrap();
+            tcp.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut stream = StreamOwned::new(ServerConnection::new(config).unwrap(), tcp);
+            *capture.lock().unwrap() = read_request(&mut stream);
+            if write_first {
+                let _ = stream.write_all(&response);
+                let _ = stream.flush();
+            }
+            thread::sleep(delay);
+            if !write_first {
+                let _ = stream.write_all(&response);
+                let _ = stream.flush();
+            }
+        });
+        (url, certificate, captured, server)
+    }
+
+    fn direct(certificate: &reqwest::Certificate) -> reqwest::Client {
+        reqwest::Client::builder()
+            .no_proxy()
+            .add_root_certificate(certificate.clone())
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .connect_timeout(Duration::from_secs(1))
+            .build()
+            .unwrap()
+    }
+
+    fn stalled_proxy(
+        certificate: Option<&reqwest::Certificate>,
+    ) -> (reqwest::Client, Arc<Mutex<Vec<u8>>>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let capture = captured.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            *capture.lock().unwrap() = read_request(&mut stream);
+            thread::sleep(Duration::from_millis(200));
+        });
+        let mut builder = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(format!("http://{address}")).unwrap())
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .connect_timeout(Duration::from_millis(50));
+        if let Some(certificate) = certificate {
+            builder = builder.add_root_certificate(certificate.clone());
+        }
+        (builder.build().unwrap(), captured, server)
+    }
+
+    fn run(
+        clients: &WalletTaskSubmitClients<'_>,
+        url: &str,
+        body: &Value,
+        timeout: Duration,
+    ) -> Result<(reqwest::Response, bool), String> {
+        tauri::async_runtime::block_on(send_wallet_task_submission(
+            clients,
+            url,
+            "fixture-token",
+            body,
+            timeout,
+        ))
+    }
+
+    #[test]
+    fn connector_timeout_falls_back_before_one_origin_post_with_the_same_receipt() {
+        let accepted = br#"{"taskId":"accepted","status":"queued"}"#;
+        let (url, certificate, received, server) = tls_origin(
+            [
+                format!(
+                    "HTTP/1.1 202 Accepted\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    accepted.len()
+                )
+                .as_bytes(),
+                accepted,
+            ]
+            .concat(),
+            Duration::ZERO,
+            false,
+        );
+        let (proxy, proxy_bytes, proxy_server) = stalled_proxy(Some(&certificate));
+        let clients = WalletTaskSubmitClients::CanvasTextNoRedirect {
+            client: proxy,
+            direct_client: Some(direct(&certificate)),
+        };
+        let expected = body("canvas_text_agent");
+        let (response, fallback) = run(&clients, &url, &expected, Duration::from_secs(2)).unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+        assert!(fallback);
+        server.join().unwrap();
+        proxy_server.join().unwrap();
+        assert!(String::from_utf8_lossy(&proxy_bytes.lock().unwrap()).starts_with("CONNECT "));
+        let request = received.lock().unwrap();
+        let end = request
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&request[end..]).unwrap(),
+            expected
+        );
+        assert!(String::from_utf8_lossy(&request).starts_with("POST /v1/ai/tasks "));
+    }
+
+    #[test]
+    fn ordinary_agent_and_non_canvas_contexts_keep_connect_timeout_rejection() {
+        for dedicated in [false, true] {
+            let (primary, received, server) = stalled_proxy(None);
+            let fallback = reqwest::Client::builder().no_proxy().build().unwrap();
+            let clients = if dedicated {
+                WalletTaskSubmitClients::CanvasTextNoRedirect {
+                    client: primary,
+                    direct_client: Some(fallback),
+                }
+            } else {
+                WalletTaskSubmitClients::Standard {
+                    client: &primary,
+                    direct_client: Some(&fallback),
+                }
+            };
+            let error = run(
+                &clients,
+                "https://127.0.0.1:1/v1/ai/tasks",
+                &body(if dedicated {
+                    "chat"
+                } else {
+                    "canvas_text_agent"
+                }),
+                Duration::from_secs(1),
+            )
+            .unwrap_err();
+            assert!(error.contains("超时"), "{error}");
+            assert!(!error.contains("直连重试"), "{error}");
+            server.join().unwrap();
+            assert!(String::from_utf8_lossy(&received.lock().unwrap()).starts_with("CONNECT "));
+        }
+    }
+
+    #[test]
+    fn task_submit_factory_does_not_follow_redirects_or_reuse_standard_cache() {
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+        drop(proxy);
+        let _ = crate::build_async_http_clients_with_direct_fallback(None, Some(&proxy_url), 3)
+            .unwrap();
+        let (_, direct) = crate::build_wallet_task_submit_http_clients_with_direct_fallback(
+            None,
+            Some(&proxy_url),
+            3,
+        )
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/ai/tasks", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_request(&mut stream);
+            stream.write_all(b"HTTP/1.1 307 Temporary Redirect\r\nLocation: http://127.0.0.1:1/v1/ai/tasks\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            request
+        });
+        let primary = direct.unwrap();
+        let clients = WalletTaskSubmitClients::CanvasTextNoRedirect {
+            client: primary.clone(),
+            direct_client: Some(primary),
+        };
+        let (response, fallback) = run(
+            &clients,
+            &url,
+            &body("canvas_text_agent"),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        assert!(!fallback);
+        assert!(String::from_utf8_lossy(&server.join().unwrap()).starts_with("POST /v1/ai/tasks "));
+    }
+
+    #[test]
+    fn uploaded_task_eof_and_response_wait_timeout_never_repost() {
+        for delay in [Duration::ZERO, Duration::from_secs(1)] {
+            let (url, certificate, received, server) = tls_origin(Vec::new(), delay, false);
+            let primary = direct(&certificate);
+            let clients = WalletTaskSubmitClients::CanvasTextNoRedirect {
+                client: primary.clone(),
+                direct_client: Some(primary),
+            };
+            let error = run(
+                &clients,
+                &url,
+                &body("canvas_text_agent"),
+                Duration::from_millis(500),
+            )
+            .unwrap_err();
+            assert!(!error.contains("直连重试"), "{error}");
+            server.join().unwrap();
+            assert!(String::from_utf8_lossy(&received.lock().unwrap())
+                .contains("same-text-task-receipt"));
+        }
+    }
+
+    #[test]
+    fn response_body_timeout_does_not_repost_an_accepted_task() {
+        let (url, certificate, received, server) = tls_origin(
+            b"HTTP/1.1 202 Accepted\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{}".to_vec(),
+            Duration::from_secs(1),
+            true,
+        );
+        let primary = direct(&certificate);
+        let clients = WalletTaskSubmitClients::CanvasTextNoRedirect {
+            client: primary.clone(),
+            direct_client: Some(primary),
+        };
+        let (response, fallback) = run(
+            &clients,
+            &url,
+            &body("canvas_text_agent"),
+            Duration::from_millis(500),
+        )
+        .unwrap();
+        assert!(!fallback);
+        assert!(tauri::async_runtime::block_on(response.json::<Value>()).is_err());
+        server.join().unwrap();
+        assert!(
+            String::from_utf8_lossy(&received.lock().unwrap()).contains("same-text-task-receipt")
+        );
+    }
+
+    #[test]
+    fn task_http_rejections_do_not_trigger_a_route_retry() {
+        for status in [
+            "400 Bad Request",
+            "401 Unauthorized",
+            "500 Internal Server Error",
+        ] {
+            let (url, certificate, received, server) = tls_origin(
+                format!("HTTP/1.1 {status}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}")
+                    .into_bytes(),
+                Duration::ZERO,
+                false,
+            );
+            let primary = direct(&certificate);
+            let clients = WalletTaskSubmitClients::CanvasTextNoRedirect {
+                client: primary.clone(),
+                direct_client: Some(primary),
+            };
+            let (response, fallback) = run(
+                &clients,
+                &url,
+                &body("canvas_text_agent"),
+                Duration::from_secs(1),
+            )
+            .unwrap();
+            assert!(response.status().is_client_error() || response.status().is_server_error());
+            assert!(!fallback);
+            server.join().unwrap();
+            assert!(!received.lock().unwrap().is_empty());
+        }
     }
 }

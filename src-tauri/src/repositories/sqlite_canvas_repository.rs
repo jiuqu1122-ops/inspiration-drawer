@@ -342,6 +342,19 @@ impl SqliteCanvasRepository {
 }
 
 impl CanvasRepository for SqliteCanvasRepository {
+    fn reorder_canvases(&self, scope: CanvasScope, ids: Vec<String>) -> Result<Vec<Value>, String> {
+        let existing = self.list_canvases(scope.clone())?;
+        let actual: std::collections::HashSet<String> = existing.iter().filter_map(|value| value["id"].as_str().map(str::to_owned)).collect();
+        let requested: std::collections::HashSet<String> = ids.iter().cloned().collect();
+        if actual != requested || requested.len() != ids.len() { return Err("Canvas order must contain each active canvas exactly once".into()); }
+        let tx = self.conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        for (index, id) in ids.iter().enumerate() {
+            tx.execute("UPDATE canvases SET sort_order = ?1 WHERE id = ?2 AND project_id = ?3 AND library_id = ?4 AND deleted_at IS NULL", params![index as i64, id, scope.normalized_project_id(), scope.normalized_library_id()]).map_err(|err| err.to_string())?;
+        }
+        tx.commit().map_err(|err| err.to_string())?;
+        self.list_canvases(scope)
+    }
+
     fn list_canvases(&self, scope: CanvasScope) -> Result<Vec<Value>, String> {
         self.ensure_default_canvas(&scope)?;
         let project_id = scope.normalized_project_id();
@@ -773,5 +786,30 @@ impl CanvasRepository for SqliteCanvasRepository {
         .map_err(|err| err.to_string())?;
         tx.commit().map_err(|err| err.to_string())?;
         Ok(written)
+    }
+}
+
+#[cfg(test)]
+mod capability_upgrade_tests {
+    use super::*;
+    #[test]
+    fn canvas_order_survives_reopening_and_rejects_incomplete_orders() {
+        let path = std::env::temp_dir().join(format!("inspiration-canvas-order-{}-{}.sqlite", std::process::id(), crate::current_time_millis()));
+        let conn = Connection::open(&path).unwrap();
+        crate::db::schema::ensure_schema(&conn).unwrap();
+        let repo = SqliteCanvasRepository::new(conn);
+        let scope = CanvasScope::default();
+        let first = repo.create_canvas(scope.clone(), "First".into()).unwrap();
+        let second = repo.create_canvas(scope.clone(), "Second".into()).unwrap();
+        let mut ids: Vec<String> = repo.list_canvases(scope.clone()).unwrap().iter().map(|value| value["id"].as_str().unwrap().to_string()).collect();
+        ids.reverse();
+        repo.reorder_canvases(scope.clone(), ids.clone()).unwrap();
+        assert!(repo.reorder_canvases(scope.clone(), vec![first["id"].as_str().unwrap().into(), second["id"].as_str().unwrap().into()]).is_err());
+        drop(repo);
+        let reopened = SqliteCanvasRepository::new(Connection::open(&path).unwrap());
+        let saved: Vec<String> = reopened.list_canvases(scope).unwrap().iter().map(|value| value["id"].as_str().unwrap().to_string()).collect();
+        assert_eq!(saved, ids);
+        drop(reopened);
+        std::fs::remove_file(path).unwrap();
     }
 }

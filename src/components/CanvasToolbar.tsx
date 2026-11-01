@@ -2,6 +2,7 @@
 import {
   Box,
   Film,
+  Music,
   Image as ImageIcon,
   Lightbulb,
   Layers,
@@ -42,6 +43,7 @@ type CanvasToolbarProps = {
   onCreateThreeScene: () => void;
   onAddFusion: () => void;
   onAddVideo: () => void;
+  onAddMusic?: () => void;
   onAddFrameInterpolation: () => void;
   onAddEnhancement: (mediaType: 'image' | 'video') => void;
   onPromptChange: (value: string) => void;
@@ -67,6 +69,7 @@ export function CanvasToolbar({
   onCreateThreeScene,
   onAddFusion,
   onAddVideo,
+  onAddMusic,
   onAddFrameInterpolation,
   onAddEnhancement,
   onPromptChange,
@@ -126,6 +129,12 @@ export function CanvasToolbar({
         <Film className="h-3.5 w-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate text-left">视频</span>
       </button>
+      {onAddMusic && (
+        <button type="button" className={CANVAS_SIDE_TOOL_CLASS} onClick={onAddMusic} title="新增 AI 音乐节点">
+          <Music className="h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 flex-1 truncate text-left">音乐</span>
+        </button>
+      )}
       <button
         type="button"
         onClick={onAddFrameInterpolation}

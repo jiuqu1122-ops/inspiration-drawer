@@ -1,5 +1,6 @@
 import type { ChatAttachment } from '../../chat/model/chatTypes';
 import { createChatVisionAttachmentResolver } from '../../chat/attachments/chatVisionAttachmentResolver';
+import { formatReferenceUploadFailureNotice } from '../../referenceUploadError';
 import {
   isAgentModelFallbackExhaustedError,
   isUnavailableChatModelError,
@@ -179,10 +180,16 @@ export const analyzeImagesToThreeSceneResult = async (input: {
     const resolved = await Promise.all(attachments.map(attachment => (
       (input.resolveImage || resolver!.resolve)(attachment)
     )));
-    const failed = resolved.find(result => !result.url);
-    if (failed) {
-      console.error('Three scene reference preparation failed:', failed.error);
-      throw new ThreeSceneAnalysisError('upload', '参考图片处理失败，请重试。');
+    const failed = resolved.filter(result => !result.url);
+    if (failed.length > 0) {
+      const uploadFailureMessage = formatReferenceUploadFailureNotice(
+        failed.map(result => result.error),
+      );
+      console.error('Three scene reference preparation failed:', uploadFailureMessage);
+      throw new ThreeSceneAnalysisError(
+        'upload',
+        uploadFailureMessage,
+      );
     }
 
     const content: Array<Record<string, unknown>> = [{

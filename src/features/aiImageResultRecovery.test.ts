@@ -20,10 +20,10 @@ describe('AI image result recovery source', () => {
     )).toBe('https://api.unmind.art/v1/ai/image-results/abc.png');
   });
 
-  it('rejects untrusted hosts and unrelated OSS namespaces', () => {
+  it('accepts object-store hosts by generated-result path, not bucket identity', () => {
     expect(getStableAiImageResultSource(
-      'https://evil.example/generated-images/abc.png',
-    )).toBeNull();
+      'https://inspirationdrawer-1475663212.cos.ap-singapore.myqcloud.com/generated-images/abc.png?temporary=1',
+    )).toBe('https://api.unmind.art/v1/ai/image-results/abc.png');
     expect(getStableAiImageResultSource(
       'https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/reference-images/abc.png',
     )).toBeNull();

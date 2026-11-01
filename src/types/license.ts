@@ -50,10 +50,37 @@ export type CloudWalletSummary = {
   lifetimeConsumed: string;
 };
 
+export type CloudMembershipQuota = {
+  type: 'IMAGE_COUNT' | 'LLM_TOKENS';
+  canonicalModelId: string;
+  modelName: string;
+  period: 'DAILY' | 'MONTHLY';
+  limit: number;
+  used: number;
+  remaining: number;
+  resetAt: string;
+};
+
 export type CloudAccountSummary = {
   email?: string | null;
   displayName?: string | null;
   wallet: CloudWalletSummary;
+  membership?: {
+    id: string;
+    status: string;
+    startsAt: string;
+    expiresAt: string;
+    source?: string | null;
+    plan: { id: string; code: string; name: string; description?: string | null };
+    /** Older account servers and locally cached snapshots may omit this field. */
+    quotas?: CloudMembershipQuota[];
+  } | null;
+  referral?: {
+    inviteCode: string;
+    bound?: boolean;
+    canBind?: boolean;
+    bindBlockedReason?: string | null;
+  } | null;
 };
 
 export type CloudCreditUsageEntry = {
@@ -71,25 +98,43 @@ export type CloudCreditUsageResult = {
   nextCursor?: string | null;
 };
 
-export type AiModelModality = 'chat' | 'image' | 'video';
+export type AiModelModality = 'chat' | 'image' | 'video' | 'audio';
 
 /**
  * Public, server-owned model behaviour. This intentionally contains no
  * provider credentials or private upstream route identifiers.
  */
 export type AiModelCapabilities = {
+  supportsImageEdit?: boolean;
+  supportedQualities?: string[];
+  qualityParameter?: string;
+  outputMode?: 'single_asset' | 'multiple_assets';
+  maxOutputImages?: number;
+  billingMode?: 'per_request' | 'per_image';
   resolutions?: string[];
+  defaultResolution?: string;
   aspectRatios?: string[];
+  aspectRatioMode?: 'list' | 'any' | 'unspecified';
+  defaultAspectRatio?: string;
   aspectRatiosByResolution?: Record<string, string[]>;
   durations?: number[];
+  durationMode?: 'list' | 'range' | 'fixed';
+  durationRange?: { min: number; max: number; step?: number };
+  defaultDurationSeconds?: number;
   maxReferenceImages?: number;
   maxReferenceVideos?: number;
   maxReferenceAudios?: number;
   minReferenceImages?: number;
+  minReferenceVideos?: number;
+  minReferenceAudios?: number;
   supportsReferenceImages?: boolean;
   supportsReferenceVideo?: boolean;
+  supportsReferenceAudio?: boolean;
   supportsAudioReference?: boolean;
+  supportsFirstFrame?: boolean;
+  supportsLastFrame?: boolean;
   supportsFirstLastFrame?: boolean;
+  supportsTextPrompt?: boolean;
   supportedInputModes?: string[];
   supportedOutputFormats?: string[];
   supportsTransparentBackground?: boolean;

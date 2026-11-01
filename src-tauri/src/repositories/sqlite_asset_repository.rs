@@ -13,6 +13,7 @@ use crate::repositories::asset_repository::{
 
 pub struct SqliteAssetRepository {
     conn: Connection,
+    memory_notifier: Option<tauri::AppHandle>,
 }
 
 #[derive(Debug, Clone)]
@@ -111,7 +112,70 @@ fn find_eagle_duplicates_on_connection(
 
 impl SqliteAssetRepository {
     pub fn new(conn: Connection) -> Self {
-        Self { conn }
+        Self {
+            conn,
+            memory_notifier: None,
+        }
+    }
+
+    pub fn with_memory_notifier(mut self, app: tauri::AppHandle) -> Self {
+        self.memory_notifier = Some(app);
+        self
+    }
+
+    fn notify_image_source_changed(&self, changed: bool) {
+        if changed {
+            if let Some(app) = &self.memory_notifier {
+                crate::commands::design_memory::notify_source_changed(app, "drawer-image");
+            }
+        }
+    }
+
+    // Memory accepts only image sources and IDs of at most 512 characters. Other
+    // asset types/IDs must remain deletable without acquiring a memory tombstone.
+    fn memory_image_id(asset: &Value) -> Option<&str> {
+        if asset.get("type").and_then(Value::as_str).map(str::trim) != Some("image") {
+            return None;
+        }
+        asset
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.trim().is_empty() && id.chars().count() <= 512)
+    }
+
+    fn restore_upserted_image(conn: &Connection, asset: &Value) -> Result<bool, String> {
+        match Self::memory_image_id(asset) {
+            Some(id) => crate::commands::design_memory::restore_source_in_transaction(
+                conn,
+                "drawer-image",
+                id,
+            ),
+            None => Ok(false),
+        }
+    }
+
+    // An asset import is allowed to fail while the rest of its batch succeeds.
+    // Keep every per-asset write (including the restoration) in a savepoint so a
+    // caught insert/FTS/memory error cannot commit a half-restored original.
+    fn insert_drawer_asset(
+        tx: &mut rusqlite::Transaction<'_>,
+        asset: &Value,
+        now: i64,
+    ) -> Result<bool, String> {
+        let savepoint = tx.savepoint().map_err(|err| err.to_string())?;
+        crate::services::migration_service::insert_asset(&savepoint, asset, now)?;
+        if let Some(id) = asset.get("id").and_then(Value::as_str).map(str::trim) {
+            savepoint
+                .execute(
+                    "UPDATE assets SET drawer_visible = 1 WHERE id = ?1",
+                    params![id],
+                )
+                .map_err(|err| err.to_string())?;
+        }
+        let restored = Self::restore_upserted_image(&savepoint, asset)?;
+        savepoint.commit().map_err(|err| err.to_string())?;
+        Ok(restored)
     }
 
     pub fn start_eagle_import(&self, request: EagleImportStartRequest) -> Result<(), String> {
@@ -144,7 +208,8 @@ impl SqliteAssetRepository {
         if import_id.is_empty() {
             return Err("Eagle import id is required".to_string());
         }
-        let tx = self
+        crate::commands::design_memory::ensure_memory_schema(&self.conn)?;
+        let mut tx = self
             .conn
             .unchecked_transaction()
             .map_err(|err| err.to_string())?;
@@ -177,6 +242,7 @@ impl SqliteAssetRepository {
 
         let existing = find_eagle_duplicates_on_connection(&tx, &incoming_identities)?;
 
+        let mut restored_image = false;
         let mut imported = 0_i64;
         let mut skipped = 0_i64;
         let mut failed = 0_i64;
@@ -209,15 +275,9 @@ impl SqliteAssetRepository {
                 skipped += 1;
                 continue;
             }
-            match crate::services::migration_service::insert_asset(&tx, &asset, now) {
-                Ok(()) => {
-                    if let Some(id) = asset.get("id").and_then(Value::as_str) {
-                        tx.execute(
-                            "UPDATE assets SET drawer_visible = 1 WHERE id = ?1",
-                            params![id],
-                        )
-                        .map_err(|err| err.to_string())?;
-                    }
+            match Self::insert_drawer_asset(&mut tx, &asset, now) {
+                Ok(restored) => {
+                    restored_image |= restored;
                     if let Some(id) = external_id {
                         seen_external_ids.insert(id);
                     }
@@ -284,6 +344,7 @@ impl SqliteAssetRepository {
             )
             .map_err(|err| err.to_string())?;
         tx.commit().map_err(|err| err.to_string())?;
+        self.notify_image_source_changed(restored_image);
         Ok(result)
     }
 
@@ -833,8 +894,9 @@ impl AssetRepository for SqliteAssetRepository {
         if assets.is_empty() {
             return Ok(0);
         }
+        crate::commands::design_memory::ensure_memory_schema(&self.conn)?;
         let now = crate::current_time_millis();
-        let tx = self
+        let mut tx = self
             .conn
             .unchecked_transaction()
             .map_err(|err| err.to_string())?;
@@ -843,18 +905,13 @@ impl AssetRepository for SqliteAssetRepository {
             "INSERT OR REPLACE INTO import_logs (id, library_id, status, total_count, success_count, skipped_count, failed_count, started_at, finished_at) VALUES (?1, ?2, 'running', ?3, 0, 0, 0, ?4, NULL)",
             params![log_id, DEFAULT_LIBRARY_ID, assets.len() as i64, now],
         ).map_err(|err| err.to_string())?;
+        let mut restored_image = false;
         let mut written = 0_usize;
         let mut failed = 0_usize;
         for asset in assets {
-            match crate::services::migration_service::insert_asset(&tx, &asset, now) {
-                Ok(()) => {
-                    if let Some(id) = asset.get("id").and_then(Value::as_str) {
-                        tx.execute(
-                            "UPDATE assets SET drawer_visible = 1 WHERE id = ?1",
-                            params![id],
-                        )
-                        .map_err(|err| err.to_string())?;
-                    }
+            match Self::insert_drawer_asset(&mut tx, &asset, now) {
+                Ok(restored) => {
+                    restored_image |= restored;
                     written += 1;
                 }
                 Err(err) => {
@@ -883,6 +940,7 @@ impl AssetRepository for SqliteAssetRepository {
             ],
         ).map_err(|err| err.to_string())?;
         tx.commit().map_err(|err| err.to_string())?;
+        self.notify_image_source_changed(restored_image);
         Ok(written)
     }
 
@@ -921,21 +979,32 @@ impl AssetRepository for SqliteAssetRepository {
     }
 
     fn delete_asset(&self, id: &str) -> Result<bool, String> {
+        crate::commands::design_memory::ensure_memory_schema(&self.conn)?;
         let tx = self
             .conn
             .unchecked_transaction()
             .map_err(|err| err.to_string())?;
-        let changed = tx
-            .execute(
-                "UPDATE assets SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
-                params![id, crate::current_time_millis()],
-            )
-            .map_err(|err| err.to_string())?;
+        let image: bool = tx.query_row(
+            "SELECT COALESCE(file_type = 'image', 0) FROM assets WHERE id = ?1 AND deleted_at IS NULL",
+            params![id], |row| row.get(0),
+        ).optional().map_err(|err| err.to_string())?.unwrap_or(false);
+        let changed = tx.execute(
+            "UPDATE assets SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+            params![id, crate::current_time_millis()],
+        ).map_err(|err| err.to_string())?;
         if changed > 0 {
             tx.execute("DELETE FROM asset_fts WHERE asset_id = ?1", params![id])
                 .map_err(|err| err.to_string())?;
+            if image && !id.trim().is_empty() && id.chars().count() <= 512 {
+                crate::commands::design_memory::invalidate_source_in_transaction(
+                    &tx,
+                    "drawer-image",
+                    id,
+                )?;
+            }
         }
         tx.commit().map_err(|err| err.to_string())?;
+        self.notify_image_source_changed(changed > 0 && image);
         Ok(changed > 0)
     }
 
@@ -944,32 +1013,61 @@ impl AssetRepository for SqliteAssetRepository {
         if ids.is_empty() {
             return Ok(0);
         }
+        crate::commands::design_memory::ensure_memory_schema(&self.conn)?;
         let tx = self
             .conn
             .unchecked_transaction()
             .map_err(|err| err.to_string())?;
         let now = crate::current_time_millis();
         let mut changed = 0_usize;
+        let mut changed_image = false;
         for chunk in ids.chunks(500) {
             let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let active_image_sql = format!(
+                "SELECT id FROM assets WHERE deleted_at IS NULL AND file_type = 'image' AND id IN ({})",
+                placeholders,
+            );
+            let image_ids = {
+                let mut stmt = tx
+                    .prepare(&active_image_sql)
+                    .map_err(|err| err.to_string())?;
+                let rows = stmt
+                    .query_map(
+                        params_from_iter(chunk.iter().cloned().map(SqlValue::Text)),
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(|err| err.to_string())?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|err| err.to_string())?
+            };
             let sql = format!(
                 "UPDATE assets SET deleted_at = ?, updated_at = ? WHERE deleted_at IS NULL AND id IN ({})",
-                placeholders
+                placeholders,
             );
             let mut values = vec![SqlValue::Integer(now), SqlValue::Integer(now)];
             values.extend(chunk.iter().cloned().map(SqlValue::Text));
             changed += tx
                 .execute(&sql, params_from_iter(values))
                 .map_err(|err| err.to_string())?;
-            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let fts_sql = format!("DELETE FROM asset_fts WHERE asset_id IN ({})", placeholders);
             tx.execute(
                 &fts_sql,
                 params_from_iter(chunk.iter().cloned().map(SqlValue::Text)),
             )
             .map_err(|err| err.to_string())?;
+            for id in image_ids {
+                changed_image = true;
+                if !id.trim().is_empty() && id.chars().count() <= 512 {
+                    crate::commands::design_memory::invalidate_source_in_transaction(
+                        &tx,
+                        "drawer-image",
+                        &id,
+                    )?;
+                }
+            }
         }
         tx.commit().map_err(|err| err.to_string())?;
+        self.notify_image_source_changed(changed_image);
         Ok(changed)
     }
 
@@ -2225,5 +2323,310 @@ mod tests {
         println!(
             "[DrawerPerf100k] seed_ms={seed_ms} count_ms={count_ms} analysis_queue_count_ms={analysis_queue_count_ms} initial_page_ms={initial_page_ms} next_page_ms={next_page_ms} deep_offset_90000_ms={deep_page_ms} folder_filter_ms={folder_filter_ms} type_filter_ms={type_filter_ms} search_ms={search_ms} chinese_search_ms={chinese_search_ms} duplicate_lookup_200_ms={duplicate_lookup_ms}"
         );
+    }
+}
+
+#[cfg(test)]
+mod design_memory_lifecycle_tests {
+    use super::*;
+    use crate::commands::design_memory::ensure_memory_schema;
+
+    fn repository() -> SqliteAssetRepository {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::db::schema::ensure_schema(&conn).unwrap();
+        SqliteAssetRepository::new(conn)
+    }
+
+    fn asset(id: &str) -> Value {
+        json!({ "id": id, "type": "image", "name": "synthetic.png", "createdAt": 1 })
+    }
+
+    fn seed_memory(conn: &Connection, id: &str) {
+        ensure_memory_schema(conn).unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO design_memory_sources(kind,source_id) VALUES ('drawer-image',?1)",
+            params![id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO design_memory_records(id,kind,source_id,scope,title,content,tags_json,evidence,attribution_json,created_at,updated_at) VALUES (?1,'drawer-image',?2,'global','synthetic','synthetic memory','[]','synthetic','{}',1,1)",
+            params![format!("memory-{id}"), id],
+        ).unwrap();
+    }
+
+    fn source(conn: &Connection, id: &str) -> Option<(i64, bool)> {
+        conn.query_row(
+            "SELECT revision,deleted FROM design_memory_sources WHERE kind='drawer-image' AND source_id=?1",
+            params![id], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional().unwrap()
+    }
+
+    fn memories(conn: &Connection, id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM design_memory_records WHERE kind='drawer-image' AND source_id=?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn design_memory_single_soft_delete_initializes_schema_and_blocks_late_jobs_without_records() {
+        let repo = repository();
+        // Deliberately pre-memory source: ordinary databases need no prior settings visit.
+        crate::services::migration_service::insert_asset(&repo.conn, &asset("image"), 1).unwrap();
+        assert!(repo.delete_asset("image").unwrap());
+        assert_eq!(source(&repo.conn, "image"), Some((1, true)));
+        assert!(repo.get_asset_by_id("image").unwrap().is_none());
+        assert!(!repo.delete_asset("image").unwrap());
+        assert!(!repo.delete_asset("missing").unwrap());
+        assert_eq!(source(&repo.conn, "image"), Some((1, true)));
+        assert_eq!(source(&repo.conn, "missing"), None);
+        assert!(repo.conn.is_autocommit());
+    }
+
+    #[test]
+    fn design_memory_soft_delete_removes_only_the_changed_source_memory() {
+        let repo = repository();
+        repo.upsert_assets(vec![asset("image"), asset("other")])
+            .unwrap();
+        seed_memory(&repo.conn, "image");
+        seed_memory(&repo.conn, "other");
+        assert!(repo.delete_asset("image").unwrap());
+        assert_eq!(memories(&repo.conn, "image"), 0);
+        assert_eq!(source(&repo.conn, "image"), Some((1, true)));
+        assert_eq!(memories(&repo.conn, "other"), 1);
+        assert_eq!(source(&repo.conn, "other"), Some((0, false)));
+        let fts: i64 = repo
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM asset_fts WHERE asset_id='image'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts, 0);
+    }
+
+    #[test]
+    fn design_memory_original_update_failure_keeps_memory_and_original() {
+        let repo = repository();
+        repo.upsert_assets(vec![asset("image")]).unwrap();
+        seed_memory(&repo.conn, "image");
+        repo.conn.execute_batch("CREATE TRIGGER fail_original BEFORE UPDATE OF deleted_at ON assets BEGIN SELECT RAISE(ABORT,'synthetic original failure'); END;").unwrap();
+        assert!(repo.delete_asset("image").is_err());
+        assert!(repo.get_asset_by_id("image").unwrap().is_some());
+        assert_eq!(memories(&repo.conn, "image"), 1);
+        assert_eq!(source(&repo.conn, "image"), Some((0, false)));
+        assert!(repo.conn.is_autocommit());
+    }
+
+    #[test]
+    fn design_memory_invalidation_failure_rolls_original_and_fts_back() {
+        let repo = repository();
+        repo.upsert_assets(vec![asset("image")]).unwrap();
+        seed_memory(&repo.conn, "image");
+        repo.conn.execute_batch("CREATE TRIGGER fail_memory BEFORE DELETE ON design_memory_records BEGIN SELECT RAISE(ABORT,'synthetic memory failure'); END;").unwrap();
+        assert!(repo.delete_asset("image").is_err());
+        assert!(repo.get_asset_by_id("image").unwrap().is_some());
+        assert_eq!(memories(&repo.conn, "image"), 1);
+        assert_eq!(source(&repo.conn, "image"), Some((0, false)));
+        let fts: i64 = repo
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM asset_fts WHERE asset_id='image'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts, 1);
+    }
+
+    #[test]
+    fn design_memory_commit_failure_rolls_original_and_invalidation_back() {
+        let repo = repository();
+        repo.upsert_assets(vec![asset("image")]).unwrap();
+        seed_memory(&repo.conn, "image");
+        repo.conn.execute_batch("CREATE TABLE synthetic_parent(id INTEGER PRIMARY KEY);
+            CREATE TABLE synthetic_commit_guard(id INTEGER REFERENCES synthetic_parent(id) DEFERRABLE INITIALLY DEFERRED);
+            CREATE TRIGGER fail_commit AFTER UPDATE OF deleted_at ON assets WHEN NEW.deleted_at IS NOT NULL BEGIN INSERT INTO synthetic_commit_guard VALUES (1); END;").unwrap();
+        assert!(repo.delete_asset("image").is_err());
+        assert!(repo.get_asset_by_id("image").unwrap().is_some());
+        assert_eq!(memories(&repo.conn, "image"), 1);
+        assert_eq!(source(&repo.conn, "image"), Some((0, false)));
+        assert!(repo.conn.is_autocommit());
+    }
+
+    #[test]
+    fn design_memory_batch_ignores_missing_duplicates_already_deleted_and_nonimages() {
+        let repo = repository();
+        repo.upsert_assets(vec![
+            asset("a"),
+            asset("b"),
+            asset("old"),
+            json!({"id":"text","type":"text"}),
+        ])
+        .unwrap();
+        for id in ["a", "b", "old"] {
+            seed_memory(&repo.conn, id);
+        }
+        repo.delete_asset("old").unwrap();
+        assert_eq!(
+            repo.delete_assets_batch(vec![
+                "a".into(),
+                "b".into(),
+                "a".into(),
+                "old".into(),
+                "missing".into(),
+                "text".into(),
+                " ".into()
+            ])
+            .unwrap(),
+            3
+        );
+        assert_eq!(source(&repo.conn, "a"), Some((1, true)));
+        assert_eq!(source(&repo.conn, "b"), Some((1, true)));
+        assert_eq!(source(&repo.conn, "old"), Some((1, true)));
+        assert_eq!(source(&repo.conn, "text"), None);
+        assert_eq!(source(&repo.conn, "missing"), None);
+        assert_eq!(memories(&repo.conn, "a"), 0);
+        assert_eq!(repo.delete_assets_batch(Vec::new()).unwrap(), 0);
+    }
+
+    #[test]
+    fn design_memory_successful_batch_spans_chunk_boundary_and_does_not_reinvalidate() {
+        let repo = repository();
+        let ids = (0..501)
+            .map(|i| format!("image-{i:03}"))
+            .collect::<Vec<_>>();
+        repo.upsert_assets(ids.iter().map(|id| asset(id)).collect())
+            .unwrap();
+        assert_eq!(repo.delete_assets_batch(ids.clone()).unwrap(), 501);
+        let states: i64 = repo.conn.query_row("SELECT COUNT(*) FROM design_memory_sources WHERE kind='drawer-image' AND revision=1 AND deleted=1", [], |r| r.get(0)).unwrap();
+        assert_eq!(states, 501);
+        assert_eq!(repo.delete_assets_batch(ids).unwrap(), 0);
+        assert_eq!(source(&repo.conn, "image-500"), Some((1, true)));
+        assert_eq!(
+            repo.get_asset_count(AssetListOptions::default()).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn design_memory_batch_failure_in_later_chunk_rolls_back_every_chunk() {
+        let repo = repository();
+        let ids = (0..501)
+            .map(|i| format!("image-{i:03}"))
+            .collect::<Vec<_>>();
+        repo.upsert_assets(ids.iter().map(|id| asset(id)).collect())
+            .unwrap();
+        seed_memory(&repo.conn, "image-000");
+        seed_memory(&repo.conn, "image-500");
+        // normalize_folder_ids sorts IDs, so this is beyond the 500-row chunk boundary.
+        repo.conn.execute_batch("CREATE TRIGGER fail_last BEFORE DELETE ON design_memory_records WHEN OLD.source_id='image-500' BEGIN SELECT RAISE(ABORT,'synthetic later chunk failure'); END;").unwrap();
+        assert!(repo.delete_assets_batch(ids).is_err());
+        assert_eq!(
+            repo.get_asset_count(AssetListOptions::default()).unwrap(),
+            501
+        );
+        assert_eq!(source(&repo.conn, "image-000"), Some((0, false)));
+        assert_eq!(source(&repo.conn, "image-500"), Some((0, false)));
+        assert_eq!(memories(&repo.conn, "image-000"), 1);
+        assert_eq!(memories(&repo.conn, "image-500"), 1);
+    }
+
+    #[test]
+    fn design_memory_restoring_via_upsert_advances_revision_without_reviving_content_or_tombstones()
+    {
+        let repo = repository();
+        repo.upsert_assets(vec![asset("image")]).unwrap();
+        seed_memory(&repo.conn, "image");
+        repo.conn.execute("INSERT INTO design_memory_tombstones(id,kind,source_id) VALUES ('explicit-user-delete','drawer-image','image')", []).unwrap();
+        repo.delete_asset("image").unwrap();
+        assert_eq!(repo.upsert_assets(vec![asset("image")]).unwrap(), 1);
+        assert_eq!(source(&repo.conn, "image"), Some((2, false)));
+        assert_eq!(memories(&repo.conn, "image"), 0);
+        assert!(repo.get_asset_by_id("image").unwrap().is_some());
+        let tombstones: i64 = repo
+            .conn
+            .query_row("SELECT COUNT(*) FROM design_memory_tombstones", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(tombstones, 1);
+        repo.upsert_assets(vec![asset("image")]).unwrap();
+        assert_eq!(source(&repo.conn, "image"), Some((2, false)));
+    }
+
+    #[test]
+    fn design_memory_failed_restore_rolls_back_only_that_asset_savepoint() {
+        let repo = repository();
+        repo.upsert_assets(vec![asset("image")]).unwrap();
+        seed_memory(&repo.conn, "image");
+        repo.delete_asset("image").unwrap();
+        repo.conn.execute_batch("CREATE TRIGGER fail_restore BEFORE UPDATE OF deleted ON design_memory_sources WHEN OLD.source_id='image' AND NEW.deleted=0 BEGIN SELECT RAISE(ABORT,'synthetic restore failure'); END;").unwrap();
+        assert_eq!(
+            repo.upsert_assets(vec![asset("image"), asset("good")])
+                .unwrap(),
+            1
+        );
+        assert!(repo.get_asset_by_id("image").unwrap().is_none());
+        assert!(repo.get_asset_by_id("good").unwrap().is_some());
+        assert_eq!(source(&repo.conn, "image"), Some((1, true)));
+        assert_eq!(memories(&repo.conn, "image"), 0);
+    }
+
+    #[test]
+    fn design_memory_eagle_restore_failure_does_not_resurrect_original() {
+        let repo = repository();
+        let image = json!({ "id":"image", "type":"image", "externalId":"eagle-image", "externalProvider":"eagle", "name":"synthetic.png" });
+        repo.upsert_assets(vec![image.clone()]).unwrap();
+        repo.delete_asset("image").unwrap();
+        repo.conn.execute_batch("CREATE TRIGGER fail_restore BEFORE UPDATE OF deleted ON design_memory_sources WHEN NEW.deleted=0 BEGIN SELECT RAISE(ABORT,'synthetic restore failure'); END;").unwrap();
+        let result = repo
+            .import_eagle_assets_batch(EagleImportBatchRequest {
+                import_id: "synthetic-failed-import".into(),
+                assets: vec![image],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(result.imported, 0);
+        assert_eq!(result.failed, 1);
+        assert!(repo.get_asset_by_id("image").unwrap().is_none());
+        assert_eq!(source(&repo.conn, "image"), Some((1, true)));
+    }
+
+    #[test]
+    fn design_memory_restore_commit_failure_rolls_back_source_revision_and_original() {
+        let repo = repository();
+        repo.upsert_assets(vec![asset("image")]).unwrap();
+        repo.delete_asset("image").unwrap();
+        repo.conn.execute_batch("CREATE TABLE synthetic_parent(id INTEGER PRIMARY KEY);
+            CREATE TABLE synthetic_commit_guard(id INTEGER REFERENCES synthetic_parent(id) DEFERRABLE INITIALLY DEFERRED);
+            CREATE TRIGGER fail_restore_commit AFTER UPDATE OF deleted_at ON assets WHEN OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS NULL BEGIN INSERT INTO synthetic_commit_guard VALUES (1); END;").unwrap();
+        assert!(repo.upsert_assets(vec![asset("image")]).is_err());
+        assert!(repo.get_asset_by_id("image").unwrap().is_none());
+        assert_eq!(source(&repo.conn, "image"), Some((1, true)));
+        assert!(repo.conn.is_autocommit());
+    }
+
+    #[test]
+    fn design_memory_eagle_import_restores_same_id_atomically() {
+        let repo = repository();
+        let image = json!({ "id":"image", "type":"image", "externalId":"eagle-image", "externalProvider":"eagle", "name":"synthetic.png" });
+        repo.upsert_assets(vec![image.clone()]).unwrap();
+        seed_memory(&repo.conn, "image");
+        repo.delete_asset("image").unwrap();
+        let result = repo
+            .import_eagle_assets_batch(EagleImportBatchRequest {
+                import_id: "synthetic-import".into(),
+                assets: vec![image],
+                total_count: Some(1),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(result.imported, 1);
+        assert_eq!(source(&repo.conn, "image"), Some((2, false)));
+        assert_eq!(memories(&repo.conn, "image"), 0);
     }
 }

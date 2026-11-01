@@ -11,7 +11,6 @@ import type { DrawerTabType,FolderContextMenuState } from '../../../types/drawer
 import { readImageDisplaySize } from '../../../utils/canvasImageSize';
 import { createCanvasAiOutputBufferItem,getCanvasAiSuccessfulOutputs } from '../../../utils/canvasItemSelectors';
 import { normalizeLocalDragPath } from '../../../utils/localMediaPaths';
-import { getCachedPlatformCapabilities,isPrimaryModifier,unsupportedPlatformMessage } from '../../../platform/capabilities';
 import { getDurableAiMediaSource } from '../../aiImageResultRecovery';
 import { isCanvasAiGeneratedType,isCanvasAiGeneratorType } from '../../canvasAiRuntime';
 import { type CanvasImageItem } from '../../canvasModel';
@@ -467,7 +466,7 @@ export const handleDeleteFolderImpl = (ctx: Pick<drawerAssetsActionContext, 'act
 export const handleDrawerFolderSelectionClickImpl = (ctx: Pick<drawerAssetsActionContext, 'lastSelectedFolderIdRef' | 'setSelectedFolderIds' | 'visibleFolderIds'>, folderId: string, event: React.MouseEvent) => {
   const { lastSelectedFolderIdRef, setSelectedFolderIds, visibleFolderIds } = ctx;
     const isRangeSelect = event.shiftKey;
-    const isToggleSelect = isPrimaryModifier(event);
+    const isToggleSelect = event.ctrlKey || event.metaKey;
     if (isRangeSelect) {
       const lastId = lastSelectedFolderIdRef.current;
       if (lastId && visibleFolderIds.includes(lastId) && visibleFolderIds.includes(folderId)) {
@@ -1124,10 +1123,6 @@ export const resolveExternalDragLocalPathImpl = async (ctx: Pick<drawerAssetsAct
 
 export const startNativeDrawerItemDragImpl = async (ctx: Pick<drawerAssetsActionContext, 'clearIdleAutoClose' | 'getExternalDragItemsForItem' | 'isPointerInsideDrawerRef' | 'resolveExternalDragLocalPath' | 'scheduleAutoClose' | 'showToast'>, itemId: string) => {
   const { clearIdleAutoClose, getExternalDragItemsForItem, isPointerInsideDrawerRef, resolveExternalDragLocalPath, scheduleAutoClose, showToast } = ctx;
-    if (getCachedPlatformCapabilities()?.nativeFileDrag === false) {
-      showToast(unsupportedPlatformMessage('从应用拖出文件'));
-      return false;
-    }
     const resolved = await Promise.all(getExternalDragItemsForItem(itemId).map(resolveExternalDragLocalPath));
     const paths = Array.from(new Set(resolved.map(result => result.path).filter(Boolean)));
     if (paths.length === 0) {

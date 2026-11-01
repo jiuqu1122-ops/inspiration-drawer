@@ -1,3 +1,7 @@
+import { connectDesignMemoryEvents, designMemory } from '../../designMemory/storage';
+import { beginChatDesignSummaryMemory, completeChatDesignSummaryMemory, designMemoryProjectId, rememberExplicitChatDesign } from '../../designMemory/sources';
+import { describeDesignMemoryTurn, designMemoryKindsInMessages, getDesignMemoryTurnReport, recallDesignMemoryForTurn, validateDesignMemoryMessages } from '../../designMemory/context';
+import type { DesignMemoryKind } from '../../designMemory/types';
 import { listen } from '@tauri-apps/api/event';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -14,6 +18,7 @@ import {
 } from '../model/chatTypes';
 import {
   deleteChatConversation,
+  deleteChatConversations,
   getChatSummary,
   listChatConversations,
   listChatMessages,
@@ -27,10 +32,14 @@ import {
   writeActiveChatConversationId,
 } from '../storage/chatStorage';
 import { buildChatContext, buildSummaryRequestMessages } from '../context/chatContextBuilder';
+import { getSelectedChatSkill } from '../skills/chatSkills';
 import { estimateChatTokens } from '../context/chatContextBudget';
 import type { ChatVisionAttachmentResolver } from '../attachments/chatVisionAttachmentResolver';
+import { formatReferenceUploadFailureNotice } from '../../referenceUploadError';
 import {
   getChatToolDefinitions,
+  isChatAgentCreationFollowup,
+  shouldForceChatAgentCreation,
   resolveDirectVisualTool,
   shouldComposeImageVariants,
   shouldExposeBatchImageOperation,
@@ -40,6 +49,10 @@ import {
 import { routeChatToolCall } from '../tools/chatToolRouter';
 import { compactChatToolResult, compactChatToolResultForProvider, serializeChatToolResult } from '../tools/chatToolResult';
 import { selectBatchImageAttachments } from '../tools/batchImageOperation';
+import {
+  normalizeImageVariants,
+  resolveImageVariantToolRoute,
+} from '../tools/imageVariantNormalization';
 import { applyChatImageGenerationSettings } from './chatImageGenerationSettings';
 import { summarizeCompletedBatchCall } from './chatBatchCompletion';
 import {
@@ -59,10 +72,12 @@ import {
   normalizeWebSearchQuery,
 } from './chatTurnPolicy';
 import { extractChatBatchImagePlan } from './chatBatchImagePlan';
+import { chatFileCreationTurnInstruction, getChatFileCreationTurn } from './chatFileCreationPolicy';
+import { buildChatSearchContinuation, buildSearchSynthesisRecoveryTools, chatSearchModelFailureMessage, classifyEmptyChatContinuation, collectChatSearchEvidence } from './chatSearchContinuation';
+import { isChatPresentationExportRequest } from '../presentations/chatPresentation';
+import { mergePresentationToolCalls, needsPresentationDeliveryRecovery, presentationInterruptedMessage, resolvePresentationToolChoice, resolvePresentationTurnText, shouldContinuePresentationAfterMedia, validatePresentationImageCall } from '../presentations/presentationTurn';
 import {
   fallbackBatchPlanDecision,
-  parseBatchPlanDecision,
-  type BatchPlanDecision,
 } from './chatBatchPlanReply';
 import { isHistoricalImageContinuation, selectChatImageAttachments } from './chatHistoricalAttachments';
 import { resolveChatReferenceArguments } from './chatReferenceArguments';
@@ -129,12 +144,18 @@ export type ChatBatchCompletedPayload = {
 };
 
 export type UseChatRuntimeOptions = {
+  /** Stable design project ID, shared by related sessions. Omit for strict conversation isolation. */
+  designMemoryProjectId?: string | null;
   model: string;
   modelOptions?: string[];
   serverManagedChannelFailover?: boolean;
   imageModel?: string;
   imageAspectRatio?: string;
   imageResolution?: string;
+  imageQuality?: string;
+  imageModelOptions?: Array<{ value: string; label?: string; hint?: string; aspectRatios?: string[]; aspectRatiosByResolution?: Record<string, string[]>; resolutions?: string[] }>;
+  imageAspectRatioOptions?: string[];
+  imageResolutionOptions?: string[];
   approvalMode?: 'ask' | 'auto';
   executeTool: ChatToolExecutor;
   resolveAttachmentUrl?: (attachment: ChatAttachment) => Promise<string>;
@@ -145,6 +166,8 @@ export type UseChatRuntimeOptions = {
   onBatchStarted?: (payload: ChatBatchStartedPayload) => void | Promise<void>;
   onBatchMediaReady?: (payload: ChatBatchMediaReadyPayload) => void | Promise<void>;
   onBatchCompleted?: (payload: ChatBatchCompletedPayload) => void | Promise<void>;
+  cloudWalletMode?: boolean;
+  onWalletSettlementComplete?: () => void;
 };
 
 type PendingApprovalRun = {
@@ -182,76 +205,6 @@ const SUMMARY_KEEP_RECENT = 28;
 const LEGACY_PROVIDER_MODELS = new Set(['codex', 'openai-compatible', 'default']);
 const CHAT_WEB_SEARCH_ENABLED_STORAGE_KEY = 'drawer_chat_web_search_enabled';
 const STREAM_RENDER_INTERVAL_MS = 64;
-
-const classifyBatchPlanReply = async (input: {
-  model: string;
-  analysisSummary: string;
-  userReply: string;
-  hasNewAttachments: boolean;
-}): Promise<BatchPlanDecision> => {
-  const requestId = createChatId('chat-batch-plan-decision');
-  try {
-    const result = await runInternalAgentModelRequest({
-      savedModel: input.model,
-      usageContext: 'system_internal',
-      requestId,
-      createRequestId: () => createChatId('chat-batch-plan-model-fallback'),
-      request: requestModel => requestChatCompletion({
-        requestId: requestModel.requestId,
-        model: requestModel.model,
-        usageContext: requestModel.usageContext,
-        stream: false,
-        messages: [
-          {
-            role: 'system',
-            content: [
-            '你负责判断用户对图片批处理执行方案的自然语言回复。',
-            'confirm：用户认可方案、表示继续、让你开始做或开始生图，即使没有使用固定口令。',
-            'revise：用户提出任何新增要求、否定项、修改意见，或带来了新的附件。',
-            'cancel：用户明确表示取消、停止或暂时不做。',
-            '不要回答用户，不要解释，只调用 decide_batch_plan_reply 一次。',
-            ].join('\n'),
-          },
-          {
-            role: 'user',
-            content: [
-            `当前方案：\n${input.analysisSummary.slice(0, 6_000)}`,
-            `用户回复：\n${input.userReply.slice(0, 2_000)}`,
-            `用户是否新增附件：${input.hasNewAttachments ? '是' : '否'}`,
-            ].join('\n\n'),
-          },
-        ],
-        tools: [{
-          type: 'function',
-          function: {
-          name: 'decide_batch_plan_reply',
-          description: '判断用户是在确认执行、修改方案还是取消任务。',
-          parameters: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              action: { type: 'string', enum: ['confirm', 'revise', 'cancel'] },
-            },
-            required: ['action'],
-          },
-          },
-        }],
-        toolChoice: {
-          type: 'function',
-          function: { name: 'decide_batch_plan_reply' },
-        },
-      }),
-    });
-    const toolDecision = result.toolCalls
-      .find(call => call.name === 'decide_batch_plan_reply')?.arguments;
-    return parseBatchPlanDecision(toolDecision)
-      || parseBatchPlanDecision(result.content)
-      || fallbackBatchPlanDecision(input.userReply);
-  } catch (error) {
-    console.warn('LLM 判断批处理方案回复失败，使用本地兜底:', error);
-    return fallbackBatchPlanDecision(input.userReply);
-  }
-};
 
 const createBatchGroupName = (instruction: string) => {
   const subject = instruction
@@ -377,54 +330,6 @@ const currentLocalDateContext = () => {
   return `${date}（${timeZone}）`;
 };
 
-const flattenWebSearchContext = (
-  providerMessages: Array<Record<string, unknown>>,
-  materialLimit = 9_000,
-) => {
-  const webCallIds = new Set<string>();
-  providerMessages.forEach(message => {
-    if (!Array.isArray(message.tool_calls)) return;
-    message.tool_calls.forEach(value => {
-      if (!value || typeof value !== 'object') return;
-      const call = value as Record<string, unknown>;
-      const fn = call.function && typeof call.function === 'object'
-        ? call.function as Record<string, unknown>
-        : {};
-      if (String(fn.name || '') === 'web_search') webCallIds.add(String(call.id || ''));
-    });
-  });
-  if (webCallIds.size === 0) return providerMessages;
-
-  const searchMaterials: string[] = [];
-  const normalized = providerMessages.flatMap(message => {
-    if (message.role === 'tool' && webCallIds.has(String(message.tool_call_id || ''))) {
-      const content = String(message.content || '').trim();
-      if (content) searchMaterials.push(content);
-      return [];
-    }
-    if (!Array.isArray(message.tool_calls)) return [message];
-    const remainingCalls = message.tool_calls.filter(value => {
-      if (!value || typeof value !== 'object') return true;
-      return !webCallIds.has(String((value as Record<string, unknown>).id || ''));
-    });
-    const content = typeof message.content === 'string' ? message.content.trim() : message.content;
-    if (remainingCalls.length > 0) return [{ ...message, tool_calls: remainingCalls }];
-    return content ? [{ role: message.role, content }] : [];
-  });
-  if (searchMaterials.length === 0) return normalized;
-
-  const materialMessage = {
-    role: 'system',
-    content: [
-      '以下是本轮已经取得的联网检索资料。请把它当作外部资料继续完成回答；不要把工具参数或原始 JSON 展示给用户。',
-      searchMaterials.join('\n\n').slice(0, materialLimit),
-    ].join('\n\n'),
-  };
-  const systemPrefixEnd = normalized.findIndex(message => message.role !== 'system');
-  const insertAt = systemPrefixEnd < 0 ? normalized.length : systemPrefixEnd;
-  return [...normalized.slice(0, insertAt), materialMessage, ...normalized.slice(insertAt)];
-};
-
 export function useChatRuntime(options: UseChatRuntimeOptions) {
   const optionsRef = useRef(options);
   optionsRef.current = options;
@@ -438,6 +343,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [nextBeforeCreatedAt, setNextBeforeCreatedAt] = useState<number | undefined>();
+  const [nextBeforeId, setNextBeforeId] = useState<string | undefined>();
   const [searchQuery, setSearchQuery] = useState('');
   const [usage, setUsage] = useState<ReturnType<typeof normalizeUsage>>();
   const [webSearchEnabled, setWebSearchEnabled] = useState(() => (
@@ -451,6 +357,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
   const activeConversationIdRef = useRef(activeConversationId);
   const busyConversationIdsRef = useRef(new Set<string>());
   const activeRequestsRef = useRef(new Map<string, ActiveChatRequest>());
+  const designMemoryTurnsRef = useRef(new Map<string, DesignMemoryKind[]>());
   const recoverableRequestIdsRef = useRef(new Map<string, string>());
   const activeBatchRunsRef = useRef(new Map<string, ActiveBatchRun>());
   const pendingApprovalsRef = useRef(new Map<string, PendingApprovalRun>());
@@ -631,6 +538,40 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     patchMessage(messageId, message => appendChatStreamBuffers(message, buffered));
   }, [patchMessage]);
 
+  // Memory revocation is immediate locally and propagated across native webviews.
+  useEffect(() => {
+    void connectDesignMemoryEvents();
+    return designMemory.subscribe(event => {
+      for (const [conversationId, usedKinds] of designMemoryTurnsRef.current) {
+        if (!event.kinds.some(kind => usedKinds.includes(kind))) continue;
+        designMemoryTurnsRef.current.delete(conversationId);
+        const active = activeRequestsRef.current.get(conversationId);
+        const pending = pendingApprovalsRef.current.get(conversationId);
+        activeRequestsRef.current.delete(conversationId);
+        pendingApprovalsRef.current.delete(conversationId);
+        recoverableRequestIdsRef.current.delete(conversationId);
+        if (pending) {
+          pending.calls.forEach(call => {
+            if (call.status !== 'pending' && call.status !== 'awaiting-approval') return;
+            call.status = 'cancelled'; call.completedAt = Date.now();
+            call.resultJson = serializeChatToolResult({ cancelled: true, reason: '设计记忆已关闭或更新' });
+            void upsertChatToolCall(call).catch(() => {});
+          });
+        }
+        const messageId = active?.messageId || pending?.assistantMessageId;
+        if (messageId) {
+          flushStreamDelta(messageId);
+          patchMessage(messageId, message => finalizeChatMessageState({
+            ...message,
+            content: message.content.trim() || '设计记忆已关闭或更新，已停止本轮回复。',
+          }, 'cancelled', Date.now(), '设计记忆已更新'), true);
+          if (!activeBatchRunsRef.current.has(conversationId)) updateConversationBusy(conversationId, false);
+        }
+        if (active) void cancelChatCompletion(active.requestId).catch(() => {});
+      }
+    });
+  }, [flushStreamDelta, patchMessage, updateConversationBusy]);
+
   const queueStreamDelta = useCallback((
     messageId: string,
     kind: 'content' | 'reasoning',
@@ -671,7 +612,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         const isStillActive = activeRequest?.messageId === resolved.id
           || activeBatch?.messageId === resolved.id;
         if (isStillActive) return resolved;
-        const recovered = finalizeOrphanedStreamingChatMessage(resolved);
+        const latestUserText = [...page.messages].reverse().find(previous => previous.role === 'user' && previous.createdAt <= resolved.createdAt)?.content || '';
+        const recovered = finalizeOrphanedStreamingChatMessage(resolved, Date.now(), resolvePresentationTurnText(latestUserText, page.messages.filter(previous => previous.createdAt <= resolved.createdAt)));
         if (recovered !== resolved) persistMessageSoon(recovered, true);
         return recovered;
       });
@@ -682,7 +624,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       messagesRef.current = resolvedMessages;
       setMessages(resolvedMessages);
       setHasMoreMessages(page.hasMore);
-      setNextBeforeCreatedAt(page.nextBeforeCreatedAt || undefined);
+      setNextBeforeCreatedAt(page.nextBeforeCreatedAt ?? undefined);
+      setNextBeforeId(page.nextBeforeId ?? undefined);
       summaryRef.current = nextSummary;
       setSummary(nextSummary);
       syncActiveConversationActivity(conversationId);
@@ -858,11 +801,12 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
 
   const loadOlderMessages = useCallback(async () => {
     const conversationId = activeConversationIdRef.current;
-    if (!conversationId || !hasMoreMessages || !nextBeforeCreatedAt || loadingOlder) return;
+    if (!conversationId || !hasMoreMessages || nextBeforeCreatedAt === undefined || loadingOlder) return;
     setLoadingOlder(true);
     try {
       const page = await listChatMessages(conversationId, {
         beforeCreatedAt: nextBeforeCreatedAt,
+        beforeId: nextBeforeId,
         limit: PAGE_SIZE,
       });
       cacheMessages(page.messages);
@@ -874,11 +818,12 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         return next;
       });
       setHasMoreMessages(page.hasMore);
-      setNextBeforeCreatedAt(page.nextBeforeCreatedAt || undefined);
+      setNextBeforeCreatedAt(page.nextBeforeCreatedAt ?? undefined);
+      setNextBeforeId(page.nextBeforeId ?? undefined);
     } finally {
       setLoadingOlder(false);
     }
-  }, [cacheMessages, hasMoreMessages, loadingOlder, nextBeforeCreatedAt]);
+  }, [cacheMessages, hasMoreMessages, loadingOlder, nextBeforeCreatedAt, nextBeforeId]);
 
   const maybeSummarize = useCallback(async (conversationId: string) => {
     const current = getConversationMessages(conversationId)
@@ -898,6 +843,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     const tokens = unsummarized.reduce((total, message) => total + estimateChatTokens(message.content), 0);
     if (tokens < SUMMARY_TRIGGER_TOKENS && unsummarized.length < SUMMARY_TRIGGER_MESSAGES) return;
     try {
+      const memoryTicket = await beginChatDesignSummaryMemory(conversationId, unsummarized).catch(() => null);
+      const memoryProjectId = optionsRef.current.designMemoryProjectId;
+      const memoryTitle = conversationsRef.current.find(item => item.id === conversationId)?.title;
       const requestId = createChatId('chat-summary');
       const savedModel = conversationsRef.current.find(item => item.id === conversationId)?.model
         || optionsRef.current.model;
@@ -923,6 +871,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         updatedAt: Date.now(),
       };
       await upsertChatSummary(next);
+      await completeChatDesignSummaryMemory(memoryTicket, next, { title: memoryTitle, projectId: memoryProjectId }).catch(() => {});
       if (activeConversationIdRef.current === conversationId) {
         summaryRef.current = next;
         setSummary(next);
@@ -947,6 +896,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     let index = run.index;
     const toolMessages = [...run.toolMessages];
     for (; index < run.calls.length; index += 1) {
+      await validateDesignMemoryMessages(run.providerMessages);
       const call = run.calls[index];
       patchThinkingStep(run.assistantMessageId, `tool-${index}`, {
         type: call.toolName === 'web_search' ? 'search' : 'tool',
@@ -960,6 +910,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       const notifiedMediaIds = new Set<string>();
       let batchAttachments: ChatAttachment[] = [];
       let batchOutputCount = 1;
+      let batchTotal = 0;
       let batchStarted = false;
       let progressQueue = Promise.resolve();
       const notifyGeneratedMedia = async () => {
@@ -1010,7 +961,54 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           }
           return;
         }
-        const generatedMedia = getGeneratedMediaFromToolCall(call).filter(media => media.type === 'image');
+        if (call.toolName === 'generate_image_variants' && batchStarted) {
+          let parsed: Record<string, unknown> = {};
+          try {
+            parsed = JSON.parse(call.resultJson || '{}') as Record<string, unknown>;
+          } catch (_) {
+            return;
+          }
+          const results = (Array.isArray(parsed.results) ? parsed.results : [])
+            .filter((value): value is Record<string, unknown> => Boolean(value && typeof value === 'object'))
+            .sort((left, right) => Number(left.variantIndex) - Number(right.variantIndex));
+          for (const result of results) {
+            const sourceIndex = Number(result.variantIndex);
+            if (!Number.isInteger(sourceIndex) || sourceIndex < 0 || sourceIndex >= batchTotal) continue;
+            const generatedMedia = getGeneratedMediaFromToolCall({
+              ...call,
+              resultJson: serializeChatToolResult({ media: result.media }),
+            }).filter(media => media.type === 'image').slice(0, 1);
+            for (const media of generatedMedia) {
+              const enrichedMedia = {
+                ...media,
+                name: media.name || String(result.name || '').trim() || `方案 ${sourceIndex + 1}`,
+                prompt: media.prompt || String(result.prompt || '').trim() || undefined,
+              };
+              const notificationId = `variant:${sourceIndex}:${media.id}`;
+              if (notifiedMediaIds.has(notificationId)) continue;
+              notifiedMediaIds.add(notificationId);
+              try {
+                if (optionsRef.current.onBatchMediaReady) {
+                  await optionsRef.current.onBatchMediaReady({
+                    batchId: call.id,
+                    media: enrichedMedia,
+                    attachmentId: `variant-${sourceIndex}`,
+                    sourceIndex,
+                    outputIndex: 0,
+                    slotIndex: sourceIndex,
+                    total: batchTotal,
+                  });
+                } else {
+                  await optionsRef.current.onGeneratedMediaReady?.(enrichedMedia);
+                }
+              } catch (error) {
+                console.warn('Chat 独立方案结果加入画布失败:', error);
+              }
+            }
+          }
+          return;
+        }
+        const generatedMedia = getGeneratedMediaFromToolCall(call);
         for (const media of generatedMedia) {
           if (notifiedMediaIds.has(media.id)) continue;
           notifiedMediaIds.add(media.id);
@@ -1022,7 +1020,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         }
       };
       const notifyBatchCompleted = async (cancelled: boolean) => {
-        if (call.toolName !== 'batch_image_operation' || !batchStarted) return;
+        if (!['batch_image_operation', 'generate_image_variants'].includes(call.toolName) || !batchStarted) return;
         let results: Array<Record<string, unknown>> = [];
         try {
           const parsed = JSON.parse(call.resultJson || '{}') as Record<string, unknown>;
@@ -1036,6 +1034,10 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         )));
         const failedSourceIndexes = results.flatMap(result => {
           if (result.status !== 'error' && result.status !== 'cancelled') return [];
+          if (call.toolName === 'generate_image_variants') {
+            const variantIndex = Number(result.variantIndex);
+            return Number.isInteger(variantIndex) && variantIndex >= 0 ? [variantIndex] : [];
+          }
           const sourceIndex = attachmentIndexById.get(String(result.attachmentId || '').trim());
           return sourceIndex === undefined ? [] : [sourceIndex];
         });
@@ -1045,7 +1047,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         try {
           await optionsRef.current.onBatchCompleted?.({
             batchId: call.id,
-            total: batchAttachments.length * batchOutputCount,
+            total: batchTotal,
             completedSlots,
             failedSourceIndexes,
             cancelled,
@@ -1058,6 +1060,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       try {
         args = parseArguments(call.argumentsJson);
         const conversationMessages = getConversationMessages(run.conversationId);
+        const presentationText = resolvePresentationTurnText(run.userText, conversationMessages);
+        const previousCalls = conversationMessages.find(message => message.id === run.assistantMessageId)?.toolCalls || [];
+        validatePresentationImageCall(presentationText, call.toolName, args, previousCalls.filter(previous => previous.id !== call.id));
         const generated = latestGeneratedMedia(conversationMessages);
         const currentImageAttachments = selectChatImageAttachments(
           conversationMessages,
@@ -1073,7 +1078,28 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           if (!args.mediaId) args.mediaId = generated.id;
           if (!args.assetId && generated.assetId) args.assetId = generated.assetId;
         }
-        if (call.toolName === 'generate_image' || call.toolName === 'generate_image_variants' || call.toolName === 'edit_image' || call.toolName === 'batch_image_operation') {
+        if (call.toolName === 'generate_image_variants') {
+          const imageSelection = selectChatImageAttachments(conversationMessages, run.userText);
+          const requireMultiple = shouldUseIndependentImageVariants(imageSelection.toolIntentText);
+          const fallback = requireMultiple
+            ? buildIndependentImageVariantFallback({
+                userText: run.userText,
+                toolIntentText: imageSelection.toolIntentText,
+                assistantTexts: conversationMessages
+                  .filter(message => message.role === 'assistant' && message.content.trim())
+                  .sort((left, right) => right.createdAt - left.createdAt)
+                  .map(message => message.content),
+              })
+            : undefined;
+          const route = resolveImageVariantToolRoute({
+            args,
+            fallbackVariants: fallback?.variants,
+            requireMultiple,
+          });
+          call.toolName = route.toolName;
+          args = route.args;
+        }
+        if (call.toolName === 'generate_image' || call.toolName === 'generate_image_variants' || call.toolName === 'edit_image' || call.toolName === 'generate_video' || call.toolName === 'batch_image_operation') {
           args = applyChatImageGenerationSettings(args, optionsRef.current);
         }
         call.argumentsJson = JSON.stringify(args);
@@ -1083,6 +1109,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
             Array.isArray(args.attachmentIds) ? args.attachmentIds.map(String) : undefined,
           );
           batchOutputCount = Math.min(4, Math.max(1, Math.round(Number(args.outputCountPerImage) || 1)));
+          batchTotal = batchAttachments.length * batchOutputCount;
           batchStarted = true;
           try {
             await optionsRef.current.onBatchStarted?.({
@@ -1090,12 +1117,33 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
               name: createBatchGroupName(String(args.instruction || run.userText)),
               instruction: String(args.instruction || run.userText).trim(),
               attachmentIds: batchAttachments.map(attachment => attachment.id),
-              total: batchAttachments.length * batchOutputCount,
+              total: batchTotal,
               outputCountPerImage: batchOutputCount,
               aspectRatio: String(args.aspectRatio || '').trim() || undefined,
             });
           } catch (error) {
             console.warn('Chat 批量画布占位编组创建失败:', error);
+          }
+        }
+        if (call.toolName === 'generate_image_variants') {
+          const variants = normalizeImageVariants(args.variants);
+          if (variants.length >= 2) {
+            batchOutputCount = 1;
+            batchTotal = variants.length;
+            batchStarted = true;
+            try {
+              await optionsRef.current.onBatchStarted?.({
+                batchId: call.id,
+                name: createBatchGroupName(variants.map(variant => variant.name).join('、')),
+                instruction: String(args.sharedRequirements || run.userText).trim(),
+                attachmentIds: variants.map((_, variantIndex) => `variant-${variantIndex}`),
+                total: batchTotal,
+                outputCountPerImage: 1,
+                aspectRatio: String(args.aspectRatio || '').trim() || undefined,
+              });
+            } catch (error) {
+              console.warn('Chat 独立方案画布占位编组创建失败:', error);
+            }
           }
         }
         const approved = approvedCallId === call.id;
@@ -1113,7 +1161,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
               progressQueue = progressQueue.then(async () => {
                 call.resultJson = serializeChatToolResult(compactChatToolResult(call.toolName, value));
                 await upsertChatToolCall(call);
-                patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: [...run.calls] }));
+                patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls) }));
                 await notifyGeneratedMedia();
               });
               return progressQueue;
@@ -1141,7 +1189,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
               }
             }
             await upsertChatToolCall(call);
-            patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: [...run.calls] }));
+            patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls) }));
           },
         });
         if (routed.requiresApproval) {
@@ -1153,7 +1201,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
             status: 'awaiting-approval',
           }, true);
           await upsertChatToolCall(call);
-          patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: [...run.calls] }), true);
+          patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls) }), true);
           pendingApprovalsRef.current.set(run.conversationId, {
             ...run,
             calls: [...run.calls],
@@ -1218,7 +1266,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           syncActiveConversationActivity(run.conversationId);
         }
       }
-      patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: [...run.calls] }), true);
+      patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls) }), true);
     }
     pendingApprovalsRef.current.delete(run.conversationId);
     if (run.calls.some(call => call.status === 'cancelled')) {
@@ -1229,7 +1277,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       updateConversationBusy(run.conversationId, false);
       return;
     }
-    const completedBatchCall = run.calls.find(call => call.toolName === 'batch_image_operation');
+    const presentationText = resolvePresentationTurnText(run.userText, getConversationMessages(run.conversationId));
+    const completedBatchCall = !presentationText && run.calls.find(call => call.toolName === 'batch_image_operation');
     if (completedBatchCall) {
       const summary = summarizeCompletedBatchCall(completedBatchCall);
       patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
@@ -1243,7 +1292,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       return;
     }
     const visibleCompletion = summarizeCompletedVisibleToolCalls(run.calls);
-    if (visibleCompletion) {
+    if (visibleCompletion && !shouldContinuePresentationAfterMedia(presentationText, run.calls)) {
       patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
         ...message,
         content: [normalizeVisibleChatText(message.content), visibleCompletion.content]
@@ -1283,7 +1332,11 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     resumeRequestId?: string,
     emptyRecoveryCount = 0,
   ) => {
-    if (!canRunChatToolRound(depth)) throw new Error(`连续工具调用超过 ${MAX_TOOL_ROUNDS} 轮，已停止`);
+    await validateDesignMemoryMessages(providerMessages);
+    const memoryKinds = designMemoryKindsInMessages(providerMessages);
+    if (memoryKinds.length) designMemoryTurnsRef.current.set(conversationId, memoryKinds);
+    else designMemoryTurnsRef.current.delete(conversationId);
+
     const providerRequestModel = resolveValidAgentModel({
       savedModel: requestModel,
       availableModels: optionsRef.current.modelOptions,
@@ -1294,7 +1347,10 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     const imageSelection = selectChatImageAttachments(conversationMessages, userText);
     const hasRecentMedia = Boolean(latestGeneratedMedia(conversationMessages));
     const currentImageAttachmentCount = imageSelection.attachments.length;
-    const toolIntentText = imageSelection.toolIntentText;
+    const presentationText = resolvePresentationTurnText(userText, conversationMessages);
+    const toolIntentText = presentationText || imageSelection.toolIntentText;
+    if (!presentationText && !canRunChatToolRound(depth)) throw new Error(`连续工具调用超过 ${MAX_TOOL_ROUNDS} 轮，已停止`);
+    const agentCreationFollowup = isChatAgentCreationFollowup(conversationMessages, userText);
     const directVisualTool = resolveDirectVisualTool(
       toolIntentText,
       hasRecentMedia,
@@ -1310,9 +1366,11 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     const previousWebSearchQueries = new Set(
       depth === 0 ? [] : providerToolCallQueries(providerMessages, 'web_search'),
     );
-    const previousFileCreateCount = depth === 0
-      ? 0
-      : providerToolCallCount(providerMessages, 'create_file');
+    const fileCreationTurn = getChatFileCreationTurn(depth === 0 ? [] : providerMessages);
+    const agentCreatedThisTurn = depth > 0 && conversationMessages.some(message => (
+      message.id === assistantMessageId
+      && message.toolCalls.some(call => call.toolName === 'create_agent' && call.status === 'completed')
+    ));
     const previousBatchImageOperationCount = depth === 0
       ? 0
       : providerToolCallCount(providerMessages, 'batch_image_operation');
@@ -1323,12 +1381,16 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       ? 0
       : providerToolCallCount(providerMessages, 'generate_image');
     const webSearchCount = previousWebSearchQueries.size;
+    const searchEvidence = collectChatSearchEvidence(providerMessages);
+    const searchResultCount = searchEvidence.reduce((sum, item) => sum + item.results.length, 0);
+    const recoverSearchSynthesis = emptyRecoveryCount > 0 && searchResultCount > 0;
+    const recoverPresentationDelivery = Boolean(presentationText && emptyRecoveryCount > 0);
     const webSearchRequested = webSearchEnabled || shouldExposeWebSearch(userText);
     const webSearchAvailable = webSearchRequested
-      && webSearchCount < MAX_WEB_SEARCH_QUERIES_PER_TURN;
+      && webSearchCount < MAX_WEB_SEARCH_QUERIES_PER_TURN && !recoverSearchSynthesis;
     const batchImageOperationAvailable = batchImageOperationRequested
       && previousBatchImageOperationCount === 0;
-    const tools = previousFileCreateCount > 0
+    const tools = !fileCreationTurn.canAttempt || agentCreatedThisTurn
       ? []
       : getChatToolDefinitions(
         toolIntentText,
@@ -1336,12 +1398,30 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         webSearchAvailable,
         webSearchCount >= MAX_WEB_SEARCH_QUERIES_PER_TURN,
         currentImageAttachmentCount,
+        Boolean(getSelectedChatSkill(conversationId)),
+        agentCreationFollowup,
       ).filter(tool => (
-        (previousBatchImageOperationCount === 0 || tool.function.name !== 'batch_image_operation')
-        && (previousImageVariantCount === 0 || tool.function.name !== 'generate_image_variants')
+        (!(recoverSearchSynthesis || recoverPresentationDelivery) || tool.function.name === 'create_file')
+        && (previousBatchImageOperationCount === 0 || tool.function.name !== 'batch_image_operation')
+        && (presentationText || previousImageVariantCount === 0 || tool.function.name !== 'generate_image_variants')
         && (previousCompositeImageCount === 0 || tool.function.name !== 'generate_image')
       ));
     const requestInstructions: Array<Record<string, unknown>> = [];
+    if (presentationText) requestInstructions.push({ role: 'system', content: [
+      '本轮最终交付是可下载的 PPTX，不是配图。纯数据或已有素材足够时不要额外生图；工业设计研究先找与当前研究对象相关、可核验的参考图；仅有必要且用户允许时生成并标注 AI 概念示意。已有合适附件时优先复用，不为了视觉装饰强制付费生图。无图片时用原生图示解释结构，不把示意图冒充真实产品照片。',
+      'PPT 配图不设每份调用次数或图片总数上限，按真实内容需要决定，不为凑图重复生成；单次请求仍遵守所选生图模型的规格。',
+      '如需生图，先完成图片工具，再根据返回的真实媒体 id 填写 presentation.slides[].imageAttachmentId；不要在尚未取得图片 ID 时猜测或同时提交 create_file。',
+      '配图失败时使用已有附件或纯文字版继续；明确说明缺图，不无限重试，不自动改用其它付费工具。取得配图后必须继续调用 create_file(format=pptx)，不能只以图片结果结束。',
+      '图片设置为自动时，省略 model、aspectRatio 和 resolution，让运行时依据当前素材用途选择可用模型、画幅和清晰度；按真实画面用途选择比例和清晰度；若完成了生图，明确以对应的真实 imageAttachmentId 放入概念页并标为 AI 概念示意，不把不相关历史图片自动放进封面。',
+      '研究检索先拆成 2～4 个具体问题：对象与范围、代表产品/车型及年款、造型/按键/调节/CMF 的同口径证据，优先官方产品页、手册和有出处的图片，避免一条关键词堆满多个品牌后就收尾。过滤配件商城、重复版本和无关结果；只有一个有效案例时收敛为研究启动稿，不伪装成完整竞品调研。',
+      '联网检索必须先做研究综合再做排版：每页只保留一个结论、2～4 条短证据和必要来源；优先合并同一事实的多个来源，区分已证实事实、推断和待验证项。禁止把搜索结果、网页摘要、JSON、URL 列表或长段原文直接塞进 body/items/notes；长细节放讲稿 notes 也必须压缩成要点。',
+    ].join('\n') });
+    if (agentCreationFollowup && !agentCreatedThisTurn) {
+      requestInstructions.push({
+        role: 'system',
+        content: '当前消息是在补充此前创建智能体/技能的需求。结合前文判断用途是否已足够明确：足够明确就调用 create_agent 真正保存；若仍缺少职责或目标，继续询问。不要只给出技能文本却声称已创建。',
+      });
+    }
     if (independentImageVariantsRequested && previousImageVariantCount === 0) {
       requestInstructions.push({
         role: 'system',
@@ -1351,7 +1431,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           '禁止调用单 prompt 的 generate_image 并设置 count，也禁止在任一方案图里拼入其他方案。',
         ].join('\n'),
       });
-    } else if (previousImageVariantCount > 0) {
+    } else if (!presentationText && previousImageVariantCount > 0) {
       requestInstructions.push({
         role: 'system',
         content: '独立方案图片任务已经执行过。禁止再次调用图片生成工具；请根据工具结果按方案名称简洁汇总成功与失败情况。',
@@ -1403,15 +1483,31 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         content: EMPTY_RESPONSE_RECOVERY_INSTRUCTION,
       });
     }
-    if (previousFileCreateCount > 0) {
+    if (recoverPresentationDelivery) {
+      requestInstructions.push({ role: 'system', content:
+        '本轮已明确要求交付 PPTX，但上一轮没有调用文件工具。当前 tools 中已提供 create_file，请根据当前用户需求及已取得资料调用它创建真实可编辑文件；不要再只输出大纲或声称缺少文件工具，不要重搜或重新生图。来源不充分处如实标注，不得编造事实、配图或文件链接。' });
+    }
+    if (fileCreationTurn.attempts > 0) {
+      requestInstructions.push({ role: 'system', content: chatFileCreationTurnInstruction(fileCreationTurn) });
+    }
+    if (agentCreatedThisTurn) {
       requestInstructions.push({
         role: 'system',
-        content: '请求的文件已经成功生成。不要再调用任何工具；用一句简洁的话告诉用户文件已生成，并提示可通过文件卡片打开或另存为。',
+        content: '本轮智能体创建工具已经执行。不要再调用工具；根据工具结果准确告诉用户是否新建成功，以及可在 Chat 顶部的“智能体”入口查看和选择。不要声称已启用，除非工具结果中的 activated 为 true。',
       });
     }
-    const normalizedProviderMessages = webSearchCount > 0
-      ? flattenWebSearchContext(providerMessages)
-      : providerMessages;
+    const normalizedProviderMessages = buildChatSearchContinuation(
+      providerMessages,
+      Boolean(presentationText) || recoverSearchSynthesis,
+      presentationText ? 7_000 : 10_000,
+      Boolean(presentationText),
+    );
+    if (searchResultCount > 0) {
+      patchThinkingStep(assistantMessageId, 'search-results', { type: 'context', title: `已取得 ${searchResultCount} 条联网资料`,
+        detail: recoverSearchSynthesis ? '检索已成功；正在用精简资料和非流式请求恢复模型整理，不重复搜索' : '检索已成功；正在交给模型整理与继续任务', status: 'completed' });
+      patchThinkingStep(assistantMessageId, 'search-synthesis', { type: 'finalizing', title: presentationText ? '正在整理资料并制作 PPT' : '正在根据检索资料整理回答',
+        detail: recoverSearchSynthesis ? '模型上一轮未返回有效内容，本轮切换兼容续接格式' : '搜索结果非空，等待模型输出', status: 'running' });
+    }
     const requestMessages = requestInstructions.length > 0
       ? [...requestInstructions, ...normalizedProviderMessages]
       : normalizedProviderMessages;
@@ -1426,14 +1522,31 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     if (activeConversationIdRef.current === conversationId) {
       syncActiveConversationActivity(conversationId);
     }
-    const toolChoice = independentImageVariantsRequested && previousImageVariantCount === 0
-      ? { type: 'function', function: { name: 'generate_image_variants' } }
-      : compositeImageVariantsRequested && previousCompositeImageCount === 0
-        ? { type: 'function', function: { name: 'generate_image' } }
-        : undefined;
+    const presentationHasImageResults = conversationMessages.find(message => message.id === assistantMessageId)?.toolCalls
+      .some(call => ['generate_image', 'generate_image_variants'].includes(call.toolName) && call.status !== 'pending');
+    const presentationToolChoice = resolvePresentationToolChoice({
+      requested: Boolean(presentationText),
+      createFileAvailable: tools.some(tool => tool.function.name === 'create_file'),
+      explicitExport: isChatPresentationExportRequest(userText),
+      fileAttempts: fileCreationTurn.attempts,
+      recoveryCount: emptyRecoveryCount,
+    });
+    const continuePresentationTools = Boolean(presentationText && presentationHasImageResults && tools.length);
+    const toolChoice = presentationToolChoice
+      ? presentationToolChoice
+      : continuePresentationTools ? 'required'
+      : shouldForceChatAgentCreation(userText)
+      && !agentCreatedThisTurn && tools.some(tool => tool.function.name === 'create_agent')
+      ? { type: 'function', function: { name: 'create_agent' } }
+      : independentImageVariantsRequested && previousImageVariantCount === 0
+        ? { type: 'function', function: { name: 'generate_image_variants' } }
+        : compositeImageVariantsRequested && previousCompositeImageCount === 0
+          ? { type: 'function', function: { name: 'generate_image' } }
+          : undefined;
     let result: ChatProviderResult | undefined;
     let expectedRequestId = requestId;
     try {
+      await validateDesignMemoryMessages(providerMessages);
       result = await requestChatCompletion({
         requestId,
         messages: requestMessages,
@@ -1441,7 +1554,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         toolChoice,
         model: providerRequestModel,
         usageContext: 'chat',
-        stream: true,
+        stream: !(recoverSearchSynthesis || recoverPresentationDelivery),
       });
     } catch (initialError) {
       let recoveryError = initialError;
@@ -1463,6 +1576,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           '当前上游渠道暂时不可用，正在切换服务端备用渠道…',
         );
         try {
+          await validateDesignMemoryMessages(providerMessages);
           result = await requestChatCompletion({
             requestId: fallbackRequestId,
             messages: requestMessages,
@@ -1483,7 +1597,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       if (!result) {
         active = activeRequestsRef.current.get(conversationId);
         if (!isChatRequestIdCurrent(active?.requestId, expectedRequestId)
-          || webSearchCount === 0 || active?.streamed) throw recoveryError;
+          || searchResultCount === 0 || active?.streamed || !isRecoverableChatRequestError(recoveryError) && !isUpstreamUnavailableChatError(recoveryError)) throw recoveryError;
         const fallbackRequestId = createChatId('chat-search-synthesis');
         expectedRequestId = fallbackRequestId;
         activeRequestsRef.current.set(conversationId, {
@@ -1496,22 +1610,27 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         });
         const fallbackMessages = [
           ...requestInstructions,
-          ...flattenWebSearchContext(providerMessages, 4_000),
+          ...buildChatSearchContinuation(providerMessages, true, 6000),
           {
             role: 'system',
-            content: '不要再调用任何工具。请立即根据已有联网资料给出完整回答；资料不足的部分明确说明，不要中断在搜索过程。',
+            content: presentationText
+              ? '联网资料已经取得。请根据已有资料调用 create_file(format=pptx) 生成真实演示文稿，不重复搜索或生图，不编造数据；不明确处标注待确认。'
+              : '联网资料已经取得。请立即根据已有资料给出完整回答；资料不足的部分明确说明，不要中断在搜索过程，也不要说搜索失败。',
           },
         ];
+        await validateDesignMemoryMessages(providerMessages);
         result = await requestChatCompletion({
           requestId: fallbackRequestId,
           messages: fallbackMessages,
-          tools: [],
+          tools: buildSearchSynthesisRecoveryTools(tools, Boolean(presentationText)),
+          toolChoice: presentationText && tools.some(tool => tool.function.name === 'create_file') ? { type: 'function', function: { name: 'create_file' } } : undefined,
           model: providerRequestModel,
           usageContext: 'chat',
-          stream: true,
+          stream: false,
         });
       }
     }
+    await validateDesignMemoryMessages(providerMessages);
     if (!result) throw new Error('Chat 请求没有返回结果');
     const active = activeRequestsRef.current.get(conversationId);
     if (!active || !isChatRequestIdCurrent(active.requestId, expectedRequestId)) {
@@ -1537,10 +1656,10 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     let acceptedWebSearchInResponse = false;
     let acceptedFileCreateInResponse = false;
     let acceptedBatchImageOperationInResponse = previousBatchImageOperationCount > 0;
-    let acceptedImageVariantInResponse = previousImageVariantCount > 0;
+    let acceptedImageVariantInResponse = !presentationText && previousImageVariantCount > 0;
     const toolCalls = (result.toolCalls || []).filter(call => {
       if (call.name === 'create_file') {
-        if (previousFileCreateCount > 0 || acceptedFileCreateInResponse) return false;
+        if (!fileCreationTurn.canAttempt || acceptedFileCreateInResponse) return false;
         acceptedFileCreateInResponse = true;
         return true;
       }
@@ -1639,6 +1758,31 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       return;
     }
     if (toolCalls.length === 0) {
+      const missingPresentationFile = needsPresentationDeliveryRecovery({
+        requested: Boolean(presentationText),
+        createFileAvailable: tools.some(tool => tool.function.name === 'create_file'),
+        explicitExport: isChatPresentationExportRequest(userText),
+        content: result.content,
+      });
+      if (missingPresentationFile) {
+        if (emptyRecoveryCount === 0) {
+          // Discard this turn's non-delivery draft, not the user's conversation
+          // or the successful tool receipts, before a single file-only retry.
+          patchMessage(assistantMessageId, message => ({ ...message, content: '' }));
+          patchThinkingStep(assistantMessageId, 'presentation-delivery', { type: 'finalizing',
+            title: '正在补全 PPT 文件交付', detail: '已提供文件工具；保留现有检索资料和配图，仅重试文件生成', status: 'running' });
+          await runModelLoopRef.current(conversationId, assistantMessageId, userText, requestModel,
+            providerMessages, depth, undefined, emptyRecoveryCount + 1);
+          return;
+        }
+        patchMessage(assistantMessageId, message => finalizeChatMessageState({
+          ...message,
+          content: 'PPT 尚未生成可下载文件。客户端已提供文件创建工具，但模型未返回有效的文件调用；一次自动续接仍未完成。已有检索资料和配图已保留，可重试或更换 Chat 模型。',
+          usage: normalizeUsage(result.usage) || message.usage,
+        }, 'error', Date.now(), '模型未完成文件交付'), true);
+        updateConversationBusy(conversationId, false);
+        return;
+      }
       const outcome = classifyChatProviderOutcome({
         content: result.content,
         toolCallCount: 0,
@@ -1654,7 +1798,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         void maybeSummarize(conversationId);
         return;
       }
-      console.warn('Chat provider returned an empty successful result', {
+      const emptyCause = classifyEmptyChatContinuation(result.toolCalls?.length || 0, toolCalls.length);
+      console.warn(emptyCause === 'filtered-tools' ? 'Chat continuation contained only blocked duplicate/quota tool calls' : 'Chat provider returned an empty successful result', {
         requestId: result.requestId || expectedRequestId,
         model: requestModel,
         finishReason: result.finishReason,
@@ -1665,6 +1810,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         emptyRecoveryCount,
       });
       if (outcome === 'recover-empty') {
+        patchThinkingStep(assistantMessageId, 'model-recovery', { type: 'finalizing',
+          title: emptyCause === 'filtered-tools' ? '已拦截重复工具，正在恢复后续任务' : '模型未返回有效内容，正在恢复',
+          detail: searchResultCount > 0 ? '已有检索资料保留；切换精简非流式续接，不再次执行搜索' : '未重复执行已完成工具', status: 'running' });
         await runModelLoopRef.current(
           conversationId,
           assistantMessageId,
@@ -1677,15 +1825,40 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         );
         return;
       }
+      patchThinkingStep(assistantMessageId, 'model-output-diagnostic', { type: 'context',
+        title: '模型输出诊断', status: 'error', detail: `stage=${searchResultCount > 0 ? 'post-search' : 'reply'}; cause=${emptyCause}; finishReason=${result.finishReason || 'unknown'}; contentChars=${result.content?.length || 0}; reasoningChars=${result.reasoning?.length || 0}; rawToolCalls=${result.toolCalls?.length || 0}; acceptedToolCalls=${toolCalls.length}` });
       patchMessage(assistantMessageId, message => finalizeChatMessageState({
         ...message,
-        content: EMPTY_CHAT_RESULT_ERROR,
+        content: searchResultCount > 0 ? chatSearchModelFailureMessage(providerMessages, Boolean(presentationText), emptyCause === 'filtered-tools') : EMPTY_CHAT_RESULT_ERROR,
         usage: normalizeUsage(result.usage) || message.usage,
-      }, 'error', Date.now(), '上游连续返回空结果'), true);
+      }, 'error', Date.now(), emptyCause === 'filtered-tools' ? '重复工具已拦截，模型未完成后续任务' : searchResultCount > 0 ? '搜索已成功，模型整理阶段连续返回空响应' : '上游连续返回空结果'), true);
       updateConversationBusy(conversationId, false);
       return;
     }
-    const calls: ChatToolCall[] = toolCalls.map(call => ({
+    const preparedToolCalls = toolCalls.map(call => {
+      if (call.name !== 'generate_image_variants') return call;
+      try {
+        const args = parseArguments(call.arguments || '{}');
+        const fallbackVariants = independentImageVariantsRequested
+          && missingVisualToolFallback
+          && 'variants' in missingVisualToolFallback
+          ? missingVisualToolFallback.variants
+          : undefined;
+        const route = resolveImageVariantToolRoute({
+          args,
+          fallbackVariants,
+          requireMultiple: independentImageVariantsRequested,
+        });
+        return {
+          ...call,
+          name: route.toolName,
+          arguments: JSON.stringify(route.args),
+        };
+      } catch (_) {
+        return call;
+      }
+    });
+    const calls: ChatToolCall[] = preparedToolCalls.map(call => ({
       id: call.id || createChatId('chat-tool'),
       messageId: assistantMessageId,
       toolName: call.name,
@@ -1704,7 +1877,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     const proposedBatchCall = calls.find(call => call.toolName === 'batch_image_operation');
     if (proposedBatchCall) {
       const batchPlan = extractChatBatchImagePlan(
-        { ...result, toolCalls },
+        { ...result, toolCalls: preparedToolCalls },
         createFallbackBatchImagePlan(currentImageAttachmentCount, toolIntentText),
       );
       let proposedArguments: Record<string, unknown> = {};
@@ -1772,11 +1945,11 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       return;
     }
     await Promise.all(calls.map(call => upsertChatToolCall(call)));
-    patchMessage(assistantMessageId, message => ({ ...message, toolCalls: calls }), true);
+    patchMessage(assistantMessageId, message => ({ ...message, toolCalls: mergePresentationToolCalls(message.toolCalls, calls) }), true);
     const assistantToolMessage = {
       role: 'assistant',
       content: result.content || null,
-      tool_calls: toolCalls.map(call => ({
+      tool_calls: preparedToolCalls.map(call => ({
         id: call.id,
         type: 'function',
         function: { name: call.name, arguments: call.arguments },
@@ -1826,12 +1999,14 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       const planArguments = parseArguments(pendingBatchCall.argumentsJson);
       const analysisSummary = normalizeVisibleChatText(planArguments.analysisSummary);
       updateConversationBusy(conversation.id, true);
-      const planDecision = await classifyBatchPlanReply({
-        model: pendingPlan.requestModel,
-        analysisSummary,
-        userReply: text || '我补充了新的图片附件。',
-        hasNewAttachments: pendingAttachments.length > 0,
-      });
+      // This reply is deliberately classified locally.  A second internal LLM
+      // request here used to leave the composer spinning indefinitely when that
+      // request stalled, even though the user had already submitted a reply.
+      // The deterministic matcher is also safer for the explicit confirmation
+      // and cancellation phrases shown in the plan message.
+      const planDecision = pendingAttachments.length > 0
+        ? 'revise'
+        : fallbackBatchPlanDecision(text);
       const confirmsPlan = planDecision === 'confirm' && pendingAttachments.length === 0;
       pendingApprovalsRef.current.delete(conversation.id);
       if (!confirmsPlan) {
@@ -1943,6 +2118,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
             index: 0,
             toolMessages: [],
           }, executionCall.id);
+          if (optionsRef.current.cloudWalletMode) {
+            optionsRef.current.onWalletSettlementComplete?.();
+          }
           return true;
         } catch (error) {
           activeRequestsRef.current.delete(conversationId);
@@ -2103,19 +2281,37 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           status: 'running',
         });
       }
+      const memoryOptions = { title: conversation.title, projectId: optionsRef.current.designMemoryProjectId };
+      await rememberExplicitChatDesign(userMessage, memoryOptions).catch(() => {});
+      const recalledDesignMemory = await recallDesignMemoryForTurn(
+        userMessage.content,
+        designMemoryProjectId(conversationId, memoryOptions.projectId),
+        conversationId,
+      );
       const providerMessages = await buildChatContext({
         messages: nextMessages,
         latestUserMessage: userMessage,
         summary: requestSummary,
+        designMemoryRecall: recalledDesignMemory,
+        presentationBrief: resolvePresentationTurnText(userMessage.content, getConversationMessages(conversationId)),
         resolveAttachmentUrl: visionResolver?.resolve || optionsRef.current.resolveAttachmentUrl,
         visionAttachments: imageSelection.attachments,
         reusedVisionAttachments: imageSelection.reusedFromHistory,
+        skill: getSelectedChatSkill(conversation.id),
       });
+      const memoryReport = getDesignMemoryTurnReport(providerMessages);
+      if (memoryReport) {
+        patchThinkingStep(assistantMessage.id, 'design-memory', {
+          type: 'context', ...describeDesignMemoryTurn(memoryReport), status: 'completed',
+        });
+      }
       if (imageSelection.attachments.length > 0) {
         patchThinkingStep(assistantMessage.id, 'attachments', {
           type: 'attachment',
-          title: '参考图片已就绪',
-          detail: `${imageSelection.attachments.length} 张图片`,
+          title: memoryReport?.unavailableImageCount ? '部分参考图片未成功提供' : '参考图片已就绪',
+          detail: memoryReport
+            ? `${memoryReport.attachedImageCount} 张图片已提供，${memoryReport.unavailableImageCount} 张未成功提供`
+            : `${imageSelection.attachments.length} 张图片`,
           status: 'completed',
         });
       }
@@ -2129,7 +2325,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       const visionFailures = visionResolver?.failures() || [];
       if (visionFailures.length > 0) {
         optionsRef.current.onNotice?.(
-          `${visionFailures.length} 张图片暂时无法上传，已跳过这些图片以避免发送过大的内容。`,
+          formatReferenceUploadFailureNotice(visionFailures.map(failure => failure.error)),
         );
       }
       await runModelLoop(
@@ -2141,13 +2337,18 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         0,
         resumeRequestId,
       );
+      if (optionsRef.current.cloudWalletMode) {
+        optionsRef.current.onWalletSettlementComplete?.();
+      }
       recoverableRequestIdsRef.current.delete(conversationId);
       return true;
     } catch (error) {
       const cancelled = /取消|cancel/i.test(String(error));
       flushStreamDelta(assistantMessage.id);
       const currentAssistantMessage = messageCacheRef.current.get(assistantMessage.id);
-      const visibleCompletion = summarizeCompletedVisibleToolCalls(
+      const interruptedPresentation = resolvePresentationTurnText(userMessage.content, getConversationMessages(conversationId));
+      const pendingPresentation = shouldContinuePresentationAfterMedia(interruptedPresentation, currentAssistantMessage?.toolCalls || []);
+      const visibleCompletion = pendingPresentation ? null : summarizeCompletedVisibleToolCalls(
         currentAssistantMessage?.toolCalls || [],
       );
       patchMessage(assistantMessage.id, message => visibleCompletion
@@ -2163,7 +2364,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         }, 'completed')
         : finalizeChatMessageState({
           ...message,
-          content: message.content.trim() || (cancelled ? '已停止生成。' : visibleChatRequestError(error)),
+          content: pendingPresentation ? presentationInterruptedMessage(message.toolCalls) + '\n' + visibleChatRequestError(error) : message.content.trim() || (cancelled ? '已停止生成。' : visibleChatRequestError(error)),
         }, cancelled ? 'cancelled' : 'error', Date.now(), cancelled ? '用户停止生成' : '连接中断'), true);
       const failedRequest = activeRequestsRef.current.get(conversationId);
       if (failedRequest?.messageId === assistantMessage.id) {
@@ -2264,12 +2465,18 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         };
         patchMessage(pending.assistantMessageId, message => ({ ...message, toolCalls: [...pending.calls] }), true);
         await continueToolCalls(nextRun);
+        if (optionsRef.current.cloudWalletMode) {
+          optionsRef.current.onWalletSettlementComplete?.();
+        }
         return;
       }
       call.status = 'pending';
       call.resultJson = null;
       call.completedAt = null;
       await continueToolCalls({ ...pending, calls: [...pending.calls] }, callId);
+      if (optionsRef.current.cloudWalletMode) {
+        optionsRef.current.onWalletSettlementComplete?.();
+      }
     } catch (error) {
       pendingApprovalsRef.current.delete(conversationId);
       activeRequestsRef.current.delete(conversationId);
@@ -2317,6 +2524,21 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     else await createConversation();
   }, [createConversation, loadConversation]);
 
+  const removeConversations = useCallback(async (ids: string[]) => {
+    const requested = new Set(ids);
+    const deletable = conversationsRef.current.filter(item => requested.has(item.id) && !busyConversationIdsRef.current.has(item.id) && !pendingApprovalsRef.current.has(item.id));
+    if (deletable.length !== requested.size) optionsRef.current.onNotice?.('正在运行的对话已保留。');
+    const deleted = new Set(await deleteChatConversations(deletable.map(item => item.id), (_id, error) => optionsRef.current.onNotice?.(`删除会话失败：${String(error)}`)));
+    for (const [id, message] of messageCacheRef.current) if (deleted.has(message.conversationId)) messageCacheRef.current.delete(id);
+    const next = conversationsRef.current.filter(item => !deleted.has(item.id));
+    conversationsRef.current = next;
+    setConversations(next);
+    if (deleted.has(activeConversationIdRef.current)) {
+      if (next[0]) await loadConversation(next[0].id); else await createConversation();
+    }
+    return [...deleted];
+  }, [createConversation, loadConversation]);
+
   const startNewConversation = useCallback((title?: string) => {
     return createConversation(optionsRef.current.model, title);
   }, [createConversation]);
@@ -2352,6 +2574,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     newConversation: startNewConversation,
     selectConversation,
     deleteConversation: removeConversation,
+    deleteConversations: removeConversations,
     loadOlderMessages,
     setConversationModel,
     searchConversations,

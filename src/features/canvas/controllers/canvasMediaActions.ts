@@ -1,9 +1,9 @@
 import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import React from 'react';
 import { flushSync } from 'react-dom';
-import { isPrimaryModifier } from '../../../platform/capabilities';
 import { createImageThumbnailInWebview,getVideoThumbnail } from '../../../services/mediaThumbnail';
 import { BufferItem } from '../../../types';
+import type { CloudImageModelsResult } from '../../../types/license';
 import type { CanvasAiOutputThumbnailJob,ImageThumbnailFileResult } from '../../../types/canvasMedia';
 import type { CanvasBrushCropRect,CanvasBrushEditorMode,CanvasBrushEditorOpenOptions,CanvasBrushEditorState,CanvasBrushPoint,CanvasBrushShapeMode,CanvasContextMenuState } from '../../../types/canvasRuntime';
 import type { TextInputDialogOptions } from '../../../types/dialogs';
@@ -23,9 +23,13 @@ import { getCanvasAiMediaType } from '../../canvasAiRuntime';
 import { cloneCanvasAiForPaste } from '../../canvasClipboard';
 import { createDefaultCanvasGroupName,getCanvasGroupId,getCommonCanvasGroup,remapCanvasGroupsForPaste } from '../../canvasGroups';
 import { CANVAS_EDGE_AUTOSCROLL_MARGIN,CANVAS_EDGE_AUTOSCROLL_SPEED,CANVAS_GROW_CHUNK,type CanvasAiGeneratedOutput,type CanvasImageItem,type CanvasItemBox,type CanvasResizeCorner,type DesignAgentConfig } from '../../canvasModel';
+import type { CanvasAiCredentialSource } from '../../canvasModel';
+import { resolveCanvasWalletVideoModelContext } from '../../canvasWalletVideoModelContext';
+import { getCanvasImageReferenceCapabilities } from '../../canvasImageReferencePolicy';
 import { clamp } from '../../common';
 import { normalizeDesignAgentConfig } from '../../designAgentNode';
 import { writeImageSourceToClipboard,writeLocalImageFileToClipboard } from '../../imageClipboard';
+import { getStableAiImageResultSource,getStableAiVideoResultSource } from '../../aiImageResultRecovery';
 
 type canvasMediaActionContext = { getCanvasPointFromClient: (clientX: number, clientY: number) => { x: number; y: number; }; x: number; y: number; canvasSelectedIdsRef: React.RefObject<string[]>; expandCanvasSelectionIdsWithGroups: (ids: string[], sourceItems?: CanvasImageItem[]) => string[]; showToast: (message: string) => void; canvasItemsRef: React.RefObject<CanvasImageItem[]>; openTextInputDialog: (options: TextInputDialogOptions) => Promise<string | null>; pushCanvasUndoSnapshot: (label: string, options?: { layoutOnly?: boolean; shareImmutableItems?: boolean; }) => void; canvasItemsPatchCommitRef: React.RefObject<boolean>; updateCanvasItemsImmediate: (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => CanvasImageItem[]; markCanvasNodesChanged: (ids: string[]) => void; scheduleCanvasChangedNodesPatchSave: (ids: string[]) => void; scheduleCanvasStateSave: (options?: { syncNodes?: boolean; }) => void; updateCanvasSelection: (ids: string[]) => void; setCanvasSelectionWithoutWorkflowExpansion: (ids: string[]) => void; canvasClipboardRef: React.RefObject<CanvasImageItem[]>; preferCanvasClipboardRef: React.RefObject<boolean>; isCanvasModeRef: React.RefObject<boolean>; getCanvasBoundsFromItems: (sourceItems: CanvasImageItem[]) => CanvasItemBox | null; CANVAS_PASTE_OFFSET: 54; createAssetId: () => `${string}-${string}-${string}-${string}-${string}`; makeCanvasNodeId: (seed: string, kind?: string) => string; appendCanvasItems: (nextItems: CanvasImageItem[], label: string, select?: boolean) => number; canvasDragRef: React.RefObject<{ ids: string[]; pointerId: number; startClientX: number; startClientY: number; startScrollLeft: number; startScrollTop: number; startItems: Record<string, CanvasItemBox>; latestDelta: { dx: number; dy: number; }; hasMoved: boolean; hasConnections: boolean; pendingSelectionIds: string[] | null; } | null>; startItems: Record<string, CanvasItemBox>; canvasScaleRef: React.RefObject<number>; startScrollLeft: number; startScrollTop: number; canvasResizeRef: React.RefObject<{ id: string; corner: CanvasResizeCorner; startClientX: number; startClientY: number; startX: number; startY: number; startWidth: number; startHeight: number; aspect: number; latestBox: CanvasItemBox | null; hasResized: boolean; } | null>; startX: number; startY: number; canvasGroupResizeRef: React.RefObject<{ corner: CanvasResizeCorner; startClientX: number; startClientY: number; startBounds: CanvasItemBox; startItems: Record<string, CanvasItemBox>; aspect: number; latestBoxes: Record<string, CanvasItemBox> | null; hasResized: boolean; } | null>; startBounds: CanvasItemBox; canvasSelectionDragRef: React.RefObject<{ pointerId: number; startX: number; startY: number; currentX: number; currentY: number; additive: boolean; baseSelectedIds: string[]; hasMoved: boolean; } | null>; hideCanvasSelectionOverlay: () => void; canvasSizeRef: React.RefObject<{ width: number; height: number; }>; setCanvasSizeImmediate: (nextSize: { width: number; height: number; }) => void; width: number; height: number; shiftCanvasWorld: (deltaX: number, deltaY: number) => void; canvasSurfaceRef: React.RefObject<HTMLDivElement | null>; canvasPanRef: React.RefObject<{ pointerId: number; button: number; startClientX: number; startClientY: number; startScrollLeft: number; startScrollTop: number; } | null>; writeCanvasSurfaceScroll: (surface: HTMLDivElement, left: number, top: number, updateLock?: boolean) => void; canvasInteractionSurfaceRectRef: React.RefObject<DOMRect | null>; isCanvasInteractingRef: React.RefObject<boolean>; expandCanvasBeforeViewport: (left: number, top: number) => void; growCanvasToFit: (right: number, bottom: number) => void; getLatestFileCacheDir: () => Promise<string>; getCanvasDropPosition: (index?: number, client?: { x: number; y: number; }) => { x: number; y: number; }; getCanvasClipboardImageFiles: (clipboardData: DataTransfer) => File[]; createCanvasImageItemFromFile: (file: File, index?: number, client?: { x: number; y: number; }) => Promise<CanvasImageItem | null>; createCanvasTextItemFromContent: (content: string, index?: number, client?: { x: number; y: number; }) => CanvasImageItem | null; canvasTextDraftValuesRef: React.RefObject<Record<string, string>>; canvasTextDraftTimersRef: React.RefObject<Record<string, number>>; updateCanvasTextItem: (canvasId: string, content: string) => void; canvasTextOutputDraftValuesRef: React.RefObject<Record<string, string>>; canvasTextOutputDraftTimersRef: React.RefObject<Record<string, number>>; updateCanvasTextOutputItem: (canvasId: string, output: string) => void; canvasTextOutputAreaRefs: React.RefObject<Record<string, HTMLTextAreaElement | null>>; generatedImageCachePromisesRef: React.RefObject<Map<string, Promise<string>>>; shouldTryBackendImageCopyDirectly: (source: string) => boolean; imageSourceToDataUrl: (source: string, optimizeForAi?: boolean) => Promise<string>; copyImageDataUrlToSystemClipboard: (dataUrl: string) => Promise<void>; selectedImage: string | null; copyImageSourceToSystemClipboard: (source: string) => Promise<void>; getCopyableCanvasImageFromIds: (ids: string[]) => CanvasImageItem | null; copyCanvasItems: (ids?: string[], options?: { showToast?: boolean; }) => number; copyCanvasImageToSystemClipboard: (canvasItem?: CanvasImageItem | null, options?: { successToast?: string; missingToast?: string; failureToast?: string; }) => Promise<boolean>; canvasBrushCanvasRef: React.RefObject<HTMLCanvasElement | null>; canvasBrushBaseCanvasRef: React.RefObject<HTMLCanvasElement | null>; loadCanvasBrushImage: (source: string) => Promise<HTMLImageElement>; canvasBrushPendingMarksRef: React.RefObject<string | null>; setCanvasBrushHistory: React.Dispatch<React.SetStateAction<string[]>>; setCanvasBrushRedoHistory: React.Dispatch<React.SetStateAction<string[]>>; setCanvasBrushEditor: React.Dispatch<React.SetStateAction<CanvasBrushEditorState | null>>; canvasBrushOpenRequestRef: React.RefObject<number>; setCanvasContextMenu: React.Dispatch<React.SetStateAction<CanvasContextMenuState | null>>; setCanvasInputMenuForId: React.Dispatch<React.SetStateAction<string | null>>; CANVAS_BRUSH_EDITOR_MAX_EDGE: 2048; setCanvasBrushMode: React.Dispatch<React.SetStateAction<CanvasBrushEditorMode>>; setCanvasBrushCropRect: React.Dispatch<React.SetStateAction<CanvasBrushCropRect | null>>; hideCanvasBrushCursor: () => void; canvasBrushCropStartRef: React.RefObject<CanvasBrushPoint | null>; canvasBrushShapeStartRef: React.RefObject<CanvasBrushPoint | null>; canvasBrushShapeSnapshotRef: React.RefObject<ImageData | null>; keepDrawerOpenByPointer: () => void; openCanvasBrushEditorFromSource: (options: CanvasBrushEditorOpenOptions) => Promise<void>; canvasBrushMode: CanvasBrushEditorMode; updateCanvasBrushCursor: (nextCursor: { visible: boolean; x: number; y: number; scale: number; }) => void; canvasBrushSize: number; canvasBrushOpacity: number; canvasBrushColor: string; getCanvasBrushShapeBox: (mode: CanvasBrushShapeMode, from: CanvasBrushPoint, to: CanvasBrushPoint) => { x: number; y: number; width: number; height: number; }; canvasBrushEditor: CanvasBrushEditorState | null; canvasBrushCropRect: CanvasBrushCropRect | null; clearCanvasBrushShapeDraft: () => void; activateDoodleShortcutScope: () => void; doodleRootRef: React.RefObject<HTMLDivElement | null>; clearCanvasBrushCrop: () => void; canvasBrushDrawingRef: React.RefObject<boolean>; canvasBrushLastPointRef: React.RefObject<CanvasBrushPoint | null>; updateCanvasBrushCursorFromEvent: (event: React.PointerEvent<Element>) => void; getCanvasBrushPoint: (event: React.PointerEvent<HTMLCanvasElement>) => { x: number; y: number; }; isCanvasBrushShapeMode: (mode: CanvasBrushEditorMode) => mode is CanvasBrushShapeMode; paintCanvasBrushStroke: (from: CanvasBrushPoint, to: CanvasBrushPoint) => void; normalizeCanvasBrushCropRect: (from: CanvasBrushPoint, to: CanvasBrushPoint, width: number, height: number) => CanvasBrushCropRect | null; restoreCanvasBrushShapeSnapshot: () => boolean; paintCanvasBrushShape: (mode: CanvasBrushShapeMode, from: CanvasBrushPoint, to: CanvasBrushPoint) => void; pushCanvasBrushHistory: () => void; canvasBrushHistory: string[]; canvasBrushRedoHistory: string[]; undoCanvasBrushStroke: () => void; redoCanvasBrushStroke: () => void; imageSourceToJpegDataUrl: (source: string) => Promise<string>; webImageCacheDirRef: React.RefObject<string>; GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS: number[]; isCanvasZoomingRef: React.RefObject<boolean>; settleCanvasAiOutputThumbnailJob: (job: CanvasAiOutputThumbnailJob, patch: Partial<CanvasAiGeneratedOutput>) => void; generatedImageCachePendingIdsRef: React.RefObject<Set<string>>; updateDrawerItemsDeferred: (updater: (previous: BufferItem[]) => BufferItem[]) => void; canvasAiOutputThumbnailInFlightRef: React.RefObject<Set<string>>; canvasAiOutputThumbnailQueueRef: React.RefObject<CanvasAiOutputThumbnailJob[]>; enqueueCanvasAiOutputThumbnailJob: (job: CanvasAiOutputThumbnailJob) => void; createCanvasImagePreviewThumbnail: (source: string, path?: string, allowWebviewFallback?: boolean) => Promise<string>; runNextCanvasAiOutputThumbnailJob: () => void; IMAGE_THUMBNAIL_UPDATE_BATCH_MS: 90; IMAGE_THUMBNAIL_QUEUE_LIMIT: 32; getCanvasContextRoutingTargetKeys: (canvasItem: CanvasImageItem) => string[]; getCanvasInputItemsForNode: (canvasItem: CanvasImageItem, sourceItems?: CanvasImageItem[]) => CanvasImageItem[]; };
 
@@ -169,7 +173,7 @@ export const copyCanvasItemsImpl = (ctx: Pick<canvasMediaActionContext, 'canvasC
 
 };
 
-export const pasteCanvasItemsImpl = (ctx: Pick<canvasMediaActionContext, 'CANVAS_PASTE_OFFSET' | 'appendCanvasItems' | 'canvasClipboardRef' | 'createAssetId' | 'getCanvasBoundsFromItems' | 'getCanvasPointFromClient' | 'isCanvasModeRef' | 'makeCanvasNodeId' | 'showToast'>, client?: { x: number; y: number }, label: string = '粘贴画布元素') => {
+export const pasteCanvasItemsImpl = (ctx: Pick<canvasMediaActionContext, 'CANVAS_PASTE_OFFSET' | 'canvasClipboardRef' | 'createAssetId' | 'getCanvasBoundsFromItems' | 'getCanvasPointFromClient' | 'isCanvasModeRef' | 'makeCanvasNodeId' | 'showToast'> & { appendCanvasItems: (nextItems: CanvasImageItem[], label: string, select?: boolean, options?: { focusSelection?: boolean }) => number }, client?: { x: number; y: number }, label: string = '粘贴画布元素') => {
   const { CANVAS_PASTE_OFFSET, appendCanvasItems, canvasClipboardRef, createAssetId, getCanvasBoundsFromItems, getCanvasPointFromClient, isCanvasModeRef, makeCanvasNodeId, showToast } = ctx;
     if (!isCanvasModeRef.current) return 0;
     const sourceItems = cloneDrawerValue(canvasClipboardRef.current || []);
@@ -177,8 +181,8 @@ export const pasteCanvasItemsImpl = (ctx: Pick<canvasMediaActionContext, 'CANVAS
     if (sourceItems.length === 0 || !sourceBounds) return 0;
 
     const targetPoint = client ? getCanvasPointFromClient(client.x, client.y) : null;
-    const offsetX = targetPoint ? targetPoint.x - sourceBounds.x : CANVAS_PASTE_OFFSET;
-    const offsetY = targetPoint ? targetPoint.y - sourceBounds.y : CANVAS_PASTE_OFFSET;
+    const offsetX = targetPoint ? targetPoint.x - (sourceBounds.x + sourceBounds.width / 2) : CANVAS_PASTE_OFFSET;
+    const offsetY = targetPoint ? targetPoint.y - (sourceBounds.y + sourceBounds.height / 2) : CANVAS_PASTE_OFFSET;
     const idMap = new Map<string, string>();
 
     const nextItems = sourceItems.map((sourceItem, index) => {
@@ -198,7 +202,7 @@ export const pasteCanvasItemsImpl = (ctx: Pick<canvasMediaActionContext, 'CANVAS
         y: Math.max(24, sourceItem.y + offsetY + (targetPoint ? 0 : index * 6)),
         item: {
           ...cloneDrawerValue(sourceItem.item),
-          id: nextBufferId,
+          id: sourceItem.item.type === 'image' || sourceItem.item.type === 'video' || sourceItem.item.type === 'file' ? sourceItem.item.id : nextBufferId,
           createdAt: Date.now() + index,
         },
         ai: sourceItem.ai ? cloneCanvasAiForPaste(sourceItem.ai) : undefined,
@@ -215,6 +219,12 @@ export const pasteCanvasItemsImpl = (ctx: Pick<canvasMediaActionContext, 'CANVAS
       inputs: (item.inputs || [])
         .map(inputId => idMap.get(inputId))
         .filter((inputId): inputId is string => !!inputId),
+      ai: item.ai ? {
+        ...item.ai,
+        sourceImageNodeId: item.ai.sourceImageNodeId ? idMap.get(item.ai.sourceImageNodeId) || item.ai.sourceImageNodeId : item.ai.sourceImageNodeId,
+        referenceImageNodeIds: item.ai.referenceImageNodeIds?.map(id => idMap.get(id) || id),
+        referenceRoles: item.ai.referenceRoles?.map(role => ({ ...role, nodeId: idMap.get(role.nodeId) || role.nodeId })),
+      } : undefined,
       threeScene: item.threeScene
         ? {
           ...item.threeScene,
@@ -226,7 +236,7 @@ export const pasteCanvasItemsImpl = (ctx: Pick<canvasMediaActionContext, 'CANVAS
         : undefined,
     }));
 
-    const addedCount = appendCanvasItems(remappedItems, label);
+    const addedCount = appendCanvasItems(remappedItems, label, true, { focusSelection: false });
     if (addedCount > 0) showToast(`已粘贴 ${addedCount} 个画布元素`);
     return addedCount;
 
@@ -502,7 +512,7 @@ export const createCanvasAudioItemFromPathImpl = async (ctx: Pick<canvasMediaAct
       x: pos.x,
       y: pos.y,
       width: 320,
-      height: 92,
+      height: 112,
     };
 
 };
@@ -598,7 +608,7 @@ export const getCanvasClipboardImageFilesImpl = (ctx: Record<never, never>, clip
 
 };
 
-export const pasteSystemClipboardToCanvasImpl = async (ctx: Pick<canvasMediaActionContext, 'appendCanvasItems' | 'createCanvasImageItemFromFile' | 'createCanvasTextItemFromContent' | 'getCanvasClipboardImageFiles' | 'showToast'>, clipboardData: DataTransfer, client?: { x: number; y: number }) => {
+export const pasteSystemClipboardToCanvasImpl = async (ctx: Pick<canvasMediaActionContext, 'createCanvasImageItemFromFile' | 'createCanvasTextItemFromContent' | 'getCanvasClipboardImageFiles' | 'showToast'> & { appendCanvasItems: (nextItems: CanvasImageItem[], label: string, select?: boolean, options?: { focusSelection?: boolean }) => number }, clipboardData: DataTransfer, client?: { x: number; y: number }) => {
   const { appendCanvasItems, createCanvasImageItemFromFile, createCanvasTextItemFromContent, getCanvasClipboardImageFiles, showToast } = ctx;
     const imageFiles = getCanvasClipboardImageFiles(clipboardData);
     const text = imageFiles.length > 0 ? '' : clipboardData.getData('text/plain') || '';
@@ -610,7 +620,7 @@ export const pasteSystemClipboardToCanvasImpl = async (ctx: Pick<canvasMediaActi
     const nextItems = textItem ? [...images, textItem] : images;
     if (nextItems.length === 0) return false;
 
-    const addedCount = appendCanvasItems(nextItems, '粘贴剪贴板内容');
+    const addedCount = appendCanvasItems(nextItems, '粘贴剪贴板内容', true, { focusSelection: false });
     if (addedCount > 0) {
       const parts = [
         images.length > 0 ? `${images.length} 张图片` : '',
@@ -1429,7 +1439,7 @@ export const redoCanvasBrushStrokeImpl = (ctx: Pick<canvasMediaActionContext, 'c
 export const handleDoodleKeyDownImpl = (ctx: Pick<canvasMediaActionContext, 'activateDoodleShortcutScope' | 'redoCanvasBrushStroke' | 'undoCanvasBrushStroke'>, event: React.KeyboardEvent<HTMLDivElement>) => {
   const { activateDoodleShortcutScope, redoCanvasBrushStroke, undoCanvasBrushStroke } = ctx;
     const key = event.key.toLowerCase();
-    const isMod = isPrimaryModifier(event);
+    const isMod = event.ctrlKey || event.metaKey;
     const isUndo = isMod && !event.shiftKey && !event.altKey && key === 'z';
     const isRedo = (
       (isMod && event.shiftKey && !event.altKey && key === 'z') ||
@@ -1609,7 +1619,10 @@ export const prepareCanvasAiInputSourceImpl = async (ctx: Pick<canvasMediaAction
 
 export const cacheCanvasGeneratedImageSourceImpl = async (ctx: Pick<canvasMediaActionContext, 'GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS' | 'webImageCacheDirRef'>, source: string, name: string, options?: { throwOnFailure?: boolean }) => {
   const { GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS, webImageCacheDirRef } = ctx;
-    const trimmed = source.trim();
+    const rawSource = source.trim();
+    const trimmed = getStableAiImageResultSource(rawSource)
+      || getStableAiVideoResultSource(rawSource)
+      || rawSource;
     if (!trimmed || (!/^data:(?:image|video)\//i.test(trimmed) && !/^https?:\/\//i.test(trimmed))) {
       return { url: trimmed, path: '', sourceUrl: trimmed };
     }
@@ -1677,6 +1690,12 @@ export const settleCanvasAiOutputThumbnailJobImpl = (ctx: Pick<canvasMediaAction
     }
     const thumbnail = patch.thumbnail;
     const matchSources = new Set((job.matchSources || []).filter(Boolean));
+    matchSources.add(job.source);
+    const matchesMedia = (media: { path?: string; url?: string; sourceUrl?: string; originalUrl?: string }) => {
+      if (job.path && media.path) return job.path === media.path;
+      return [media.url, media.sourceUrl, media.originalUrl, media.path ? convertFileSrc(media.path) : '']
+        .some(source => !!source && matchSources.has(source));
+    };
     const changedCanvasIds = new Set<string>();
     updateCanvasItemsImmediate(prev => prev.map(canvasItem => {
       if ((job.canvasItemId && canvasItem.id !== job.canvasItemId) || !canvasItem.ai?.outputs?.length) return canvasItem;
@@ -1685,7 +1704,9 @@ export const settleCanvasAiOutputThumbnailJobImpl = (ctx: Pick<canvasMediaAction
         const isTarget = job.outputId
           ? output.id === job.outputId || matchSources.has(getCanvasAiOutputDisplaySource(output))
           : job.outputIndex !== undefined && index === job.outputIndex;
-        if (!isTarget || (thumbnail && output.thumbnail === thumbnail && output.cacheStatus === 'ready')) return output;
+        if (!isTarget || !matchesMedia(output)
+          || (job.clientRequestId && output.clientRequestId !== job.clientRequestId)
+          || (thumbnail && output.thumbnail === thumbnail && output.cacheStatus === 'ready')) return output;
         changed = true;
         return { ...output, ...patch };
       });
@@ -1694,7 +1715,7 @@ export const settleCanvasAiOutputThumbnailJobImpl = (ctx: Pick<canvasMediaAction
     }));
     if (job.drawerItemId) {
       generatedImageCachePendingIdsRef.current.delete(job.drawerItemId);
-      updateDrawerItemsDeferred(prev => prev.map(item => item.id === job.drawerItemId
+      updateDrawerItemsDeferred(prev => prev.map(item => item.id === job.drawerItemId && matchesMedia(item)
         ? { ...item, ...(thumbnail ? { thumbnail } : {}) }
         : item));
     }
@@ -1763,7 +1784,7 @@ export const enqueueCanvasAiOutputThumbnailJobImpl = (ctx: Pick<canvasMediaActio
 
 export const createCanvasAiOutputDraftsImpl = (ctx: Pick<canvasMediaActionContext, 'createAssetId'>, target: CanvasImageItem, prompt: string, clientRequestId?: string): CanvasAiGeneratedOutput[] => {
   const { createAssetId } = ctx;
-    const count = clamp(Math.round(Number(target.ai?.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
+    const count = clamp(Math.round(Number(target.ai?.imageExpectedOutputCount ?? target.ai?.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
     const size = getCanvasAiOutputSize(target.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO);
     const now = Date.now();
     const mediaType = getCanvasAiMediaType(target.ai);
@@ -1774,7 +1795,7 @@ export const createCanvasAiOutputDraftsImpl = (ctx: Pick<canvasMediaActionContex
       prompt,
       status: 'working',
       clientRequestId: clientRequestId
-        ? getCanvasAiSlotClientRequestId(clientRequestId, index, count)
+        ? target.ai?.imageOutputMode === 'multiple_assets' ? clientRequestId : getCanvasAiSlotClientRequestId(clientRequestId, index, count)
         : undefined,
       generatedAt: now + index,
       width: size.width,
@@ -1847,8 +1868,15 @@ export const getCanvasTextInputsForNodeImpl = (ctx: Pick<canvasMediaActionContex
 
 };
 
-export const getCanvasImageInputBufferItemsForNodeImpl = (ctx: Pick<canvasMediaActionContext, 'getCanvasInputItemsForNode'>, canvasItem: CanvasImageItem, sourceItems: CanvasImageItem[]) => {
-  const { getCanvasInputItemsForNode } = ctx;
+export const getCanvasImageInputBufferItemsForNodeImpl = (
+  ctx: Pick<canvasMediaActionContext, 'getCanvasInputItemsForNode'> & {
+    canvasAiCloudImageModels?: CloudImageModelsResult | null;
+    canvasAiCredentialSource?: CanvasAiCredentialSource;
+  },
+  canvasItem: CanvasImageItem,
+  sourceItems: CanvasImageItem[],
+) => {
+  const { canvasAiCloudImageModels, canvasAiCredentialSource = 'local', getCanvasInputItemsForNode } = ctx;
     const mediaInputs: BufferItem[] = [];
     const isVideoGenerator = canvasItem.ai?.type === 'video-generator';
     const isImageFusion = isCanvasImageFusionAi(canvasItem.ai);
@@ -1857,6 +1885,7 @@ export const getCanvasImageInputBufferItemsForNodeImpl = (ctx: Pick<canvasMediaA
       && (candidate.providerChannelId || '') === (canvasItem.ai?.providerChannelId || '')
     )) || canvasItem.ai?.providerCandidates?.[0];
     const structuredCapabilities = selectedCandidate?.modelCapabilities;
+    const walletImageCapabilities = getCanvasImageReferenceCapabilities(canvasItem, ctx);
     const resolvedImageCapabilities = structuredCapabilities && !isVideoGenerator
       ? resolveCanvasAiImageModelCapabilities({
         provider: selectedCandidate?.provider || canvasItem.ai?.provider,
@@ -1864,13 +1893,22 @@ export const getCanvasImageInputBufferItemsForNodeImpl = (ctx: Pick<canvasMediaA
         canonical: structuredCapabilities,
       })
       : null;
-    const resolvedVideoCapabilities = structuredCapabilities && isVideoGenerator
-      ? resolveCanvasAiVideoModelCapabilities({
+    const walletVideoContext = isVideoGenerator
+      ? resolveCanvasWalletVideoModelContext(
+        canvasItem.ai,
+        canvasAiCloudImageModels,
+        canvasAiCredentialSource,
+      )
+      : null;
+    const resolvedVideoCapabilities = walletVideoContext?.serverDriven
+      ? walletVideoContext.capabilities
+      : structuredCapabilities && isVideoGenerator
+        ? resolveCanvasAiVideoModelCapabilities({
         provider: selectedCandidate?.provider || canvasItem.ai?.provider,
         model: selectedCandidate?.model || canvasItem.ai?.model,
         canonical: structuredCapabilities,
-      })
-      : null;
+        })
+        : null;
     const canvasVideoReferenceSlots = isVideoGenerator
       ? getCanvasAiVideoReferenceSlots(
         canvasItem.ai?.model,
@@ -1879,11 +1917,13 @@ export const getCanvasImageInputBufferItemsForNodeImpl = (ctx: Pick<canvasMediaA
         resolvedVideoCapabilities,
       )
       : null;
-    const maxImageInputs = isImageFusion
-      ? 2
-      : isVideoGenerator
-        ? canvasVideoReferenceSlots?.imageSlots ?? 9
-        : resolvedImageCapabilities?.referenceImageLimit ?? 8;
+    const maxImageInputs = walletImageCapabilities
+      ? Math.min(walletImageCapabilities.referenceImageLimit, isImageFusion ? 2 : Infinity)
+      : isImageFusion
+        ? 2
+        : isVideoGenerator
+          ? canvasVideoReferenceSlots?.imageSlots ?? 9
+          : resolvedImageCapabilities?.referenceImageLimit ?? 8;
     const maxVideoInputs = isVideoGenerator ? canvasVideoReferenceSlots?.videoSlots ?? 0 : 0;
     const maxAudioInputs = isVideoGenerator ? canvasVideoReferenceSlots?.audioSlots ?? 0 : 0;
     let imageInputCount = 0;
@@ -1939,7 +1979,7 @@ export const getCanvasImageInputBufferItemsForNodeImpl = (ctx: Pick<canvasMediaA
         } else {
           pushInput(applyInputRotation(inputItem.item));
         }
-      } else if (inputItem.ai?.type === 'image-generator' || inputItem.ai?.type === 'workflow') {
+      } else if (inputItem.ai?.type === 'image-generator' || inputItem.ai?.type === 'music-generator' || inputItem.ai?.type === 'workflow') {
         getCanvasAiSuccessfulOutputs(inputItem).slice(0, isImageFusion ? 1 : undefined).forEach((output, index) => {
           const outputItem = createCanvasAiOutputBufferItem(inputItem, output, index);
           if (outputItem) pushInput(outputItem);

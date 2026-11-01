@@ -10,6 +10,7 @@ export type CanvasUndoSnapshot = {
 };
 
 export type CanvasPersistedState = {
+  activeCanvasId?: string;
   items: CanvasImageItem[];
   size: { width: number; height: number };
   scale: number;

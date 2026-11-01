@@ -1,6 +1,9 @@
 import { AnimatePresence,motion } from 'framer-motion';
 import { Bot,Check,Edit3,FolderPlus,Image as ImageIcon,Move,Plus,Search,Send,Tag,Upload,X } from 'lucide-react';
+import { findAiCatalogModel, getAiCatalogModels } from '../../aiModelCapabilities';
+import { parseCanvasAiModelChoiceValue } from '../../../utils/canvasAiConfig';
 import { ChatHost } from '../../chat/components/ChatHost';
+import { CHAT_AUTO_IMAGE_SETTING } from '../../chat/runtime/chatImageGenerationSettings';
 import { getDrawerFolderPathName } from '../../folderModel';
 import type { DrawerFolderTreeEntry } from '../../folderModel';
 
@@ -11,14 +14,20 @@ export type DrawerInteractionOverlaysScope = Record<string, any> & {
 };
 
 export function DrawerInteractionOverlays({ scope }: { scope: DrawerInteractionOverlaysScope }) {
-  const { activeChatImageAspectRatio, activeChatImageModel, activeChatImageModelChoice, activeChatImageResolution, addChatMediaToCanvas, addWebImageCollectorTag, agentModels, agentModelsLoading, buildCanvasAgentSelectedItems, canvasAgent, canvasAgentSelectedItems, canvasAgentSidebarWidth, chatImageAspectRatioOptions, chatImageModelOptions, chatImageResolutionOptions, chooseReferenceImageForCollector, clearWebImageCollectorTags, closeFolderModal, closeWebImageCollector, collectWebImagesToDrawer, commitQuickText, completeChatBatchCanvasGroup, createChatBatchCanvasGroup, createFolderAndMoveSelected, drawerAgentSelectedItems, executeChatTool, fillChatBatchCanvasSlot, folderMoveSelectionIds, folderMoveTargetEntries, folderMoveTargetId, folders, generateQueryAndCollectFromReference, handleAddFolder, handleCloseTextInput, handleDrawerPanelKeyDown, handleDrawerPanelMouseDown, handleDrawerPanelPointerDown, handleOpenTextInput, hasRemoteImageSearch, installOllamaSilently, isCanvasChromeHidden, isCanvasMode, isCollectingWebImages, isDrawerAgentOpen, isGeneratingWebImageQuery, isInstallingOllama, isInvalidFolderMoveTarget, isMovingFolders, isShortcutReveal, isUtilityActiveTab, lastSelectedDrawerItemIdRef, localVisionModelLastError, localVisionModelReadyRef, moveDrawerFoldersToParent, moveFolderName, moveFolderParent, moveSelectedItemsToFolder, newFolderName, newFolderParent, orderedFolderEntries, quickText, refreshAgentModels, removeWebImageCollectorTag, retryLocalVisionModelDownload, selectedIds, setCanvasAgentSidebarWidth, setChatImageAspectRatio, setChatImageModel, setChatImageResolution, setFolderMoveTargetId, setIsDrawerAgentOpen, setMoveFolderName, setNewFolderName, setQuickText, setSelectedIds, setShowFolderModal, setShowMoveExistingFolderModal, setShowMoveFolderModal, setShowSettings, setWebImageCollectorQuery, setWebImageCollectorReference, setWebImageCollectorStatus, setWebImageCollectorTagDraft, showFolderModal, showMoveExistingFolderModal, showMoveFolderModal, showTextInput, showToast, showWebImageCollector, updateCanvasSelection, updateWebImageCollectorTag, webImageCollectorPanelRef, webImageCollectorQuery, webImageCollectorReference, webImageCollectorStatus, webImageCollectorTagDraft, webImageCollectorTags } = scope;
+  const { activeChatImageAspectRatio, activeChatImageModel, activeChatImageModelChoice, activeChatImageResolution, chatImageModelRuntimeOptions, chatAutoImageAspectRatioValues, chatAutoImageResolutionValues, addChatMediaToCanvas, addWebImageCollectorTag, agentModels, agentModelsLoading, buildCanvasAgentSelectedItems, canvasAgent, canvasAgentSelectedItems, canvasAgentSidebarWidth, chatImageAspectRatioOptions, chatImageModelOptions, chatImageResolutionOptions, chooseReferenceImageForCollector, clearWebImageCollectorTags, closeFolderModal, closeWebImageCollector, collectWebImagesToDrawer, commitQuickText, completeChatBatchCanvasGroup, createChatBatchCanvasGroup, createFolderAndMoveSelected, drawerAgentSelectedItems, executeChatTool, fillChatBatchCanvasSlot, folderMoveSelectionIds, folderMoveTargetEntries, folderMoveTargetId, folders, generateQueryAndCollectFromReference, handleAddFolder, handleCloseTextInput, handleDrawerPanelKeyDown, handleDrawerPanelMouseDown, handleDrawerPanelPointerDown, handleOpenTextInput, hasRemoteImageSearch, installOllamaSilently, isCanvasChromeHidden, isCanvasMode, isCollectingWebImages, isDrawerAgentOpen, isGeneratingWebImageQuery, isInstallingOllama, isInvalidFolderMoveTarget, isMovingFolders, isShortcutReveal, isUtilityActiveTab, lastSelectedDrawerItemIdRef, localVisionModelLastError, localVisionModelReadyRef, moveDrawerFoldersToParent, moveFolderName, moveFolderParent, moveSelectedItemsToFolder, newFolderName, newFolderParent, orderedFolderEntries, quickText, refreshAgentModels, removeWebImageCollectorTag, retryLocalVisionModelDownload, selectedIds, setCanvasAgentSidebarWidth, setChatImageAspectRatio, setChatImageModel, setChatImageResolution, setFolderMoveTargetId, setIsDrawerAgentOpen, setMoveFolderName, setNewFolderName, setQuickText, setSelectedIds, setShowFolderModal, setShowMoveExistingFolderModal, setShowMoveFolderModal, setShowSettings, setWebImageCollectorQuery, setWebImageCollectorReference, setWebImageCollectorStatus, setWebImageCollectorTagDraft, showFolderModal, showMoveExistingFolderModal, showMoveFolderModal, showTextInput, showToast, showWebImageCollector, updateCanvasSelection, updateWebImageCollectorTag, webImageCollectorPanelRef, webImageCollectorQuery, webImageCollectorReference, webImageCollectorStatus, webImageCollectorTagDraft, webImageCollectorTags } = scope;
   return (
 <>
 <ChatHost
+                  canvasId={scope.activeCanvasId}
+                  imageQualities={findAiCatalogModel(getAiCatalogModels(scope.canvasAiCloudImageModels, 'image'), parseCanvasAiModelChoiceValue(activeChatImageModelChoice?.value || '')?.model)?.capabilities?.supportedQualities}
                   visible={!isCanvasMode && !showTextInput && !showWebImageCollector && isDrawerAgentOpen}
                   model={canvasAgent.settings.apiModel}
                   serverManagedChannelFailover={canvasAgent.settings.apiProvider === 'unmind-wallet'}
-                  runtimeImageModel={activeChatImageModelChoice?.value}
+                  cloudWalletMode={canvasAgent.settings.apiProvider === 'unmind-wallet' || canvasAgent.settings.apiCredentialSource === 'cloud_wallet'}
+                  runtimeImageModel={activeChatImageModelChoice?.value || CHAT_AUTO_IMAGE_SETTING}
+                  runtimeImageModelOptions={chatImageModelRuntimeOptions}
+                  runtimeImageAspectRatioOptions={chatAutoImageAspectRatioValues}
+                  runtimeImageResolutionOptions={chatAutoImageResolutionValues}
                   approvalMode={canvasAgent.settings.approvalMode}
                   executeTool={executeChatTool}
                   onNotice={showToast}
@@ -34,6 +43,12 @@ export function DrawerInteractionOverlays({ scope }: { scope: DrawerInteractionO
                     setIsDrawerAgentOpen(false);
                   }}
                   selectedItems={isCanvasMode ? canvasAgentSelectedItems : drawerAgentSelectedItems}
+                  workflowAttachmentOptions={(scope.canvasWorkflowTemplates || []).map((workflow: any) => ({
+                    id: workflow.id,
+                    label: workflow.label,
+                    source: 'template' as const,
+                    snapshot: { schema: 'inspiration-workflow-snapshot' as const, version: 1 as const, source: 'template' as const, label: workflow.label, nodes: workflow.nodes || [], edges: [], metadata: { templateId: workflow.id, hint: workflow.hint } },
+                  }))}
                   resolveSelectedItems={isCanvasMode ? () => buildCanvasAgentSelectedItems() : undefined}
                   onClearSelectedItems={() => {
                     if (isCanvasMode) {
