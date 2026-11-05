@@ -19,6 +19,7 @@ mod repositories;
 mod recharge;
 mod reference_upload;
 mod renderer_diagnostics;
+mod rhino_beta;
 use renderer_diagnostics::{window_action, WindowAction};
 mod services;
 mod update_cache;
@@ -16546,7 +16547,10 @@ fn set_auto_start_impl(auto_start: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn set_auto_start(auto_start: bool) -> Result<(), String> {
+async fn set_auto_start(app_handle: tauri::AppHandle, auto_start: bool) -> Result<(), String> {
+    if app_handle.config().identifier == "com.inspirationdrawer.rhino.beta" {
+        return Err("Rhino Beta 使用独立便携运行，不修改正式版的开机启动设置".to_string());
+    }
     tauri::async_runtime::spawn_blocking(move || set_auto_start_impl(auto_start))
         .await
         .map_err(|e| e.to_string())?
@@ -19255,6 +19259,8 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
+            rhino_beta::rhino_beta_get_connection,
+            rhino_beta::rhino_beta_request,
             renderer_diagnostics::record_renderer_diagnostic,
             renderer_diagnostics::diagnostic_minimize_window,
             renderer_diagnostics::diagnostic_show_window,
@@ -19523,16 +19529,19 @@ fn main() {
             inspiration_space_submit,
         ])
         .setup(|app| {
+            let is_rhino_beta = app.config().identifier == "com.inspirationdrawer.rhino.beta";
             renderer_diagnostics::init(app.handle());
             update_cache::cleanup_update_cache_on_startup(app.handle());
-            POST_INSTALL_LAUNCH_PENDING.store(take_post_install_launch_marker(), Ordering::Release);
+            POST_INSTALL_LAUNCH_PENDING.store(!is_rhino_beta && take_post_install_launch_marker(), Ordering::Release);
             set_startup_close_lock(16_000);
 
+            if !is_rhino_beta {
             if let Err(error) = app
                 .state::<browser_extension::BrowserExtensionManagerState>()
                 .start(app.handle().clone())
             {
                 eprintln!("browser extension bridge init failed: {error}");
+            }
             }
 
             if let Some(main) = app.get_webview_window("main") {
@@ -19563,7 +19572,7 @@ fn main() {
                 eprintln!("native drop init failed: {err}");
             }
 
-            start_mobile_server(app.handle().clone());
+            if !is_rhino_beta { start_mobile_server(app.handle().clone()); }
 
             if let Some(icon) = app.default_window_icon().cloned() {
                 let open_item =
@@ -19578,7 +19587,7 @@ fn main() {
 
                 let _ = TrayIconBuilder::new()
                     .icon(icon)
-                    .tooltip("Inspiration drawer")
+                    .tooltip(if is_rhino_beta { "Inspiration Drawer · Rhino Beta" } else { "Inspiration drawer" })
                     .menu(&tray_menu)
                     .show_menu_on_left_click(false)
                     .on_menu_event(|app, event| match event.id().as_ref() {

@@ -5,6 +5,7 @@ import { compactChatToolResult } from './chatToolResult';
 import { shouldComposeImageVariants, shouldUseIndependentImageVariants } from './chatToolDefinitions';
 import { normalizeImageVariants } from './imageVariantNormalization';
 import { normalizeChatToolName } from './chatToolNames';
+import { isRhinoReadTool } from '../../rhino/rhinoProtocol';
 
 const SUPPORTED_TOOLS = new Set([
   'web_search', 'create_file', 'create_agent', 'get_canvas_selection', 'get_canvas_selected_shapes', 'search_assets', 'generate_image', 'generate_image_variants', 'edit_image', 'generate_video',
@@ -59,7 +60,12 @@ export const routeChatToolCall = async (input: {
   onExecuting?: () => void | Promise<void>;
 }) => {
   const name = normalizeChatToolName(input.name);
-  if (!SUPPORTED_TOOLS.has(name)) throw new Error(`不支持的 Chat 工具：${input.name}`);
+  if (!SUPPORTED_TOOLS.has(name) && !isRhinoReadTool(name)) throw new Error(`不支持的 Chat 工具：${input.name}`);
+  if (isRhinoReadTool(name)) {
+    await input.onExecuting?.();
+    const permission = evaluateLegacyActionPermission({ tool: 'app_get_context', arguments: input.args }, { userText: input.context.userText, approvalMode: input.approvalMode });
+    return { requiresApproval: false, result: await input.executor(name, input.args, input.context), permission };
+  }
   if ((name === 'generate_image' || name === 'edit_image' || name === 'generate_video') && !String(input.args.prompt || '').trim()) {
     throw new Error('生成提示词不能为空');
   }

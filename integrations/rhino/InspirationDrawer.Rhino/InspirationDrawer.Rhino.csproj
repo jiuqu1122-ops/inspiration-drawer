@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <AssemblyName>InspirationDrawer.Rhino</AssemblyName>
+    <TargetExt>.rhp</TargetExt>
+    <Version>0.1.0-beta.1</Version>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RhinoSystemDir Condition="'$(RhinoSystemDir)' == ''">D:/Program Files/Rhino 9/System</RhinoSystemDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="RhinoCommon"><HintPath>$(RhinoSystemDir)/RhinoCommon.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Eto"><HintPath>$(RhinoSystemDir)/Eto.dll</HintPath><Private>false</Private></Reference>
+    <EmbeddedResource Include="Panel/*" />
+  </ItemGroup>
+</Project>

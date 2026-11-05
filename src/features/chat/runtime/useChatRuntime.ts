@@ -158,11 +158,12 @@ export type UseChatRuntimeOptions = {
   imageResolutionOptions?: string[];
   approvalMode?: 'ask' | 'auto';
   executeTool: ChatToolExecutor;
+  additionalTools?: (conversationId: string) => ReturnType<typeof getChatToolDefinitions>;
   resolveAttachmentUrl?: (attachment: ChatAttachment) => Promise<string>;
   createVisionAttachmentResolver?: () => ChatVisionAttachmentResolver;
   prepareAttachment?: (attachment: PendingChatAttachment) => Promise<PendingChatAttachment>;
   onNotice?: (message: string) => void;
-  onGeneratedMediaReady?: (media: ChatGeneratedMedia) => void | Promise<void>;
+  onGeneratedMediaReady?: (media: ChatGeneratedMedia, origin: { conversationId: string }) => void | Promise<void>;
   onBatchStarted?: (payload: ChatBatchStartedPayload) => void | Promise<void>;
   onBatchMediaReady?: (payload: ChatBatchMediaReadyPayload) => void | Promise<void>;
   onBatchCompleted?: (payload: ChatBatchCompletedPayload) => void | Promise<void>;
@@ -952,7 +953,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
                     total: batchAttachments.length * batchOutputCount,
                   });
                 } else {
-                  await optionsRef.current.onGeneratedMediaReady?.(media);
+                  await optionsRef.current.onGeneratedMediaReady?.(media, { conversationId: run.conversationId });
                 }
               } catch (error) {
                 console.warn('Chat 批量生成结果加入画布失败:', error);
@@ -999,7 +1000,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
                     total: batchTotal,
                   });
                 } else {
-                  await optionsRef.current.onGeneratedMediaReady?.(enrichedMedia);
+                  await optionsRef.current.onGeneratedMediaReady?.(enrichedMedia, { conversationId: run.conversationId });
                 }
               } catch (error) {
                 console.warn('Chat 独立方案结果加入画布失败:', error);
@@ -1013,7 +1014,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           if (notifiedMediaIds.has(media.id)) continue;
           notifiedMediaIds.add(media.id);
           try {
-            await optionsRef.current.onGeneratedMediaReady?.(media);
+            await optionsRef.current.onGeneratedMediaReady?.(media, { conversationId: run.conversationId });
           } catch (error) {
             console.warn('Chat 生成结果自动加入画布失败:', error);
           }
@@ -1407,6 +1408,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         && (previousCompositeImageCount === 0 || tool.function.name !== 'generate_image')
       ));
     const requestInstructions: Array<Record<string, unknown>> = [];
+    tools.push(...(optionsRef.current.additionalTools?.(conversationId) || []));
     if (presentationText) requestInstructions.push({ role: 'system', content: [
       '本轮最终交付是可下载的 PPTX，不是配图。纯数据或已有素材足够时不要额外生图；工业设计研究先找与当前研究对象相关、可核验的参考图；仅有必要且用户允许时生成并标注 AI 概念示意。已有合适附件时优先复用，不为了视觉装饰强制付费生图。无图片时用原生图示解释结构，不把示意图冒充真实产品照片。',
       'PPT 配图不设每份调用次数或图片总数上限，按真实内容需要决定，不为凑图重复生成；单次请求仍遵守所选生图模型的规格。',

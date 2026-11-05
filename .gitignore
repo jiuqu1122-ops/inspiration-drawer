@@ -47,3 +47,6 @@ sunstudio/
 
 native-winui/**/bin/
 native-winui/**/obj/
+integrations/rhino/**/bin/
+integrations/rhino/**/obj/
+integrations/rhino/artifacts/

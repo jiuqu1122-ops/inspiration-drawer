@@ -1,4 +1,5 @@
 import { createCanvasPersistedItemsCache, createCanvasStatePersistence } from './features/canvas/canvasStatePersistence';
+import { isRhinoCanvasLocked } from './features/rhino/rhinoProtocol';
 import { createCanvasViewportScheduler, readCanvasVisualViewport } from './features/canvas/canvasViewportScheduler';
 import { haveSameCanvasConnectionEndpoints, reuseCanvasRenderArray } from './features/canvas/canvasRenderArrayIdentity';
 import { beginDrawerImageMemory, syncAnalyzedDrawerProfile, type DesignMemoryRecord } from './features/designMemory';
@@ -3283,9 +3284,9 @@ function MainApp() {
     return `canvas_${kind}_${scope}_${seed}_${Math.random().toString(36).slice(2, 7)}`.replace(/[^a-zA-Z0-9_-]/g, '_');
   };
 
-  const switchToCanvas = async (canvasId: string) => { return switchToCanvasImpl({ activeCanvasIdRef, enterCanvasMode, isCanvasModeRef, isSwitchingCanvasRef, loadCanvasItems, saveCurrentCanvasBeforeSwitch, setActiveCanvasId, setCanvasActionMenuId, setCanvases, setIsSwitchingCanvas, showToast, sortCanvasesNewestFirst }, canvasId); };
+  const switchToCanvas = async (canvasId: string) => { if (isRhinoCanvasLocked() && canvasId !== activeCanvasIdRef.current) { showToast('Rhino Chat 正在使用当前画布，请等待任务结束后再切换'); return; } return switchToCanvasImpl({ activeCanvasIdRef, enterCanvasMode, isCanvasModeRef, isSwitchingCanvasRef, loadCanvasItems, saveCurrentCanvasBeforeSwitch, setActiveCanvasId, setCanvasActionMenuId, setCanvases, setIsSwitchingCanvas, showToast, sortCanvasesNewestFirst }, canvasId); };
 
-  const createNewCanvasPage = async () => { return createNewCanvasPageImpl({ activeCanvasIdRef, canvases, enterCanvasMode, isCanvasModeRef, isSwitchingCanvasRef, loadCanvasItems, openTextInputDialog, saveCurrentCanvasBeforeSwitch, setActiveCanvasId, setCanvasActionMenuId, setCanvases, setIsSwitchingCanvas, showToast, sortCanvasesNewestFirst }); };
+  const createNewCanvasPage = async () => { if (isRhinoCanvasLocked()) { showToast('Rhino Chat 正在使用当前画布，请等待任务结束后再创建画布'); return; } return createNewCanvasPageImpl({ activeCanvasIdRef, canvases, enterCanvasMode, isCanvasModeRef, isSwitchingCanvasRef, loadCanvasItems, openTextInputDialog, saveCurrentCanvasBeforeSwitch, setActiveCanvasId, setCanvasActionMenuId, setCanvases, setIsSwitchingCanvas, showToast, sortCanvasesNewestFirst }); };
 
   const renameCanvasPage = async (canvas: CanvasRecord) => { return renameCanvasPageImpl({ openTextInputDialog, setCanvases, showToast }, canvas); };
 
@@ -3293,7 +3294,7 @@ function MainApp() {
 
   const saveCurrentCanvasAsSnapshot = async (canvas: CanvasRecord, switchAfterSave = false) => { return saveCurrentCanvasAsSnapshotImpl({ openTextInputDialog, refreshCanvases, saveCurrentCanvasBeforeSwitch, showToast, switchToCanvas }, canvas, switchAfterSave); };
 
-  const moveCanvasPageToTrash = async (canvas: CanvasRecord) => { return moveCanvasPageToTrashImpl({ activeCanvasIdRef, isCanvasTrashOpen, loadCanvasItems, refreshCanvases, refreshDeletedCanvases, saveCurrentCanvasBeforeSwitch, setActiveCanvasId }, canvas); };
+  const moveCanvasPageToTrash = async (canvas: CanvasRecord) => { if (isRhinoCanvasLocked()) { showToast('Rhino Chat 正在使用画布，请等待任务结束后再删除'); return; } return moveCanvasPageToTrashImpl({ activeCanvasIdRef, isCanvasTrashOpen, loadCanvasItems, refreshCanvases, refreshDeletedCanvases, saveCurrentCanvasBeforeSwitch, setActiveCanvasId }, canvas); };
 
   const saveCanvasPageElementsToDrawer = async (canvas: CanvasRecord) => { return saveCanvasPageElementsToDrawerImpl({ activeCanvasIdRef, canvasItemsRef, copyCanvasItemsToDrawerFolder, getActiveCanvasRunNodeIds, saveCurrentCanvasBeforeSwitch, waitForCanvasBackgroundPatches }, canvas); };
 

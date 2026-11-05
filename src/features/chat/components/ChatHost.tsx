@@ -19,6 +19,7 @@ import { useCloudAccount } from '../../cloudAccountContext';
 import { getWorkflowChatBinding, saveWorkflowChatBinding } from '../storage/workflowChatStorage';
 import type { WorkflowResultCardData } from '../../agentModel';
 import { createCanvasWorkflowSnapshot, workflowSnapshotHash } from '../attachments/chatWorkflowAttachments';
+import { assertRhinoResultTarget, getRhinoTools, useRhinoBridge, withRhinoTools } from '../../rhino/useRhinoBridge';
 
 export type ChatHostProps = Omit<ChatViewProps, 'runtime'> & {
   visible: boolean;
@@ -39,6 +40,7 @@ export type ChatHostProps = Omit<ChatViewProps, 'runtime'> & {
   onBatchMediaReady?: UseChatRuntimeOptions['onBatchMediaReady'];
   onBatchCompleted?: UseChatRuntimeOptions['onBatchCompleted'];
   resolveSelectedItems?: () => AgentCanvasSelectionItem[];
+  resolveRhinoSelectedItems?: () => AgentCanvasSelectionItem[];
 };
 
 const prepareChatAttachment = async (attachment: PendingChatAttachment) => {
@@ -103,6 +105,7 @@ export function ChatHost({
   onBatchMediaReady,
   onBatchCompleted,
   resolveSelectedItems,
+  resolveRhinoSelectedItems,
   imageModel,
   imageAspectRatio,
   imageResolution,
@@ -127,9 +130,17 @@ export function ChatHost({
     imageResolutionOptions: runtimeImageResolutionOptions,
     imageQuality: effectiveImageQuality,
     approvalMode,
-    executeTool,
+    executeTool: withRhinoTools(executeTool, canvasId),
+    additionalTools: getRhinoTools,
     onNotice,
-    onGeneratedMediaReady,
+    onGeneratedMediaReady: (media, origin) => {
+      try { assertRhinoResultTarget(origin.conversationId, canvasId); }
+      catch {
+        onNotice?.('Rhino 生成结果已保留在会话中。画布已切换，请返回原画布后手动添加。');
+        return;
+      }
+      return onGeneratedMediaReady?.(media, origin);
+    },
     onBatchStarted,
     onBatchMediaReady,
     onBatchCompleted,
@@ -137,6 +148,14 @@ export function ChatHost({
     onWalletSettlementComplete: scheduleQuotaRefresh,
     prepareAttachment: prepareChatAttachment,
     createVisionAttachmentResolver: createChatVisionAttachmentResolver,
+  });
+  useRhinoBridge({
+    runtime, canvasId,
+    selectedItems: () => resolveRhinoSelectedItems?.() || resolveSelectedItems?.() || viewProps.selectedItems || [],
+    modelOptions: viewProps.modelOptions || [],
+    imageModel,
+    imageModelOptions: viewProps.imageModelOptions || [],
+    onImageModelChange: viewProps.onImageModelChange,
   });
   const memoryConversationRequest = useDesignMemoryConversationRequest();
   const handledMemoryRequestRef = useRef(0);

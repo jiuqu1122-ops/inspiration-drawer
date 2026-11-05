@@ -18,6 +18,7 @@ export function DrawerInteractionOverlays({ scope }: { scope: DrawerInteractionO
   return (
 <>
 <ChatHost
+                  resolveRhinoSelectedItems={() => buildCanvasAgentSelectedItems()}
                   canvasId={scope.activeCanvasId}
                   imageQualities={findAiCatalogModel(getAiCatalogModels(scope.canvasAiCloudImageModels, 'image'), parseCanvasAiModelChoiceValue(activeChatImageModelChoice?.value || '')?.model)?.capabilities?.supportedQualities}
                   visible={!isCanvasMode && !showTextInput && !showWebImageCollector && isDrawerAgentOpen}

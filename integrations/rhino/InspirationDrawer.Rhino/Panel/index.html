@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>灵感抽屉 Beta</title><link rel="stylesheet" href="/panel.css"></head>
+<body>
+  <header><div><strong>灵感抽屉</strong><span class="badge">BETA</span></div><button id="new" title="新建会话">新对话 ＋</button></header>
+  <div class="connection"><span id="dot"></span><span id="connection" role="status">等待抽屉连接</span></div>
+  <div id="document" class="document">正在读取 Rhino 文档…</div>
+  <section class="settings" aria-label="会话与模型">
+    <label>对话<select id="conversation" aria-label="选择对话"><option value="">新对话</option></select></label>
+    <div class="models"><label>聊天模型<select id="model" aria-label="聊天模型"><option>跟随抽屉</option></select></label><label>生图模型<select id="image-model" aria-label="生图模型"><option>跟随抽屉</option></select></label></div>
+  </section>
+  <div id="notice" role="status" hidden></div>
+  <main id="messages" aria-label="聊天记录"><div class="empty"><h1>从模型到灵感</h1><p>选择 Rhino 对象，结合画布参考图，在这里继续你的 Chat。</p><p class="hint">请先启动配套 Beta 桌面端，完成登录并设置聊天与生图模型。</p></div></main>
+  <footer>
+    <div class="references"><label><input id="viewport" type="checkbox" checked>附带当前视口</label><label><input id="canvas" type="checkbox" checked>画布选中图片 <span id="selected-count">0</span></label></div>
+    <form id="composer"><textarea id="input" rows="3" maxlength="12000" placeholder="例如：参考画布材质，给选中的外壳生成一张效果图…" aria-label="消息"></textarea><div class="actions"><span>Enter 发送 · Shift + Enter 换行</span><button id="stop" type="button" hidden>停止</button><button id="send" type="submit" disabled>发送 ↑</button></div></form>
+    <p class="beta-note">参考图生成 · 暂未启用对象遮罩，不保证严格保形</p>
+  </footer>
+  <script src="/panel.js"></script>
+</body></html>
