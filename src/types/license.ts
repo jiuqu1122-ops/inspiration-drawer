@@ -106,6 +106,8 @@ export type AiModelModality = 'chat' | 'image' | 'video' | 'audio';
  */
 export type AiModelCapabilities = {
   supportsImageEdit?: boolean;
+  /** Explicit server declaration that this exact model/route accepts an edit mask. */
+  supportsMask?: boolean;
   supportedQualities?: string[];
   qualityParameter?: string;
   outputMode?: 'single_asset' | 'multiple_assets';

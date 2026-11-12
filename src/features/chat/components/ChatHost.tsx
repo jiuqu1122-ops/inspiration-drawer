@@ -1,3 +1,4 @@
+import { readRhinoImageSettings, resolveRhinoImageSettings, RHINO_IMAGE_SETTINGS_KEY, type RhinoImageSettings } from '../../rhino/rhinoImageSettings';
 import { useDesignMemoryConversationRequest } from '../../designMemory/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -117,8 +118,19 @@ export function ChatHost({
   const workflowConversationRequest = useCanvasWorkflowConversationRequest();
   const resolvedVisible = viewProps.variant === 'canvas' ? canvasChatVisible : visible;
   const [imageQuality, setImageQuality] = useState('');
+  const [imageMaskMode, setImageMaskMode] = useState<'off' | 'on'>('off');
+  const [imageMaskAttachmentId, setImageMaskAttachmentId] = useState('');
   const effectiveImageQuality = imageQualities.includes(imageQuality) ? imageQuality : imageQualities[0] || '';
-  const runtime = useChatRuntime({
+  const [rhinoImageSettings, setRhinoImageSettings] = useState(readRhinoImageSettings);
+  const [rhinoImageMaskMode, setRhinoImageMaskMode] = useState<'off' | 'on'>('off');
+  const rhinoOutput = resolveRhinoImageSettings(rhinoImageSettings, viewProps.imageModelOptions || [], runtimeImageModelOptions || []);
+  const updateRhinoImageSetting = (key: keyof RhinoImageSettings, value: string) => {
+    setRhinoImageSettings(previous => ({ ...previous, [key]: value }));
+  };
+  useEffect(() => {
+    try { localStorage.setItem(RHINO_IMAGE_SETTINGS_KEY, JSON.stringify(rhinoImageSettings)); } catch { /* Keep session preferences in memory. */ }
+  }, [rhinoImageSettings]);
+  const runtimeOptions: UseChatRuntimeOptions = {
     model,
     modelOptions: viewProps.modelOptions,
     serverManagedChannelFailover,
@@ -129,6 +141,8 @@ export function ChatHost({
     imageAspectRatioOptions: runtimeImageAspectRatioOptions,
     imageResolutionOptions: runtimeImageResolutionOptions,
     imageQuality: effectiveImageQuality,
+    imageMaskMode,
+    imageMaskAttachmentId,
     approvalMode,
     executeTool: withRhinoTools(executeTool, canvasId),
     additionalTools: getRhinoTools,
@@ -136,7 +150,7 @@ export function ChatHost({
     onGeneratedMediaReady: (media, origin) => {
       try { assertRhinoResultTarget(origin.conversationId, canvasId); }
       catch {
-        onNotice?.('Rhino 生成结果已保留在会话中。画布已切换，请返回原画布后手动添加。');
+        onNotice?.('Rhino ??????????????????????????????');
         return;
       }
       return onGeneratedMediaReady?.(media, origin);
@@ -148,14 +162,35 @@ export function ChatHost({
     onWalletSettlementComplete: scheduleQuotaRefresh,
     prepareAttachment: prepareChatAttachment,
     createVisionAttachmentResolver: createChatVisionAttachmentResolver,
+  };
+  const runtime = useChatRuntime({ ...runtimeOptions, conversationScope: 'desktop' });
+  const rhinoRuntime = useChatRuntime({
+    ...runtimeOptions, conversationScope: 'rhino', defaultExecutionSource: 'rhino',
+    imageModel: rhinoOutput.model, imageResolution: rhinoOutput.resolution,
+    imageAspectRatio: rhinoOutput.aspectRatio, imageQuality: rhinoOutput.quality,
+    imageResolutionOptions: rhinoOutput.resolutionOptions.map(option => option.value),
+    imageAspectRatioOptions: rhinoOutput.aspectRatioOptions.map(option => option.value),
+    imageMaskMode: rhinoImageMaskMode, imageMaskAttachmentId: undefined,
   });
   useRhinoBridge({
-    runtime, canvasId,
+    runtime: rhinoRuntime, canvasId,
     selectedItems: () => resolveRhinoSelectedItems?.() || resolveSelectedItems?.() || viewProps.selectedItems || [],
     modelOptions: viewProps.modelOptions || [],
-    imageModel,
+    imageModel: rhinoOutput.model,
     imageModelOptions: viewProps.imageModelOptions || [],
-    onImageModelChange: viewProps.onImageModelChange,
+    imageAspectRatio: rhinoOutput.aspectRatio,
+    imageAspectRatioOptions: rhinoOutput.aspectRatioOptions,
+    imageResolution: rhinoOutput.resolution,
+    imageResolutionOptions: rhinoOutput.resolutionOptions,
+    imageQuality: rhinoOutput.quality,
+    imageQualityOptions: rhinoOutput.qualityOptions,
+    onImageAspectRatioChange: value => updateRhinoImageSetting('aspectRatio', value),
+    onImageResolutionChange: value => updateRhinoImageSetting('resolution', value),
+    onImageQualityChange: value => updateRhinoImageSetting('quality', value),
+    imageMaskMode: rhinoImageMaskMode,
+    onNotice,
+    onImageModelChange: value => updateRhinoImageSetting('model', value),
+    onImageMaskModeChange: setRhinoImageMaskMode,
   });
   const memoryConversationRequest = useDesignMemoryConversationRequest();
   const handledMemoryRequestRef = useRef(0);
@@ -259,6 +294,10 @@ export function ChatHost({
       imageQuality={effectiveImageQuality}
       imageQualityOptions={imageQualities.map(value => ({ value, label: value }))}
       onImageQualityChange={setImageQuality}
+      imageMaskMode={imageMaskMode}
+      onImageMaskModeChange={setImageMaskMode}
+      imageMaskAttachmentId={imageMaskAttachmentId}
+      onImageMaskAttachmentChange={setImageMaskAttachmentId}
       workflowResult={viewProps.variant === 'canvas'
         ? workflowConversationId === runtime.activeConversationId
           ? savedWorkflowResult

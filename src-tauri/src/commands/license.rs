@@ -445,6 +445,8 @@ pub struct CloudImageGenerationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     negative_prompt: Option<String>,
     input_images: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mask_image: Option<String>,
     aspect_ratio: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolution: Option<String>,
@@ -461,6 +463,8 @@ pub struct CloudImageGenerationResult {
     provider: String,
     model: String,
     charged_credits: String,
+    #[serde(default)]
+    mask_applied: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -479,6 +483,8 @@ pub struct CloudImageGenerationLookup {
     provider_channel_name: Option<String>,
     model: Option<String>,
     charged_credits: Option<String>,
+    #[serde(default)]
+    mask_applied: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -499,8 +505,10 @@ pub struct CloudImageModelsResponse {
     #[serde(default)]
     default_video_model: Option<String>,
     models: Vec<String>,
-    #[serde(default)]
-    catalog: Vec<CloudAiCatalogModel>,
+    // Preserve the distinction between a legacy backend that omits `catalog`
+    // and a current backend that explicitly returns an empty authoritative catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    catalog: Option<Vec<CloudAiCatalogModel>>,
     #[serde(default)]
     capabilities: std::collections::HashMap<String, CloudAiModelCapabilities>,
     #[serde(default)]
@@ -538,6 +546,8 @@ pub struct CloudAiModelCapabilities {
     supported_qualities: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     supports_image_edit: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_mask: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     quality_parameter: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2717,6 +2727,26 @@ pub async fn generate_cloud_images(
     }
     request.input_images =
         normalize_cloud_image_references(std::mem::take(&mut request.input_images))?;
+    if let Some(mask_image) = request.mask_image.take() {
+        if request.input_images.is_empty() {
+            return Err("invalid_request: Mask 编辑必须同时提供基础图片".to_string());
+        }
+        let mut normalized_mask = normalize_cloud_image_references(vec![mask_image])?;
+        let mask = normalized_mask.pop().unwrap_or_default();
+        if !mask.starts_with("data:image/png;base64,") {
+            return Err("invalid_request: Mask 必须是 PNG 图片".to_string());
+        }
+        if mask.len() > 12_000_000 {
+            return Err("invalid_request: Mask 图片数据过大".to_string());
+        }
+        let payload = mask.split_once(',').map(|(_, value)| value).unwrap_or_default();
+        let bytes = general_purpose::STANDARD
+            .decode(payload)
+            .map_err(|_| "invalid_request: Mask PNG Base64 无效".to_string())?;
+        screenshots::image::load_from_memory_with_format(&bytes, screenshots::image::ImageFormat::Png)
+            .map_err(|_| "invalid_request: Mask PNG 图片损坏".to_string())?;
+        request.mask_image = Some(mask);
+    }
     let references_normalized_at = Instant::now();
     if request
         .input_images
@@ -2735,7 +2765,13 @@ pub async fn generate_cloud_images(
         &request,
         CLOUD_IMAGE_GENERATION_TIMEOUT,
     )
-    .await;
+    .await
+    .and_then(|result| {
+        if request.mask_image.is_some() && result.mask_applied != Some(true) {
+            return Err("mask_unsupported: 云端服务未确认 Mask 已应用；该结果已拒绝，未按普通生图回退".to_string());
+        }
+        Ok(result)
+    });
     eprintln!(
         "[cloud_image_command_timing] clientRequestId={} referenceNormalizeMs={} tokenMs={} requestMs={} totalMs={}",
         request.client_request_id,
@@ -3418,6 +3454,43 @@ mod tests {
         let value = serde_json::to_value(pricing).unwrap();
         assert_eq!(value["agentRequestCredits"], serde_json::json!("10"));
         assert!(value.get("canvasTextAgentCredits").is_none());
+    }
+
+    #[test]
+    fn preserves_an_omitted_catalog_for_legacy_channel_model_fallback() {
+        let response: CloudImageModelsResponse = serde_json::from_value(serde_json::json!({
+            "provider": "NEW_API",
+            "models": ["legacy-route-model"],
+            "channels": [{
+                "id": "legacy-channel",
+                "name": "Legacy channel",
+                "provider": "NEW_API",
+                "models": ["legacy-route-model"],
+                "modelCapabilities": {
+                    "legacy-route-model": { "resolutions": ["1K"] }
+                }
+            }]
+        })).unwrap();
+        let value = serde_json::to_value(response).unwrap();
+        assert!(value.get("catalog").is_none(), "an omitted legacy catalog must not become an authoritative empty array");
+        assert_eq!(value["channels"][0]["models"], serde_json::json!(["legacy-route-model"]));
+    }
+
+    #[test]
+    fn preserves_an_explicit_empty_catalog_as_authoritative() {
+        let response: CloudImageModelsResponse = serde_json::from_value(serde_json::json!({
+            "provider": "NEW_API",
+            "models": ["legacy-route-model"],
+            "catalog": [],
+            "channels": [{
+                "id": "legacy-channel",
+                "name": "Legacy channel",
+                "provider": "NEW_API",
+                "models": ["legacy-route-model"]
+            }]
+        })).unwrap();
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["catalog"], serde_json::json!([]));
     }
 
     #[test]

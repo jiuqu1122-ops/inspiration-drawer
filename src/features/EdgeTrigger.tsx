@@ -20,6 +20,7 @@ import {
   EDGE_STRIP_HEIGHT,
   FLOAT_HOVER_OPEN_DELAY,
   FLOAT_TRIGGER_SIZE,
+  floatingTriggerAppearance,
   getStoredEdgeStripY,
   getStoredFloatPosition,
   getStoredTriggerMode,
@@ -879,13 +880,7 @@ export function EdgeTrigger() {
   };
 
   if (triggerMode === 'float') {
-    const browserDragVisualClass = browserDragState === 'ready'
-      ? 'bg-amber-500 border-amber-300 dark:bg-amber-400 dark:border-amber-300/55'
-      : browserDragState === 'success'
-      ? 'bg-emerald-500 border-emerald-300 dark:bg-emerald-400 dark:border-emerald-300/55'
-      : browserDragState === 'error'
-      ? 'bg-red-500 border-red-300 dark:bg-red-400 dark:border-red-300/55'
-      : 'bg-blue-500 border-blue-300/80 dark:bg-blue-400 dark:border-blue-300/55';
+    const floatAppearance = floatingTriggerAppearance(browserDragState);
     const BrowserDragIcon = browserDragState === 'success'
       ? Check
       : browserDragState === 'error'
@@ -908,7 +903,7 @@ export function EdgeTrigger() {
         onDrop={handleEdgeFileDrag}
       >
         <button
-          className={`absolute rounded-[22px] overflow-hidden isolate ${browserDragVisualClass} text-white dark:text-stone-950 backdrop-blur-xl border shadow-xl shadow-black/18 flex items-center justify-center cursor-pointer opacity-100 transition-[transform,background-color,border-color] ${isFloatDragOverlay ? 'shadow-2xl' : 'hover:scale-[1.03] active:scale-95'}`}
+          className={`absolute rounded-[22px] overflow-hidden isolate ${floatAppearance.surface} ${floatAppearance.foreground} backdrop-blur-xl border shadow-xl shadow-black/18 flex items-center justify-center cursor-pointer opacity-100 transition-[transform,background-color,border-color] ${isFloatDragOverlay ? 'shadow-2xl' : 'hover:scale-[1.03] active:scale-95'}`}
           style={isFloatDragOverlay ? { left: floatVisualPos.x - floatOverlayOrigin.x, top: floatVisualPos.y - floatOverlayOrigin.y, width: FLOAT_TRIGGER_SIZE, height: FLOAT_TRIGGER_SIZE } : { left: 0, top: 0, width: FLOAT_TRIGGER_SIZE, height: FLOAT_TRIGGER_SIZE }}
           title={browserDragState === 'ready' ? '松开即可收取当前网页图片' : browserDragState === 'saving' ? '正在保存网页图片' : browserDragState === 'success' ? '网页图片已保存' : browserDragState === 'error' ? '网页图片保存失败' : '左键单击打开抽屉，按住左键拖动悬浮方块，拖入文件也可打开'}
           onClick={(e) => {
@@ -929,8 +924,8 @@ export function EdgeTrigger() {
           onDragLeave={handleFloatHoverLeave}
           onDrop={handleEdgeFileDrag}
         >
-          <BrowserDragIcon className={`w-5 h-5 text-white dark:text-stone-950 pointer-events-none ${browserDragState === 'saving' ? 'animate-pulse' : ''}`} />
-          <span className="absolute right-2 bottom-2 w-2 h-2 rounded-full bg-cyan-200 dark:bg-cyan-100 shadow-[0_0_8px_rgba(34,211,238,0.7)] pointer-events-none" />
+          <BrowserDragIcon className={`w-5 h-5 ${floatAppearance.foreground} pointer-events-none ${browserDragState === 'saving' ? 'animate-pulse' : ''}`} />
+          <span className="absolute right-2 bottom-2 w-2 h-2 rounded-full bg-yellow-50 dark:bg-yellow-100 shadow-[0_0_8px_rgba(254,249,195,0.7)] pointer-events-none" />
         </button>
       </div>
     );

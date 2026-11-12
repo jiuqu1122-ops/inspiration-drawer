@@ -211,7 +211,12 @@ export function ChatToolCallCard({ call, onResolve }: {
       )}
       {call.toolName !== 'batch_image_operation' && call.status === 'awaiting-approval' && (
         <div className="chat-tool__approval">
-          <span>此操作可能产生费用或修改软件内容。</span>
+          {call.toolName.startsWith('rhino_native_') ? (
+            <>
+              <span>将通过 RhinoAI 原生 MCP 操作当前绑定文档。请核对工具名称和参数后确认：</span>
+              <pre className="chat-tool__native-approval-args">{JSON.stringify(readJsonRecord(call.argumentsJson), null, 2).slice(0, 6000)}</pre>
+            </>
+          ) : <span>此操作可能产生费用或修改软件内容。</span>}
           <div>
             <button type="button" className="chat-button chat-button--primary" onClick={() => onResolve(call.id, true)}>允许</button>
             <button type="button" className="chat-button" onClick={() => onResolve(call.id, false)}><X size={12} />拒绝</button>

@@ -1,6 +1,6 @@
 {
   "productName": "Inspiration Drawer Rhino Beta",
-  "version": "8.0.27-beta.1",
+  "version": "8.0.27-beta.32",
   "identifier": "com.inspirationdrawer.rhino.beta",
   "bundle": { "createUpdaterArtifacts": false },
   "plugins": { "updater": { "endpoints": [] } }

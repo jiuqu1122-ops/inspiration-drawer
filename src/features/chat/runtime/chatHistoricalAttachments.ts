@@ -2,6 +2,8 @@ import type { ChatAttachment, ChatMessage } from '../model/chatTypes';
 import {
   explicitlyResetsVisualContext,
   isShortVisualFollowup,
+  isVisualEditFollowup,
+  isVisualCreationIntent,
   isVisualRevisionFollowup,
 } from '../context/chatVisualIntent';
 import { isBatchPlanConfirmation } from './chatBatchPlanReply';
@@ -35,6 +37,9 @@ export const isHistoricalImageContinuation = (text: string) => {
     || HISTORICAL_VISUAL_REFERENCE.test(normalized)
     || isShortVisualFollowup(normalized)
     || isVisualRevisionFollowup(normalized)
+    || isVisualEditFollowup(normalized)
+    || isVisualCreationIntent(normalized)
+    || isVisualEditFollowup(normalized)
     || isBatchPlanConfirmation(normalized);
 };
 

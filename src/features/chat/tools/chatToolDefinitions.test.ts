@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '../model/chatTypes';
 import { CHAT_TOOL_DEFINITIONS, getChatToolDefinitions, isChatAgentCreationFollowup, isChatAgentCreationRequest, resolveDirectVisualTool, shouldComposeImageVariants, shouldDirectGenerateImage, shouldExposeBatchImageOperation, shouldExposeChatTools, shouldExposeWebSearch, shouldForceChatAgentCreation, shouldUseIndependentImageVariants } from './chatToolDefinitions';
 
+const imageToolNames = ['generate_image', 'generate_image_variants', 'edit_image'];
+
 describe('Chat tool exposure', () => {
   it('exposes canvas tools for an active agent even when the user refers to its instructions briefly', () => {
     expect(getChatToolDefinitions('按这个智能体继续', false, false, false, 0, true)
@@ -116,12 +118,36 @@ describe('Chat tool exposure', () => {
     expect(getChatToolDefinitions(text).map(tool => tool.function.name)).toContain(expectedTool);
   });
 
-  it.each(['帮我生成一张风景照', '生成一张海报', '出图', '输出两张图'])('marks direct image requests for the runtime fallback: %s', text => {
+  it.each(['帮我生成一张风景照', '生成一张海报', '出图', '输出两张图'])('recognizes explicit image requests in the intent hint: %s', text => {
     expect(shouldDirectGenerateImage(text)).toBe(true);
   });
 
   it.each(['先不要出图', '暂时不用生成图片', '别生图，先分析一下'])('respects explicit requests not to render yet: %s', text => {
     expect(shouldDirectGenerateImage(text)).toBe(false);
+  });
+  it.each([
+    '\u5e2e\u6211\u751f\u6210\u4e00\u4e2a\u7528\u4e8e Midjourney \u7684\u56fe\u7247\u63d0\u793a\u8bcd',
+    '\u5199\u4e00\u4e2a\u751f\u6210\u56fe\u7247\u7684\u63d0\u793a\u8bcd',
+    '\u4f18\u5316\u8fd9\u6bb5\u751f\u56fe\u63d0\u793a\u8bcd',
+    'Write an image-generation prompt for a futuristic car',
+    'Improve this prompt for image generation',
+  ])('keeps image-prompt authoring text-only: %s', text => {
+    expect(shouldDirectGenerateImage(text)).toBe(false);
+    expect(resolveDirectVisualTool(text)).toBeNull();
+    expect(getChatToolDefinitions(text).map(tool => tool.function.name))
+      .not.toContain('generate_image');
+  });
+
+  it.each([
+    '\u5e2e\u6211\u5199\u4e00\u4e2a\u751f\u56fe\u63d0\u793a\u8bcd\uff0c\u7136\u540e\u6309\u5b83\u751f\u6210\u56fe\u7247',
+    '\u5148\u5199\u63d0\u793a\u8bcd\uff0c\u518d\u751f\u6210\u4e00\u5f20\u56fe',
+    'Write an image prompt, then generate the image',
+    '\u5e2e\u6211\u5199\u63d0\u793a\u8bcd\uff0c\u7136\u540e\u5e2e\u6211\u751f\u6210\u56fe\u7247',
+    '\u751f\u6210\u63d0\u793a\u8bcd\uff0c\u56fe\u7247\u4e5f\u751f\u6210\u4e00\u4e0b',
+  ])('preserves a separate explicit render request: %s', text => {
+    expect(shouldDirectGenerateImage(text)).toBe(true);
+    expect(getChatToolDefinitions(text).map(tool => tool.function.name))
+      .toContain('generate_image');
   });
 
   it('does not route an explicit video request through the image fallback', () => {
@@ -287,17 +313,21 @@ describe('Chat tool exposure', () => {
 
   it('exposes web search for explicit current-information requests or when enabled', () => {
     expect(shouldExposeWebSearch('联网查一下今天的 AI 新闻')).toBe(true);
-    expect(getChatToolDefinitions('你好', false, true).map(tool => tool.function.name)).toEqual(['web_search']);
-    expect(getChatToolDefinitions('你好', false, false)).toEqual([]);
-    expect(getChatToolDefinitions('联网查一下今天的 AI 新闻', false, true, true)).toEqual([]);
+    expect(getChatToolDefinitions('hello', false, true).map(tool => tool.function.name)).toEqual(['web_search', ...imageToolNames]);
+    expect(getChatToolDefinitions('hello', false, false).map(tool => tool.function.name)).toEqual(imageToolNames);
+    expect(getChatToolDefinitions('current news', false, true, true).map(tool => tool.function.name)).toEqual(imageToolNames);
   });
 
-  it('exposes only the file tool for an explicit downloadable-file request', () => {
+  it('always exposes image capabilities for model-side intent classification', () => {
+    expect(getChatToolDefinitions('ordinary text query').map(tool => tool.function.name)).toEqual(imageToolNames);
+  });
+
+  it('exposes file creation on request while leaving visual intent to the model', () => {
     expect(getChatToolDefinitions('帮我生成一份可以下载的 Word 报告').map(tool => tool.function.name))
-      .toEqual(['create_file']);
+      .toEqual(['create_file', ...imageToolNames]);
     expect(getChatToolDefinitions('帮我做个 Excel 表格').map(tool => tool.function.name))
-      .toEqual(['create_file']);
-    expect(getChatToolDefinitions('帮我写一份报告')).toEqual([]);
+      .toEqual(['create_file', ...imageToolNames]);
+    expect(getChatToolDefinitions('write a report').map(tool => tool.function.name)).toEqual(imageToolNames);
   });
 });
 
@@ -408,8 +438,8 @@ describe('Chat PPTX file tool', () => {
 
   it.each([
     '给我文件', '请给我可下载的文件', 'Give me the file', 'Export a downloadable file',
-  ])('does not automatically generate images for a formatless file follow-up: %s', text => {
-    expect(getChatToolDefinitions(text).map(tool => tool.function.name)).toEqual(['create_file']);
+  ])('does not automatically execute image tools for a formatless file follow-up: %s', text => {
+    expect(getChatToolDefinitions(text).map(tool => tool.function.name)).toEqual(['create_file', ...imageToolNames]);
   });
 
   it.each([
@@ -470,7 +500,7 @@ describe('Chat PPTX file tool', () => {
     '生成一份PPT，只要大纲', 'Create a PowerPoint outline',
     '生成一份PPT，先只给大纲，不要制作文件', '不要生成PPT',
   ])('does not expose file creation for advice, outline-only work, or cancellation: %s', text => {
-    expect(getChatToolDefinitions(text)).toEqual([]);
+    expect(getChatToolDefinitions(text).map(tool => tool.function.name)).toEqual(imageToolNames);
     expect(resolveDirectVisualTool(text)).toBeNull();
   });
 
@@ -484,7 +514,7 @@ describe('Chat PPTX file tool', () => {
     '帮我生成一份可以下载的 Word 报告', '帮我做个 Excel 表格', '帮我生成 PDF 文件',
     '帮我导出 CSV', '生成 JSON 文件', '创建 Markdown 文件', '给我 TXT 文件',
   ])('keeps existing non-PPT format exposure intact: %s', text => {
-    expect(getChatToolDefinitions(text).map(tool => tool.function.name)).toEqual(['create_file']);
+    expect(getChatToolDefinitions(text).map(tool => tool.function.name)).toEqual(['create_file', ...imageToolNames]);
   });
 
   it('keeps PPTX optional for other formats and survives provider JSON serialization', () => {

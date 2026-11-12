@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RhinoUI major_ver="5" minor_ver="0" guid="5748a720-6b16-4e33-a65a-a0808f897d2e" plug_in_guid="b55c8d32-2c2f-4da2-84ca-b7c88c1a8de5" localize="False" default_language_id="2052" dpi_scale="100">
+  <extend_rhino_menus />
+  <menus />
+  <tool_bar_groups>
+    <tool_bar_group guid="c210d76e-e797-4875-8ec1-06bd3fa41ee8" dock_bar_guid32="00000000-0000-0000-0000-000000000000" dock_bar_guid64="5748a720-6b16-4e33-a65a-a0808f897d2e" active_tool_bar_group="c210d76e-e797-4875-8ec1-06bd3fa41ee8" single_file="False" hide_single_tab="False" point_floating="500,215">
+      <text><locale_1033>Inspiration Drawer</locale_1033><locale_2052>&#28789;&#24863;&#25277;&#23651;</locale_2052></text>
+      <tool_bar_group_item guid="d33cf705-d369-4f50-9c69-ae7a835ff1f6" major_version="1" minor_version="1">
+        <text><locale_1033>Inspiration Drawer</locale_1033><locale_2052>&#28789;&#24863;&#25277;&#23651;</locale_2052></text>
+        <tool_bar_id>3e5749cc-7f91-4ae6-aeff-a65bb876985a</tool_bar_id>
+      </tool_bar_group_item>
+      <dock_bar_info dpi_scale="100" dock_bar="False" docking="True" horz="True" visible="True" floating="False" mru_float_style="0" bar_id="59420" mru_width="1" point_pos="0,1" float_point="1,1" rect_mru_dock_pos="0,1,1,1" dock_location_u="59419" dock_location="top" float_size="0,0" />
+    </tool_bar_group>
+  </tool_bar_groups>
+  <tool_bars>
+    <tool_bar guid="3e5749cc-7f91-4ae6-aeff-a65bb876985a" platforms="Win">
+      <text><locale_1033>Inspiration Drawer</locale_1033><locale_2052>&#28789;&#24863;&#25277;&#23651;</locale_2052></text>
+      <tool_bar_item guid="2db5ac40-b13d-4242-9a74-fca51c09f95a" button_display_mode="control_only" button_style="normal">
+        <text><locale_1033>Open Inspiration Drawer</locale_1033><locale_2052>&#25171;&#24320;&#28789;&#24863;&#25277;&#23651;</locale_2052></text>
+        <left_macro_id>3a390c11-f04e-4786-a346-b8a7132b7683</left_macro_id>
+      </tool_bar_item>
+    </tool_bar>
+  </tool_bars>
+  <macros>
+    <macro_item guid="3a390c11-f04e-4786-a346-b8a7132b7683" platforms="Win" bitmap_id="c2841ef1-9c2f-450a-9a82-8382e2888542">
+      <text><locale_1033>Open Inspiration Drawer</locale_1033><locale_2052>&#25171;&#24320;&#28789;&#24863;&#25277;&#23651;</locale_2052></text>
+      <tooltip><locale_1033>Open the Inspiration Drawer Rhino Chat panel</locale_1033><locale_2052>&#25171;&#24320;&#28789;&#24863;&#25277;&#23651; Rhino &#32842;&#22825;&#38754;&#26495;</locale_2052></tooltip>
+      <button_text><locale_1033>Inspiration Drawer</locale_1033><locale_2052>&#28789;&#24863;&#25277;&#23651;</locale_2052></button_text>
+      <script>! _InspirationDrawer</script>
+    </macro_item>
+  </macros>
+  <icons>
+    <icon guid="c2841ef1-9c2f-450a-9a82-8382e2888542">
+      <light>&lt;svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"&gt;
+  &lt;rect x="3" y="3" width="42" height="42" rx="12" fill="#f3f0e8" fill-dark="#282a27"/&gt;
+  &lt;path d="M11 17.5h26v19H11z" fill="none" stroke="#34372f" stroke-dark="#e7e4da" stroke-width="2.2" stroke-linejoin="round"/&gt;
+  &lt;path d="M11 23h26M14 28.5h8M14 33h8" fill="none" stroke="#74776e" stroke-dark="#a9aca2" stroke-width="1.7" stroke-linecap="round"/&gt;
+  &lt;path d="M30 28.5h4.5v4.5H30z" fill="#b89558" fill-dark="#dfbd7e"/&gt;
+  &lt;path d="M24 7.5l1.8 4.2L30 13.5l-4.2 1.8L24 19.5l-1.8-4.2L18 13.5l4.2-1.8z" fill="#c29b54" fill-dark="#e1bd78"/&gt;
+  &lt;circle cx="36.5" cy="13" r="2" fill="#5f8291" fill-dark="#8fc5d6"/&gt;
+&lt;/svg&gt;
+</light>
+      <dark>&lt;svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"&gt;
+  &lt;rect x="3" y="3" width="42" height="42" rx="12" fill="#292b28" fill-dark="#282a27"/&gt;
+  &lt;path d="M11 17.5h26v19H11z" fill="none" stroke="#e7e4da" stroke-dark="#e7e4da" stroke-width="2.2" stroke-linejoin="round"/&gt;
+  &lt;path d="M11 23h26M14 28.5h8M14 33h8" fill="none" stroke="#a9aca2" stroke-dark="#a9aca2" stroke-width="1.7" stroke-linecap="round"/&gt;
+  &lt;path d="M30 28.5h4.5v4.5H30z" fill="#dfbd7e" fill-dark="#dfbd7e"/&gt;
+  &lt;path d="M24 7.5l1.8 4.2L30 13.5l-4.2 1.8L24 19.5l-1.8-4.2L18 13.5l4.2-1.8z" fill="#e1bd78" fill-dark="#e1bd78"/&gt;
+  &lt;circle cx="36.5" cy="13" r="2" fill="#8fc5d6" fill-dark="#8fc5d6"/&gt;
+&lt;/svg&gt;
+</dark>
+    </icon>
+  </icons>
+  <bitmaps><small_bitmap item_width="16" item_height="16" /><normal_bitmap item_width="24" item_height="24" /><large_bitmap item_width="32" item_height="32" /></bitmaps>
+  <scripts />
+</RhinoUI>

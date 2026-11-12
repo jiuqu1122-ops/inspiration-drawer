@@ -1,0 +1,254 @@
+[
+  {
+    "name": "ask_user",
+    "title": "Ask User",
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  {
+    "name": "close_doc",
+    "title": "Close Document",
+    "readOnlyHint": false,
+    "destructiveHint": true
+  },
+  {
+    "name": "g1_apply_graph",
+    "title": "Apply GH1 Graph",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "g1_clear_canvas",
+    "title": "Clear GH1 Canvas",
+    "readOnlyHint": false,
+    "destructiveHint": true
+  },
+  {
+    "name": "g1_connect",
+    "title": "Connect GH1 Wire",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "g1_connect_many",
+    "title": "Connect GH1 Wires (Batch)",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "g1_delete_component",
+    "title": "Delete GH1 Component",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "g1_describe_component",
+    "title": "Describe GH1 Component",
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  {
+    "name": "g1_get_canvas_graph",
+    "title": "Get GH1 Canvas Graph",
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  {
+    "name": "g1_place_component",
+    "title": "Place GH1 Component",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "g1_place_slider",
+    "title": "Place GH1 Number Slider",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "g1_search_components",
+    "title": "Search GH1 Components",
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  {
+    "name": "g1_solve_graph",
+    "title": "Solve GH1 Graph",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "g1_start",
+    "title": "Start Grasshopper 1",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "g2_apply_graph",
+    "title": "Apply GH2 Graph",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "g2_clear_canvas",
+    "title": "Clear GH2 Canvas",
+    "readOnlyHint": false,
+    "destructiveHint": true
+  },
+  {
+    "name": "g2_connect",
+    "title": "Connect GH2 Wire",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "g2_connect_many",
+    "title": "Connect GH2 Wires (Batch)",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "g2_delete_component",
+    "title": "Delete a GH2 Component",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "g2_describe_component",
+    "title": "Describe GH2 Component",
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  {
+    "name": "g2_get_canvas_graph",
+    "title": "Get GH2 Canvas Graph",
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  {
+    "name": "g2_place_component",
+    "title": "Place GH2 Component",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "g2_place_slider",
+    "title": "Place GH2 Number Slider",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "g2_search_components",
+    "title": "Search GH2 Components",
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  {
+    "name": "g2_solve_canvas",
+    "title": "Solve GH2 Canvas",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "g2_start",
+    "title": "Start Grasshopper 2",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "get_commands",
+    "title": "List Rhino Commands",
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  {
+    "name": "get_context",
+    "title": "Get Context Snapshot",
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  {
+    "name": "get_selection",
+    "title": "Get Selection",
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  {
+    "name": "get_viewport_image",
+    "title": "Capture Viewport Image",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "list_objects",
+    "title": "List Document Objects",
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  {
+    "name": "manage_plugin_commands",
+    "title": "Manage Plugin Commands",
+    "readOnlyHint": false,
+    "destructiveHint": true
+  },
+  {
+    "name": "open_doc",
+    "title": "Open / Import Document",
+    "readOnlyHint": false,
+    "destructiveHint": true
+  },
+  {
+    "name": "run_command",
+    "title": "Run Rhino Command",
+    "readOnlyHint": false,
+    "destructiveHint": true
+  },
+  {
+    "name": "run_csharp",
+    "title": "Run C# Script",
+    "readOnlyHint": false,
+    "destructiveHint": true
+  },
+  {
+    "name": "run_python",
+    "title": "Run Python Script",
+    "readOnlyHint": false,
+    "destructiveHint": true
+  },
+  {
+    "name": "save_doc",
+    "title": "Save Document",
+    "readOnlyHint": false,
+    "destructiveHint": true
+  },
+  {
+    "name": "set_camera",
+    "title": "Set Camera",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "set_layer_material",
+    "title": "Set Layer Material",
+    "readOnlyHint": false,
+    "destructiveHint": true
+  },
+  {
+    "name": "set_selection",
+    "title": "Set Selection",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "zoom_to_layer",
+    "title": "Zoom To Layer",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  {
+    "name": "zoom_to_object",
+    "title": "Zoom To Object",
+    "readOnlyHint": false,
+    "destructiveHint": false
+  }
+]

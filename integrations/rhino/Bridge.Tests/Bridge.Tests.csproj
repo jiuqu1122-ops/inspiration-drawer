@@ -1,4 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>
-  <ItemGroup><Compile Include="../InspirationDrawer.Rhino/BetaServer.cs" Link="BetaServer.cs" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="../InspirationDrawer.Rhino/DrawerPanelLayout.cs" Link="DrawerPanelLayout.cs" />
+    <Compile Include="../InspirationDrawer.Rhino/DeferredMcpStartup.cs" Link="DeferredMcpStartup.cs" />
+    <Compile Include="../InspirationDrawer.Rhino/JsonNodeCompat.cs" Link="JsonNodeCompat.cs" />
+    <Compile Include="../InspirationDrawer.Rhino/BetaServer.cs" Link="BetaServer.cs" />
+    <Compile Include="../InspirationDrawer.Rhino/ViewportCaptureValidation.cs" Link="ViewportCaptureValidation.cs" />
+    <Compile Include="../InspirationDrawer.Rhino/NativeRhinoMcpClient.cs" Link="NativeRhinoMcpClient.cs" />
+    <EmbeddedResource Include="../InspirationDrawer.Rhino/Panel/*" Link="Panel/%(Filename)%(Extension)" LogicalName="InspirationDrawer.Rhino.Panel.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="../InspirationDrawer.Rhino/InspirationDrawer.Rhino.rui" LogicalName="InspirationDrawer.Rhino.Toolbar.rui" />
+  </ItemGroup>
 </Project>

@@ -83,6 +83,7 @@ export const runChatMediaGeneration = async (input: {
       ...(String(input.args.aspectRatio || '').trim() ? { aspectRatio: String(input.args.aspectRatio).trim() } : {}),
       ...(String(input.args.quality || '').trim() ? { quality: String(input.args.quality).trim() } : {}),
       ...(String(input.args.resolution || '').trim() ? { resolution: String(input.args.resolution).trim() } : {}),
+      ...(mediaType === 'image' && String(input.args.maskImage || '').trim() ? { maskImage: String(input.args.maskImage).trim() } : {}),
       ...(Number(input.args.count) > 0 ? { count: Math.min(4, Math.max(1, Math.round(Number(input.args.count)))) } : {}),
       ...(mediaType === 'video' && Number(input.args.duration) > 0 ? { duration: Number(input.args.duration) } : {}),
       ...(mediaType === 'video' && (input.args.inputMode === 'REF' || input.args.inputMode === 'FLF')

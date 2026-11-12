@@ -1,7 +1,5 @@
 import { AnimatePresence,motion } from 'framer-motion';
 import { Bot,Check,Edit3,FolderPlus,Image as ImageIcon,Move,Plus,Search,Send,Tag,Upload,X } from 'lucide-react';
-import { findAiCatalogModel, getAiCatalogModels } from '../../aiModelCapabilities';
-import { parseCanvasAiModelChoiceValue } from '../../../utils/canvasAiConfig';
 import { ChatHost } from '../../chat/components/ChatHost';
 import { CHAT_AUTO_IMAGE_SETTING } from '../../chat/runtime/chatImageGenerationSettings';
 import { getDrawerFolderPathName } from '../../folderModel';
@@ -20,7 +18,7 @@ export function DrawerInteractionOverlays({ scope }: { scope: DrawerInteractionO
 <ChatHost
                   resolveRhinoSelectedItems={() => buildCanvasAgentSelectedItems()}
                   canvasId={scope.activeCanvasId}
-                  imageQualities={findAiCatalogModel(getAiCatalogModels(scope.canvasAiCloudImageModels, 'image'), parseCanvasAiModelChoiceValue(activeChatImageModelChoice?.value || '')?.model)?.capabilities?.supportedQualities}
+                  imageQualities={chatImageModelRuntimeOptions.find((option: { value: string; supportedQualities?: string[] }) => option.value === activeChatImageModelChoice?.value)?.supportedQualities}
                   visible={!isCanvasMode && !showTextInput && !showWebImageCollector && isDrawerAgentOpen}
                   model={canvasAgent.settings.apiModel}
                   serverManagedChannelFailover={canvasAgent.settings.apiProvider === 'unmind-wallet'}

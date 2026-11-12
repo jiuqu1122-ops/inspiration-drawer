@@ -175,6 +175,12 @@ describe('server-driven AI model capabilities', () => {
     expect(resolved.referenceImageLimit).toBe(0);
   });
 
+  it('exposes Mask only when the exact server or route capability explicitly enables it', () => {
+    expect(resolveImageModelCapabilities({ canonical: { supportsMask: true } }).supportsMask).toBe(true);
+    expect(resolveImageModelCapabilities({ canonical: { supportsMask: false }, route: { supportsMask: true } }).supportsMask).toBe(false);
+    expect(resolveImageModelCapabilities({ legacy: { supportsMask: true } }).supportsMask).toBe(false);
+  });
+
   it('uses a selected route override only when canonical data omits that field', () => {
     const resolved = resolveVideoModelCapabilities({
       canonical: { resolutions: ['1080p'] },

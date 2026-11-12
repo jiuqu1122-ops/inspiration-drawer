@@ -4,6 +4,8 @@ import type { ChatMessage } from '../model/chatTypes';
 import {
   completedMediaToolIsMissingVisibleResult,
   finalizeOrphanedStreamingChatMessage,
+  normalizeCompletedRhinoNativeMessage,
+  summarizeCompletedRhinoNativeCalls,
   summarizeCompletedVisibleToolCalls,
 } from './chatVisibleToolCompletion';
 
@@ -19,6 +21,44 @@ const call = (
   resultJson: JSON.stringify(result),
   status,
   createdAt: 1,
+});
+
+describe('Rhino native completion display', () => {
+  const progress = '\u6b63\u5728\u5efa\u7acb\u7f51\u683c... \u6309 Esc \u53d6\u6d88';
+
+  it('replaces the screenshot progress line with a clear success receipt', () => {
+    const command = call('rhino_native_run_command', 'completed', { source: 'rhino', documentId: 7, content: progress + '\r\n' });
+    const result = summarizeCompletedRhinoNativeCalls([command]);
+    expect(result).toContain('Rhino MCP \u6267\u884c\u5b8c\u6210');
+    expect(result).toContain('run_command\uff1a\u5df2\u6267\u884c\u5b8c\u6210');
+    expect(result).not.toContain('Esc');
+    expect(command.resultJson).toContain(progress);
+  });
+
+  it('preserves meaningful output alongside the progress line and script output verbatim', () => {
+    const command = call('rhino_native_run_command', 'completed', { content: progress + '\nCreated object 123.' });
+    expect(summarizeCompletedRhinoNativeCalls([command])).toContain('Created object 123.');
+    expect(summarizeCompletedRhinoNativeCalls([command])).not.toContain('Esc');
+    const script = call('rhino_native_run_python', 'completed', { content: progress });
+    expect(summarizeCompletedRhinoNativeCalls([script])).toContain(progress);
+    const warning = call('rhino_native_run_command', 'completed', { content: 'Warning: mesh generation failed. Press Esc to cancel' });
+    expect(summarizeCompletedRhinoNativeCalls([warning])).toContain('Warning:');
+  });
+
+  it('repairs saved summaries without changing receipts or statuses and is idempotent', () => {
+    const command = call('rhino_native_run_command', 'completed', { content: progress });
+    const message: ChatMessage = {
+      id: 'assistant-rhino-completed', conversationId: 'rhino-chat', role: 'assistant',
+      content: 'Rhino MCP \u6267\u884c\u5b8c\u6210\uff1a\n- rhino_native_run_command: ' + progress,
+      status: 'completed', createdAt: 1, attachments: [], toolCalls: [command],
+    };
+    const repaired = normalizeCompletedRhinoNativeMessage(message);
+    expect(repaired.content).not.toContain('Esc');
+    expect(repaired.content).toContain('\u5df2\u6267\u884c\u5b8c\u6210');
+    expect(repaired.toolCalls).toBe(message.toolCalls);
+    expect(normalizeCompletedRhinoNativeMessage(repaired)).toBe(repaired);
+    expect(normalizeCompletedRhinoNativeMessage({ ...message, status: 'error' }).content).toBe(message.content);
+  });
 });
 
 describe('visible Chat tool completion', () => {
@@ -94,6 +134,22 @@ describe('visible Chat tool completion', () => {
     expect(repaired.status).toBe('completed');
     expect(repaired.content).toContain('1 张图片已生成');
     expect(repaired.thinkingSteps).toEqual([]);
+  });
+
+  it('marks pending Rhino tool calls as interrupted when recovering a streaming message', () => {
+    const running = { ...call('rhino_native_run_python', 'running', {}), resultJson: null };
+    const awaiting = { ...call('rhino_native_run_command', 'awaiting-approval', {}), resultJson: null };
+    const message: ChatMessage = {
+      id: 'assistant-rhino', conversationId: 'rhino-chat', role: 'assistant', content: '',
+      status: 'streaming', createdAt: 1, attachments: [], toolCalls: [running, awaiting],
+    };
+
+    const repaired = finalizeOrphanedStreamingChatMessage(message, 5_000);
+
+    expect(repaired.status).toBe('error');
+    expect(repaired.toolCalls.map(value => value.status)).toEqual(['error', 'error']);
+    expect(repaired.toolCalls.map(value => value.completedAt)).toEqual([5_000, 5_000]);
+    expect(JSON.parse(repaired.toolCalls[0].resultJson || '{}').error).toContain('interrupted');
   });
 
   it('marks an orphaned request without a visible result as interrupted', () => {

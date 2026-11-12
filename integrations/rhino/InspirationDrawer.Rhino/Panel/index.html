@@ -1,20 +1,43 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>灵感抽屉 Beta</title><link rel="stylesheet" href="/panel.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>灵感抽屉 Beta</title><link rel="stylesheet" href="/panel.css"><link rel="stylesheet" href="/parts.css"><link rel="stylesheet" href="/markdown.css"><link rel="stylesheet" href="/image-preview.css"></head>
 <body>
-  <header><div><strong>灵感抽屉</strong><span class="badge">BETA</span></div><button id="new" title="新建会话">新对话 ＋</button></header>
+  <header><div><strong>灵感抽屉</strong><span class="badge" title="Rhino 插件版本">BETA.32</span></div><button id="new" title="新建会话">新对话 ＋</button></header>
   <div class="connection"><span id="dot"></span><span id="connection" role="status">等待抽屉连接</span></div>
   <div id="document" class="document">正在读取 Rhino 文档…</div>
   <section class="settings" aria-label="会话与模型">
-    <label>对话<select id="conversation" aria-label="选择对话"><option value="">新对话</option></select></label>
-    <div class="models"><label>聊天模型<select id="model" aria-label="聊天模型"><option>跟随抽屉</option></select></label><label>生图模型<select id="image-model" aria-label="生图模型"><option>跟随抽屉</option></select></label></div>
+    <div class="conversation-row"><label>对话<select id="conversation" aria-label="选择对话"><option value="">新对话</option></select></label><button id="delete-conversation" type="button" title="&#21024;&#38500;&#24403;&#21069;&#23545;&#35805;" aria-label="&#21024;&#38500;&#24403;&#21069;&#23545;&#35805;" disabled>&#21024;&#38500;</button></div>
+    <div id="delete-confirmation" class="delete-confirmation" role="group" aria-label="&#21024;&#38500;&#23545;&#35805;&#30830;&#35748;" hidden>
+      <p id="delete-question"></p><p>&#21024;&#38500;&#21518;&#26080;&#27861;&#24674;&#22797;&#32842;&#22825;&#35760;&#24405;&#12290;&#19981;&#20250;&#21024;&#38500; Rhino &#27169;&#22411;&#25110;&#30011;&#24067;&#20869;&#23481;&#12290;</p>
+      <div class="delete-confirmation-actions"><button id="cancel-delete" type="button">&#21462;&#28040;</button><button id="confirm-delete" type="button">&#30830;&#35748;&#21024;&#38500;</button></div>
+    </div>
   </section>
   <div id="notice" role="status" hidden></div>
+  <details id="parts" class="parts" open><summary>当前选择 · <span id="parts-count">0</span></summary><div id="parts-list" class="parts-list"><p class="parts-empty">在 Rhino 中选择对象以读取分件</p></div><p id="parts-note" class="parts-note">真实图层与材质数据 · 分件清单不含区域映射</p></details>
   <main id="messages" aria-label="聊天记录"><div class="empty"><h1>从模型到灵感</h1><p>选择 Rhino 对象，结合画布参考图，在这里继续你的 Chat。</p><p class="hint">请先启动配套 Beta 桌面端，完成登录并设置聊天与生图模型。</p></div></main>
+  <div id="image-preview" class="image-preview" role="dialog" aria-modal="true" aria-label="图片预览" hidden>
+    <button id="image-preview-close" class="image-preview-close" type="button" aria-label="关闭图片预览">&#215;</button>
+    <img id="image-preview-image" alt="生成图片放大预览">
+    <p id="image-preview-status" class="image-preview-hint" role="status" aria-live="polite"></p>
+    <p class="image-preview-hint">点击空白处或按 Esc 关闭</p>
+  </div>
   <footer>
-    <div class="references"><label><input id="viewport" type="checkbox" checked>附带当前视口</label><label><input id="canvas" type="checkbox" checked>画布选中图片 <span id="selected-count">0</span></label></div>
+    <div class="references"><label><input id="viewport" type="checkbox" checked>附带当前视口</label><label><input id="canvas" type="checkbox" checked>画布选中图片 <span id="selected-count">0</span></label><label class="mask-toggle"><input id="mask" type="checkbox" disabled>自动导出对象遮罩</label><select id="mask-layer" aria-label="遮罩来源" disabled><option value="selection">当前选择</option></select></div>
+    <section class="composer-model-settings" aria-label="模型与出图设置">
+      <div class="models">
+        <label>聊天模型<select id="model" aria-label="聊天模型"><option>跟随抽屉</option></select></label>
+        <label>生图模型<select id="image-model" aria-label="生图模型"><option>跟随抽屉</option></select></label>
+      </div>
+      <div class="image-output-settings" aria-label="生图参数">
+        <label>清晰度<select id="image-resolution" aria-label="生图清晰度" disabled><option value="">跟随模型</option></select></label>
+        <label>画面比例<select id="image-aspect-ratio" aria-label="生图比例" disabled><option value="">跟随模型</option></select></label>
+        <label id="image-quality-field" hidden>生成质量<select id="image-quality" aria-label="生成质量" disabled></select></label>
+      </div>
+    </section>
     <form id="composer"><textarea id="input" rows="3" maxlength="12000" placeholder="例如：参考画布材质，给选中的外壳生成一张效果图…" aria-label="消息"></textarea><div class="actions"><span>Enter 发送 · Shift + Enter 换行</span><button id="stop" type="button" hidden>停止</button><button id="send" type="submit" disabled>发送 ↑</button></div></form>
-    <p class="beta-note">参考图生成 · 暂未启用对象遮罩，不保证严格保形</p>
+    <p id="beta-note" class="beta-note">普通参考图生成 · 未启用 Mask，不保证严格保形</p>
   </footer>
+  <script src="/markdown.js"></script>
+  <script src="/image-preview.js"></script>
   <script src="/panel.js"></script>
 </body></html>

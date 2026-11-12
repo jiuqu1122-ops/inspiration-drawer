@@ -1,0 +1,12 @@
+.image-preview[hidden] { display: none !important; }
+.image-preview { position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 48px 20px 24px; box-sizing: border-box; background: rgb(18 19 17 / 92%); cursor: zoom-out; }
+.image-preview img { display: block; max-width: min(100%, 1600px); max-height: calc(100vh - 108px); width: auto; height: auto; object-fit: contain; border-radius: 5px; box-shadow: 0 12px 48px #0008; cursor: default; }
+.image-preview-close { position: absolute; top: 10px; right: 12px; width: 34px; height: 34px; padding: 0; border: 1px solid #ffffff50; border-radius: 50%; color: #fff; background: #ffffff14; font-size: 24px; line-height: 1; cursor: pointer; }
+.image-preview-close:hover { background: #ffffff2b; }
+.image-preview-hint { margin: 0; color: #d7d6cf; font-size: 10px; letter-spacing: .04em; }
+body.image-preview-open { overflow: hidden; }
+
+.message-image-button { display: block; max-width: 100%; padding: 0; margin-top: 8px; border: 0; background: transparent; border-radius: 7px; cursor: zoom-in; text-align: left; }
+.message .message-image-button .message-image { margin-top: 0; }
+.message-image-button:focus-visible { outline: 2px solid #a7976f; outline-offset: 3px; }
+.auto-reference-hint { margin: 5px 1px 0; color: #8a887f; font-size: 10px; }

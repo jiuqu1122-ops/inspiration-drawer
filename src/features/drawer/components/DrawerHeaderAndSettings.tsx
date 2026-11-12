@@ -1,3 +1,4 @@
+import { RhinoPluginSetup } from '../../rhino/RhinoPluginSetup';
 import { DesignMemorySettingsPanel } from '../../designMemory';
 import { indexExistingDesignMemory } from '../indexExistingDesignMemory';
 import { invoke } from '@tauri-apps/api/core';
@@ -549,6 +550,11 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                             )}
                           </AnimatePresence>
                         </div>
+
+                        <RhinoPluginSetup
+                          expanded={activeSettingCategory === 'rhino-plugin'}
+                          onToggle={() => setActiveSettingCategory(prev => prev === 'rhino-plugin' ? '' : 'rhino-plugin')}
+                        />
 
                         <BrowserExtensionSetup
                           expanded={activeSettingCategory === 'browser-extension'}

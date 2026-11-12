@@ -26,6 +26,7 @@ export type ResolvedImageModelCapabilities = {
   maxOutputs: number;
   supportsReferenceImages: boolean;
   supportsTransparentBackground: boolean;
+  supportsMask?: boolean;
 };
 
 export type ResolvedVideoModelCapabilities = {
@@ -123,6 +124,7 @@ export const normalizeAiModelCapabilities = (
   if (!value || typeof value !== 'object') return undefined;
   const normalized: AiModelCapabilities = {};
   if (value.supportsImageEdit !== undefined) normalized.supportsImageEdit = value.supportsImageEdit;
+  if (value.supportsMask !== undefined) normalized.supportsMask = value.supportsMask === true;
   if (value.supportedQualities !== undefined) normalized.supportedQualities = normalizeStrings(value.supportedQualities);
   if (value.qualityParameter !== undefined) normalized.qualityParameter = value.qualityParameter;
   if (value.outputMode !== undefined) normalized.outputMode = value.outputMode;
@@ -173,10 +175,11 @@ export const normalizeAiModelCapabilities = (
     }
   });
   const booleanKeys: Array<keyof Pick<AiModelCapabilities,
-    'supportsReferenceImages' | 'supportsReferenceVideo' | 'supportsReferenceAudio' | 'supportsAudioReference'
+    'supportsMask' | 'supportsReferenceImages' | 'supportsReferenceVideo' | 'supportsReferenceAudio' | 'supportsAudioReference'
     | 'supportsFirstFrame' | 'supportsLastFrame' | 'supportsFirstLastFrame'
     | 'supportsTextPrompt' | 'supportsTransparentBackground'
   >> = [
+    'supportsMask',
     'supportsReferenceImages',
     'supportsReferenceVideo',
     'supportsReferenceAudio',
@@ -390,6 +393,7 @@ export const resolveImageModelCapabilities = (options: {
     legacy?.supportsReferenceImages,
     referenceImageLimit > 0,
   );
+  const supportsMask = firstDefined(canonical?.supportsMask, route?.supportsMask, undefined, false);
   return {
     source,
     supportedQualities: firstDefined(canonical?.supportedQualities, route?.supportedQualities, undefined, []),
@@ -423,6 +427,7 @@ export const resolveImageModelCapabilities = (options: {
       4,
     ), 4)),
     supportsReferenceImages,
+    supportsMask,
     supportsTransparentBackground: firstDefined(
       canonical?.supportsTransparentBackground,
       route?.supportsTransparentBackground,

@@ -7,6 +7,8 @@ export type ChatImageModelSettingOption = {
   aspectRatios?: string[];
   aspectRatiosByResolution?: Record<string, string[]>;
   resolutions?: string[];
+  supportedQualities?: string[];
+  supportsMask?: boolean;
 };
 
 export type ChatImageGenerationSettings = {
@@ -14,6 +16,8 @@ export type ChatImageGenerationSettings = {
   imageAspectRatio?: string;
   imageResolution?: string;
   imageQuality?: string;
+  imageMaskMode?: 'off' | 'on';
+  imageMaskAttachmentId?: string;
   imageModelOptions?: ChatImageModelSettingOption[];
   imageAspectRatioOptions?: string[];
   imageResolutionOptions?: string[];
@@ -51,8 +55,8 @@ const inferResolution = (prompt: string, options: string[]) => {
   return sorted.find(value => resolutionRank(value) === 2) || sorted[0];
 };
 
-const chooseModel = (prompt: string, options: ChatImageModelSettingOption[]) => {
-  const available = options.filter(option => option.value && !isAuto(option.value));
+const chooseModel = (prompt: string, options: ChatImageModelSettingOption[], requireMask = false) => {
+  const available = options.filter(option => option.value && !isAuto(option.value) && (!requireMask || option.supportsMask === true));
   if (available.length === 0) return undefined;
   const highDetail = /(?:排版|文字|海报|幻灯片|方案板|细节|高清|清晰|印刷|presentation|layout|typography|poster|text|detail|high.?res|print)/i.test(prompt);
   const fast = /(?:草图|快速|草案|预览|draft|sketch|quick|fast|preview)/i.test(prompt);
@@ -77,11 +81,12 @@ export const applyChatImageGenerationSettings = (
   const options = settings.imageModelOptions || [];
   const requestedModel = normalized(args.model);
   const configuredModel = normalized(settings.imageModel);
+  const maskMode = settings.imageMaskMode === 'on' ? 'on' : 'off';
   const requestedOption = options.find(option => option.value === requestedModel || option.label?.toLowerCase() === requestedModel.toLowerCase());
   const selectedModel = requestedModel && !isAuto(requestedModel)
     ? requestedOption?.value || requestedModel
     : isAuto(requestedModel) || isAuto(configuredModel)
-      ? chooseModel(prompt, options)
+      ? chooseModel(prompt, options, maskMode === 'on')
       : configuredModel || undefined;
   const selectedOption = options.find(option => option.value === selectedModel);
   const configuredRatio = normalized(settings.imageAspectRatio);
@@ -105,6 +110,17 @@ export const applyChatImageGenerationSettings = (
       ? inferAspectRatio(prompt, modelRatios)
       : configuredRatio || undefined;
   const quality = normalized(args.quality) || (isAuto(settings.imageQuality) ? '' : normalized(settings.imageQuality));
+  if (maskMode === 'on' && selectedOption?.supportsMask !== true) {
+    throw new Error('当前生图模型/线路未声明支持 Mask，请先由服务端能力目录明确开启。');
+  }
+  if (maskMode === 'off') {
+    delete args.maskImage;
+    delete args.maskAttachmentId;
+  } else {
+    const maskAttachmentId = normalized(settings.imageMaskAttachmentId) || normalized(args.maskAttachmentId);
+    if (!maskAttachmentId) throw new Error('Mask 编辑已开启，请在图片附件中明确指定一张 Mask 图。');
+    args.maskAttachmentId = maskAttachmentId;
+  }
   const result = { ...args } as Record<string, unknown>;
   const patch: Record<string, string | undefined> = { model: selectedModel, aspectRatio, resolution, quality };
   for (const [key, value] of Object.entries(patch)) {

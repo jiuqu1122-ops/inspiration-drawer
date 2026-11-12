@@ -1,11 +1,17 @@
+import { assertGeometryCorrection } from '../../rhino/rhinoGeometryRecovery';
+import { assertRhinoScriptPreflight } from '../../rhino/rhinoScriptPreflight';
+import { assertSafePlanarRoute, SAFE_PROFILE_TOOL } from '../../rhino/rhinoSafeModeling';
+import { RhinoNativeArgumentError } from '../../rhino/rhinoArgumentRecovery';
 import { evaluateLegacyActionPermission } from '../../appAgent/commands/permissionGate';
 import type { LegacyAgentAction } from '../../appAgent/commands/commandTypes';
 import type { ChatToolExecutionContext, ChatToolExecutor } from '../model/chatTypes';
 import { compactChatToolResult } from './chatToolResult';
+import { isImagePromptTextRequest } from '../context/chatVisualIntent';
 import { shouldComposeImageVariants, shouldUseIndependentImageVariants } from './chatToolDefinitions';
 import { normalizeImageVariants } from './imageVariantNormalization';
 import { normalizeChatToolName } from './chatToolNames';
-import { isRhinoReadTool } from '../../rhino/rhinoProtocol';
+import { getRhinoNativeTool, isRhinoNativeTool, isRhinoReadTool } from '../../rhino/rhinoProtocol';
+import { validateRhinoNativeArguments } from '../../rhino/rhinoWorkflow';
 
 const SUPPORTED_TOOLS = new Set([
   'web_search', 'create_file', 'create_agent', 'get_canvas_selection', 'get_canvas_selected_shapes', 'search_assets', 'generate_image', 'generate_image_variants', 'edit_image', 'generate_video',
@@ -60,7 +66,30 @@ export const routeChatToolCall = async (input: {
   onExecuting?: () => void | Promise<void>;
 }) => {
   const name = normalizeChatToolName(input.name);
-  if (!SUPPORTED_TOOLS.has(name) && !isRhinoReadTool(name)) throw new Error(`不支持的 Chat 工具：${input.name}`);
+  if (isImagePromptTextRequest(input.context.userText)
+    && ['generate_image', 'generate_image_variants', 'edit_image', 'batch_image_operation'].includes(name)) {
+    throw new Error('The user requested image-prompt text, not image generation. Return the prompt as text unless a separate image-render request is present.');
+  }
+  const rhinoTool = isRhinoReadTool(name) || isRhinoNativeTool(name, input.context.conversationId);
+  if (rhinoTool && input.context.executionSource !== 'rhino') throw new Error('Rhino MCP tools are only available in Rhino plugin mode; desktop Chat cannot access Rhino.');
+  if (!SUPPORTED_TOOLS.has(name) && !rhinoTool) throw new Error(`???? Chat ???${input.name}`);
+  if (isRhinoNativeTool(name, input.context.conversationId)) {
+    const native = getRhinoNativeTool(name, input.context.conversationId)!;
+    assertSafePlanarRoute(name, input.args, isRhinoNativeTool(SAFE_PROFILE_TOOL, input.context.conversationId), input.context.userText);
+    if (name === SAFE_PROFILE_TOOL) assertGeometryCorrection(input.args, input.context.recentMessages.flatMap(message => message.id === input.context.messageId ? message.toolCalls : []).filter(call => call.status !== 'running' && call.status !== 'pending'));
+    assertRhinoScriptPreflight(name, input.args);
+    const validation = validateRhinoNativeArguments(native, input.args);
+    if (!validation.valid) throw new RhinoNativeArgumentError(validation.message);
+    const permission = {
+      riskLevel: native.readOnly ? 'read' : native.destructive ? 'destructive' : 'safe_write',
+      // The Rhino panel is an explicit command surface: native tool calls there
+      // run directly. Desktop-origin Chat is rejected above before reaching here.
+      requiresConfirmation: false,
+      reasons: [native.readOnly ? 'rhino-read-only' : 'rhino-native-document-change'],
+    } as const;
+    await input.onExecuting?.();
+    return { requiresApproval: false, result: await input.executor(name, input.args, input.context), permission };
+  }
   if (isRhinoReadTool(name)) {
     await input.onExecuting?.();
     const permission = evaluateLegacyActionPermission({ tool: 'app_get_context', arguments: input.args }, { userText: input.context.userText, approvalMode: input.approvalMode });

@@ -1,3 +1,4 @@
+import { conversationDisplayTitle } from '../model/chatConversationTitle';
 import { Bot, Check, MessageSquarePlus, PanelLeft, Sparkles, Trash2, Workflow, X } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import type { AgentCanvasSelectionItem, WorkflowResultCardData } from '../../agentModel';
@@ -47,6 +48,10 @@ export type ChatViewProps = {
   imageQuality?: string;
   imageQualityOptions?: ChatImageModelOption[];
   onImageQualityChange?: (quality: string) => void;
+  imageMaskMode?: 'off' | 'on';
+  onImageMaskModeChange?: (value: 'off' | 'on') => void;
+  imageMaskAttachmentId?: string;
+  onImageMaskAttachmentChange?: (id: string) => void;
   imageResolution: string;
   imageResolutionOptions?: ChatImageModelOption[];
   onImageResolutionChange: (resolution: string) => void;
@@ -80,6 +85,10 @@ export const ChatView = memo(function ChatView({
   imageQuality,
   imageQualityOptions,
   onImageQualityChange,
+  imageMaskMode = 'off',
+  onImageMaskModeChange,
+  imageMaskAttachmentId = '',
+  onImageMaskAttachmentChange,
   imageResolution,
   imageResolutionOptions = [],
   onImageResolutionChange,
@@ -332,7 +341,7 @@ export const ChatView = memo(function ChatView({
                 setSelectedConversationIds([]);
                 runtime.selectConversation(conversation.id); if (variant === 'drawer') setHistoryOpen(false);
               }}>
-                <span>{conversation.title}</span><small>{new Date(conversation.updatedAt).toLocaleDateString()}</small>
+                <span>{conversationDisplayTitle(conversation)}</span><small>{new Date(conversation.updatedAt).toLocaleDateString()}</small>
               </button>
               <button type="button" className="chat-history__delete" onClick={() => void deleteSelectedConversations([conversation.id])} title="删除会话"><Trash2 size={12} /></button>
             </div>
@@ -396,6 +405,7 @@ export const ChatView = memo(function ChatView({
             onAttachmentsChange={next => {
               setSuggestedSkill(null);
               const nextIds = new Set(next.map(item => item.id));
+              if (imageMaskAttachmentId && !nextIds.has(imageMaskAttachmentId)) onImageMaskAttachmentChange?.('');
               setIgnoredSelectionAttachmentIds(selectionAttachments
                 .filter(item => !nextIds.has(item.id))
                 .map(item => item.id));
@@ -419,6 +429,10 @@ export const ChatView = memo(function ChatView({
             imageQuality={imageQuality}
             imageQualityOptions={imageQualityOptions}
             onImageQualityChange={onImageQualityChange}
+            imageMaskMode={imageMaskMode}
+            onImageMaskModeChange={onImageMaskModeChange}
+            imageMaskAttachmentId={imageMaskAttachmentId}
+            onImageMaskAttachmentChange={onImageMaskAttachmentChange}
             imageResolution={imageResolution}
             imageResolutionOptions={imageResolutionOptions}
             onImageResolutionChange={onImageResolutionChange}

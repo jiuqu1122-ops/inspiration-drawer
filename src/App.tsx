@@ -1,3 +1,5 @@
+import { resolveChatImageModelCapabilities } from './features/chat/runtime/chatImageModelCapabilities';
+import { resolveChatImageModelValue } from './features/chat/runtime/chatImageModelSelection';
 import { createCanvasPersistedItemsCache, createCanvasStatePersistence } from './features/canvas/canvasStatePersistence';
 import { isRhinoCanvasLocked } from './features/rhino/rhinoProtocol';
 import { createCanvasViewportScheduler, readCanvasVisualViewport } from './features/canvas/canvasViewportScheduler';
@@ -336,13 +338,11 @@ import { addCanvasDroppedFilesImpl,addCanvasDroppedPathsImpl,addCanvasDroppedTem
 import {
 CANVAS_AI_IMAGE_MODEL_MENU_NAMES,
 CANVAS_AI_VIDEO_MODEL_OPTIONS,
-getCanvasAiImageResolutionValues,
-getCanvasAiImageResolutionValuesForCandidates,
 getCanvasAiPublicImageModelId,
 getCanvasAiPublicImageModelVariantName,
 isCanvasAiPublicImageModel
 } from './features/canvasAiImage';
-import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,getDefaultAiCatalogModelId,getImageAspectRatioOptionsForResolution,hasServerAiCatalog,mergeAiModelCapabilities,normalizeCapabilityOption,resolveImageModelCapabilities } from './features/aiModelCapabilities';
+import { findAiCatalogModel,getAiCatalogModels,getChannelModelCapabilities,getDefaultAiCatalogModelId,getImageAspectRatioOptionsForResolution,hasServerAiCatalog,mergeAiModelCapabilities,normalizeCapabilityOption } from './features/aiModelCapabilities';
 import {
 CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT
 } from './features/canvasAiOutputs';
@@ -5898,77 +5898,60 @@ useEffect(() => {
       label: '自动选择（推荐）',
       hint: '根据任务内容、版面比例和清晰度自动匹配生图模型',
       meta: '智能匹配',
+      supportsMask: canvasAiUnifiedImageModelOptions.some(option => {
+        const config = parseCanvasAiModelChoiceValue(option.value);
+        const candidate = config?.providerCandidates?.[0];
+        const catalog = findAiCatalogModel(getAiCatalogModels(canvasAiCloudImageModels, 'image'), candidate?.canonicalModelId || config?.model);
+        return catalog?.capabilities?.supportsMask === true || candidate?.modelCapabilities?.supportsMask === true;
+      }),
     },
     ...canvasAiUnifiedImageModelOptions
       .filter(option => !option.disabled)
       .map(option => ({
-        value: option.label,
+        value: option.value,
         label: option.label,
         hint: option.hint,
         meta: parseCanvasAiModelChoiceValue(option.value)?.source === 'local' ? '本地 API' : '账号额度',
+        supportsMask: (() => {
+          const config = parseCanvasAiModelChoiceValue(option.value);
+          const candidate = config?.providerCandidates?.[0];
+          const catalog = findAiCatalogModel(getAiCatalogModels(canvasAiCloudImageModels, 'image'), candidate?.canonicalModelId || config?.model);
+          return Boolean(catalog?.capabilities?.supportsMask === true || candidate?.modelCapabilities?.supportsMask === true);
+        })(),
       })),
-  ]), [canvasAiUnifiedImageModelOptions]);
+  ]), [canvasAiCloudImageModels, canvasAiUnifiedImageModelOptions]);
   const [chatImageModel, setChatImageModel] = useState(() => (
     localStorage.getItem(CHAT_IMAGE_MODEL_STORAGE_KEY) || CHAT_AUTO_IMAGE_SETTING
   ));
-  const activeChatImageModel = chatImageModelOptions.some(option => option.value === chatImageModel)
-    ? chatImageModel
-    : CHAT_AUTO_IMAGE_SETTING;
+  const activeChatImageModel = resolveChatImageModelValue(chatImageModel, chatImageModelOptions);
   const activeChatImageModelChoice = activeChatImageModel === CHAT_AUTO_IMAGE_SETTING
     ? undefined
-    : canvasAiUnifiedImageModelOptions.find(option => !option.disabled && option.label === activeChatImageModel);
+    : canvasAiUnifiedImageModelOptions.find(option => !option.disabled && option.value === activeChatImageModel);
   const activeChatImageModelConfig = activeChatImageModelChoice ? parseCanvasAiModelChoiceValue(activeChatImageModelChoice.value) : null;
-  const activeChatImageModelCandidates = activeChatImageModelConfig?.providerCandidates || [];
-  const activeChatImageModelCandidate = activeChatImageModelCandidates[0];
-  const activeChatImageCatalogModel = findAiCatalogModel(
-    getAiCatalogModels(canvasAiCloudImageModels, 'image'),
-    activeChatImageModelCandidate?.canonicalModelId || activeChatImageModelConfig?.model,
-  );
-  const chatLegacyImageResolutionValues = activeChatImageModelCandidates.length > 0
-    ? getCanvasAiImageResolutionValuesForCandidates(activeChatImageModelCandidates)
-    : getCanvasAiImageResolutionValues(activeChatImageModelConfig?.provider, activeChatImageModelConfig?.model);
-  const chatResolvedImageCapabilities = resolveImageModelCapabilities({
-    canonical: activeChatImageCatalogModel?.capabilities,
-    route: activeChatImageModelCandidate?.modelCapabilities,
-    legacy: { resolutions: chatLegacyImageResolutionValues },
-  });
+  const chatResolvedImageCapabilities = resolveChatImageModelCapabilities(activeChatImageModelChoice?.value, canvasAiCloudImageModels);
   const chatImageModelRuntimeOptions = useMemo(() => (
     canvasAiUnifiedImageModelOptions
       .filter(option => !option.disabled)
       .map(option => {
-        const config = parseCanvasAiModelChoiceValue(option.value);
-        const candidates = config?.providerCandidates || [];
-        const candidate = candidates[0];
-        const catalogModel = findAiCatalogModel(
-          getAiCatalogModels(canvasAiCloudImageModels, 'image'),
-          candidate?.canonicalModelId || config?.model,
-        );
-        const resolutions = candidates.length > 0
-          ? getCanvasAiImageResolutionValuesForCandidates(candidates)
-          : getCanvasAiImageResolutionValues(config?.provider, config?.model);
-        const capabilities = resolveImageModelCapabilities({
-          canonical: catalogModel?.capabilities,
-          route: candidate?.modelCapabilities,
-          legacy: { resolutions },
-        });
-        const ratios = capabilities.aspectRatios.length > 0
-          ? capabilities.aspectRatios
-          : getCanvasAiAspectRatioOptionsForModel(config?.model, resolutions[0]).map(ratio => ratio.value);
+        const capabilities = resolveChatImageModelCapabilities(option.value, canvasAiCloudImageModels);
+        const ratios = capabilities.aspectRatios;
         return {
           value: option.value,
           label: option.label,
           hint: option.hint,
-          resolutions,
+          resolutions: capabilities.resolutions,
+          supportedQualities: capabilities.supportedQualities,
           aspectRatios: ratios,
           aspectRatiosByResolution: capabilities.aspectRatiosByResolution,
+          supportsMask: capabilities.supportsMask,
         };
       })
   ), [canvasAiCloudImageModels, canvasAiUnifiedImageModelOptions]);
   const chatAutoImageAspectRatioValues = Array.from(new Set(chatImageModelRuntimeOptions.flatMap(option => option.aspectRatios || [])));
   const chatAutoImageResolutionValues = Array.from(new Set(chatImageModelRuntimeOptions.flatMap(option => option.resolutions || [])));
   const chatImageResolutionValues = activeChatImageModel === CHAT_AUTO_IMAGE_SETTING
-    ? []
-    : Array.from(new Set([...chatResolvedImageCapabilities.resolutions, ...chatLegacyImageResolutionValues]));
+    ? chatAutoImageResolutionValues
+    : chatResolvedImageCapabilities.resolutions;
   const chatImageResolutionOptions = useMemo<ChatImageModelOption[]>(() => ([
     { value: CHAT_AUTO_IMAGE_SETTING, label: '自动匹配', hint: '根据当前提示词选择合适清晰度' },
     ...(chatImageResolutionValues.length > 0
@@ -5984,7 +5967,7 @@ useEffect(() => {
       ? chatImageResolution
       : chatImageResolutionOptions.find(option => option.value !== CHAT_AUTO_IMAGE_SETTING)?.value || CHAT_AUTO_IMAGE_SETTING;
   const chatImageAspectRatioValues = activeChatImageModel === CHAT_AUTO_IMAGE_SETTING
-    ? []
+    ? chatAutoImageAspectRatioValues
     : getImageAspectRatioOptionsForResolution(
       chatResolvedImageCapabilities,
       activeChatImageResolution === CHAT_AUTO_IMAGE_SETTING ? undefined : activeChatImageResolution,
@@ -6007,16 +5990,17 @@ useEffect(() => {
       ? normalizeCapabilityOption(chatImageAspectRatioValues, chatImageAspectRatio, CANVAS_AI_DEFAULT_ASPECT_RATIO)
       : normalizeCanvasAiAspectRatioForModel(activeChatImageModelConfig?.model, chatImageAspectRatio, activeChatImageResolution === CHAT_AUTO_IMAGE_SETTING ? undefined : activeChatImageResolution);
   useEffect(() => {
-    if (activeChatImageModel !== chatImageModel) setChatImageModel(activeChatImageModel);
-    localStorage.setItem(CHAT_IMAGE_MODEL_STORAGE_KEY, activeChatImageModel);
+    // A temporarily empty/loading catalog must not erase the user's preference.
+    // Only migrate a selection once an actual current option matched it.
+    const matched = activeChatImageModel !== CHAT_AUTO_IMAGE_SETTING;
+    if (matched && activeChatImageModel !== chatImageModel) setChatImageModel(activeChatImageModel);
+    localStorage.setItem(CHAT_IMAGE_MODEL_STORAGE_KEY, matched ? activeChatImageModel : chatImageModel);
   }, [activeChatImageModel, chatImageModel]);
   useEffect(() => {
-    if (activeChatImageResolution !== chatImageResolution) setChatImageResolution(activeChatImageResolution);
-    localStorage.setItem(CHAT_IMAGE_RESOLUTION_STORAGE_KEY, activeChatImageResolution);
+    localStorage.setItem(CHAT_IMAGE_RESOLUTION_STORAGE_KEY, chatImageResolution);
   }, [activeChatImageResolution, chatImageResolution]);
   useEffect(() => {
-    if (activeChatImageAspectRatio !== chatImageAspectRatio) setChatImageAspectRatio(activeChatImageAspectRatio);
-    localStorage.setItem(CHAT_IMAGE_ASPECT_RATIO_STORAGE_KEY, activeChatImageAspectRatio);
+    localStorage.setItem(CHAT_IMAGE_ASPECT_RATIO_STORAGE_KEY, chatImageAspectRatio);
   }, [activeChatImageAspectRatio, chatImageAspectRatio]);
 
   const generateChatMedia = (

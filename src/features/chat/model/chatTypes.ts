@@ -77,6 +77,7 @@ export type ChatImageModelOption = {
   label: string;
   hint?: string;
   meta?: string;
+  supportsMask?: boolean;
 };
 
 export type ChatMessage = {
@@ -101,6 +102,8 @@ export type ChatMessage = {
 export type ChatConversation = {
   id: string;
   title: string;
+  /** Read-only derived opening message; not a document/conversation identifier. */
+  firstUserMessage?: string | null;
   model: string;
   createdAt: number;
   updatedAt: number;
@@ -133,8 +136,11 @@ export type PendingChatAttachment = Omit<ChatAttachment, 'messageId' | 'createdA
   createdAt?: number;
 };
 
+export type ChatExecutionSource = 'desktop' | 'rhino';
+
 export type ChatToolExecutionContext = {
   userText: string;
+  executionSource?: ChatExecutionSource;
   conversationId: string;
   messageId: string;
   recentMessages: ChatMessage[];

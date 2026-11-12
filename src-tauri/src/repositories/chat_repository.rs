@@ -7,6 +7,8 @@ use serde_json::Value;
 pub struct ChatConversationRecord {
     pub id: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_user_message: Option<String>,
     pub model: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -219,7 +221,10 @@ impl ChatRepository {
             .conn
             .prepare(
                 r#"
-            SELECT id, title, model, created_at, updated_at, archived
+            SELECT id, title, model, created_at, updated_at, archived,
+                (SELECT substr(content, 1, 2000) FROM chat_messages
+                 WHERE conversation_id = chat_conversations.id AND role = 'user'
+                 ORDER BY created_at ASC, id ASC LIMIT 1) AS first_user_message
             FROM chat_conversations
             WHERE archived = ?1
               AND (?2 = '' OR title LIKE ?3 ESCAPE '\')
@@ -233,6 +238,7 @@ impl ChatRepository {
                 Ok(ChatConversationRecord {
                     id: row.get(0)?,
                     title: row.get(1)?,
+                    first_user_message: row.get(6)?,
                     model: row.get(2)?,
                     created_at: row.get(3)?,
                     updated_at: row.get(4)?,
@@ -631,6 +637,7 @@ mod tests {
         ChatConversationRecord {
             id: "conversation-1".to_string(),
             title: "通用聊天".to_string(),
+            first_user_message: None,
             model: "gpt-test".to_string(),
             created_at: 1,
             updated_at: 1,
@@ -657,6 +664,24 @@ mod tests {
             attachments: Vec::new(),
             tool_calls: Vec::new(),
         }
+    }
+
+    #[test]
+    fn exposes_opening_user_requirement_without_changing_conversation_identity_or_title() {
+        let repository = repository();
+        repository.upsert_conversation(conversation()).unwrap();
+        repository.upsert_message(message("assistant-first", 1)).unwrap();
+        let mut first = message("user-first", 2);
+        first.role = "user".into(); first.content = "Make a model. Preserve the holes.".into();
+        repository.upsert_message(first).unwrap();
+        let mut later = message("user-later", 3);
+        later.role = "user".into(); later.content = "Another requirement".into();
+        repository.upsert_message(later).unwrap();
+        let items = repository.list_conversations(ChatConversationListOptions { search: None, archived: None, limit: Some(10), offset: None }).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "conversation-1");
+        assert_eq!(items[0].title, conversation().title);
+        assert_eq!(items[0].first_user_message.as_deref(), Some("Make a model. Preserve the holes."));
     }
 
     #[test]
@@ -968,6 +993,7 @@ mod design_memory_lifecycle_tests {
         ChatConversationRecord {
             id: id.into(),
             title: "synthetic".into(),
+            first_user_message: None,
             model: "test".into(),
             created_at: 1,
             updated_at: 1,

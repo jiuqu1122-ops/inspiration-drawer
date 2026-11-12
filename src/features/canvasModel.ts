@@ -222,6 +222,8 @@ export type CanvasAiItemData = {
   endpoint?: string;
   model?: string;
   imageProtocol?: NewApiImageProtocol;
+  /** Explicit optional edit mask source; absent means the normal generation path. */
+  maskImage?: string;
   prompt?: string;
   presetId?: string;
   presetLabel?: string;

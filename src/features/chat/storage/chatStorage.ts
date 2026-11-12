@@ -69,8 +69,17 @@ export const upsertChatSummary = (summary: ChatSummary) => (
   invoke<ChatSummary>('chat_upsert_summary', { summary })
 );
 
-export const readActiveChatConversationId = () => localStorage.getItem(ACTIVE_CHAT_KEY) || '';
-export const writeActiveChatConversationId = (id: string) => localStorage.setItem(ACTIVE_CHAT_KEY, id);
+export type ChatConversationScope = 'desktop' | 'rhino';
+const RHINO_CONVERSATION_ID_PREFIX = 'rhino-chat-conversation-';
+const LEGACY_RHINO_TITLE_PREFIX = 'Rhino \u5bf9\u8bdd';
+export const chatConversationInScope = (conversation: ChatConversation, scope: ChatConversationScope = 'desktop') => {
+  const isRhino = conversation.id.startsWith(RHINO_CONVERSATION_ID_PREFIX)
+    || conversation.title.startsWith(LEGACY_RHINO_TITLE_PREFIX);
+  return scope === 'rhino' ? isRhino : !isRhino;
+};
+const activeConversationKey = (scope: ChatConversationScope = 'desktop') => scope === 'desktop' ? ACTIVE_CHAT_KEY : `${ACTIVE_CHAT_KEY}:${scope}`;
+export const readActiveChatConversationId = (scope: ChatConversationScope = 'desktop') => localStorage.getItem(activeConversationKey(scope)) || '';
+export const writeActiveChatConversationId = (id: string, scope: ChatConversationScope = 'desktop') => localStorage.setItem(activeConversationKey(scope), id);
 
 export const migrateLegacyAgentConversations = async (defaultModel = '') => {
   if (localStorage.getItem(LEGACY_MIGRATION_MARKER) === 'completed') return 0;

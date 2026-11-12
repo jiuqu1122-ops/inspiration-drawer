@@ -2,6 +2,34 @@ import { describe, expect, it, vi } from 'vitest';
 import { routeChatToolCall } from './chatToolRouter';
 
 describe('Chat tool router', () => {
+  it.each([
+    '\u5e2e\u6211\u751f\u6210\u4e00\u6bb5\u56fe\u7247\u63d0\u793a\u8bcd',
+    'Write an image-generation prompt for a product render',
+  ])('blocks image side effects for prompt-only requests: %s', async userText => {
+    const executor = vi.fn();
+    await expect(routeChatToolCall({
+      name: 'generate_image',
+      args: { prompt: 'A product render prompt' },
+      context: { userText, conversationId: 'conversation-1', messageId: 'message-1', recentMessages: [] },
+      executor,
+    })).rejects.toThrow('not image generation');
+    expect(executor).not.toHaveBeenCalled();
+  });
+
+  it('allows image generation when prompt writing is followed by an explicit render request', async () => {
+    const executor = vi.fn(async () => ({ ok: true }));
+    const result = await routeChatToolCall({
+      name: 'generate_image',
+      args: { prompt: 'A product render prompt' },
+      context: {
+        userText: '\u5148\u5e2e\u6211\u5199\u4e00\u6bb5\u56fe\u7247\u63d0\u793a\u8bcd\uff0c\u7136\u540e\u6309\u5b83\u751f\u6210\u4e00\u5f20\u56fe',
+        conversationId: 'conversation-1', messageId: 'message-1', recentMessages: [],
+      },
+      executor,
+    });
+    expect(result.requiresApproval).toBe(false);
+    expect(executor).toHaveBeenCalledOnce();
+  });
   it('routes explicit agent creation to local storage without an extra approval', async () => {
     const executor = vi.fn(async () => ({ created: true, id: 'agent-1' }));
     const context = { userText: '创建一个产品设计智能体', conversationId: 'conversation-1', messageId: 'message-1', recentMessages: [] };

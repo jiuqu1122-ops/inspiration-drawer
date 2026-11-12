@@ -36,4 +36,25 @@ describe('applyChatImageGenerationSettings', () => {
       { imageModel: CHAT_AUTO_IMAGE_SETTING, imageAspectRatio: CHAT_AUTO_IMAGE_SETTING, imageResolution: CHAT_AUTO_IMAGE_SETTING },
     )).toEqual({ prompt: 'image' });
   });
+
+  it('keeps Mask off by default and requires an explicit capable model when enabled', () => {
+    expect(applyChatImageGenerationSettings(
+      { prompt: 'edit', maskImage: 'C:/mask.png' },
+      { imageModel: 'model-a' },
+    )).not.toHaveProperty('maskImage');
+    expect(applyChatImageGenerationSettings(
+      { prompt: 'edit', maskImage: 'C:/mask.png' },
+      {
+        imageModel: 'model-mask', imageMaskMode: 'on', imageMaskAttachmentId: 'mask-id',
+        imageModelOptions: [{ value: 'model-mask', supportsMask: true }],
+      },
+    )).toMatchObject({ maskImage: 'C:/mask.png', maskAttachmentId: 'mask-id' });
+  });
+
+  it('rejects Mask mode when the selected model is not explicitly declared mask-capable', () => {
+    expect(() => applyChatImageGenerationSettings(
+      { prompt: 'edit' },
+      { imageModel: 'model-a', imageMaskMode: 'on', imageMaskAttachmentId: 'mask-id', imageModelOptions: [{ value: 'model-a' }] },
+    )).toThrow('未声明支持 Mask');
+  });
 });

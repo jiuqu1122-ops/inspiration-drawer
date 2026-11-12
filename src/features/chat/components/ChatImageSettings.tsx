@@ -2,7 +2,7 @@ import { Check, ChevronDown, Image as ImageIcon } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { ChatImageModelOption } from '../model/chatTypes';
 
-type PickerName = 'model' | 'aspect-ratio' | 'resolution' | 'quality';
+type PickerName = 'model' | 'aspect-ratio' | 'resolution' | 'quality' | 'mask';
 
 function ImageSettingPicker({
   name,
@@ -37,6 +37,7 @@ function ImageSettingPicker({
         aria-haspopup="listbox"
         aria-expanded={open}
         title={`${label}：${selected?.label || '自动'}`}
+        aria-label={`${label}：${selected?.label || '自动'}`}
       >
         <span className="chat-image-setting-trigger__label">{label}</span>
         <strong>{selected?.label || '自动'}</strong>
@@ -83,6 +84,9 @@ export function ChatImageSettings({
   resolution,
   resolutionOptions,
   onResolutionChange,
+  maskMode = 'off',
+  maskSupported = false,
+  onMaskModeChange,
   busy,
 }: {
   model: string;
@@ -97,6 +101,9 @@ export function ChatImageSettings({
   resolution: string;
   resolutionOptions: ChatImageModelOption[];
   onResolutionChange: (value: string) => void;
+  maskMode?: 'off' | 'on';
+  maskSupported?: boolean;
+  onMaskModeChange?: (value: 'off' | 'on') => void;
   busy: boolean;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -124,38 +131,53 @@ export function ChatImageSettings({
         <ImageIcon size={13} aria-hidden="true" />
       </span>
       <div className="chat-image-settings__controls">
-        <ImageSettingPicker
-          name="model"
-          label="模型"
-          value={model}
-          options={modelOptions}
-          openPicker={openPicker}
-          setOpenPicker={setOpenPicker}
-          onChange={onModelChange}
-          disabled={busy}
-          wide
-        />
-        <ImageSettingPicker
-          name="aspect-ratio"
-          label="比例"
-          value={aspectRatio}
-          options={aspectRatioOptions}
-          openPicker={openPicker}
-          setOpenPicker={setOpenPicker}
-          onChange={onAspectRatioChange}
-          disabled={busy}
-        />
+        <div className="chat-image-settings__primary">
+          <ImageSettingPicker
+            name="model"
+            label="模型"
+            value={model}
+            options={modelOptions}
+            openPicker={openPicker}
+            setOpenPicker={setOpenPicker}
+            onChange={onModelChange}
+            disabled={busy}
+            wide
+          />
+          <ImageSettingPicker
+            name="aspect-ratio"
+            label="比例"
+            value={aspectRatio}
+            options={aspectRatioOptions}
+            openPicker={openPicker}
+            setOpenPicker={setOpenPicker}
+            onChange={onAspectRatioChange}
+            disabled={busy}
+          />
+          <ImageSettingPicker
+            name="resolution"
+            label="清晰度"
+            value={resolution}
+            options={resolutionOptions}
+            openPicker={openPicker}
+            setOpenPicker={setOpenPicker}
+            onChange={onResolutionChange}
+            disabled={busy}
+          />
+        </div>
         {qualityOptions.length > 0 && <ImageSettingPicker name="quality" label="质量" value={quality || qualityOptions[0].value} options={qualityOptions} openPicker={openPicker} setOpenPicker={setOpenPicker} onChange={onQualityChange || (() => {})} disabled={busy} />}
-        <ImageSettingPicker
-          name="resolution"
-          label="清晰度"
-          value={resolution}
-          options={resolutionOptions}
+        {maskSupported && <ImageSettingPicker
+          name="mask"
+          label="遮罩"
+          value={maskMode}
+          options={[
+            { value: 'off', label: '关闭', hint: '保持当前普通生图流程' },
+            { value: 'on', label: '启用', hint: '对支持遮罩的模型使用所选遮罩附件' },
+          ]}
           openPicker={openPicker}
           setOpenPicker={setOpenPicker}
-          onChange={onResolutionChange}
+          onChange={value => onMaskModeChange?.(value === 'on' ? 'on' : 'off')}
           disabled={busy}
-        />
+        />}
       </div>
     </div>
   );

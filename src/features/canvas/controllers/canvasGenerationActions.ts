@@ -988,6 +988,9 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         canonical: selectedCatalogModel?.capabilities,
         route: selectedRouteCapabilities,
       });
+      if (mediaType === 'image' && targetAi.maskImage && resolvedImageCapabilities.supportsMask !== true) {
+        throw new Error('当前模型/线路未声明支持 Mask，已阻止发送。');
+      }
       const imageOutputPlan = canvasImageOutputPlan(targetAi, resolvedImageCapabilities);
       if (mediaType === 'image') {
         const outputPlanPatch = {
@@ -1129,7 +1132,7 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
       let preserveReferenceIdentity = false;
       temporaryReferenceShares = preparedInputs.temporaryShareIds;
       const imageProtocol = mediaType === 'image' && provider === 'new-api'
-        ? getDefaultNewApiImageProtocol(requestModel, inputImages.length > 0)
+        ? targetAi.maskImage ? 'images_edits' : getDefaultNewApiImageProtocol(requestModel, inputImages.length > 0)
         : undefined;
       if (imageProtocol && targetAi.imageProtocol !== imageProtocol) {
         options.updateAi({ imageProtocol });
@@ -1344,6 +1347,8 @@ export const runCanvasAiGeneratorTargetImpl = async (ctx: Pick<canvasGenerationA
         inputImages,
         inputVideos,
         inputAudios,
+        maskImage: mediaType === 'image' ? targetAi.maskImage : undefined,
+        singleAttempt: mediaType === 'image' && Boolean(targetAi.maskImage),
         aspectRatio: requestAspectRatio,
         resolution: requestResolution,
         outputFormat: targetAi.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,

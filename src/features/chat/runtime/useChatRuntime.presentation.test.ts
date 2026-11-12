@@ -1,3 +1,4 @@
+import { registerRhinoNativeTools } from '../../rhino/rhinoProtocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatMessage } from '../model/chatTypes';
 
@@ -67,6 +68,38 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
+describe('model-selected image intent through the real runtime', () => {
+  it.each([
+    'It needs to feel more refined and balanced.',
+    'Only analyze this; do not create images yet.',
+  ])('exposes image capabilities but does not invent tool calls: %s', async text => {
+    const runtime = setupRuntime();
+    harness.replies.push(textReply('Here is a text response from the model.'));
+    await runtime.sendMessage(text);
+    const request = harness.requests[0];
+    const names = request.tools.map((tool: any) => tool.function.name);
+    expect(names).toEqual(expect.arrayContaining(['generate_image', 'generate_image_variants', 'edit_image']));
+    expect(request.toolChoice).toBeUndefined();
+    expect(JSON.stringify(request.messages)).toContain('Do not require words such as generate');
+    expect(harness.execute).not.toHaveBeenCalled();
+    expect(lastAssistant().status).toBe('completed');
+  });
+  it.each([
+    '\u751f\u6210\u4e00\u6bb5\u7528\u4e8e Midjourney \u7684\u4ea7\u54c1\u751f\u56fe\u63d0\u793a\u8bcd',
+    'Write an image-generation prompt for a product render',
+  ])('does not offer image tools for prompt-only requests: %s', async text => {
+    const runtime = setupRuntime();
+    harness.replies.push(textReply('Here is the requested prompt as text.'));
+    await runtime.sendMessage(text);
+    const request = harness.requests[0];
+    const names = request.tools.map((tool: any) => tool.function.name);
+    expect(names).not.toContain('generate_image');
+    expect(names).not.toContain('generate_image_variants');
+    expect(names).not.toContain('edit_image');
+    expect(harness.execute).not.toHaveBeenCalled();
+  });
+});
+
 describe('PPT delivery through the real runtime (synthetic IPC)', () => {
   it('passes create_file for the exact screenshot wording 出ppt and produces a successful file receipt', async () => {
     const runtime = setupRuntime();
@@ -88,7 +121,7 @@ describe('PPT delivery through the real runtime (synthetic IPC)', () => {
     expect(harness.execute).not.toHaveBeenCalled();
     expect(harness.requests[0].toolChoice).toBeUndefined();
     await runtime.sendMessage(answer);
-    expect(harness.requests[1].tools).toEqual([]);
+    expect(harness.requests[1].tools.map((tool: any) => tool.function.name)).toEqual(['generate_image', 'generate_image_variants', 'edit_image']);
     await runtime.sendMessage('开始做吧');
     const request = harness.requests[2];
     expect(request.tools.some((tool: any) => tool.function.name === 'create_file')).toBe(true);
@@ -161,4 +194,22 @@ describe('PPT delivery through the real runtime (synthetic IPC)', () => {
     expect(lastAssistant().content).toContain('PPT 尚未生成可下载文件');
     expect(lastAssistant().content).not.toContain('仍然无法创建文件');
   });
+});
+
+describe('Rhino geometry success followed by failed view cleanup (synthetic IPC)',()=>{
+ it.each([true,false])('preserves evidence instead of claiming a geometry failure; verified=%s',async verified=>{
+  const tools=['rhino_native_run_python','rhino_native_zoom_to_layer','rhino_native_save_doc'].map(name=>({name,description:'synthetic fixture',inputSchema:{type:'object',properties:{}},readOnly:false,destructive:true,workflowPhase:'write'}));
+  const runtime=useChatRuntime({model:'default',approvalMode:'auto',executeTool:harness.execute,additionalTools:(conversationId)=>{registerRhinoNativeTools(conversationId,tools);return tools.map(tool=>({type:'function' as const,function:{name:tool.name,description:tool.description,parameters:tool.inputSchema}}));}});
+  harness.execute.mockImplementation(async(name:string)=>{
+   if(name==='rhino_native_run_python')return {source:'rhino',documentId:7,content:'synthetic modeling receipt',...(verified?{geometryVerification:{status:'passed',structuralOnly:true,documentChanged:true,addedCount:12,changedCount:0}}:{})};
+   if(name==='rhino_native_zoom_to_layer')throw new Error('No matching native MCP document');
+   throw new Error('Must not dispatch tools after failed view call');
+  });
+  harness.replies.push({content:'',toolCalls:[{id:'fixture-build',name:'rhino_native_run_python',arguments:JSON.stringify({script:'print(1)'})},{id:'fixture-zoom',name:'rhino_native_zoom_to_layer',arguments:JSON.stringify({layer:'Synthetic'})},{id:'fixture-save',name:'rhino_native_save_doc',arguments:'{}'}]});
+  await runtime.sendMessage('帮我建一个桌面摄像头',[],undefined,undefined,undefined,'rhino');
+  const assistant=lastAssistant();expect(harness.requests).toHaveLength(1);expect(harness.execute.mock.calls.map(([name])=>name)).toEqual(['rhino_native_run_python','rhino_native_zoom_to_layer']);
+  expect(assistant.toolCalls.find(call=>call.id==='fixture-build')?.status).toBe('completed');expect(assistant.toolCalls.find(call=>call.id==='fixture-zoom')?.status).toBe('error');expect(assistant.toolCalls.find(call=>call.id==='fixture-save')?.status).toBe('cancelled');
+  if(verified){expect(assistant.status).toBe('completed');expect(assistant.content).toContain('后续“缩放到目标图层”未完成');expect(assistant.content).not.toContain('Rhino MCP 执行失败');}
+  else{expect(assistant.status).toBe('error');expect(assistant.content).not.toContain('模型几何已写入，并通过结构检查');}
+ });
 });

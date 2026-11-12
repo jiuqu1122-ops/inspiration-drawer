@@ -1,0 +1,76 @@
+{
+  "desktopVersion": "8.0.27-beta.32",
+  "architecture": "x64",
+  "desktopSha256": "1B60AB2B18C250A6A6E891E430BF3403ED10551583DE369CA05CE3D3ECB04D6A",
+  "pluginPayloads": [
+    {
+      "rhino": 8,
+      "framework": "net7.0",
+      "sha256": "952D2B63D5216E679491B2F92CA1E8CE1BDA88ACCE65A58200C34AFEA3552C7F",
+      "zip": "InspirationDrawer-Rhino8-Beta-0.1.0-beta.32-win-x64.zip",
+      "yak": null,
+      "yakVerified": false,
+      "embeddedInDesktop": true,
+      "embeddedPanelAssetsCurrent": true
+    },
+    {
+      "rhino": 9,
+      "framework": "net8.0",
+      "sha256": "55BC7902E043313963C591DB08E03B30A088ED0BB561654ED0B15BD370045F07",
+      "zip": "InspirationDrawer-Rhino9-Beta-0.1.0-beta.32-win-x64.zip",
+      "yak": null,
+      "yakVerified": false,
+      "embeddedInDesktop": true,
+      "embeddedPanelAssetsCurrent": true
+    }
+  ],
+  "floatingTrigger": {
+    "background": "yellow",
+    "bulb": "white",
+    "frontendAsset": "index-DV935lAv.js",
+    "assetKeyEmbeddedInDesktop": true
+  },
+  "frontendEntry": {
+    "asset": "main-CAcdDHgO.js",
+    "assetKeyEmbeddedInDesktop": true
+  },
+  "chatPromptOnlyProtection": {
+    "compiledToolExposureAndDispatchGuard": true,
+    "compiledModelInstruction": true,
+    "frontendAsset": "main-CAcdDHgO.js"
+  },
+  "installer": {
+    "file": "Inspiration Drawer Rhino Beta_8.0.27-beta.32_x64-setup.exe",
+    "sha256": "DED338E6BFE71741873ACF67F6EFE10042ADD4FEE2D07A64D950BF4E5E31CC66",
+    "archiveTestPassed": true,
+    "containedDesktopSha256": "84D9FC564F187FD71EAA40DC8B821F29E486A7F1CA00DAE5DBA019FF9AEE7A86",
+    "matchesPortableExceptTauriBundleType": true,
+    "onlyDifference": "NSS/UNK marker values"
+  },
+  "automatedTests": {
+    "frontend": 2465,
+    "frontendFiles": 235,
+    "csharpLoopbackTransport": 111,
+    "rustLicenseAndTransport": 47,
+    "rustInstaller": 6,
+    "typecheck": true,
+    "rhino8Build": true,
+    "rhino9Build": true,
+    "installerBuild": true,
+    "rhino8Sdk": "RhinoCommon 8.23.25251.13001",
+    "rhino9Sdk": "RhinoCommon 9.0.26300.09401",
+    "rhino9WebViewUnchanged": true,
+    "rhino8FixedWebViewSizeRemoved": true,
+    "panelMinimumLogicalSize": {
+      "width": 340,
+      "height": 420
+    },
+    "chatPromptOnlyToolExposureAndRouterGuard": true,
+    "catalogOmissionSemanticsPreserved": true,
+    "rhino8023LiveVisualAcceptance": false,
+    "livePaidModelAcceptance": false,
+    "yakPackagesIncluded": false,
+    "scope": "Local automated tests and builds; synthetic Chat/MCP fixtures. No live paid generation, production deployment, or target Rhino GUI acceptance."
+  },
+  "verificationScope": "Build, embedded resources, static color, matching runtime payloads, archive integrity. Not live Rhino/remote-machine functional acceptance."
+}

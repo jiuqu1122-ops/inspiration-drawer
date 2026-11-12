@@ -17,7 +17,8 @@
     "test:browser-extension": "node --test browser-extension/tests/*.test.mjs",
     "test:smoke": "vitest run src/features/appAgent/appAgentSmoke.test.ts",
     "lint": "eslint src",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:rhino-panel": "node scripts/build-rhino-panel.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.8",
@@ -39,7 +40,9 @@
     "react-qr-code": "^2.0.18",
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
     "three": "^0.185.1",
+    "unified": "^11.0.5",
     "zod": "^4.5.4"
   },
   "devDependencies": {

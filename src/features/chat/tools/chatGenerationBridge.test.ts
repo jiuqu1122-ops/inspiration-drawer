@@ -74,6 +74,18 @@ describe('Chat generation bridge', () => {
     })]);
   });
 
+  it('passes resolution, ratio and quality selections into the actual image generator', async () => {
+    const runGenerator = vi.fn(async (target: CanvasImageItem) => {
+      expect(target.ai).toMatchObject({ resolution: '4k', aspectRatio: '16:9', quality: 'high' });
+      return [{ id: 'settings-output', path: 'C:/generated/settings.png', status: 'success' as const }];
+    });
+    await runChatMediaGeneration({
+      toolName: 'generate_image', args: { prompt: 'product render', resolution: '4k', aspectRatio: '16:9', quality: 'high' },
+      sourceItems: () => [], buildGeneratorNode: generatorNode, runGenerator,
+    });
+    expect(runGenerator).toHaveBeenCalledOnce();
+  });
+
   it('passes image, video and audio references plus FLF mode through the existing video generator', async () => {
     const runGenerator = vi.fn(async (target: CanvasImageItem, options: { sourceItems: () => CanvasImageItem[] }) => {
       expect(target.ai?.videoInputMode).toBe('FLF');

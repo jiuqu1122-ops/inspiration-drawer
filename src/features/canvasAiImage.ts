@@ -549,6 +549,7 @@ export type CanvasAiBaseImageOptions = {
   preserveReferenceIdentity?: boolean;
   model?: string;
   inputImages?: string[];
+  maskImage?: string;
   prepareInputImagesForCandidate?: (candidate: CanvasAiModelCandidate) => Promise<string[]>;
   aspectRatio?: string;
   resolution?: string;
@@ -565,6 +566,7 @@ type CloudImageGenerationResult = {
   provider: string;
   model: string;
   chargedCredits: string;
+  maskApplied?: boolean;
 };
 
 export type CloudImageGenerationLookup = {
@@ -578,6 +580,7 @@ export type CloudImageGenerationLookup = {
   providerChannelName?: string;
   model?: string;
   chargedCredits?: string;
+  maskApplied?: boolean;
   error?: { code?: string; message?: string; httpStatus?: number | null } | null;
 };
 
@@ -601,7 +604,7 @@ const shouldReconcileCloudWalletImageError = (error: unknown) => {
     return true;
   }
   if (/AMBIGUOUS_SUBMIT|IMAGE_TASK_RECOVERY_REQUIRED|IMAGE_RESULT_PERSISTENCE_FAILED/i.test(message)) return true;
-  return !/(?:invalid_request|license_missing|cloud_account_required|unauthorized|invalid api key|invalid token|insufficient_credits|HTTP\s*4\d\d|upstream\s+error\s*:\s*(?:400|401|403|422)\b|图片\s*URL\s*不符合安全策略|Image URL is blocked|IMAGE_TASK_FAILED)/i.test(message);
+  return !/(?:mask_unsupported|invalid_request|license_missing|cloud_account_required|unauthorized|invalid api key|invalid token|insufficient_credits|HTTP\s*4\d\d|upstream\s+error\s*:\s*(?:400|401|403|422)\b|图片\s*URL\s*不符合安全策略|Image URL is blocked|IMAGE_TASK_FAILED)/i.test(message);
 };
 
 class CloudWalletImageTerminalError extends Error {
@@ -681,6 +684,7 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
           0,
           options.imageCapabilities?.referenceImageLimit ?? (options.provider === 'new-api' ? 9 : 8),
         ),
+        maskImage: options.maskImage || undefined,
         aspectRatio,
         resolution: options.resolution?.trim() || undefined,
         outputFormat,
@@ -721,7 +725,12 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
         try {
           const lookup = await getCloudWalletImageGenerationByRequest(clientRequestId);
           const images = getCloudWalletImageLookupImages(lookup);
-          if (images.length > 0) return images;
+          if (images.length > 0) {
+            if (options.maskImage && lookup.maskApplied !== true) {
+              throw new CloudWalletImageTerminalError('mask_unsupported: 云端任务查询未确认 Mask 已应用，拒绝接受该图片结果。');
+            }
+            return images;
+          }
           if (lookup.confirmationRequired && lookup.recoveryStatus === 'manual_confirmation_required') {
             throw new CloudWalletImageConfirmationError('IMAGE_TASK_RECOVERY_REQUIRED: 图片结果待确认，已停止自动重发。请保留请求 ID 联系管理员恢复原任务。');
           }
@@ -1250,6 +1259,7 @@ const postImageEditViaTauri = async (
     outputFormat?: string;
     background?: string;
     images: string[];
+    maskImage?: string;
     asyncTask?: boolean;
     stream?: boolean;
     repeatImageField?: boolean;
@@ -3497,10 +3507,14 @@ const generateOpenAiCompatibleImages = async (options: CanvasAiImageOptions) => 
       size,
       ...(quality ? { quality } : {}),
       images: inputImages,
+      ...(options.maskImage ? { maskImage: options.maskImage } : {}),
     }, options);
     const images = Array.from(new Set(collectImageStrings(data)));
     if (images.length > 0) return images.slice(0, count);
+    if (options.maskImage) throw new Error('Mask 编辑接口未返回图片，已阻止回退为普通文生图。');
   }
+
+  if (options.maskImage) throw new Error('Mask 编辑需要至少一张参考图，并且必须使用 images/edits 协议。');
 
   const data = await postJsonViaTauri(normalizeOpenAiEndpoint(options.endpoint || '', 'images/generations'), apiKey, {
     model,
@@ -3529,14 +3543,18 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
   const imageParams = newApiImageRequestParams(model, count, options.aspectRatio, options.resolution, options.outputFormat);
   const promptText = buildPromptWithOptions(prompt, options.aspectRatio, options.resolution);
   const negativePrompt = normalizeNegativePrompt(options.negativePrompt);
-  const defaultProtocol = getDefaultNewApiImageProtocol(model, inputImages.length > 0);
-  const protocol = options.imageProtocol === 'images_edits' || options.imageProtocol === 'images_generations'
-    ? options.imageProtocol
-    : defaultProtocol;
-  const useAsync = options.imageProtocol === 'async_task'
+  const defaultProtocol = options.maskImage
+    ? 'images_edits'
+    : getDefaultNewApiImageProtocol(model, inputImages.length > 0);
+  const protocol = options.maskImage
+    ? 'images_edits'
+    : (options.imageProtocol === 'images_edits' || options.imageProtocol === 'images_generations'
+      ? options.imageProtocol
+      : defaultProtocol);
+  const useAsync = !options.maskImage && (options.imageProtocol === 'async_task'
     || normalizeCanvasAiImageResolution(options.resolution) === '4k'
     || inputImages.length > 1
-    || count > 1;
+    || count > 1);
   const cloudflareReferenceUrls = getCloudflareReferenceUrls(inputImages);
   const referenceHosts = getRemoteReferenceHosts(inputImages);
   const clientRequestId = options.clientRequestId?.trim()
@@ -3617,6 +3635,7 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
           ...('background' in imageParams ? { background: imageParams.background } : {}),
           responseFormat: NEW_API_IMAGE_RESPONSE_FORMAT,
           images: inputImages,
+          ...(options.maskImage ? { maskImage: options.maskImage } : {}),
           ...(useAsync ? { asyncTask: true } : {}),
           stream: false,
           repeatImageField: true,
@@ -3624,6 +3643,7 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
         return resolveResponse(started, readiness);
       },
       imagesGenerations: async (readiness) => {
+        if (options.maskImage) throw new Error('Mask 编辑不能回退到 images/generations。');
         const started = await postJsonViaTauri(
           generationEndpoint,
           apiKey,
@@ -4164,6 +4184,17 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
 };
 
 export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptions): Promise<string[]> => {
+  if (options.maskImage) {
+    if (options.imageCapabilities?.supportsMask !== true) {
+      throw new Error('当前模型/线路能力目录未声明支持 Mask，已阻止发送。');
+    }
+    if ((options.inputImages || []).length === 0) {
+      throw new Error('Mask 编辑需要至少一张基础参考图。');
+    }
+    if (!options.cloudWallet && options.provider !== 'new-api' && options.provider !== 'openai-compatible') {
+      throw new Error('当前图片服务适配器尚不支持 Mask multipart 请求。');
+    }
+  }
   if (options.cloudWallet) {
     return generateCloudWalletImages({
       ...options,

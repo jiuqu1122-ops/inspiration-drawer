@@ -1705,9 +1705,22 @@ fn merge_openai_choice_data(
                 if let Some(name) = function.get("name").and_then(Value::as_str) {
                     entry.name.push_str(name);
                 }
-                if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
-                    entry.arguments.push_str(arguments);
-                    arguments_delta.push_str(arguments);
+                if let Some(arguments) = function.get("arguments") {
+                    match arguments {
+                        Value::String(fragment) => {
+                            entry.arguments.push_str(fragment);
+                            arguments_delta.push_str(fragment);
+                        }
+                        // Some compatible gateways return a parsed object instead
+                        // of the JSON string. Preserve it rather than turning a
+                        // fully populated script/tool call into an empty {} call.
+                        Value::Object(_) => {
+                            let snapshot = arguments.to_string();
+                            entry.arguments = snapshot.clone();
+                            arguments_delta = snapshot;
+                        }
+                        _ => {}
+                    }
                 }
             }
             update.tool_calls.push(OpenAiToolCallDelta {
@@ -3742,6 +3755,29 @@ mod tests {
         assert_eq!(tool.id, "call-1");
         assert_eq!(tool.name, "search_assets");
         assert_eq!(tool.arguments, "{\"query\":\"car\"}");
+    }
+
+    #[test]
+    fn native_tool_arguments_preserve_gateway_objects_and_streamed_scripts() {
+        let script = "import rhinoscriptsyntax as rs\nrs.AddBox(points)";
+        for tool_name in ["rhino_native_run_python", "rhino_native_set_layer_material"] {
+            let mut calls = BTreeMap::new();
+            let expected = json!({ "script": script, "enabled": false, "count": 0 });
+            let update = merge_openai_choice_data(
+                &json!({"message": {"tool_calls": [{"id":"native-call", "function": {"name":tool_name, "arguments":expected}}]}}),
+                &mut String::new(), &mut String::new(), &mut calls,
+            );
+            assert_eq!(serde_json::from_str::<Value>(&calls[&0].arguments).unwrap(), expected);
+            assert_eq!(serde_json::from_str::<Value>(&update.tool_calls[0].arguments_delta).unwrap(), expected);
+        }
+        let mut calls = BTreeMap::new();
+        for fragment in [r#"{"script":"import rhino"#, r#"scriptsyntax as rs\nrs.AddBox(points)"}"#] {
+            merge_openai_choice_data(
+                &json!({"delta": {"tool_calls": [{"index":0, "function": {"arguments":fragment}}]}}),
+                &mut String::new(), &mut String::new(), &mut calls,
+            );
+        }
+        assert_eq!(serde_json::from_str::<Value>(&calls[&0].arguments).unwrap()["script"], script);
     }
 
     #[test]

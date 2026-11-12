@@ -1,11 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <RhinoMajorVersion Condition="'$(RhinoMajorVersion)' == ''">9</RhinoMajorVersion>
+    <TargetFramework Condition="'$(RhinoMajorVersion)' == '8'">net7.0-windows</TargetFramework>
+    <TargetFramework Condition="'$(RhinoMajorVersion)' != '8'">net8.0-windows</TargetFramework>
+    <LangVersion>12</LangVersion>
+    <DefineConstants Condition="'$(RhinoMajorVersion)' == '8'">$(DefineConstants);RHINO8</DefineConstants>
     <UseWindowsForms>true</UseWindowsForms>
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <AssemblyName>InspirationDrawer.Rhino</AssemblyName>
     <TargetExt>.rhp</TargetExt>
-    <Version>0.1.0-beta.1</Version>
+    <Version>0.1.0-beta.32</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RhinoSystemDir Condition="'$(RhinoSystemDir)' == ''">D:/Program Files/Rhino 9/System</RhinoSystemDir>
@@ -14,5 +18,8 @@
     <Reference Include="RhinoCommon"><HintPath>$(RhinoSystemDir)/RhinoCommon.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Eto"><HintPath>$(RhinoSystemDir)/Eto.dll</HintPath><Private>false</Private></Reference>
     <EmbeddedResource Include="Panel/*" />
+    <Content Include="InspirationDrawer.Rhino.rui" CopyToOutputDirectory="PreserveNewest" TargetPath="InspirationDrawer.Rhino.rui" />
+    <Content Include="ToolbarAssets/InspirationDrawer.svg" CopyToOutputDirectory="PreserveNewest" TargetPath="InspirationDrawer.Rhino.svg" />
+    <EmbeddedResource Include="InspirationDrawer.Rhino.rui" LogicalName="InspirationDrawer.Rhino.Toolbar.rui" />
   </ItemGroup>
 </Project>

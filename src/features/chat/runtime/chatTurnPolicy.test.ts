@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { CHAT_TOOL_DEFINITIONS, getChatToolDefinitions } from '../tools/chatToolDefinitions';
 import {
   buildWebSearchTurnInstruction,
+  buildRhinoTurnInstruction,
+  chatToolRoundLimit,
+  MAX_RHINO_TOOL_ROUNDS,
   canAcceptWebSearchQuery,
   canRunChatToolRound,
   classifyChatProviderOutcome,
@@ -87,6 +90,20 @@ describe('ordinary Chat turn policy', () => {
     expect(MAX_TOOL_ROUNDS).toBe(8);
     expect(canRunChatToolRound(7)).toBe(true);
     expect(canRunChatToolRound(8)).toBe(false);
+  });
+
+  it('allows bounded longer Rhino workflows without changing the desktop limit', () => {
+    expect(chatToolRoundLimit()).toBe(8);
+    expect(chatToolRoundLimit('rhino')).toBe(24);
+    expect(canRunChatToolRound(8, 'rhino')).toBe(true);
+    expect(canRunChatToolRound(MAX_RHINO_TOOL_ROUNDS - 1, 'rhino')).toBe(true);
+    expect(canRunChatToolRound(MAX_RHINO_TOOL_ROUNDS, 'rhino')).toBe(false);
+    const instruction = buildRhinoTurnInstruction();
+    expect(instruction).toContain('only open Grasshopper');
+    expect(instruction).toContain('solve, and verify');
+    expect(instruction).toContain('Do not repeat successful writes');
+    expect(instruction).toContain('at most one targeted correction');
+    expect(instruction).toContain('do not issue a long series of speculative graph edits');
   });
 
   it('removes web_search at the limit and requires synthesis from gathered sources', () => {

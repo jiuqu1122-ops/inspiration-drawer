@@ -2,6 +2,7 @@ import { normalizeVisibleChatText } from './chatVisibleText';
 
 export const MAX_WEB_SEARCH_QUERIES_PER_TURN = 4;
 export const MAX_TOOL_ROUNDS = 8;
+export const MAX_RHINO_TOOL_ROUNDS = 24;
 export const MAX_EMPTY_RESPONSE_RECOVERIES = 1;
 
 export const EMPTY_CHAT_RESULT_ERROR = '模型未返回有效结果，请重试。';
@@ -27,7 +28,20 @@ export const classifyChatProviderOutcome = (input: {
     : 'error-empty';
 };
 
-export const canRunChatToolRound = (depth: number) => depth < MAX_TOOL_ROUNDS;
+export const chatToolRoundLimit = (executionSource: 'desktop' | 'rhino' = 'desktop') => (
+  executionSource === 'rhino' ? MAX_RHINO_TOOL_ROUNDS : MAX_TOOL_ROUNDS
+);
+export const canRunChatToolRound = (depth: number, executionSource: 'desktop' | 'rhino' = 'desktop') => depth < chatToolRoundLimit(executionSource);
+
+export const buildRhinoTurnInstruction = () => [
+  'Rhino/Grasshopper is a multi-step tool workflow. A successful native tool call is a completed STEP, not necessarily the completed user task.',
+  'g1_start/g2_start only open Grasshopper. Searches and component descriptions are preparation. For a modeling request, continue with the available native tools to build the requested geometry/graph, wire inputs, solve, and verify the actual result before reporting completion.',
+  'For an explicit Grasshopper request, create a real Grasshopper graph using the supplied g1_/g2_ schemas. Prefer apply_graph/connect_many to batch known components and wires. Never use run_python to enumerate Grasshopper assemblies with Assembly.GetTypes(); that reflection path can fail on the Rhino host System.Collections.Immutable dependency set. Use g1_/g2_ search, describe, get_canvas_graph and diagnostics instead. For a perforated planar outline, validate every outer/inner curve as individually closed and planar before region/extrusion operations. After a solve reports an invalid/open loop, make at most one targeted correction using the exact component error; do not issue a long series of speculative graph edits. Inspect the solved graph; do not substitute standalone Rhino geometry or stop after startup.',
+  'For ordinary Rhino 9 geometry code, prefer the discovered Python tool over C#: its C# script host can fail to load System.Collections.Immutable 9 before execution. If that exact load failure occurs and a read-only snapshot proves no geometry changed, translate the intended operation to Python once; never replay the C# write.',
+  'Use only registered tools and real component IDs returned by discovery. Do not invent tools, component names, or output IDs.',
+  'Do not clear an existing graph unless the user explicitly requested clearing it. Do not repeat successful writes merely to obtain a closing sentence. Continue from existing tool receipts and use read-only inspection to verify results.',
+  'If any required step fails or the result cannot be verified, report what completed and what remains incomplete. Never claim that opening Grasshopper created the requested graph.',
+].join('\n');
 
 export const normalizeWebSearchQuery = (argumentsJson: string): string | null => {
   try {

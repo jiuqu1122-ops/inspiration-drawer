@@ -20,6 +20,7 @@ mod recharge;
 mod reference_upload;
 mod renderer_diagnostics;
 mod rhino_beta;
+mod rhino_installer;
 use renderer_diagnostics::{window_action, WindowAction};
 mod services;
 mod update_cache;
@@ -8475,6 +8476,7 @@ fn build_ai_image_edit_form(
     output_format: Option<&str>,
     background: Option<&str>,
     images: &[String],
+    mask_image: Option<&str>,
     async_task: Option<bool>,
     stream: Option<bool>,
     repeat_image_field: bool,
@@ -8530,6 +8532,29 @@ fn build_ai_image_edit_form(
         form = form.part(field_name, part);
     }
 
+    if let Some(mask_source) = mask_image.filter(|value| !value.trim().is_empty()) {
+        let (bytes, mime) = image_edit_source_to_bytes(client, mask_source)?;
+        if mime != "image/png" {
+            return Err("Mask 文件必须是 PNG".to_string());
+        }
+        let mask = screenshots::image::load_from_memory(&bytes)
+            .map_err(|e| format!("Mask PNG 无法解码：{}", e))?;
+        let (reference_bytes, _) = image_edit_source_to_bytes(client, &images[0])?;
+        let reference = screenshots::image::load_from_memory(&reference_bytes)
+            .map_err(|e| format!("基础图片无法解码：{}", e))?;
+        if (mask.width(), mask.height()) != (reference.width(), reference.height()) {
+            return Err(format!(
+                "Mask 尺寸必须与基础图片相同（Mask {}x{}，基础图 {}x{}）",
+                mask.width(), mask.height(), reference.width(), reference.height()
+            ));
+        }
+        let part = Part::bytes(bytes)
+            .file_name("mask.png")
+            .mime_str("image/png")
+            .map_err(|e| format!("Mask MIME 设置失败：{}", e))?;
+        form = form.part("mask", part);
+    }
+
     Ok(form)
 }
 
@@ -8549,6 +8574,7 @@ fn http_post_image_edit_with_headers(
     output_format: Option<&str>,
     background: Option<&str>,
     images: &[String],
+    mask_image: Option<&str>,
     async_task: Option<bool>,
     stream: Option<bool>,
     repeat_image_field: bool,
@@ -8583,6 +8609,7 @@ fn http_post_image_edit_with_headers(
                 output_format,
                 background,
                 images,
+                mask_image,
                 async_task,
                 stream,
                 repeat_image_field,
@@ -8629,6 +8656,7 @@ fn http_post_image_edit_with_headers(
                         output_format,
                         background,
                         images,
+                        mask_image,
                         async_task,
                         stream,
                         repeat_image_field,
@@ -8884,6 +8912,7 @@ async fn post_ai_image_edit(
     output_format: Option<String>,
     background: Option<String>,
     images: Vec<String>,
+    mask_image: Option<String>,
     async_task: Option<bool>,
     stream: Option<bool>,
     repeat_image_field: Option<bool>,
@@ -8949,6 +8978,7 @@ async fn post_ai_image_edit(
             output_format.as_deref(),
             background.as_deref(),
             &images,
+            mask_image.as_deref(),
             async_task,
             stream,
             repeat_image_field.unwrap_or(false),
@@ -19259,7 +19289,10 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
+            rhino_installer::rhino_plugin_status,
+            rhino_installer::install_rhino_plugin,
             rhino_beta::rhino_beta_get_connection,
+            rhino_beta::rhino_beta_get_connections,
             rhino_beta::rhino_beta_request,
             renderer_diagnostics::record_renderer_diagnostic,
             renderer_diagnostics::diagnostic_minimize_window,

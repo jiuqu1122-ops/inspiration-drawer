@@ -18,12 +18,17 @@ export const resolveChatReferenceArguments = (input: {
   const requestedAttachmentIds = Array.isArray(args.attachmentIds)
     ? args.attachmentIds.map(String).map(value => value.trim()).filter(Boolean)
     : [];
-  const currentSources = input.currentImageAttachments.map(attachment => attachment.path.trim()).filter(Boolean);
+  const maskAttachmentId = String(args.maskAttachmentId || '').trim();
+  const referenceAttachments = input.currentImageAttachments.filter(attachment => {
+    if (attachment.id === maskAttachmentId) return false;
+    try { return JSON.parse(attachment.metadataJson || '{}').role !== 'mask'; } catch { return true; }
+  });
+  const currentSources = referenceAttachments.map(attachment => attachment.path.trim()).filter(Boolean);
 
   if (!hasUsableReferenceImages) {
     if (requestedAttachmentIds.length > 0) {
       const selectedIds = new Set(requestedAttachmentIds);
-      args.referenceImages = input.currentImageAttachments
+      args.referenceImages = referenceAttachments
         .filter(attachment => selectedIds.has(attachment.id))
         .map(attachment => attachment.path.trim())
         .filter(Boolean);

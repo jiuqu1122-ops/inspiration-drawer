@@ -325,6 +325,13 @@ describe('Chat PPTX storyboard and composition context', () => {
     ]) expect(combinedContextText).toContain(rule);
   });
 
+  it('uses semantic model judgment for image requests instead of a keyword gate', () => {
+    expect(GENERAL_CHAT_SYSTEM_PROMPT).toContain('semantic reading of the latest user request');
+    expect(GENERAL_CHAT_SYSTEM_PROMPT).toContain('Do not require fixed trigger words');
+    expect(GENERAL_CHAT_SYSTEM_PROMPT).toContain('the user genuinely wants a new visual result');
+    expect(GENERAL_CHAT_SYSTEM_PROMPT).toContain('Do not call image tools for analysis, advice, discussion');
+  });
+
   it('allows model-selected illustrations without deck-wide limits and labels concept art safely', () => {
     for (const rule of [
       '不必每份都生图', '优先复用用户附件',

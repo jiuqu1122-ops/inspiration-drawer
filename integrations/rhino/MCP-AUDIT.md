@@ -1,10 +1,12 @@
 # Rhino Beta MCP 能力核查
+## 2026-11-06 source status
 
-核查日期：2026-11-05。范围：当前 Beta 源码、正在运行的插件 MCP 服务、Beta 本地聊天数据库。仅执行本机只读查询，未触发新的聊天模型或付费生图请求。
+beta.6 adds native MCP forwarding. It reads listener announcements from the current Rhino process, then calls `tools/list` and `tools/call` only after a unique bound-document fingerprint match. The match includes current selection, the complete object ID list, object/layer counts, and camera; more than 10000 objects or duplicate fingerprints disable native tools.
 
+Native read and write calls execute directly in Rhino plugin Chat after the user sends a request. They are forwarded only to the official RhinoAI MCP listener matched to the bound document. The bridge compiles and transport tests cover request routing; real GUI modeling execution remains a separate manual verification requirement.
 ## 结论
 
-Chat 具有调用 Rhino 工具的通路，当前实际服务提供 4 个工具；它是灵感抽屉插件自建的 MCP 服务，并未连接 Rhino 官方 AI router 的完整 MCP 工具集。当前版本尚未实现按图层/材质分件的渲染数据导出。
+Chat 具有调用 Rhino 工具的通路；beta.1 运行实例提供 4 个工具。当前源码 beta.2 增加第 5 个只读工具 `rhino_list_parts`，并把分件清单附加到 Chat 提示上下文。它是灵感抽屉插件自建的 MCP 服务，并未连接 Rhino 官方 AI router 的完整 MCP 工具集。分件清单不包含可见区域图或遮罩，也不能单独约束图像编辑。
 
 ## 实际会话证据
 
@@ -24,7 +26,12 @@ tools/list 返回：
 | rhino_get_context | 文档、相机、选择 | 是，需从 Rhino 入口发送并建立会话绑定 |
 | rhino_list_objects | 对象 ID、名称、图层、类型、隐藏状态 | 是 |
 | rhino_list_layers | 图层 ID、完整路径、可见性、显示颜色 | 是 |
+| rhino_list_parts | 当前选择对象、块实例展开分件、简单材质/来源、可用面材质和变换 | 是（beta.2 源码；尚未 Rhino GUI 验证） |
 | rhino_capture_viewport | 当前视口 PNG | 仅桥接预处理使用，未作为模型工具公开 |
+| rhino_list_native_tools | Enumerate matched official native tools | Beta bridge only |
+| rhino_call_native_tool | Forward one matched official tool | Chat maps it to `rhino_native_<name>` and executes it directly in Rhino plugin mode |
+
+当前 beta.2 源码还声明 `rhino_list_parts`，读取当前 Rhino 选择并用 `InstanceObject.Explode` 展开块内分件，包含稳定路径 ID、piece 属性、简单材质与来源、Rhino 返回变换以及估算包围盒；父级继承不可确认时会标为未解析。原生面板独立低频读取分件端点。beta.2 的相关行为只有源码/协议测试和 RhinoCommon 编译验证，尚无 Rhino 9 GUI 运行验证。
 
 对正在运行的文档分别实测前三个 tools/call，全部成功。对象返回字段为 id/name/layer/type/hidden；图层字段为 id/path/visible/color。没有对象的实际渲染材质、纹理、材质继承关系，也没有部件对应的屏幕区域或遮罩。
 

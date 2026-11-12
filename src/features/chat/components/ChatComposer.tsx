@@ -46,6 +46,10 @@ export function ChatComposer({
   imageQuality,
   imageQualityOptions,
   onImageQualityChange,
+  imageMaskMode = 'off',
+  onImageMaskModeChange,
+  imageMaskAttachmentId = '',
+  onImageMaskAttachmentChange,
   imageResolution,
   imageResolutionOptions,
   onImageResolutionChange,
@@ -75,6 +79,10 @@ export function ChatComposer({
   imageQuality?: string;
   imageQualityOptions?: ChatImageModelOption[];
   onImageQualityChange?: (quality: string) => void;
+  imageMaskMode?: 'off' | 'on';
+  onImageMaskModeChange?: (value: 'off' | 'on') => void;
+  imageMaskAttachmentId?: string;
+  onImageMaskAttachmentChange?: (id: string) => void;
   imageResolution: string;
   imageResolutionOptions: ChatImageModelOption[];
   onImageResolutionChange: (value: string) => void;
@@ -168,18 +176,36 @@ export function ChatComposer({
           <ChatImageSettings
             model={imageModel}
             modelOptions={imageModelOptions}
-            onModelChange={onImageModelChange}
+            onModelChange={value => {
+              onImageModelChange(value);
+              if (imageModelOptions.find(option => option.value === value)?.supportsMask !== true) onImageMaskModeChange?.('off');
+            }}
             aspectRatio={imageAspectRatio}
             aspectRatioOptions={imageAspectRatioOptions}
             onAspectRatioChange={onImageAspectRatioChange}
             quality={imageQuality}
             qualityOptions={imageQualityOptions}
             onQualityChange={onImageQualityChange}
+            maskMode={imageMaskMode}
+            maskSupported={imageModelOptions.find(option => option.value === imageModel)?.supportsMask === true}
+            onMaskModeChange={onImageMaskModeChange}
             resolution={imageResolution}
             resolutionOptions={imageResolutionOptions}
             onResolutionChange={onImageResolutionChange}
             busy={busy}
           />
+          {imageMaskMode === 'on' && (
+            <label className="chat-image-mask-attachment">
+              <span>Mask 图</span>
+              <select value={imageMaskAttachmentId} onChange={event => onImageMaskAttachmentChange?.(event.target.value)} disabled={busy}>
+                <option value="">选择本轮附件中的 Mask 图</option>
+                {attachments.filter(item => item.type === 'image' && (item.mimeType === 'image/png' || /\.png(?:$|[?#])/i.test(item.path))).map(item => (
+                  <option key={item.id} value={item.id}>{item.path.split(/[\\/]/).pop() || item.id}</option>
+                ))}
+              </select>
+              <small>仅显示 PNG；必须与基础图同尺寸。Mask 黑白/透明区域语义由上游模型线路决定。</small>
+            </label>
+          )}
         </div>
       )}
       <div className="chat-composer__footer">

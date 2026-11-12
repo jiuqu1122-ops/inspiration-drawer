@@ -60,6 +60,22 @@ describe('Chat reference argument resolution', () => {
     }).referenceImages).toEqual(['C:\\source-2.png']);
   });
 
+  it('keeps the selected mask attachment separate from ordinary reference images', () => {
+    expect(resolveChatReferenceArguments({
+      toolName: 'generate_image',
+      args: { prompt: 'edit', maskAttachmentId: 'attachment-2' },
+      currentImageAttachments: attachments,
+    }).referenceImages).toEqual(['C:\\source-1.png', 'C:\\source-3.png']);
+  });
+
+  it('does not include the mask attachment when explicit reference attachment ids include it', () => {
+    expect(resolveChatReferenceArguments({
+      toolName: 'generate_image',
+      args: { prompt: 'edit', maskAttachmentId: 'attachment-2', attachmentIds: ['attachment-1', 'attachment-2'] },
+      currentImageAttachments: attachments,
+    }).referenceImages).toEqual(['C:\\source-1.png']);
+  });
+
   it('does not inject references into the batch tool', () => {
     expect(resolveChatReferenceArguments({
       toolName: 'batch_image_operation',

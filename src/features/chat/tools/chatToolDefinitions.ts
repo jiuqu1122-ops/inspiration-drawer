@@ -1,4 +1,4 @@
-import { isShortVisualFollowup, isVisualRevisionFollowup } from '../context/chatVisualIntent';
+import { defersVisualGeneration, isImagePromptTextRequest, isShortVisualFollowup, isVisualCreationIntent, isVisualEditFollowup, isVisualRevisionFollowup } from '../context/chatVisualIntent';
 import type { ChatMessage } from '../model/chatTypes';
 import { MAX_WEB_SEARCH_QUERIES_PER_TURN } from '../runtime/chatTurnPolicy';
 import { canGenerateChatPresentationImages, CHAT_PRESENTATION_SCHEMA, isChatFileDeliveryRequest, isChatPresentationRequest } from '../presentations/chatPresentation';
@@ -18,9 +18,9 @@ export const CHAT_TOOL_DEFINITIONS: ChatToolDefinition[] = [
   { type: 'function', function: { name: 'create_agent', description: '当用户用普通对话明确要求新建可复用的 Chat 智能体、技能、skill、skills（也兼容 skllis）时调用，真实保存到智能体列表。根据用户需求生成具体的名称、适用场景、触发关键词和可执行的 Markdown 技能指令。指令应写清角色、步骤、输出格式及成功标准；涉及软件操作时仅使用灵感抽屉 Chat 已提供的画布、素材、图片、视频、工作流和文件工具，不要编造脚本、插件或不存在的能力。默认只创建不启用；用户明确要求立即使用时才传 activate=true。', parameters: objectSchema({ name: { type: 'string', maxLength: 80, description: '简洁的智能体名称，不超过 80 字。' }, description: { type: 'string', maxLength: 240, description: '智能体适用场景和职责，不超过 240 字。' }, triggers: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'string' }, description: '3 到 8 个具体任务关键词或短语，用于在 Chat 中推荐启用。' }, instructions: { type: 'string', maxLength: 16000, description: '完整的 Markdown 技能指令：角色、工作步骤、输出要求、边界和画布工具使用方式；仅写当前客户端支持的能力。' }, activate: { type: ['boolean', 'null'], description: '仅当用户明确要求创建后立即使用时为 true，否则为 false 或 null。' } }, ['name', 'description', 'triggers', 'instructions']) } },
   { type: 'function', function: { name: 'get_canvas_selection', description: '读取当前画布选中项的精简信息。仅在用户提到当前画布、当前节点或选中内容时使用。', parameters: objectSchema({}) } },
   { type: 'function', function: { name: 'search_assets', description: '在本地素材库中搜索少量相关素材。', parameters: objectSchema({ query: { type: 'string' }, limit: { type: ['number', 'null'], minimum: 1, maximum: 8 }, filter: { type: ['object', 'null'], additionalProperties: true } }, ['query']) } },
-  { type: 'function', function: { name: 'generate_image', description: '使用灵感抽屉现有生图系统执行一个图片任务，结果显示在聊天中并自动加入画布。count>1 只表示同一提示词的随机候选，不得用它承载多个独立任务；如果用户明确要求把多个方向放进同一张对比图、拼版或方案板，也使用本工具并固定 count=1，在 prompt 中描述同图布局。当前附件默认自动作为共同参考；只有用户明确说不要使用附件时才传 useAttachedImages=false。只参考部分当前附件时传 attachmentIds，不要猜测本地路径。模型、比例和清晰度由图片设置控制；只有用户在对话里明确指定不同值时才填写对应参数。自动模式下省略这些参数。', parameters: objectSchema({ prompt: { type: 'string' }, model: { type: ['string', 'null'], description: '仅当用户在对话里明确指定模型时填写，否则为 null。' }, aspectRatio: { type: ['string', 'null'], description: '仅当用户明确指定比例时填写，例如 16:9；自动模式或手动设置默认值时省略。' }, resolution: { type: ['string', 'null'], description: '仅当用户明确指定清晰度或分辨率时填写；自动模式或手动设置默认值时省略。' }, referenceImages: { type: 'array', items: { type: 'string' } }, attachmentIds: { type: ['array', 'null'], items: { type: 'string' } }, useAttachedImages: { type: ['boolean', 'null'], description: '仅当用户明确要求忽略、不参考当前或历史附件时传 false；其他情况为 null。' }, count: { type: ['number', 'null'], minimum: 1, maximum: 4 } }, ['prompt']) } },
-  { type: 'function', function: { name: 'generate_image_variants', description: '当用户要求同一个参考对象产生多个语义不同的设计方向、方案、版本、风格或概念，并且每个方向要独立出图时调用。适用于任何视觉领域，不限于产品或 CMF。每个 variants 项会成为一个独立并行任务且固定只生成一张图；禁止把所有方向合进一个 prompt，也禁止用 generate_image 的 count 代替。如果用户明确要求一张图同时展示多个方案、并排比较或做成方案板，不得调用本工具，应使用 generate_image 且 count=1。当前或历史续接图片会自动作为所有任务的共同参考。', parameters: objectSchema({ sharedRequirements: { type: 'string', description: '所有独立方案共同遵守的要求，包括必须保持的主体身份、结构、比例、视角、构图或其他连续性约束。' }, variants: { type: 'array', minItems: 2, maxItems: 4, items: { type: 'object', additionalProperties: false, properties: { name: { type: 'string', description: '用户可识别的方案名称。' }, prompt: { type: 'string', description: '只描述当前这一个方案的完整、可执行生图指令，不得混入其他方案。' } }, required: ['name', 'prompt'] } }, model: { type: ['string', 'null'], description: '仅当用户明确指定模型时填写；自动模式或手动设置默认值时省略。' }, aspectRatio: { type: ['string', 'null'], description: '仅当用户明确指定比例时填写，否则为 null。' }, resolution: { type: ['string', 'null'], description: '仅当用户明确指定清晰度或分辨率时填写；自动模式或手动设置默认值时省略。' }, referenceImages: { type: 'array', items: { type: 'string' } }, attachmentIds: { type: ['array', 'null'], items: { type: 'string' } }, useAttachedImages: { type: ['boolean', 'null'], description: '仅当用户明确要求忽略、不参考当前或历史附件时传 false；其他情况为 null。' } }, ['sharedRequirements', 'variants']) } },
-  { type: 'function', function: { name: 'edit_image', description: '继续编辑本轮或此前聊天生成的图片。只有用户明确说不要使用附件时才传 useAttachedImages=false。只编辑部分当前附件时传 attachmentIds，不要猜测本地路径。模型、比例和清晰度由图片设置控制；只有用户在对话里明确指定不同值时才填写对应参数。自动模式下省略这些参数。', parameters: objectSchema({ prompt: { type: 'string' }, sourceImageId: { type: ['string', 'null'] }, referenceImages: { type: 'array', items: { type: 'string' } }, attachmentIds: { type: ['array', 'null'], items: { type: 'string' } }, useAttachedImages: { type: ['boolean', 'null'], description: '仅当用户明确要求忽略、不参考当前或历史附件时传 false；其他情况为 null。' }, model: { type: ['string', 'null'], description: '仅当用户明确指定模型时填写；自动模式或手动设置默认值时省略。' }, aspectRatio: { type: ['string', 'null'], description: '仅当用户明确指定比例时填写，否则为 null。' }, resolution: { type: ['string', 'null'], description: '仅当用户明确指定清晰度或分辨率时填写；自动模式或手动设置默认值时省略。' } }, ['prompt']) } },
+  { type: 'function', function: { name: 'generate_image', description: 'Only call when semantic reading of the latest request and relevant conversation context indicates the user wants a new image; do not require fixed output keywords or subject nouns, and do not use this for analysis, advice, requests to wait, or prompt-writing. Writing, drafting, translating, or improving an image-generation prompt is a text task; do not render the described image unless the user separately asks for image output. 使用灵感抽屉现有生图系统执行一个图片任务，结果显示在聊天中并自动加入画布。count>1 只表示同一提示词的随机候选，不得用它承载多个独立任务；如果用户明确要求把多个方向放进同一张对比图、拼版或方案板，也使用本工具并固定 count=1，在 prompt 中描述同图布局。当前附件默认自动作为共同参考；只有用户明确说不要使用附件时才传 useAttachedImages=false。只参考部分当前附件时传 attachmentIds，不要猜测本地路径。模型、比例和清晰度由图片设置控制；只有用户在对话里明确指定不同值时才填写对应参数。自动模式下省略这些参数。', parameters: objectSchema({ prompt: { type: 'string' }, model: { type: ['string', 'null'], description: '仅当用户在对话里明确指定模型时填写，否则为 null。' }, aspectRatio: { type: ['string', 'null'], description: '仅当用户明确指定比例时填写，例如 16:9；自动模式或手动设置默认值时省略。' }, resolution: { type: ['string', 'null'], description: '仅当用户明确指定清晰度或分辨率时填写；自动模式或手动设置默认值时省略。' }, referenceImages: { type: 'array', items: { type: 'string' } }, attachmentIds: { type: ['array', 'null'], items: { type: 'string' } }, useAttachedImages: { type: ['boolean', 'null'], description: '仅当用户明确要求忽略、不参考当前或历史附件时传 false；其他情况为 null。' }, count: { type: ['number', 'null'], minimum: 1, maximum: 4 } }, ['prompt']) } },
+  { type: 'function', function: { name: 'generate_image_variants', description: 'Only call when semantic reading of the request indicates the user wants multiple separate visual results; do not infer image intent from a discussion of options alone. 当用户要求同一个参考对象产生多个语义不同的设计方向、方案、版本、风格或概念，并且每个方向要独立出图时调用。适用于任何视觉领域，不限于产品或 CMF。每个 variants 项会成为一个独立并行任务且固定只生成一张图；禁止把所有方向合进一个 prompt，也禁止用 generate_image 的 count 代替。如果用户明确要求一张图同时展示多个方案、并排比较或做成方案板，不得调用本工具，应使用 generate_image 且 count=1。当前或历史续接图片会自动作为所有任务的共同参考。', parameters: objectSchema({ sharedRequirements: { type: 'string', description: '所有独立方案共同遵守的要求，包括必须保持的主体身份、结构、比例、视角、构图或其他连续性约束。' }, variants: { type: 'array', minItems: 2, maxItems: 4, items: { type: 'object', additionalProperties: false, properties: { name: { type: 'string', description: '用户可识别的方案名称。' }, prompt: { type: 'string', description: '只描述当前这一个方案的完整、可执行生图指令，不得混入其他方案。' } }, required: ['name', 'prompt'] } }, model: { type: ['string', 'null'], description: '仅当用户明确指定模型时填写；自动模式或手动设置默认值时省略。' }, aspectRatio: { type: ['string', 'null'], description: '仅当用户明确指定比例时填写，否则为 null。' }, resolution: { type: ['string', 'null'], description: '仅当用户明确指定清晰度或分辨率时填写；自动模式或手动设置默认值时省略。' }, referenceImages: { type: 'array', items: { type: 'string' } }, attachmentIds: { type: ['array', 'null'], items: { type: 'string' } }, useAttachedImages: { type: ['boolean', 'null'], description: '仅当用户明确要求忽略、不参考当前或历史附件时传 false；其他情况为 null。' } }, ['sharedRequirements', 'variants']) } },
+  { type: 'function', function: { name: 'edit_image', description: 'Only call when the user actually wants a relevant existing image changed; infer this from the request and context rather than fixed keywords, and do not use it for analysis or advice alone. 继续编辑本轮或此前聊天生成的图片。只有用户明确说不要使用附件时才传 useAttachedImages=false。只编辑部分当前附件时传 attachmentIds，不要猜测本地路径。模型、比例和清晰度由图片设置控制；只有用户在对话里明确指定不同值时才填写对应参数。自动模式下省略这些参数。', parameters: objectSchema({ prompt: { type: 'string' }, sourceImageId: { type: ['string', 'null'] }, referenceImages: { type: 'array', items: { type: 'string' } }, attachmentIds: { type: ['array', 'null'], items: { type: 'string' } }, useAttachedImages: { type: ['boolean', 'null'], description: '仅当用户明确要求忽略、不参考当前或历史附件时传 false；其他情况为 null。' }, model: { type: ['string', 'null'], description: '仅当用户明确指定模型时填写；自动模式或手动设置默认值时省略。' }, aspectRatio: { type: ['string', 'null'], description: '仅当用户明确指定比例时填写，否则为 null。' }, resolution: { type: ['string', 'null'], description: '仅当用户明确指定清晰度或分辨率时填写；自动模式或手动设置默认值时省略。' } }, ['prompt']) } },
   { type: 'function', function: { name: 'batch_image_operation', description: '仅当正常对话中确认用户希望对多张图片分别执行同一种图像任务时调用。任务可以是排版、换背景、增加或移除元素、修复增强、风格转换、改色、扩图或其他编辑，不得预设任务类型。该调用先形成与用户目标匹配的具体方案并等待自然语言确认，不会立即执行。必须逐张查看图片；不要只复述原话或输出泛化摘要。每张图片会成为相互隔离的并发任务，不会合并成一张参考图。', parameters: objectSchema({ taskUnderstanding: { type: 'string', description: '结合对话说明真正的任务目标、任务类型和成功标准；不要默认写成排版任务。' }, sourceAssessment: { type: 'string', description: '按“图片 1、图片 2…”逐张说明看到了什么、当前差异、处理重点和风险；使用 Markdown 列表。' }, executionPlan: { type: 'string', description: '说明后续工具会对每张图执行哪些步骤、先后关系以及如何根据不同原图自适应。' }, specificChanges: { type: 'string', description: '写清所有图片共同需要增加、移除、替换、调整或修复的内容及目标效果。只有任务涉及排版时才写版式、标题、文案、网格与字体；其他任务写对应的背景、颜色、元素、光影、边缘、清晰度等具体处理。' }, perImageInstructions: { type: 'array', minItems: 1, description: '为当前每张附件各写一条可直接执行的专属指令，数量必须与图片数一致，imageIndex 从 1 开始且不得重复。排版任务要在这里写明该页的实际标题、文案和位置；其他任务写明该图特有的处理区域、难点和目标。', items: { type: 'object', additionalProperties: false, properties: { imageIndex: { type: 'number', minimum: 1 }, instruction: { type: 'string' } }, required: ['imageIndex', 'instruction'] } }, preservationRules: { type: 'string', description: '明确必须保留的主体身份、造型、构图、材质或其他信息，以及禁止出现的变化。' }, deliveryPlan: { type: 'string', description: '只说明独立处理数量、结果顺序和自动编组方式。不要规划或推荐模型、宽高比、分辨率、清晰度。' }, analysisSummary: { type: ['string', 'null'], description: '可选补充说明，不要用它替代上述具体方案字段。' }, instruction: { type: 'string', description: '概括用户本次真实任务。运行时会把完整结构化方案自动编译进最终提示词，因此这里不得套用固定模板。' }, mode: { type: 'string', enum: ['one_per_image'] }, attachmentIds: { type: ['array', 'null'], items: { type: 'string' }, description: '只处理指定附件时填写稳定 attachmentId；省略或 null 时使用当前消息的全部图片。' }, outputCountPerImage: { type: ['number', 'null'], minimum: 1, maximum: 4 }, model: { type: ['string', 'null'], description: '仅当用户在对话里明确指定模型时填写，否则为 null。' }, aspectRatio: { type: ['string', 'null'], description: '仅当用户明确指定比例时填写，否则为 null，运行时将使用图片设置。' }, resolution: { type: ['string', 'null'], description: '仅当用户明确指定清晰度或分辨率时填写，否则为 null，运行时将使用图片设置。' } }, ['taskUnderstanding', 'sourceAssessment', 'executionPlan', 'specificChanges', 'perImageInstructions', 'preservationRules', 'deliveryPlan', 'instruction', 'mode']) } },
   { type: 'function', function: { name: 'generate_video', description: '使用灵感抽屉现有视频生成系统生成新视频，结果显示在聊天中。不要把已有视频补帧或增强请求路由到这里。引用能力和数量由所选模型的现有能力校验决定；不要猜测本地文件路径。', parameters: objectSchema({ prompt: { type: 'string' }, model: { type: ['string', 'null'] }, aspectRatio: { type: ['string', 'null'] }, resolution: { type: ['string', 'null'] }, referenceImages: { type: 'array', items: { type: 'string' } }, referenceVideos: { type: 'array', items: { type: 'string' } }, referenceAudios: { type: 'array', items: { type: 'string' } }, inputMode: { type: ['string', 'null'], enum: ['REF', 'FLF', null] }, duration: { type: ['number', 'null'] }, count: { type: ['number', 'null'], minimum: 1, maximum: 4 } }, ['prompt']) } },
   { type: 'function', function: { name: 'interpolate_video', description: '对一个已有视频执行补帧。优先使用用户明确指定的视频；否则使用当前画布选中的单个视频或最近明确引用的视频。', parameters: objectSchema({ inputId: { type: ['string', 'null'], description: '画布视频节点 ID；不要填写本地文件路径。' }, mediaId: { type: ['string', 'null'], description: 'Chat 已生成视频的媒体 ID；不要填写本地文件路径。' } }) } },
@@ -105,8 +105,10 @@ const WEB_SEARCH_INTENT = /(联网|上网|网上|网络搜索|网页搜索|搜�
 
 export const shouldExposeWebSearch = (text: string) => WEB_SEARCH_INTENT.test(text);
 
-export const shouldExposeBatchImageOperation = (text: string, imageAttachmentCount: number) => (
+export const shouldExposeBatchImageOperation = (text: string, imageAttachmentCount: number, currentUserText = text) => (
   !isChatPresentationRequest(text)
+  && !isImagePromptTextRequest(currentUserText)
+  && !defersVisualGeneration(currentUserText)
   && imageAttachmentCount >= 2
   && (
     BATCH_IMAGE_INTENT.test(text)
@@ -124,22 +126,26 @@ export const getChatToolDefinitions = (
   imageAttachmentCount = 0,
   skillEnabled = false,
   agentCreationFollowup = false,
+  currentUserText = text,
+  _imageContextAvailable = false,
 ) => {
   const presentationRequested = isChatPresentationRequest(text);
   const exposePresentationImageTools = canGenerateChatPresentationImages(text);
-  const exposeBatch = !presentationRequested && shouldExposeBatchImageOperation(text, imageAttachmentCount);
-  const exposeAttachedImageTools = !presentationRequested && imageAttachmentCount > 0 && (
-    ATTACHED_IMAGE_OPERATION_INTENT.test(text)
-    || isShortVisualFollowup(text)
-    || isVisualRevisionFollowup(text)
-  );
-  const exposeLocalTools = !presentationRequested && (
+  const exposeBatch = !presentationRequested && shouldExposeBatchImageOperation(text, imageAttachmentCount, currentUserText);
+  const exposeAttachedImageTools = !presentationRequested && imageAttachmentCount > 0 && !defersVisualGeneration(currentUserText);
+  const exposeLocalTools = !presentationRequested && !defersVisualGeneration(currentUserText) && (
     shouldExposeChatTools(text, hasRecentGeneratedMedia)
     || shouldUseIndependentImageVariants(text)
     || exposeBatch
     || exposeAttachedImageTools
     || skillEnabled
   );
+  // These are capabilities, not intent triggers. Expose them to the chat model
+  // so it can judge the request from language and conversation context; tool
+  // visibility alone never executes a paid image task. Presentation requests
+  // keep their separate, explicitly optional illustration policy below.
+  // A prompt is a text artifact, not an implicit request to render its contents.
+  const exposeImageTools = !presentationRequested && !isImagePromptTextRequest(currentUserText);
   const exposeFileCreation = FILE_CREATION_INTENT.test(text.replace(NEGATED_FILE_CREATION, ' ')) || presentationRequested
     || isChatFileDeliveryRequest(text) || skillEnabled;
   const exposeAgentCreation = isChatAgentCreationRequest(text) || agentCreationFollowup;
@@ -153,6 +159,8 @@ export const getChatToolDefinitions = (
           ? exposeAgentCreation
         : presentationRequested && ['generate_image', 'generate_image_variants'].includes(tool.function.name)
           ? exposePresentationImageTools
+        : ['generate_image', 'generate_image_variants', 'edit_image'].includes(tool.function.name)
+          ? exposeImageTools
         : tool.function.name === 'batch_image_operation'
           ? exposeBatch
           : exposeLocalTools
@@ -161,6 +169,7 @@ export const getChatToolDefinitions = (
 
 export const shouldDirectGenerateImage = (text: string) => (
   !isChatPresentationRequest(text)
+  && !isImagePromptTextRequest(text)
   && !WORKFLOW_CREATION_INTENT.test(text)
   && DIRECT_IMAGE_INTENT.test(text.replace(NEGATED_IMAGE_GENERATION_INTENT, ' '))
 );
@@ -171,17 +180,20 @@ export const resolveDirectVisualTool = (
   text: string,
   hasRecentGeneratedMedia = false,
   imageAttachmentCount = 0,
+  currentUserText = text,
 ): DirectVisualToolName | null => {
-  if (isChatPresentationRequest(text)) return null;
-  if (imageAttachmentCount > 0 && /(?:删除|去掉|移除|擦除|替换|修改|改成|换成|remove|delete|erase|replace|edit).{0,120}/i.test(text)) return 'edit_image';
-  if (shouldDirectGenerateImage(text)) return 'generate_image';
-  if (!isShortVisualFollowup(text) && !isVisualRevisionFollowup(text)) return null;
+  if (isChatPresentationRequest(text) || isImagePromptTextRequest(currentUserText) || defersVisualGeneration(currentUserText)) return null;
+  if (shouldDirectGenerateImage(currentUserText) || (imageAttachmentCount > 0 && isVisualCreationIntent(currentUserText))) return 'generate_image';
+  if (imageAttachmentCount > 0 && /(?:\u5220\u9664|\u53bb\u6389|\u79fb\u9664|\u64e6\u9664|\u66ff\u6362|\u4fee\u6539|\u6539\u6210|\u6362\u6210|remove|delete|erase|replace|edit).{0,120}/i.test(currentUserText)) return 'edit_image';
+  if (imageAttachmentCount > 0 && isVisualEditFollowup(currentUserText)) return 'edit_image';
+  if (!isShortVisualFollowup(currentUserText) && !isVisualRevisionFollowup(currentUserText) && !(hasRecentGeneratedMedia && isVisualEditFollowup(currentUserText))) return null;
   if (hasRecentGeneratedMedia) return 'edit_image';
   return imageAttachmentCount > 0 ? 'generate_image' : null;
 };
 
 export const shouldUseIndependentImageVariants = (text: string) => (
   !isChatPresentationRequest(text)
+  && !isImagePromptTextRequest(text)
   && !WORKFLOW_CREATION_INTENT.test(text)
   && INDEPENDENT_IMAGE_VARIANT_INTENT.test(text)
   && (EXPLICIT_INDEPENDENT_VARIANT_DELIVERY.test(text) || !COMPOSITE_VARIANT_OUTPUT_INTENT.test(text))
@@ -190,6 +202,7 @@ export const shouldUseIndependentImageVariants = (text: string) => (
 
 export const shouldComposeImageVariants = (text: string) => (
   !isChatPresentationRequest(text)
+  && !isImagePromptTextRequest(text)
   && !WORKFLOW_CREATION_INTENT.test(text)
   && INDEPENDENT_IMAGE_VARIANT_INTENT.test(text)
   && COMPOSITE_VARIANT_OUTPUT_INTENT.test(text)

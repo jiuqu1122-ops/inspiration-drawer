@@ -1,3 +1,13 @@
+import { rhinoPostprocessFailure } from '../../rhino/rhinoPostprocessFailure';
+import { readableRhinoMcpFailure } from '../../rhino/rhinoErrorDiagnostic';
+import { geometryFailureReceipt, geometryFailureSummary, MAX_GEOMETRY_PREFLIGHT_CORRECTIONS } from '../../rhino/rhinoGeometryRecovery';
+import { isShortVisualFollowup, isVisualEditFollowup, isVisualRevisionFollowup } from '../context/chatVisualIntent';
+import { firstRequestTitle } from '../model/chatConversationTitle';
+import { RhinoDocumentGeometryWriteError } from '../../rhino/rhinoDocumentGeometry';
+import { rhinoScriptFailureExplanation } from '../../rhino/rhinoScriptPreflight';
+import { collectGhPythonComponentIds, splitRhinoVisionObservation, VERIFY_GH_TOOL } from '../../rhino/rhinoGhSafety';
+import { GEOMETRY_PREFLIGHT_REJECTION, RhinoGeometryPreflightError, SAFE_PROFILE_TOOL } from '../../rhino/rhinoSafeModeling';
+import { isRhinoGeometryOnlyRequest } from '../../rhino/rhinoRequestIntent';
 import { connectDesignMemoryEvents, designMemory } from '../../designMemory/storage';
 import { beginChatDesignSummaryMemory, completeChatDesignSummaryMemory, designMemoryProjectId, rememberExplicitChatDesign } from '../../designMemory/sources';
 import { describeDesignMemoryTurn, designMemoryKindsInMessages, getDesignMemoryTurnReport, recallDesignMemoryForTurn, validateDesignMemoryMessages } from '../../designMemory/context';
@@ -14,9 +24,11 @@ import {
   type ChatSummary,
   type ChatToolCall,
   type ChatToolExecutor,
+  type ChatExecutionSource,
   type PendingChatAttachment,
 } from '../model/chatTypes';
 import {
+  chatConversationInScope,
   deleteChatConversation,
   deleteChatConversations,
   getChatSummary,
@@ -24,6 +36,7 @@ import {
   listChatMessages,
   migrateLegacyAgentConversations,
   readActiveChatConversationId,
+  type ChatConversationScope,
   upsertChatAttachment,
   upsertChatConversation,
   upsertChatMessage,
@@ -40,11 +53,8 @@ import {
   getChatToolDefinitions,
   isChatAgentCreationFollowup,
   shouldForceChatAgentCreation,
-  resolveDirectVisualTool,
-  shouldComposeImageVariants,
   shouldExposeBatchImageOperation,
   shouldExposeWebSearch,
-  shouldUseIndependentImageVariants,
 } from '../tools/chatToolDefinitions';
 import { routeChatToolCall } from '../tools/chatToolRouter';
 import { compactChatToolResult, compactChatToolResultForProvider, serializeChatToolResult } from '../tools/chatToolResult';
@@ -58,6 +68,7 @@ import { summarizeCompletedBatchCall } from './chatBatchCompletion';
 import {
   completedMediaToolIsMissingVisibleResult,
   finalizeOrphanedStreamingChatMessage,
+  normalizeCompletedRhinoNativeMessage,
   summarizeCompletedVisibleToolCalls,
 } from './chatVisibleToolCompletion';
 import {
@@ -67,7 +78,8 @@ import {
   classifyChatProviderOutcome,
   EMPTY_CHAT_RESULT_ERROR,
   EMPTY_RESPONSE_RECOVERY_INSTRUCTION,
-  MAX_TOOL_ROUNDS,
+  chatToolRoundLimit,
+  buildRhinoTurnInstruction,
   MAX_WEB_SEARCH_QUERIES_PER_TURN,
   normalizeWebSearchQuery,
 } from './chatTurnPolicy';
@@ -82,6 +94,7 @@ import {
 import { isHistoricalImageContinuation, selectChatImageAttachments } from './chatHistoricalAttachments';
 import { resolveChatReferenceArguments } from './chatReferenceArguments';
 import { normalizeVisibleChatText } from './chatVisibleText';
+import { repeatedGhLoopFailureAfterCorrection } from './rhinoGhFailureGuard';
 import {
   appendChatStreamBuffers,
   createStreamingAssistantState,
@@ -91,6 +104,9 @@ import {
   type ChatThinkingStepPatch,
 } from './chatThinkingRuntime';
 import { getChatToolStepTitle } from '../tools/chatToolLabels';
+import { buildRhinoWorkflowInstruction, isRhinoNativeRecoverableError, validateRhinoNativeArguments } from '../../rhino/rhinoWorkflow';
+import { completedRhinoWriteReceipt, RHINO_SCRIPT_PREFLIGHT_REJECTION, RHINO_RUNTIME_COMPATIBILITY_REJECTION, RhinoNativeArgumentError, RhinoNativeScriptPreflightError, RhinoNativeRuntimeCompatibilityError, rhinoArgumentRejection, rhinoArgumentRepairCount, rhinoArgumentRepairInstruction, rhinoGhReflectionRecoveryState, unresolvedRhinoArgumentRejection } from '../../rhino/rhinoArgumentRecovery';
+import { getRhinoNativeTool } from '../../rhino/rhinoProtocol';
 import {
   createKeyedSerialTaskQueue,
   normalizeChatModelSelection,
@@ -101,10 +117,6 @@ import {
   resolveValidAgentModel,
   runInternalAgentModelRequest,
 } from './agentModelResolution';
-import {
-  buildCompositeImageVariantFallback,
-  buildIndependentImageVariantFallback,
-} from './chatImageToolFallback';
 import {
   cancelChatCompletion,
   isChatRequestIdCurrent,
@@ -153,12 +165,16 @@ export type UseChatRuntimeOptions = {
   imageAspectRatio?: string;
   imageResolution?: string;
   imageQuality?: string;
-  imageModelOptions?: Array<{ value: string; label?: string; hint?: string; aspectRatios?: string[]; aspectRatiosByResolution?: Record<string, string[]>; resolutions?: string[] }>;
+  imageModelOptions?: Array<{ value: string; label?: string; hint?: string; aspectRatios?: string[]; aspectRatiosByResolution?: Record<string, string[]>; resolutions?: string[]; supportedQualities?: string[]; supportsMask?: boolean }>;
+  imageMaskMode?: 'off' | 'on';
+  imageMaskAttachmentId?: string;
   imageAspectRatioOptions?: string[];
   imageResolutionOptions?: string[];
   approvalMode?: 'ask' | 'auto';
   executeTool: ChatToolExecutor;
-  additionalTools?: (conversationId: string) => ReturnType<typeof getChatToolDefinitions>;
+  additionalTools?: (conversationId: string, executionSource?: ChatExecutionSource) => ReturnType<typeof getChatToolDefinitions>;
+  conversationScope?: ChatConversationScope;
+  defaultExecutionSource?: ChatExecutionSource;
   resolveAttachmentUrl?: (attachment: ChatAttachment) => Promise<string>;
   createVisionAttachmentResolver?: () => ChatVisionAttachmentResolver;
   prepareAttachment?: (attachment: PendingChatAttachment) => Promise<PendingChatAttachment>;
@@ -182,6 +198,7 @@ type PendingApprovalRun = {
   toolMessages: Array<Record<string, unknown>>;
   depth: number;
   emptyRecoveryCount: number;
+  executionSource: ChatExecutionSource;
 };
 
 type ActiveChatRequest = {
@@ -253,10 +270,7 @@ const normalizeUsage = (value?: Record<string, unknown>) => {
   };
 };
 
-const trimConversationTitle = (text: string) => {
-  const first = text.trim().split(/\r?\n/)[0] || '新对话';
-  return first.length > 28 ? `${first.slice(0, 28)}…` : first;
-};
+const trimConversationTitle = firstRequestTitle;
 
 const parseArguments = (value: string) => {
   try {
@@ -319,6 +333,48 @@ const providerToolCallCount = (
   }).length;
 }, 0);
 
+const RHINO_RECOVERABLE_NATIVE_READ_TOOLS = new Set([
+  'get_context', 'get_selection', 'get_commands', 'list_objects', 'get_viewport_image',
+  'g1_search_components', 'g1_describe_component', 'g1_get_canvas_graph',
+  'g2_search_components', 'g2_describe_component', 'g2_get_canvas_graph',
+]);
+const isRecoverableRhinoNativeReadFailure = (toolName: string, conversationId?: string) => {
+  const registered = conversationId ? getRhinoNativeTool(toolName, conversationId) : undefined;
+  return registered ? isRhinoNativeRecoverableError(registered) : isRhinoNativeRecoverableError(toolName)
+    || (toolName.startsWith('rhino_native_') && RHINO_RECOVERABLE_NATIVE_READ_TOOLS.has(toolName.slice('rhino_native_'.length)));
+};
+
+const inferRhinoComponentQuery = (userText: string) => {
+  const text = userText.toLocaleLowerCase();
+  if (text.includes('sphere') || text.includes('\u7403')) return 'Sphere';
+  if (text.includes('square') || text.includes('\u6b63\u65b9\u5f62')) return 'Square';
+  if (text.includes('circle') || text.includes('\u5706')) return 'Circle';
+  if (text.includes('line') || text.includes('\u76f4\u7ebf')) return 'Line';
+  if (text.includes('rectangle') || text.includes('\u77e9\u5f62')) return 'Rectangle';
+  return '';
+};
+
+const normalizeRhinoNativeArguments = (toolName: string, args: Record<string, unknown>, userText: string) => {
+  if (toolName === 'rhino_native_g1_search_components' || toolName === 'rhino_native_g2_search_components') {
+    if (!String(args.query || '').trim()) {
+      const query = inferRhinoComponentQuery(userText);
+      if (query) return { ...args, query, limit: Number(args.limit) > 0 ? args.limit : 10 };
+    }
+  }
+  if (toolName === 'rhino_native_g1_describe_component' || toolName === 'rhino_native_g2_describe_component') {
+    if (!String(args.name || '').trim()) {
+      const name = inferRhinoComponentQuery(userText);
+      if (name) return { ...args, name };
+    }
+  }
+  return args;
+};
+
+const rhinoVisualToolNames = new Set(['generate_image', 'edit_image']);
+const findAttachmentRole = (attachments: ChatAttachment[], role: string) => attachments.find(attachment => {
+  try { return JSON.parse(attachment.metadataJson || '{}').role === role; } catch { return false; }
+});
+
 const currentLocalDateContext = () => {
   const now = new Date();
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
@@ -334,6 +390,8 @@ const currentLocalDateContext = () => {
 export function useChatRuntime(options: UseChatRuntimeOptions) {
   const optionsRef = useRef(options);
   optionsRef.current = options;
+  const conversationScope = options.conversationScope || 'desktop';
+
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -362,6 +420,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
   const recoverableRequestIdsRef = useRef(new Map<string, string>());
   const activeBatchRunsRef = useRef(new Map<string, ActiveBatchRun>());
   const pendingApprovalsRef = useRef(new Map<string, PendingApprovalRun>());
+  const activeToolMessagesRef = useRef(new Map<string, string>());
+  const cancelledToolRunsRef = useRef(new Set<string>());
   const persistTimersRef = useRef(new Map<string, number>());
   const streamBuffersRef = useRef(new Map<string, ChatStreamBuffers>());
   const streamFlushTimersRef = useRef(new Map<string, number>());
@@ -395,6 +455,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     setStoppable(Boolean(
       activeRequestsRef.current.has(conversationId)
       || activeBatchRunsRef.current.has(conversationId)
+      || (activeToolMessagesRef.current.has(conversationId) && !cancelledToolRunsRef.current.has(conversationId))
     ));
   }, []);
 
@@ -463,9 +524,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     }
   }, [enqueueConversationPersist]);
 
-  const setConversationModel = useCallback((model: string) => {
+  const setConversationModel = useCallback((model: string, targetConversationId?: string) => {
     const conversation = conversationsRef.current.find(
-      item => item.id === activeConversationIdRef.current,
+      item => item.id === (targetConversationId || activeConversationIdRef.current),
     );
     if (!conversation
       || busyConversationIdsRef.current.has(conversation.id)
@@ -589,14 +650,19 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
   }, [flushStreamDelta]);
 
   const refreshConversations = useCallback(async (query = searchQuery) => {
-    const next = await listChatConversations(query, 120, 0);
+    const next = (await listChatConversations(query, 500, 0)).filter(conversation => chatConversationInScope(conversation, conversationScope));
     conversationsRef.current = next;
     setConversations(next);
     return next;
-  }, [searchQuery]);
+  }, [conversationScope, searchQuery]);
 
   const loadConversation = useCallback(async (conversationId: string) => {
     if (!conversationId) return;
+    const scopedConversation = conversationsRef.current.find(item => item.id === conversationId);
+    if (!scopedConversation || !chatConversationInScope(scopedConversation, conversationScope)) {
+      optionsRef.current.onNotice?.('???????? Chat ????????????');
+      return;
+    }
     const loadVersion = conversationLoadVersionRef.current + 1;
     conversationLoadVersionRef.current = loadVersion;
     setLoading(true);
@@ -611,17 +677,27 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         const activeRequest = activeRequestsRef.current.get(conversationId);
         const activeBatch = activeBatchRunsRef.current.get(conversationId);
         const isStillActive = activeRequest?.messageId === resolved.id
-          || activeBatch?.messageId === resolved.id;
+          || activeBatch?.messageId === resolved.id
+          || activeToolMessagesRef.current.get(conversationId) === resolved.id
+          || pendingApprovalsRef.current.get(conversationId)?.assistantMessageId === resolved.id;
         if (isStillActive) return resolved;
         const latestUserText = [...page.messages].reverse().find(previous => previous.role === 'user' && previous.createdAt <= resolved.createdAt)?.content || '';
-        const recovered = finalizeOrphanedStreamingChatMessage(resolved, Date.now(), resolvePresentationTurnText(latestUserText, page.messages.filter(previous => previous.createdAt <= resolved.createdAt)));
-        if (recovered !== resolved) persistMessageSoon(recovered, true);
+        const recovered = normalizeCompletedRhinoNativeMessage(finalizeOrphanedStreamingChatMessage(
+          resolved, Date.now(), resolvePresentationTurnText(latestUserText, page.messages.filter(previous => previous.createdAt <= resolved.createdAt)),
+        ));
+        if (recovered !== resolved) {
+          persistMessageSoon(recovered, true);
+          recovered.toolCalls.forEach((call, index) => {
+            if (call === resolved.toolCalls[index]) return;
+            void upsertChatToolCall(call).catch(error => console.warn('Failed to persist interrupted Chat tool state:', error));
+          });
+        }
         return recovered;
       });
       cacheMessages(resolvedMessages);
       activeConversationIdRef.current = conversationId;
       setActiveConversationId(conversationId);
-      writeActiveChatConversationId(conversationId);
+      writeActiveChatConversationId(conversationId, optionsRef.current.conversationScope || 'desktop');
       messagesRef.current = resolvedMessages;
       setMessages(resolvedMessages);
       setHasMoreMessages(page.hasMore);
@@ -633,7 +709,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     } finally {
       if (conversationLoadVersionRef.current === loadVersion) setLoading(false);
     }
-  }, [cacheMessages, persistMessageSoon, syncActiveConversationActivity]);
+  }, [cacheMessages, conversationScope, persistMessageSoon, syncActiveConversationActivity]);
 
   const createConversation = useCallback(async (
     model = optionsRef.current.model,
@@ -643,7 +719,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     setLoading(false);
     const now = Date.now();
     const conversation: ChatConversation = {
-      id: createChatId('chat-conversation'),
+      id: createChatId(optionsRef.current.conversationScope === 'rhino' ? 'rhino-chat-conversation' : 'chat-conversation'),
       title: title.trim().slice(0, 80) || '新对话',
       model: model || 'default',
       createdAt: now,
@@ -658,7 +734,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     });
     activeConversationIdRef.current = conversation.id;
     setActiveConversationId(conversation.id);
-    writeActiveChatConversationId(conversation.id);
+    writeActiveChatConversationId(conversation.id, optionsRef.current.conversationScope || 'desktop');
     messagesRef.current = [];
     setMessages([]);
     summaryRef.current = null;
@@ -674,7 +750,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     void (async () => {
       try {
         await migrateLegacyAgentConversations(optionsRef.current.model);
-        let next = await listChatConversations('', 120, 0);
+        let next = (await listChatConversations('', 500, 0)).filter(conversation => chatConversationInScope(conversation, conversationScope));
         const configuredModel = optionsRef.current.model.trim();
         if (configuredModel) {
           next = await Promise.all(next.map(conversation => (
@@ -690,7 +766,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         }
         conversationsRef.current = next;
         setConversations(next);
-        const storedId = readActiveChatConversationId();
+        const storedId = readActiveChatConversationId(conversationScope);
         const activeId = next.some(item => item.id === storedId) ? storedId : next[0].id;
         await loadConversation(activeId);
       } catch (error) {
@@ -699,7 +775,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       }
     })();
     return () => { disposed = true; };
-  }, [createConversation, loadConversation]);
+  }, [conversationScope, createConversation, loadConversation]);
 
   useEffect(() => {
     const unlisten = listen<Record<string, unknown>>('agent-openai-stream', event => {
@@ -891,429 +967,616 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     depth: number,
     resumeRequestId?: string,
     emptyRecoveryCount?: number,
+    executionSource?: ChatExecutionSource,
   ) => Promise<void>>(async () => {});
 
   const continueToolCalls = useCallback(async (run: PendingApprovalRun, approvedCallId?: string) => {
-    let index = run.index;
-    const toolMessages = [...run.toolMessages];
-    for (; index < run.calls.length; index += 1) {
-      await validateDesignMemoryMessages(run.providerMessages);
-      const call = run.calls[index];
-      patchThinkingStep(run.assistantMessageId, `tool-${index}`, {
-        type: call.toolName === 'web_search' ? 'search' : 'tool',
-        title: getChatToolStepTitle(call.toolName, 'pending'),
-        detail: '工具调用已准备',
-        status: 'pending',
-      });
-      const batchController = ['batch_image_operation', 'generate_image_variants'].includes(call.toolName)
-        ? new AbortController()
-        : null;
-      const notifiedMediaIds = new Set<string>();
-      let batchAttachments: ChatAttachment[] = [];
-      let batchOutputCount = 1;
-      let batchTotal = 0;
-      let batchStarted = false;
-      let progressQueue = Promise.resolve();
-      const notifyGeneratedMedia = async () => {
-        if (call.toolName === 'batch_image_operation' && batchAttachments.length > 0) {
-          let parsed: Record<string, unknown> = {};
-          try {
-            parsed = JSON.parse(call.resultJson || '{}') as Record<string, unknown>;
-          } catch (_) {
+    activeToolMessagesRef.current.set(run.conversationId, run.assistantMessageId);
+    if (activeConversationIdRef.current === run.conversationId) syncActiveConversationActivity(run.conversationId);
+    try {
+      let index = run.index;
+      const toolMessages = [...run.toolMessages];
+      const rhinoVisionMessages: Array<Record<string, unknown>> = [];
+      for (; index < run.calls.length; index += 1) {
+        if (cancelledToolRunsRef.current.has(run.conversationId)) {
+          for (const skipped of run.calls.slice(index).filter(item => item.status === 'pending')) {
+            skipped.status = 'cancelled';
+            skipped.completedAt = Date.now();
+            skipped.resultJson = serializeChatToolResult({ cancelled: true, error: 'Cancelled before dispatch; an already-running Rhino tool was not replayed.' });
+            await upsertChatToolCall(skipped).catch(() => {});
+          }
+          patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
+            ...message,
+            toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls),
+            content: message.content.trim() || 'Rhino ?????????????????????????????',
+          }, 'cancelled', Date.now(), 'Rhino workflow stopped after the current native call'), true);
+          cancelledToolRunsRef.current.delete(run.conversationId);
+          updateConversationBusy(run.conversationId, false);
+          return;
+        }
+        if (run.executionSource === 'rhino' && index > run.index) {
+          const priorCalls = getConversationMessages(run.conversationId).find(message => message.id === run.assistantMessageId)?.toolCalls || [];
+          if (repeatedGhLoopFailureAfterCorrection(priorCalls, run.calls.slice(run.index, index))) {
+            for (const skipped of run.calls.slice(index)) {
+              skipped.status = 'cancelled';
+              skipped.completedAt = Date.now();
+              skipped.resultJson = serializeChatToolResult({ cancelled: true, error: 'Stopped before dispatch because the GH loop-closure error persisted after correction.' });
+              await upsertChatToolCall(skipped).catch(() => {});
+            }
+            break;
+          }
+        }
+        await validateDesignMemoryMessages(run.providerMessages);
+        const call = run.calls[index];
+        patchThinkingStep(run.assistantMessageId, `tool-${index}`, {
+          type: call.toolName === 'web_search' ? 'search' : 'tool',
+          title: getChatToolStepTitle(call.toolName, 'pending'),
+          detail: '工具调用已准备',
+          status: 'pending',
+        });
+        const batchController = ['batch_image_operation', 'generate_image_variants'].includes(call.toolName)
+          ? new AbortController()
+          : null;
+        const notifiedMediaIds = new Set<string>();
+        let batchAttachments: ChatAttachment[] = [];
+        let batchOutputCount = 1;
+        let batchTotal = 0;
+        let batchStarted = false;
+        let progressQueue = Promise.resolve();
+        const notifyGeneratedMedia = async () => {
+          if (call.toolName === 'batch_image_operation' && batchAttachments.length > 0) {
+            let parsed: Record<string, unknown> = {};
+            try {
+              parsed = JSON.parse(call.resultJson || '{}') as Record<string, unknown>;
+            } catch (_) {
+              return;
+            }
+            const attachmentIndexById = new Map(batchAttachments.map((attachment, sourceIndex) => (
+              [attachment.id, sourceIndex] as const
+            )));
+            const results = Array.isArray(parsed.results) ? parsed.results : [];
+            for (const value of results) {
+              if (!value || typeof value !== 'object') continue;
+              const result = value as Record<string, unknown>;
+              const attachmentId = String(result.attachmentId || '').trim();
+              const sourceIndex = attachmentIndexById.get(attachmentId);
+              if (sourceIndex === undefined || !Array.isArray(result.media)) continue;
+              const generatedMedia = getGeneratedMediaFromToolCall({
+                ...call,
+                resultJson: serializeChatToolResult({ media: result.media }),
+              }).filter(media => media.type === 'image');
+              for (let outputIndex = 0; outputIndex < generatedMedia.length; outputIndex += 1) {
+                const media = generatedMedia[outputIndex];
+                const notificationId = `${attachmentId}:${media.id}`;
+                if (notifiedMediaIds.has(notificationId)) continue;
+                notifiedMediaIds.add(notificationId);
+                try {
+                  if (optionsRef.current.onBatchMediaReady) {
+                    await optionsRef.current.onBatchMediaReady({
+                      batchId: call.id,
+                      media,
+                      attachmentId,
+                      sourceIndex,
+                      outputIndex,
+                      slotIndex: sourceIndex * batchOutputCount + outputIndex,
+                      total: batchAttachments.length * batchOutputCount,
+                    });
+                  } else {
+                    await optionsRef.current.onGeneratedMediaReady?.(media, { conversationId: run.conversationId });
+                  }
+                } catch (error) {
+                  console.warn('Chat 批量生成结果加入画布失败:', error);
+                }
+              }
+            }
             return;
+          }
+          if (call.toolName === 'generate_image_variants' && batchStarted) {
+            let parsed: Record<string, unknown> = {};
+            try {
+              parsed = JSON.parse(call.resultJson || '{}') as Record<string, unknown>;
+            } catch (_) {
+              return;
+            }
+            const results = (Array.isArray(parsed.results) ? parsed.results : [])
+              .filter((value): value is Record<string, unknown> => Boolean(value && typeof value === 'object'))
+              .sort((left, right) => Number(left.variantIndex) - Number(right.variantIndex));
+            for (const result of results) {
+              const sourceIndex = Number(result.variantIndex);
+              if (!Number.isInteger(sourceIndex) || sourceIndex < 0 || sourceIndex >= batchTotal) continue;
+              const generatedMedia = getGeneratedMediaFromToolCall({
+                ...call,
+                resultJson: serializeChatToolResult({ media: result.media }),
+              }).filter(media => media.type === 'image').slice(0, 1);
+              for (const media of generatedMedia) {
+                const enrichedMedia = {
+                  ...media,
+                  name: media.name || String(result.name || '').trim() || `方案 ${sourceIndex + 1}`,
+                  prompt: media.prompt || String(result.prompt || '').trim() || undefined,
+                };
+                const notificationId = `variant:${sourceIndex}:${media.id}`;
+                if (notifiedMediaIds.has(notificationId)) continue;
+                notifiedMediaIds.add(notificationId);
+                try {
+                  if (optionsRef.current.onBatchMediaReady) {
+                    await optionsRef.current.onBatchMediaReady({
+                      batchId: call.id,
+                      media: enrichedMedia,
+                      attachmentId: `variant-${sourceIndex}`,
+                      sourceIndex,
+                      outputIndex: 0,
+                      slotIndex: sourceIndex,
+                      total: batchTotal,
+                    });
+                  } else {
+                    await optionsRef.current.onGeneratedMediaReady?.(enrichedMedia, { conversationId: run.conversationId });
+                  }
+                } catch (error) {
+                  console.warn('Chat 独立方案结果加入画布失败:', error);
+                }
+              }
+            }
+            return;
+          }
+          const generatedMedia = getGeneratedMediaFromToolCall(call);
+          for (const media of generatedMedia) {
+            if (notifiedMediaIds.has(media.id)) continue;
+            notifiedMediaIds.add(media.id);
+            try {
+              await optionsRef.current.onGeneratedMediaReady?.(media, { conversationId: run.conversationId });
+            } catch (error) {
+              console.warn('Chat 生成结果自动加入画布失败:', error);
+            }
+          }
+        };
+        const notifyBatchCompleted = async (cancelled: boolean) => {
+          if (!['batch_image_operation', 'generate_image_variants'].includes(call.toolName) || !batchStarted) return;
+          let results: Array<Record<string, unknown>> = [];
+          try {
+            const parsed = JSON.parse(call.resultJson || '{}') as Record<string, unknown>;
+            results = (Array.isArray(parsed.results) ? parsed.results : [])
+              .filter((value): value is Record<string, unknown> => Boolean(value && typeof value === 'object'));
+          } catch (_) {
+            results = [];
           }
           const attachmentIndexById = new Map(batchAttachments.map((attachment, sourceIndex) => (
             [attachment.id, sourceIndex] as const
           )));
-          const results = Array.isArray(parsed.results) ? parsed.results : [];
-          for (const value of results) {
-            if (!value || typeof value !== 'object') continue;
-            const result = value as Record<string, unknown>;
-            const attachmentId = String(result.attachmentId || '').trim();
-            const sourceIndex = attachmentIndexById.get(attachmentId);
-            if (sourceIndex === undefined || !Array.isArray(result.media)) continue;
-            const generatedMedia = getGeneratedMediaFromToolCall({
-              ...call,
-              resultJson: serializeChatToolResult({ media: result.media }),
-            }).filter(media => media.type === 'image');
-            for (let outputIndex = 0; outputIndex < generatedMedia.length; outputIndex += 1) {
-              const media = generatedMedia[outputIndex];
-              const notificationId = `${attachmentId}:${media.id}`;
-              if (notifiedMediaIds.has(notificationId)) continue;
-              notifiedMediaIds.add(notificationId);
-              try {
-                if (optionsRef.current.onBatchMediaReady) {
-                  await optionsRef.current.onBatchMediaReady({
-                    batchId: call.id,
-                    media,
-                    attachmentId,
-                    sourceIndex,
-                    outputIndex,
-                    slotIndex: sourceIndex * batchOutputCount + outputIndex,
-                    total: batchAttachments.length * batchOutputCount,
-                  });
-                } else {
-                  await optionsRef.current.onGeneratedMediaReady?.(media, { conversationId: run.conversationId });
-                }
-              } catch (error) {
-                console.warn('Chat 批量生成结果加入画布失败:', error);
-              }
+          const failedSourceIndexes = results.flatMap(result => {
+            if (result.status !== 'error' && result.status !== 'cancelled') return [];
+            if (call.toolName === 'generate_image_variants') {
+              const variantIndex = Number(result.variantIndex);
+              return Number.isInteger(variantIndex) && variantIndex >= 0 ? [variantIndex] : [];
             }
-          }
-          return;
-        }
-        if (call.toolName === 'generate_image_variants' && batchStarted) {
-          let parsed: Record<string, unknown> = {};
-          try {
-            parsed = JSON.parse(call.resultJson || '{}') as Record<string, unknown>;
-          } catch (_) {
-            return;
-          }
-          const results = (Array.isArray(parsed.results) ? parsed.results : [])
-            .filter((value): value is Record<string, unknown> => Boolean(value && typeof value === 'object'))
-            .sort((left, right) => Number(left.variantIndex) - Number(right.variantIndex));
-          for (const result of results) {
-            const sourceIndex = Number(result.variantIndex);
-            if (!Number.isInteger(sourceIndex) || sourceIndex < 0 || sourceIndex >= batchTotal) continue;
-            const generatedMedia = getGeneratedMediaFromToolCall({
-              ...call,
-              resultJson: serializeChatToolResult({ media: result.media }),
-            }).filter(media => media.type === 'image').slice(0, 1);
-            for (const media of generatedMedia) {
-              const enrichedMedia = {
-                ...media,
-                name: media.name || String(result.name || '').trim() || `方案 ${sourceIndex + 1}`,
-                prompt: media.prompt || String(result.prompt || '').trim() || undefined,
-              };
-              const notificationId = `variant:${sourceIndex}:${media.id}`;
-              if (notifiedMediaIds.has(notificationId)) continue;
-              notifiedMediaIds.add(notificationId);
-              try {
-                if (optionsRef.current.onBatchMediaReady) {
-                  await optionsRef.current.onBatchMediaReady({
-                    batchId: call.id,
-                    media: enrichedMedia,
-                    attachmentId: `variant-${sourceIndex}`,
-                    sourceIndex,
-                    outputIndex: 0,
-                    slotIndex: sourceIndex,
-                    total: batchTotal,
-                  });
-                } else {
-                  await optionsRef.current.onGeneratedMediaReady?.(enrichedMedia, { conversationId: run.conversationId });
-                }
-              } catch (error) {
-                console.warn('Chat 独立方案结果加入画布失败:', error);
-              }
-            }
-          }
-          return;
-        }
-        const generatedMedia = getGeneratedMediaFromToolCall(call);
-        for (const media of generatedMedia) {
-          if (notifiedMediaIds.has(media.id)) continue;
-          notifiedMediaIds.add(media.id);
-          try {
-            await optionsRef.current.onGeneratedMediaReady?.(media, { conversationId: run.conversationId });
-          } catch (error) {
-            console.warn('Chat 生成结果自动加入画布失败:', error);
-          }
-        }
-      };
-      const notifyBatchCompleted = async (cancelled: boolean) => {
-        if (!['batch_image_operation', 'generate_image_variants'].includes(call.toolName) || !batchStarted) return;
-        let results: Array<Record<string, unknown>> = [];
-        try {
-          const parsed = JSON.parse(call.resultJson || '{}') as Record<string, unknown>;
-          results = (Array.isArray(parsed.results) ? parsed.results : [])
-            .filter((value): value is Record<string, unknown> => Boolean(value && typeof value === 'object'));
-        } catch (_) {
-          results = [];
-        }
-        const attachmentIndexById = new Map(batchAttachments.map((attachment, sourceIndex) => (
-          [attachment.id, sourceIndex] as const
-        )));
-        const failedSourceIndexes = results.flatMap(result => {
-          if (result.status !== 'error' && result.status !== 'cancelled') return [];
-          if (call.toolName === 'generate_image_variants') {
-            const variantIndex = Number(result.variantIndex);
-            return Number.isInteger(variantIndex) && variantIndex >= 0 ? [variantIndex] : [];
-          }
-          const sourceIndex = attachmentIndexById.get(String(result.attachmentId || '').trim());
-          return sourceIndex === undefined ? [] : [sourceIndex];
-        });
-        const completedSlots = results.reduce((total, result) => (
-          total + (Array.isArray(result.media) ? result.media.length : 0)
-        ), 0);
-        try {
-          await optionsRef.current.onBatchCompleted?.({
-            batchId: call.id,
-            total: batchTotal,
-            completedSlots,
-            failedSourceIndexes,
-            cancelled,
+            const sourceIndex = attachmentIndexById.get(String(result.attachmentId || '').trim());
+            return sourceIndex === undefined ? [] : [sourceIndex];
           });
-        } catch (error) {
-          console.warn('Chat 批量画布编组收尾失败:', error);
-        }
-      };
-      let args: Record<string, unknown>;
-      try {
-        args = parseArguments(call.argumentsJson);
-        const conversationMessages = getConversationMessages(run.conversationId);
-        const presentationText = resolvePresentationTurnText(run.userText, conversationMessages);
-        const previousCalls = conversationMessages.find(message => message.id === run.assistantMessageId)?.toolCalls || [];
-        validatePresentationImageCall(presentationText, call.toolName, args, previousCalls.filter(previous => previous.id !== call.id));
-        const generated = latestGeneratedMedia(conversationMessages);
-        const currentImageAttachments = selectChatImageAttachments(
-          conversationMessages,
-          run.userText,
-        ).attachments;
-        args = resolveChatReferenceArguments({
-          toolName: call.toolName,
-          args,
-          currentImageAttachments,
-          latestGenerated: generated,
-        });
-        if (call.toolName === 'add_to_canvas' && generated) {
-          if (!args.mediaId) args.mediaId = generated.id;
-          if (!args.assetId && generated.assetId) args.assetId = generated.assetId;
-        }
-        if (call.toolName === 'generate_image_variants') {
-          const imageSelection = selectChatImageAttachments(conversationMessages, run.userText);
-          const requireMultiple = shouldUseIndependentImageVariants(imageSelection.toolIntentText);
-          const fallback = requireMultiple
-            ? buildIndependentImageVariantFallback({
-                userText: run.userText,
-                toolIntentText: imageSelection.toolIntentText,
-                assistantTexts: conversationMessages
-                  .filter(message => message.role === 'assistant' && message.content.trim())
-                  .sort((left, right) => right.createdAt - left.createdAt)
-                  .map(message => message.content),
-              })
-            : undefined;
-          const route = resolveImageVariantToolRoute({
-            args,
-            fallbackVariants: fallback?.variants,
-            requireMultiple,
-          });
-          call.toolName = route.toolName;
-          args = route.args;
-        }
-        if (call.toolName === 'generate_image' || call.toolName === 'generate_image_variants' || call.toolName === 'edit_image' || call.toolName === 'generate_video' || call.toolName === 'batch_image_operation') {
-          args = applyChatImageGenerationSettings(args, optionsRef.current);
-        }
-        call.argumentsJson = JSON.stringify(args);
-        if (call.toolName === 'batch_image_operation') {
-          batchAttachments = selectBatchImageAttachments(
-            currentImageAttachments,
-            Array.isArray(args.attachmentIds) ? args.attachmentIds.map(String) : undefined,
-          );
-          batchOutputCount = Math.min(4, Math.max(1, Math.round(Number(args.outputCountPerImage) || 1)));
-          batchTotal = batchAttachments.length * batchOutputCount;
-          batchStarted = true;
+          const completedSlots = results.reduce((total, result) => (
+            total + (Array.isArray(result.media) ? result.media.length : 0)
+          ), 0);
           try {
-            await optionsRef.current.onBatchStarted?.({
+            await optionsRef.current.onBatchCompleted?.({
               batchId: call.id,
-              name: createBatchGroupName(String(args.instruction || run.userText)),
-              instruction: String(args.instruction || run.userText).trim(),
-              attachmentIds: batchAttachments.map(attachment => attachment.id),
               total: batchTotal,
-              outputCountPerImage: batchOutputCount,
-              aspectRatio: String(args.aspectRatio || '').trim() || undefined,
+              completedSlots,
+              failedSourceIndexes,
+              cancelled,
             });
           } catch (error) {
-            console.warn('Chat 批量画布占位编组创建失败:', error);
+            console.warn('Chat 批量画布编组收尾失败:', error);
           }
-        }
-        if (call.toolName === 'generate_image_variants') {
-          const variants = normalizeImageVariants(args.variants);
-          if (variants.length >= 2) {
-            batchOutputCount = 1;
-            batchTotal = variants.length;
+        };
+        let args: Record<string, unknown> = {};
+        const native = run.executionSource === 'rhino' ? getRhinoNativeTool(call.toolName, run.conversationId) : undefined;
+        let nativeDispatched = false;
+        let rejectedNativeArguments = false;
+        let rejectedGeometry = false;
+        let compatibilityRejected = false;
+        let scriptRejected = false;
+        try {
+          try { args = parseArguments(call.argumentsJson); }
+          catch (error) {
+            if (native) throw new RhinoNativeArgumentError(String(error));
+            throw error;
+          }
+          if (run.executionSource === 'rhino') {
+            args = normalizeRhinoNativeArguments(call.toolName, args, run.userText);
+            if (call.toolName === VERIFY_GH_TOOL && (!Array.isArray(args.componentIds) || args.componentIds.length === 0)) {
+              const priorCalls=getConversationMessages(run.conversationId).find(message=>message.id===run.assistantMessageId)?.toolCalls||[];
+              args={...args,componentIds:collectGhPythonComponentIds(priorCalls)};
+            }
+            if (native) {
+              const validation = validateRhinoNativeArguments(native, args);
+              if (!validation.valid) throw new RhinoNativeArgumentError(validation.message);
+            }
+          }
+          const conversationMessages = getConversationMessages(run.conversationId);
+          const presentationText = resolvePresentationTurnText(run.userText, conversationMessages);
+          const previousCalls = conversationMessages.find(message => message.id === run.assistantMessageId)?.toolCalls || [];
+          validatePresentationImageCall(presentationText, call.toolName, args, previousCalls.filter(previous => previous.id !== call.id));
+          const generated = latestGeneratedMedia(conversationMessages);
+          const currentImageAttachments = selectChatImageAttachments(
+            conversationMessages,
+            run.userText,
+          ).attachments;
+          const rhinoMaskAttachment = run.executionSource === 'rhino' ? findAttachmentRole(currentImageAttachments, 'mask') : undefined;
+          const forceRhinoCanvasMask = Boolean(rhinoMaskAttachment && rhinoVisualToolNames.has(call.toolName));
+          if ((optionsRef.current.imageMaskMode === 'on' || forceRhinoCanvasMask)
+            && !String(optionsRef.current.imageMaskAttachmentId || '').trim()
+            && !String(args.maskAttachmentId || '').trim()) {
+            if (rhinoMaskAttachment) args.maskAttachmentId = rhinoMaskAttachment.id;
+          }
+          args = resolveChatReferenceArguments({
+            toolName: call.toolName,
+            args,
+            currentImageAttachments,
+            latestGenerated: generated,
+          });
+          if (call.toolName === 'add_to_canvas' && generated) {
+            if (!args.mediaId) args.mediaId = generated.id;
+            if (!args.assetId && generated.assetId) args.assetId = generated.assetId;
+          }
+          if (call.toolName === 'generate_image_variants') {
+            const route = resolveImageVariantToolRoute({ args, requireMultiple: false });
+            call.toolName = route.toolName;
+            args = route.args;
+          }
+          if (call.toolName === 'generate_image' || call.toolName === 'generate_image_variants' || call.toolName === 'edit_image' || call.toolName === 'generate_video' || call.toolName === 'batch_image_operation') {
+            if ((optionsRef.current.imageMaskMode === 'on' || forceRhinoCanvasMask)
+              && (call.toolName === 'generate_image_variants' || call.toolName === 'batch_image_operation' || call.toolName === 'generate_video')) {
+              throw new Error('当前 Beta 的 Mask 编辑仅支持单张图片生成/编辑；请关闭 Mask 或改为单张图片任务。');
+            }
+            const imageSettings = forceRhinoCanvasMask
+              ? { ...optionsRef.current, imageMaskMode: 'on' as const, imageMaskAttachmentId: rhinoMaskAttachment?.id }
+              : optionsRef.current;
+            args = applyChatImageGenerationSettings(args, imageSettings);
+            const maskAttachmentId = String(args.maskAttachmentId || '').trim();
+            if (maskAttachmentId) {
+              const maskAttachment = currentImageAttachments.find(attachment => attachment.id === maskAttachmentId)
+                || currentImageAttachments.find(attachment => {
+                  try { return JSON.parse(attachment.metadataJson || '{}').role === 'mask'; } catch { return false; }
+                });
+              if (!maskAttachment) throw new Error('所选 Mask 图片不在本轮附件中，请重新附加后再试。');
+              args.maskImage = maskAttachment.path;
+              if (Array.isArray(args.referenceImages)) {
+                args.referenceImages = args.referenceImages.map(String).filter(source => source.trim() !== maskAttachment.path.trim());
+              }
+              delete args.maskAttachmentId;
+            }
+          }
+          call.argumentsJson = JSON.stringify(args);
+          if (call.toolName === 'batch_image_operation') {
+            batchAttachments = selectBatchImageAttachments(
+              currentImageAttachments,
+              Array.isArray(args.attachmentIds) ? args.attachmentIds.map(String) : undefined,
+            );
+            batchOutputCount = Math.min(4, Math.max(1, Math.round(Number(args.outputCountPerImage) || 1)));
+            batchTotal = batchAttachments.length * batchOutputCount;
             batchStarted = true;
             try {
               await optionsRef.current.onBatchStarted?.({
                 batchId: call.id,
-                name: createBatchGroupName(variants.map(variant => variant.name).join('、')),
-                instruction: String(args.sharedRequirements || run.userText).trim(),
-                attachmentIds: variants.map((_, variantIndex) => `variant-${variantIndex}`),
+                name: createBatchGroupName(String(args.instruction || run.userText)),
+                instruction: String(args.instruction || run.userText).trim(),
+                attachmentIds: batchAttachments.map(attachment => attachment.id),
                 total: batchTotal,
-                outputCountPerImage: 1,
+                outputCountPerImage: batchOutputCount,
                 aspectRatio: String(args.aspectRatio || '').trim() || undefined,
               });
             } catch (error) {
-              console.warn('Chat 独立方案画布占位编组创建失败:', error);
+              console.warn('Chat 批量画布占位编组创建失败:', error);
             }
           }
-        }
-        const approved = approvedCallId === call.id;
-        const routed = await routeChatToolCall({
-          name: call.toolName,
-          args,
-          context: {
-            userText: run.userText,
-            conversationId: run.conversationId,
-            messageId: run.assistantMessageId,
-            recentMessages: conversationMessages,
-            currentUserAttachments: currentImageAttachments,
-            signal: batchController?.signal,
-            onProgress: value => {
-              progressQueue = progressQueue.then(async () => {
-                call.resultJson = serializeChatToolResult(compactChatToolResult(call.toolName, value));
-                await upsertChatToolCall(call);
-                patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls) }));
-                await notifyGeneratedMedia();
-              });
-              return progressQueue;
-            },
-          },
-          executor: optionsRef.current.executeTool,
-          approvalMode: optionsRef.current.approvalMode,
-          approved,
-          onExecuting: async () => {
-            call.status = 'running';
-            patchThinkingStep(run.assistantMessageId, `tool-${index}`, {
-              type: call.toolName === 'web_search' ? 'search' : 'tool',
-              title: getChatToolStepTitle(call.toolName, 'running'),
-              detail: '正在等待工具结果',
-              status: 'running',
-            });
-            if (batchController) {
-              activeBatchRunsRef.current.set(run.conversationId, {
-                callId: call.id,
-                messageId: run.assistantMessageId,
-                controller: batchController,
-              });
-              if (activeConversationIdRef.current === run.conversationId) {
-                syncActiveConversationActivity(run.conversationId);
+          if (call.toolName === 'generate_image_variants') {
+            const variants = normalizeImageVariants(args.variants);
+            if (variants.length >= 2) {
+              batchOutputCount = 1;
+              batchTotal = variants.length;
+              batchStarted = true;
+              try {
+                await optionsRef.current.onBatchStarted?.({
+                  batchId: call.id,
+                  name: createBatchGroupName(variants.map(variant => variant.name).join('、')),
+                  instruction: String(args.sharedRequirements || run.userText).trim(),
+                  attachmentIds: variants.map((_, variantIndex) => `variant-${variantIndex}`),
+                  total: batchTotal,
+                  outputCountPerImage: 1,
+                  aspectRatio: String(args.aspectRatio || '').trim() || undefined,
+                });
+              } catch (error) {
+                console.warn('Chat 独立方案画布占位编组创建失败:', error);
               }
             }
+          }
+          const approved = approvedCallId === call.id;
+          const routed = await routeChatToolCall({
+            name: call.toolName,
+            args,
+            context: {
+              userText: run.userText,
+              executionSource: run.executionSource,
+              conversationId: run.conversationId,
+              messageId: run.assistantMessageId,
+              recentMessages: conversationMessages,
+              currentUserAttachments: currentImageAttachments,
+              signal: batchController?.signal,
+              onProgress: value => {
+                progressQueue = progressQueue.then(async () => {
+                  call.resultJson = serializeChatToolResult(compactChatToolResult(call.toolName, value));
+                  await upsertChatToolCall(call);
+                  patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls) }));
+                  await notifyGeneratedMedia();
+                });
+                return progressQueue;
+              },
+            },
+            executor: async (name, finalArgs, context) => {
+              const previous = native && completedRhinoWriteReceipt(
+                getConversationMessages(run.conversationId).find(message => message.id === run.assistantMessageId)?.toolCalls || [], native, finalArgs,
+              );
+              if (previous) return { ...JSON.parse(previous.resultJson!), reusedCompletedReceipt: true, originalToolCallId: previous.id };
+              nativeDispatched = Boolean(native);
+              return optionsRef.current.executeTool(name, finalArgs, context);
+            },
+            approvalMode: optionsRef.current.approvalMode,
+            approved,
+            onExecuting: async () => {
+              call.status = 'running';
+              patchThinkingStep(run.assistantMessageId, `tool-${index}`, {
+                type: call.toolName === 'web_search' ? 'search' : 'tool',
+                title: getChatToolStepTitle(call.toolName, 'running'),
+                detail: '正在等待工具结果',
+                status: 'running',
+              });
+              if (batchController) {
+                activeBatchRunsRef.current.set(run.conversationId, {
+                  callId: call.id,
+                  messageId: run.assistantMessageId,
+                  controller: batchController,
+                });
+                if (activeConversationIdRef.current === run.conversationId) {
+                  syncActiveConversationActivity(run.conversationId);
+                }
+              }
+              await upsertChatToolCall(call);
+              patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls) }));
+            },
+          });
+          if (routed.requiresApproval) {
+            call.status = 'awaiting-approval';
+            patchThinkingStep(run.assistantMessageId, `tool-${index}`, {
+              type: call.toolName === 'web_search' ? 'search' : 'tool',
+              title: getChatToolStepTitle(call.toolName, 'awaiting-approval'),
+              detail: '需要用户确认后继续',
+              status: 'awaiting-approval',
+            }, true);
             await upsertChatToolCall(call);
-            patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls) }));
-          },
-        });
-        if (routed.requiresApproval) {
-          call.status = 'awaiting-approval';
+            patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls) }), true);
+            pendingApprovalsRef.current.set(run.conversationId, {
+              ...run,
+              calls: [...run.calls],
+              index,
+              toolMessages,
+            });
+            updateConversationBusy(run.conversationId, false);
+            return;
+          }
+          await progressQueue;
+          const observed = splitRhinoVisionObservation(call.toolName, routed.result);
+          if (observed.observation && run.executionSource === 'rhino') rhinoVisionMessages.push(observed.observation);
+          const resultJson = serializeChatToolResult(observed.result);
+          call.resultJson = resultJson;
+          const resultRecord = observed.result && typeof observed.result === 'object'
+            ? observed.result as Record<string, unknown>
+            : {};
+          call.status = resultRecord.cancelled === true ? 'cancelled' : 'completed';
+          if (completedMediaToolIsMissingVisibleResult(call)) {
+            call.status = 'error';
+            call.resultJson = serializeChatToolResult({
+              ...resultRecord,
+              incomplete: true,
+              error: '媒体工具未返回有效的图片或视频结果',
+            });
+          }
+          call.completedAt = Date.now();
           patchThinkingStep(run.assistantMessageId, `tool-${index}`, {
             type: call.toolName === 'web_search' ? 'search' : 'tool',
-            title: getChatToolStepTitle(call.toolName, 'awaiting-approval'),
-            detail: '需要用户确认后继续',
-            status: 'awaiting-approval',
-          }, true);
-          await upsertChatToolCall(call);
-          patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls) }), true);
-          pendingApprovalsRef.current.set(run.conversationId, {
-            ...run,
-            calls: [...run.calls],
-            index,
-            toolMessages,
+            title: getChatToolStepTitle(call.toolName, call.status),
+            status: call.status,
           });
+          await upsertChatToolCall(call);
+          toolMessages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: call.status === 'error'
+              ? call.resultJson
+              : serializeChatToolResult(compactChatToolResultForProvider(call.toolName, observed.result)),
+          });
+          if (call.toolName === 'generate_image' || call.toolName === 'generate_image_variants' || call.toolName === 'edit_image' || call.toolName === 'batch_image_operation') {
+            await notifyGeneratedMedia();
+          }
+          await notifyBatchCompleted(call.status === 'cancelled');
+        } catch (error) {
+          call.status = batchController?.signal.aborted ? 'cancelled' : 'error';
+          const geometryRejected = rejectedGeometry = Boolean(native && call.toolName === SAFE_PROFILE_TOOL && error instanceof RhinoGeometryPreflightError);
+          compatibilityRejected = Boolean(native && nativeDispatched && error instanceof RhinoNativeRuntimeCompatibilityError);
+          scriptRejected = Boolean(native && error instanceof RhinoNativeScriptPreflightError);
+          rejectedNativeArguments = geometryRejected || compatibilityRejected || scriptRejected || Boolean(native && !nativeDispatched && error instanceof RhinoNativeArgumentError);
+          call.resultJson = serializeChatToolResult(batchController?.signal.aborted
+            ? { cancelled: true, error: '???????????' }
+            : geometryRejected ? { kind: GEOMETRY_PREFLIGHT_REJECTION, toolName: call.toolName, correctionTool: call.toolName,
+              ...geometryFailureReceipt((error as RhinoGeometryPreflightError).receipt, args), error: String(error), instruction: 'A typed local or trusted-kernel preflight confirms zero document writes. Read inputPaths, priorIssues and repairPolicy; correct the actual conflicting geometry within the bounded budget. Preserve intended dimensions, holes and minimum walls. No blind replay of commits or uncertain raw scripts.' }
+            : compatibilityRejected ? { kind: RHINO_RUNTIME_COMPATIBILITY_REJECTION, toolName: call.toolName,
+              correctionTool: (error as RhinoNativeRuntimeCompatibilityError).correctionTool, dispatched: true, scriptExecuted: false,
+              documentChanged: false, geometryVerification: (error as RhinoNativeRuntimeCompatibilityError).geometryVerification,
+              error: String(error), instruction: 'Rhino confirmed the C# script failed during host assembly loading before script execution and the document geometry snapshot is unchanged. Do not call run_csharp again. Translate the intended geometry operation to rhino_native_run_python once, then verify.' }
+            : rejectedNativeArguments ? rhinoArgumentRejection(native!, error as Error) : { error: String(error), ...(error instanceof RhinoDocumentGeometryWriteError ? { geometryVerification: error.geometryVerification } : {}) });
+          call.completedAt = Date.now();
+          patchThinkingStep(run.assistantMessageId, `tool-${index}`, {
+            type: call.toolName === 'web_search' ? 'search' : 'tool',
+            title: getChatToolStepTitle(call.toolName, call.status),
+            detail: call.status === 'error' ? '工具执行未完成' : '用户停止执行',
+            status: call.status,
+          }, true);
+          await upsertChatToolCall(call).catch(() => {});
+          toolMessages.push({ role: 'tool', tool_call_id: call.id, content: call.resultJson });
+          await notifyBatchCompleted(call.status === 'cancelled');
+        }
+        if (rejectedNativeArguments) {
+          const priorCalls = getConversationMessages(run.conversationId).find(message => message.id === run.assistantMessageId)?.toolCalls || [];
+          const exhausted = rhinoArgumentRepairCount(priorCalls.filter(previous => previous.id !== call.id), call.toolName) >= (rejectedGeometry ? MAX_GEOMETRY_PREFLIGHT_CORRECTIONS : 1);
+          // A later call in the same batch may depend on the rejected write. Do not dispatch it.
+          for (const skipped of run.calls.slice(index + 1)) {
+            skipped.status = 'cancelled';
+            skipped.completedAt = Date.now();
+            skipped.resultJson = serializeChatToolResult({ kind: 'rhino_native_dependency_skipped', dispatched: false, error: 'Not dispatched because an earlier call needs corrected arguments. Resubmit only after correcting it.' });
+            await upsertChatToolCall(skipped);
+            toolMessages.push({ role: 'tool', tool_call_id: skipped.id, content: skipped.resultJson });
+          }
+          patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls) }), true);
+          if (exhausted) {
+            patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
+              ...message,
+              content: [message.content.trim(), scriptRejected ? `Rhino \u811a\u672c\u7c7b\u578b\u9884\u68c0\u4ecd\u672a\u901a\u8fc7: ${call.toolName}\n\u5df2\u81ea\u52a8\u4fee\u6b63\u4e00\u6b21\uff0c\u4ecd\u5b58\u5728 API \u7c7b\u578b\u95ee\u9898\u3002\u672c\u6b21\u811a\u672c\u672a\u6267\u884c\uff0c\u5148\u524d\u6210\u529f\u7684\u6b65\u9aa4\u5df2\u4fdd\u7559\uff1b\u9519\u8bef\u4f4d\u7f6e\u548c\u4fee\u6b63\u8981\u6c42\u89c1\u5de5\u5177\u56de\u6267\u3002` : rejectedGeometry ? `Rhino \u51e0\u4f55\u9884\u68c0\u4ecd\u672a\u901a\u8fc7: ${call.toolName}\n${geometryFailureSummary(JSON.parse(call.resultJson || '{}'))}\n\u5df2\u8fbe\u5230\u672c\u8f6e\u9884\u68c0\u4fee\u6b63\u4e0a\u9650\uff0c\u6ca1\u6709\u5199\u5165\u5bf9\u8c61\u3002\u65e0\u6548\u8ba1\u5212\u4e0d\u4f1a\u91cd\u590d\u6267\u884c\uff0c\u5df2\u5b8c\u6210\u7684\u6b65\u9aa4\u4fdd\u7559\u3002` : compatibilityRejected ? `Rhino C# \u8fd0\u884c\u73af\u5883\u4e0d\u517c\u5bb9: ${call.toolName}\n\u5df2\u6838\u5b9e\u9519\u8bef\u53d1\u751f\u5728\u811a\u672c\u6267\u884c\u4e4b\u524d\uff0c\u4e14\u6587\u6863\u51e0\u4f55\u672a\u53d8\u5316\uff1b\u5df2\u81ea\u52a8\u6362\u7528 Python \u5efa\u6a21\u4e00\u6b21\uff0c\u672a\u91cd\u653e C# \u811a\u672c\u3002` : `Rhino MCP \u53c2\u6570\u8865\u5168\u5931\u8d25: ${call.toolName}\n\u5df2\u81ea\u52a8\u8865\u5168\u4e00\u6b21\uff0c\u4ecd\u4e0d\u7b26\u5408\u5de5\u5177\u53c2\u6570\u8981\u6c42\u3002\u672c\u6b21\u65e0\u6548\u8c03\u7528\u672a\u53d1\u9001\u5230 Rhino\uff1b\u5148\u524d\u6210\u529f\u7684\u6b65\u9aa4\u5df2\u4fdd\u7559\u3002`].filter(Boolean).join('\n\n'),
+            }, 'error', Date.now(), 'Native Rhino argument repair exhausted'), true);
+            updateConversationBusy(run.conversationId, false);
+            return;
+          }
+          patchThinkingStep(run.assistantMessageId, `tool-${index}`, { type: 'tool',
+            title: scriptRejected ? '\u6b63\u5728\u4fee\u6b63 Rhino \u811a\u672c\u7c7b\u578b' : rejectedGeometry ? '\u6b63\u5728\u81ea\u52a8\u4fee\u6b63\u51e0\u4f55\u51b2\u7a81' : '\u6b63\u5728\u81ea\u52a8\u8865\u5168 MCP \u53c2\u6570',
+            detail: scriptRejected ? '\u811a\u672c\u5c1a\u672a\u6267\u884c\uff1b\u6839\u636e\u786e\u5207 API \u7c7b\u578b\u95ee\u9898\u81ea\u52a8\u4fee\u6b63\u4e00\u6b21' : rejectedGeometry ? '\u5185\u5b58\u51e0\u4f55\u9884\u68c0\u672a\u901a\u8fc7\uff0c\u5c1a\u672a\u5199\u5165\u5bf9\u8c61\uff1b\u6839\u636e\u5177\u4f53\u51b2\u7a81\u4fee\u6b63\u4e00\u6b21' : '\u53c2\u6570\u6821\u9a8c\u672a\u901a\u8fc7\uff0c\u5c1a\u672a\u53d1\u9001\u5230 Rhino\uff1b\u5141\u8bb8\u6a21\u578b\u8865\u5168\u4e00\u6b21', status: 'running' });
+          await runModelLoopRef.current(
+            run.conversationId, run.assistantMessageId, run.userText, run.requestModel,
+            [...run.providerMessages, ...toolMessages, ...rhinoVisionMessages, { role: 'system', content: rhinoArgumentRepairInstruction(call.toolName) + (scriptRejected ? '\nThe local script checker rejected the script before dispatch. Read issues and fix the exact missing import/binding or incompatible API/type once. Import every referenced Python/.NET namespace explicitly; do not depend on globals from previous tool calls. Preserve holes and three-dimensional design intent. Do not repeat any earlier completed write, remove requested features, or ask for user approval.' : '') + (compatibilityRejected ? '\nThe native MCP returned System.Collections.Immutable version 9 load failure. Snapshot verification proves zero geometry changes. Do not retry C#; translate to Python exactly once, preserve target dimensions and holes, and verify the committed geometry.' : '') + (rejectedGeometry ? '\nTrusted geometry preflight executed in memory but made no document writes. Correct the exact inputPaths from the receipt, retain requested holes/dimensions/wall constraints, and resubmit only a genuinely changed plan. Crossing boundaries require boundary edits; changing minWall alone cannot fix them. At most two zero-write preflight corrections are allowed, never a commit replay.' : '') }],
+            run.depth + 1, undefined, run.emptyRecoveryCount, run.executionSource,
+          );
+          return;
+        }
+        if (run.executionSource === 'rhino' && call.toolName.startsWith('rhino_native_') && call.status === 'error'
+          && !isRecoverableRhinoNativeReadFailure(call.toolName, run.conversationId)) {
+          for (const skipped of run.calls.slice(index + 1)) {
+            skipped.status = 'cancelled';
+            skipped.completedAt = Date.now();
+            skipped.resultJson = serializeChatToolResult({ cancelled: true, error: 'Skipped after a failed native Rhino call; no automatic replay.' });
+            await upsertChatToolCall(skipped).catch(() => {});
+          }
+          let errorDetail = call.resultJson || '';
+          let inspectedFailure = false;
+          try {
+            const failureReceipt = JSON.parse(errorDetail);
+            errorDetail = rhinoScriptFailureExplanation(failureReceipt.error) || readableRhinoMcpFailure(failureReceipt.error || errorDetail);
+            const verification = failureReceipt.geometryVerification;
+            inspectedFailure = Boolean(verification?.writeFailed && verification.status !== 'inspection_failed');
+            if (verification?.writeFailed) errorDetail += verification.status === 'inspection_failed'
+              ? '\n\u6267\u884c\u540e\u7684\u6587\u6863\u68c0\u67e5\u672a\u5b8c\u6210\uff0c\u65e0\u6cd5\u786e\u8ba4\u662f\u5426\u5df2\u5199\u5165\u90e8\u5206\u5bf9\u8c61\u3002'
+              : verification.documentChanged === true
+                ? '\n\u5df2\u8bfb\u53d6\u6587\u6863\uff1a\u68c0\u6d4b\u5230\u90e8\u5206\u51e0\u4f55\u53d8\u5316\uff0c\u73b0\u6709\u5bf9\u8c61\u5df2\u4fdd\u7559\uff0c\u4e0d\u91cd\u590d\u5efa\u6a21\u3002'
+                : '\n\u5df2\u8bfb\u53d6\u6587\u6863\uff1a\u672a\u68c0\u6d4b\u5230\u51e0\u4f55\u53d8\u5316\uff1b\u8fd9\u4e0d\u4ee3\u8868\u811a\u672c\u6ca1\u6709\u5176\u4ed6\u526f\u4f5c\u7528\u3002';
+          } catch { /* Keep the original error. */ }
+          const visibleCalls = getConversationMessages(run.conversationId).find(item => item.id === run.assistantMessageId)?.toolCalls || [];
+          const postprocess = rhinoPostprocessFailure(mergePresentationToolCalls(visibleCalls, run.calls), call);
+          patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
+            ...message,
+            toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls),
+            content: postprocess
+              ? [message.content.trim(), postprocess.summary, '未完成的工具：' + call.toolName + '\n' + errorDetail, postprocess.limitation].filter(Boolean).join('\n\n')
+              : [message.content.trim(), `Rhino MCP \u6267\u884c\u5931\u8d25\uff1a${call.toolName}\n${errorDetail}\n${inspectedFailure ? '\u5df2\u505c\u6b62\u672c\u6b21\u8c03\u7528\uff0c\u4e0d\u4f1a\u81ea\u52a8\u91cd\u653e\u5efa\u6a21\u6307\u4ee4\u3002\u8be6\u7ec6\u9519\u8bef\u548c\u6587\u6863\u68c0\u67e5\u7ed3\u679c\u89c1\u5de5\u5177\u56de\u6267\u3002' : '\u5df2\u505c\u6b62\u672c\u6b21\u8c03\u7528\uff0c\u4e0d\u4f1a\u81ea\u52a8\u91cd\u653e\u5efa\u6a21\u6307\u4ee4\uff1b\u8bf7\u5148\u68c0\u67e5 Rhino \u6587\u6863\u72b6\u6001\u3002'}`].filter(Boolean).join('\n\n'),
+          }, postprocess ? 'completed' : 'error', Date.now(), postprocess ? undefined : 'Native Rhino MCP execution failed'), true);
+          pendingApprovalsRef.current.delete(run.conversationId);
           updateConversationBusy(run.conversationId, false);
           return;
         }
-        await progressQueue;
-        const resultJson = serializeChatToolResult(routed.result);
-        call.resultJson = resultJson;
-        const resultRecord = routed.result && typeof routed.result === 'object'
-          ? routed.result as Record<string, unknown>
-          : {};
-        call.status = resultRecord.cancelled === true ? 'cancelled' : 'completed';
-        if (completedMediaToolIsMissingVisibleResult(call)) {
-          call.status = 'error';
-          call.resultJson = serializeChatToolResult({
-            ...resultRecord,
-            incomplete: true,
-            error: '媒体工具未返回有效的图片或视频结果',
-          });
+        if (activeBatchRunsRef.current.get(run.conversationId)?.callId === call.id) {
+          activeBatchRunsRef.current.delete(run.conversationId);
+          if (activeConversationIdRef.current === run.conversationId) {
+            syncActiveConversationActivity(run.conversationId);
+          }
         }
-        call.completedAt = Date.now();
-        patchThinkingStep(run.assistantMessageId, `tool-${index}`, {
-          type: call.toolName === 'web_search' ? 'search' : 'tool',
-          title: getChatToolStepTitle(call.toolName, call.status),
-          status: call.status,
-        });
-        await upsertChatToolCall(call);
-        toolMessages.push({
-          role: 'tool',
-          tool_call_id: call.id,
-          content: call.status === 'error'
-            ? call.resultJson
-            : serializeChatToolResult(compactChatToolResultForProvider(call.toolName, routed.result)),
-        });
-        if (call.toolName === 'generate_image' || call.toolName === 'generate_image_variants' || call.toolName === 'edit_image' || call.toolName === 'batch_image_operation') {
-          await notifyGeneratedMedia();
-        }
-        await notifyBatchCompleted(call.status === 'cancelled');
-      } catch (error) {
-        call.status = batchController?.signal.aborted ? 'cancelled' : 'error';
-        call.resultJson = serializeChatToolResult(batchController?.signal.aborted
-          ? { cancelled: true, error: '图片任务已停止' }
-          : { error: String(error) });
-        call.completedAt = Date.now();
-        patchThinkingStep(run.assistantMessageId, `tool-${index}`, {
-          type: call.toolName === 'web_search' ? 'search' : 'tool',
-          title: getChatToolStepTitle(call.toolName, call.status),
-          detail: call.status === 'error' ? '工具执行未完成' : '用户停止执行',
-          status: call.status,
-        }, true);
-        await upsertChatToolCall(call).catch(() => {});
-        toolMessages.push({ role: 'tool', tool_call_id: call.id, content: call.resultJson });
-        await notifyBatchCompleted(call.status === 'cancelled');
+        patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls) }), true);
       }
-      if (activeBatchRunsRef.current.get(run.conversationId)?.callId === call.id) {
-        activeBatchRunsRef.current.delete(run.conversationId);
-        if (activeConversationIdRef.current === run.conversationId) {
-          syncActiveConversationActivity(run.conversationId);
+      pendingApprovalsRef.current.delete(run.conversationId);
+      if (run.executionSource === 'rhino') {
+        const currentCalls = getConversationMessages(run.conversationId).find(message => message.id === run.assistantMessageId)?.toolCalls || [];
+        if (repeatedGhLoopFailureAfterCorrection(currentCalls, run.calls)) {
+          const skippedCalls = run.calls.filter(call => call.status === 'pending');
+          for (const skipped of skippedCalls) {
+            skipped.status = 'cancelled';
+            skipped.completedAt = Date.now();
+            skipped.resultJson = serializeChatToolResult({ cancelled: true, error: 'Stopped after the GH loop-closure error persisted across a correction; this tool was not dispatched.' });
+            await upsertChatToolCall(skipped).catch(() => {});
+          }
+          patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
+            ...message,
+            toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls),
+            content: [normalizeVisibleChatText(message.content), 'GH 轮廓/孔环闭合检查在一次定向修正后仍然失败（Rhino 报告 Invalid hole loop 或等价未闭合环错误）。为避免继续循环改写图，本轮自动停止；已执行步骤和现有 GH 定义保留，未重放先前写入。请检查报错组件的外轮廓与孔环是否各自闭合、共面且无自交。'].filter(Boolean).join('\n\n'),
+          }, 'error', Date.now(), 'Grasshopper loop closure still invalid after one correction'), true);
+          updateConversationBusy(run.conversationId, false);
+          return;
         }
       }
-      patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls) }), true);
+      if (run.calls.some(call => call.status === 'cancelled')) {
+        patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
+          ...message,
+          content: message.content.trim() || '已停止批量处理，已完成的图片结果已保留。',
+        }, 'cancelled', Date.now(), '用户停止生成'), true);
+        updateConversationBusy(run.conversationId, false);
+        return;
+      }
+      if (cancelledToolRunsRef.current.has(run.conversationId)) {
+        patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
+          ...message,
+          toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls),
+          content: message.content.trim() || 'Rhino ?????????????????????????????????',
+        }, 'cancelled', Date.now(), 'Rhino workflow stopped after the current native call'), true);
+        cancelledToolRunsRef.current.delete(run.conversationId);
+        updateConversationBusy(run.conversationId, false);
+        return;
+      }
+      // Native success is a step receipt, not a turn-completion signal. Feed it
+      // back to the model so startup/search/place/connect/solve chains continue.
+      const presentationText = resolvePresentationTurnText(run.userText, getConversationMessages(run.conversationId));
+      const completedBatchCall = !presentationText && run.calls.find(call => call.toolName === 'batch_image_operation');
+      if (completedBatchCall) {
+        const summary = summarizeCompletedBatchCall(completedBatchCall);
+        patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
+          ...message,
+          content: [normalizeVisibleChatText(message.content), summary.content]
+            .filter(Boolean)
+            .join('\n\n'),
+        }, summary.status, Date.now(), summary.status === 'error' ? '批量处理未完全完成' : undefined), true);
+        updateConversationBusy(run.conversationId, false);
+        void maybeSummarize(run.conversationId);
+        return;
+      }
+      const visibleCompletion = summarizeCompletedVisibleToolCalls(run.calls);
+      if (visibleCompletion && !shouldContinuePresentationAfterMedia(presentationText, run.calls)) {
+        patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
+          ...message,
+          content: [normalizeVisibleChatText(message.content), visibleCompletion.content]
+            .filter(Boolean)
+            .join('\n\n'),
+        }, 'completed'), true);
+        updateConversationBusy(run.conversationId, false);
+        void maybeSummarize(run.conversationId);
+        return;
+      }
+      await runModelLoopRef.current(
+        run.conversationId,
+        run.assistantMessageId,
+        run.userText,
+        run.requestModel,
+        [...run.providerMessages, ...toolMessages, ...rhinoVisionMessages],
+        run.depth + 1,
+        undefined,
+        run.emptyRecoveryCount,
+        run.executionSource,
+      );
+    } finally {
+      if (activeToolMessagesRef.current.get(run.conversationId) === run.assistantMessageId) {
+        activeToolMessagesRef.current.delete(run.conversationId);
+        if (activeConversationIdRef.current === run.conversationId) syncActiveConversationActivity(run.conversationId);
+      }
     }
-    pendingApprovalsRef.current.delete(run.conversationId);
-    if (run.calls.some(call => call.status === 'cancelled')) {
-      patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
-        ...message,
-        content: message.content.trim() || '已停止批量处理，已完成的图片结果已保留。',
-      }, 'cancelled', Date.now(), '用户停止生成'), true);
-      updateConversationBusy(run.conversationId, false);
-      return;
-    }
-    const presentationText = resolvePresentationTurnText(run.userText, getConversationMessages(run.conversationId));
-    const completedBatchCall = !presentationText && run.calls.find(call => call.toolName === 'batch_image_operation');
-    if (completedBatchCall) {
-      const summary = summarizeCompletedBatchCall(completedBatchCall);
-      patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
-        ...message,
-        content: [normalizeVisibleChatText(message.content), summary.content]
-          .filter(Boolean)
-          .join('\n\n'),
-      }, summary.status, Date.now(), summary.status === 'error' ? '批量处理未完全完成' : undefined), true);
-      updateConversationBusy(run.conversationId, false);
-      void maybeSummarize(run.conversationId);
-      return;
-    }
-    const visibleCompletion = summarizeCompletedVisibleToolCalls(run.calls);
-    if (visibleCompletion && !shouldContinuePresentationAfterMedia(presentationText, run.calls)) {
-      patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
-        ...message,
-        content: [normalizeVisibleChatText(message.content), visibleCompletion.content]
-          .filter(Boolean)
-          .join('\n\n'),
-      }, 'completed'), true);
-      updateConversationBusy(run.conversationId, false);
-      void maybeSummarize(run.conversationId);
-      return;
-    }
-    await runModelLoopRef.current(
-      run.conversationId,
-      run.assistantMessageId,
-      run.userText,
-      run.requestModel,
-      [...run.providerMessages, ...toolMessages],
-      run.depth + 1,
-      undefined,
-      run.emptyRecoveryCount,
-    );
   }, [
     getConversationMessages,
     maybeSummarize,
@@ -1332,6 +1595,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     depth: number,
     resumeRequestId?: string,
     emptyRecoveryCount = 0,
+    executionSource: ChatExecutionSource = optionsRef.current.defaultExecutionSource || 'desktop',
   ) => {
     await validateDesignMemoryMessages(providerMessages);
     const memoryKinds = designMemoryKindsInMessages(providerMessages);
@@ -1350,18 +1614,13 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     const currentImageAttachmentCount = imageSelection.attachments.length;
     const presentationText = resolvePresentationTurnText(userText, conversationMessages);
     const toolIntentText = presentationText || imageSelection.toolIntentText;
-    if (!presentationText && !canRunChatToolRound(depth)) throw new Error(`连续工具调用超过 ${MAX_TOOL_ROUNDS} 轮，已停止`);
+    if (!presentationText && !canRunChatToolRound(depth, executionSource)) throw new Error(`\u8fde\u7eed\u5de5\u5177\u8c03\u7528\u8d85\u8fc7 ${chatToolRoundLimit(executionSource)} \u8f6e\uff0c\u5df2\u505c\u6b62`);
     const agentCreationFollowup = isChatAgentCreationFollowup(conversationMessages, userText);
-    const directVisualTool = resolveDirectVisualTool(
-      toolIntentText,
-      hasRecentMedia,
-      currentImageAttachmentCount,
-    );
-    const independentImageVariantsRequested = shouldUseIndependentImageVariants(toolIntentText);
-    const compositeImageVariantsRequested = shouldComposeImageVariants(toolIntentText);
-    const batchImageOperationRequested = !independentImageVariantsRequested && shouldExposeBatchImageOperation(
+    const rhinoGeometryRequest = executionSource === 'rhino' && isRhinoGeometryOnlyRequest(userText);
+    const batchImageOperationRequested = !rhinoGeometryRequest && shouldExposeBatchImageOperation(
       toolIntentText,
       currentImageAttachmentCount,
+      userText,
     );
     // Tool calls in older conversation history must not block a new user turn.
     const previousWebSearchQueries = new Set(
@@ -1378,13 +1637,13 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     const previousImageVariantCount = depth === 0
       ? 0
       : providerToolCallCount(providerMessages, 'generate_image_variants');
-    const previousCompositeImageCount = depth === 0 || !compositeImageVariantsRequested
-      ? 0
-      : providerToolCallCount(providerMessages, 'generate_image');
     const webSearchCount = previousWebSearchQueries.size;
     const searchEvidence = collectChatSearchEvidence(providerMessages);
     const searchResultCount = searchEvidence.reduce((sum, item) => sum + item.results.length, 0);
     const recoverSearchSynthesis = emptyRecoveryCount > 0 && searchResultCount > 0;
+    const lastProviderMessage = providerMessages[providerMessages.length - 1];
+    const repairingRhinoArguments = executionSource === 'rhino' && lastProviderMessage?.role === 'system'
+      && String(lastProviderMessage.content || '').startsWith('A typed Rhino preflight/runtime compatibility check ');
     const recoverPresentationDelivery = Boolean(presentationText && emptyRecoveryCount > 0);
     const webSearchRequested = webSearchEnabled || shouldExposeWebSearch(userText);
     const webSearchAvailable = webSearchRequested
@@ -1401,14 +1660,18 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         currentImageAttachmentCount,
         Boolean(getSelectedChatSkill(conversationId)),
         agentCreationFollowup,
+        userText,
+        currentImageAttachmentCount > 0 || (hasRecentMedia && (isShortVisualFollowup(userText) || isVisualRevisionFollowup(userText) || isVisualEditFollowup(userText))),
       ).filter(tool => (
-        (!(recoverSearchSynthesis || recoverPresentationDelivery) || tool.function.name === 'create_file')
+        (!rhinoGeometryRequest || !['generate_image', 'edit_image', 'generate_image_variants', 'generate_video', 'batch_image_operation'].includes(tool.function.name))
+        && (!(recoverSearchSynthesis || recoverPresentationDelivery) || tool.function.name === 'create_file')
         && (previousBatchImageOperationCount === 0 || tool.function.name !== 'batch_image_operation')
         && (presentationText || previousImageVariantCount === 0 || tool.function.name !== 'generate_image_variants')
-        && (previousCompositeImageCount === 0 || tool.function.name !== 'generate_image')
       ));
     const requestInstructions: Array<Record<string, unknown>> = [];
-    tools.push(...(optionsRef.current.additionalTools?.(conversationId) || []));
+    tools.push(...(optionsRef.current.additionalTools?.(conversationId, executionSource) || []));
+    if (executionSource === 'rhino') requestInstructions.push({ role: 'system', content: `${buildRhinoTurnInstruction()}\n${buildRhinoWorkflowInstruction()}` });
+    if (rhinoGeometryRequest) requestInstructions.push({ role: 'system', content: 'This is a native Rhino geometry task. Use the attached canvas images as shape references for actual Rhino/Grasshopper modeling. Do not substitute generated images, and do not require a non-empty Rhino viewport before building geometry. Verify real objects/graph results before reporting completion.' });
     if (presentationText) requestInstructions.push({ role: 'system', content: [
       '本轮最终交付是可下载的 PPTX，不是配图。纯数据或已有素材足够时不要额外生图；工业设计研究先找与当前研究对象相关、可核验的参考图；仅有必要且用户允许时生成并标注 AI 概念示意。已有合适附件时优先复用，不为了视觉装饰强制付费生图。无图片时用原生图示解释结构，不把示意图冒充真实产品照片。',
       'PPT 配图不设每份调用次数或图片总数上限，按真实内容需要决定，不为凑图重复生成；单次请求仍遵守所选生图模型的规格。',
@@ -1418,39 +1681,26 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       '研究检索先拆成 2～4 个具体问题：对象与范围、代表产品/车型及年款、造型/按键/调节/CMF 的同口径证据，优先官方产品页、手册和有出处的图片，避免一条关键词堆满多个品牌后就收尾。过滤配件商城、重复版本和无关结果；只有一个有效案例时收敛为研究启动稿，不伪装成完整竞品调研。',
       '联网检索必须先做研究综合再做排版：每页只保留一个结论、2～4 条短证据和必要来源；优先合并同一事实的多个来源，区分已证实事实、推断和待验证项。禁止把搜索结果、网页摘要、JSON、URL 列表或长段原文直接塞进 body/items/notes；长细节放讲稿 notes 也必须压缩成要点。',
     ].join('\n') });
+    if (!rhinoGeometryRequest && tools.some(tool => ['generate_image', 'generate_image_variants', 'edit_image'].includes(tool.function.name))) {
+      requestInstructions.push({ role: 'system', content: [
+        'Judge visual intent semantically from the latest user request, relevant conversation context, and actual attachments. Do not require words such as generate, image, render, or any fixed subject/domain vocabulary; users may express a visual goal indirectly or in specialist language.',
+        'Call an image tool only when the user actually wants a new visual deliverable or an edit to an existing image. Do not call one for discussion, analysis, evaluation, explanations, advice, brainstorming alone, capability questions, unrelated text work, or explicit requests to wait or defer. Tool visibility, an attachment, or an assistant suggestion is not authorization.',
+        'Writing, drafting, translating, polishing, explaining, or improving an image-generation prompt is a text-only deliverable. A prompt that describes an image, says "generate an image", or names an image model is not permission to render it. Generate the actual image only when the user separately asks for image output (for example, "write the prompt, then render it").',
+        'Choose between generation, editing the current attachment, editing a relevant recent result, one composite image, or separate variants based on context. Reuse prior images only when relevant; respect model, aspect-ratio, resolution, and other user settings; never invent attachment paths.',
+        'If the user previously asked to wait for a reference, continue that visual task only when the new message actually supplies the reference and the task remains active. An assistant suggestion alone is not authorization.',
+        'If image tools are unavailable or fail, say so accurately. Never claim an image was generated or edited until a real image is returned.',
+      ].join('\n') });
+    }
     if (agentCreationFollowup && !agentCreatedThisTurn) {
       requestInstructions.push({
         role: 'system',
         content: '当前消息是在补充此前创建智能体/技能的需求。结合前文判断用途是否已足够明确：足够明确就调用 create_agent 真正保存；若仍缺少职责或目标，继续询问。不要只给出技能文本却声称已创建。',
       });
     }
-    if (independentImageVariantsRequested && previousImageVariantCount === 0) {
+    if (!presentationText && previousImageVariantCount > 0) {
       requestInstructions.push({
         role: 'system',
-        content: [
-          '用户要求的是同一参考对象下多个语义不同的方向/方案/版本各自独立出图。必须调用一次 generate_image_variants。',
-          '根据用户真实语义提炼 variants，不要套用固定领域模板。每个 variant 只描述自身方向；sharedRequirements 写所有方向共同保持的主体身份与视觉连续性。',
-          '禁止调用单 prompt 的 generate_image 并设置 count，也禁止在任一方案图里拼入其他方案。',
-        ].join('\n'),
-      });
-    } else if (!presentationText && previousImageVariantCount > 0) {
-      requestInstructions.push({
-        role: 'system',
-        content: '独立方案图片任务已经执行过。禁止再次调用图片生成工具；请根据工具结果按方案名称简洁汇总成功与失败情况。',
-      });
-    }
-    if (compositeImageVariantsRequested && previousCompositeImageCount === 0) {
-      requestInstructions.push({
-        role: 'system',
-        content: [
-          '用户明确要求把多个方案放进同一张图、同一画面、拼版或对比板中。必须调用 generate_image，count 固定为 1。',
-          '在一个完整 prompt 中写清各方案的差异和同图布局。不要调用 generate_image_variants，也不要生成多张随机候选。',
-        ].join('\n'),
-      });
-    } else if (compositeImageVariantsRequested && previousCompositeImageCount > 0) {
-      requestInstructions.push({
-        role: 'system',
-        content: '包含多个方案的单张合成图任务已经执行过。禁止再次调用图片工具；请根据已有工具结果简洁汇总。',
+        content: 'The independent-variant image task has already run this turn. Do not call image-generation tools again; summarize success and failure from the actual tool results.',
       });
     }
     if (batchImageOperationAvailable) {
@@ -1534,17 +1784,29 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       recoveryCount: emptyRecoveryCount,
     });
     const continuePresentationTools = Boolean(presentationText && presentationHasImageResults && tools.length);
-    const toolChoice = presentationToolChoice
-      ? presentationToolChoice
+    const currentTurnToolCalls = conversationMessages.find(message => message.id === assistantMessageId)?.toolCalls || [];
+    const ghRecoveryState = executionSource === 'rhino'
+      ? rhinoGhReflectionRecoveryState(currentTurnToolCalls, false)
+      : 'none';
+    const repairRejection = repairingRhinoArguments ? unresolvedRhinoArgumentRejection(currentTurnToolCalls) : undefined;
+    const repairToolName = ghRecoveryState === 'inspect'
+      ? 'rhino_native_g2_get_canvas_graph'
+      : ghRecoveryState === 'continue' || ghRecoveryState === 'complete' || ghRecoveryState === 'failed'
+        ? undefined
+        : repairRejection?.toolName;
+    const requiresGhVerificationRound = executionSource === 'rhino' && providerMessages.some(message => message.role === 'system' && String(message.content || '').startsWith('Grasshopper completion requires structural verification.'));
+    const toolChoice = requiresGhVerificationRound && tools.some(tool => tool.function.name === VERIFY_GH_TOOL)
+      ? {type:'function',function:{name:VERIFY_GH_TOOL}}
+      : repairToolName && tools.some(tool => tool.function.name === repairToolName)
+      ? { type: 'function', function: { name: repairToolName } }
+      : executionSource === 'rhino' && String(lastProviderMessage?.content || '').startsWith('Controlled profile validation is not a commit.') && tools.some(tool => tool.function.name === SAFE_PROFILE_TOOL)
+        ? { type: 'function', function: { name: SAFE_PROFILE_TOOL } }
+      : presentationToolChoice ? presentationToolChoice
       : continuePresentationTools ? 'required'
       : shouldForceChatAgentCreation(userText)
       && !agentCreatedThisTurn && tools.some(tool => tool.function.name === 'create_agent')
       ? { type: 'function', function: { name: 'create_agent' } }
-      : independentImageVariantsRequested && previousImageVariantCount === 0
-        ? { type: 'function', function: { name: 'generate_image_variants' } }
-        : compositeImageVariantsRequested && previousCompositeImageCount === 0
-          ? { type: 'function', function: { name: 'generate_image' } }
-          : undefined;
+      : undefined;
     let result: ChatProviderResult | undefined;
     let expectedRequestId = requestId;
     try {
@@ -1556,7 +1818,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         toolChoice,
         model: providerRequestModel,
         usageContext: 'chat',
-        stream: !(recoverSearchSynthesis || recoverPresentationDelivery),
+        stream: !(recoverSearchSynthesis || recoverPresentationDelivery || repairingRhinoArguments),
       });
     } catch (initialError) {
       let recoveryError = initialError;
@@ -1688,78 +1950,93 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       acceptedWebSearchQueries.add(query);
       return true;
     });
-    const assistantContextTexts = conversationMessages
-      .filter(message => (
-        message.id !== assistantMessageId
-        && message.role === 'assistant'
-        && message.content.trim()
-      ))
-      .sort((left, right) => right.createdAt - left.createdAt)
-      .map(message => message.content);
-    const missingVisualToolFallback = independentImageVariantsRequested
-      ? buildIndependentImageVariantFallback({
-          userText,
-          toolIntentText,
-          assistantTexts: [result.content, ...assistantContextTexts],
-        })
-      : compositeImageVariantsRequested
-        ? buildCompositeImageVariantFallback({
-            userText,
-            toolIntentText,
-            assistantTexts: [result.content, ...assistantContextTexts],
-          })
-        : directVisualTool
-          ? { prompt: toolIntentText }
-          : undefined;
-    const missingVisualToolName = independentImageVariantsRequested
-      ? 'generate_image_variants'
-      : compositeImageVariantsRequested
-        ? 'generate_image'
-        : directVisualTool;
-    if (
-      depth === 0
-      && toolCalls.length === 0
-      && !batchImageOperationRequested
-      && missingVisualToolName
-      && missingVisualToolFallback
-    ) {
-      const fallbackCall: ChatToolCall = {
-        id: createChatId('chat-tool'),
-        messageId: assistantMessageId,
-        toolName: missingVisualToolName,
-        argumentsJson: JSON.stringify(applyChatImageGenerationSettings(
-          missingVisualToolFallback,
-          optionsRef.current,
-        )),
-        status: 'pending',
-        createdAt: Date.now(),
-      };
-      await upsertChatToolCall(fallbackCall);
-      patchMessage(assistantMessageId, message => ({ ...message, content: '', toolCalls: [fallbackCall] }), true);
-      const fallbackAssistantToolMessage = {
-        role: 'assistant',
-        content: null,
-        tool_calls: [{
-          id: fallbackCall.id,
-          type: 'function',
-          function: { name: fallbackCall.toolName, arguments: fallbackCall.argumentsJson },
-        }],
-      };
-      await continueToolCalls({
-        conversationId,
-        assistantMessageId,
-        userText,
-        requestModel,
-        providerMessages: [...providerMessages, fallbackAssistantToolMessage],
-        calls: [fallbackCall],
-        index: 0,
-        toolMessages: [],
-        depth,
-        emptyRecoveryCount,
-      });
-      return;
-    }
     if (toolCalls.length === 0) {
+      const ghTurnCalls = getConversationMessages(conversationId).find(message => message.id === assistantMessageId)?.toolCalls || [];
+      const needsGhVerification = executionSource === 'rhino' && Boolean(getRhinoNativeTool(VERIFY_GH_TOOL, conversationId)) && collectGhPythonComponentIds(ghTurnCalls).length>0;
+      if (needsGhVerification) {
+        const lastGhCheck = [...ghTurnCalls].reverse().find(call => call.toolName === VERIFY_GH_TOOL && call.status === 'completed');
+        let checkPassed = false;
+        try { checkPassed = JSON.parse(lastGhCheck?.resultJson || '{}').ghVerification?.status === 'passed'; } catch { /* No verified receipt. */ }
+        const lastMutation = [...ghTurnCalls].reverse().find(call => call.toolName !== VERIFY_GH_TOOL && !/get_|search|describe/.test(call.toolName) && call.status === 'completed');
+        const fresh = lastGhCheck && (!lastMutation || (lastGhCheck.completedAt || 0) >= (lastMutation.completedAt || 0));
+        if (!checkPassed || !fresh) {
+          const alreadyChecked = providerMessages.some(message => message.role === 'system' && String(message.content || '').startsWith('Grasshopper completion requires structural verification.'));
+          if (!alreadyChecked) {
+            await runModelLoopRef.current(conversationId, assistantMessageId, userText, requestModel,
+              [...providerMessages, {role:'system',content:'Grasshopper completion requires structural verification. Call rhino_native_verify_gh_geometry; runtime supplies exact component IDs from successful code-change receipts. The helper is read-only and checks actual outward solids, bounds, volumes, Boolean guard reports and component errors. If verification needs attention, inspect and correct the graph; never claim completion from one closed Brep alone. This does NOT establish photo fidelity.'}],
+              depth+1,undefined,emptyRecoveryCount,executionSource);
+            return;
+          }
+          patchMessage(assistantMessageId,message=>finalizeChatMessageState({...message,content:'GH \u4efb\u52a1\u5c1a\u672a\u901a\u8fc7\u7ed3\u6784\u5b8c\u6574\u6027\u9a8c\u8bc1\u3002\u5fc5\u987b\u68c0\u67e5\u5b9e\u4f53\u671d\u5411\u3001\u4f53\u79ef\u548c\u5305\u56f4\u76d2\uff0c\u4e0d\u80fd\u53ea\u51ed\u4e00\u4e2a\u5c01\u95ed Brep \u5224\u65ad\u5efa\u6a21\u5b8c\u6210\u3002\u5f53\u524d GH \u5df2\u4fdd\u7559\uff0c\u672a\u81ea\u52a8\u91cd\u653e\u6216\u6e05\u7a7a\u3002'},'error',Date.now(),'GH structural verification incomplete'),true);
+          updateConversationBusy(conversationId,false);
+          return;
+        }
+      }
+      const currentNativeCalls = getConversationMessages(conversationId).find(message => message.id === assistantMessageId)?.toolCalls || [];
+      const documentGeometryWrites=currentNativeCalls.filter(call=>call.status==='completed'&&['rhino_native_run_command','rhino_native_run_python','rhino_native_run_csharp'].includes(call.toolName)&&(()=>{try{return Boolean(JSON.parse(call.resultJson||'{}').geometryVerification)}catch{return false}})());
+      if(executionSource==='rhino'&&documentGeometryWrites.length>0){
+        const latest=documentGeometryWrites[documentGeometryWrites.length-1];
+        let geometryReport:Record<string,unknown>={status:'inspection_failed'};
+        try{geometryReport=JSON.parse(latest.resultJson||'{}').geometryVerification||geometryReport}catch{/* preserve unknown state */}
+        if(geometryReport.status!=='passed'){
+          const hadRecovery=providerMessages.some(message=>message.role==='system'&&String(message.content||'').startsWith('Rhino document geometry validation requires a correction.'));
+          if(!hadRecovery){
+            await runModelLoopRef.current(conversationId,assistantMessageId,userText,requestModel,
+              [...providerMessages,{role:'system',content:'Rhino document geometry validation requires a correction. The previous native write WAS dispatched and must NEVER be replayed. Exact before/after geometry verification: '+JSON.stringify(geometryReport)+'. Inspect current Rhino objects and viewport; do not repeat the same command/script. If the original geometry is absent or invalid, issue a deliberate new corrective edit once. Preserve unrelated existing objects. The bridge will snapshot and compare that correction. Structural validity/bounds do not establish photo fidelity; compare actual viewport to the reference.'}],
+              depth+1,undefined,emptyRecoveryCount,executionSource);
+            return;
+          }
+          patchMessage(assistantMessageId,message=>finalizeChatMessageState({...message,content:'Rhino \u5b9e\u4f53\u5efa\u6a21\u672a\u901a\u8fc7\u524d\u540e\u7ed3\u6784\u6821\u9a8c\uff1a'+String(geometryReport.explanation||geometryReport.status)+'. \u5df2\u6267\u884c\u7684\u5bf9\u8c61\u4fdd\u7559\uff0c\u672a\u91cd\u653e\u811a\u672c\u3002'},'error',Date.now(),'Rhino document geometry verification failed'),true);
+          updateConversationBusy(conversationId,false);
+          return;
+        }
+      }
+      const profileCalls = currentNativeCalls.filter(call => call.toolName === SAFE_PROFILE_TOOL && call.status === 'completed');
+      const validatedOnly = rhinoGeometryRequest && profileCalls.length > 0 && !profileCalls.some(call => {
+        try { return JSON.parse(call.resultJson || '{}').status === 'committed'; } catch { return false; }
+      });
+      if (validatedOnly) {
+        const alreadyContinued = providerMessages.some(message => message.role === 'system' && String(message.content || '').startsWith('Controlled profile validation is not a commit.'));
+        if (!alreadyContinued) {
+          await runModelLoopRef.current(conversationId, assistantMessageId, userText, requestModel,
+            [...providerMessages, { role:'system', content:'Controlled profile validation is not a commit. The user asked to build actual Rhino geometry. Use rhino_native_safe_profile_solids with mode commit and the complete validated plan once, then verify returned object IDs. Validation alone must not be reported as modeling complete.' }],
+            depth + 1, undefined, emptyRecoveryCount, executionSource);
+          return;
+        }
+        patchMessage(assistantMessageId, message => finalizeChatMessageState({ ...message, content:'Rhino \u51e0\u4f55\u9884\u68c0\u5df2\u901a\u8fc7\uff0c\u4f46\u6a21\u578b\u672a\u5b8c\u6210\u5b9e\u4f53\u5199\u5165\u3002\u5f53\u524d\u4e0d\u80fd\u6807\u8bb0\u4e3a\u5efa\u6a21\u5b8c\u6210\u3002' }, 'error',Date.now(),'Safe profile plan not committed'),true);
+        updateConversationBusy(conversationId,false);
+        return;
+      }
+      const currentTurnToolCalls = getConversationMessages(conversationId).find(message => message.id === assistantMessageId)?.toolCalls || [];
+      const ghRecoveryContinuationIssued = providerMessages.some(message => message.role === 'system'
+        && String(message.content || '').startsWith('GH reflection recovery continuation issued.'));
+      const ghRecoveryState = executionSource === 'rhino'
+        ? rhinoGhReflectionRecoveryState(currentTurnToolCalls, ghRecoveryContinuationIssued)
+        : 'none';
+      if (ghRecoveryState === 'continue' && !ghRecoveryContinuationIssued) {
+        await runModelLoopRef.current(conversationId, assistantMessageId, userText, requestModel,
+          [...providerMessages, { role: 'system', content: 'GH reflection recovery continuation issued. The read-only GH2 canvas inspection succeeded. Use this single continuation to perform the requested modeling with native GH2 tools: preserve the existing graph, discover components as needed, add/connect components, solve, read diagnostics, and verify. Do not call run_python to enumerate assemblies or repeat the failed probe.' }],
+          depth + 1, undefined, emptyRecoveryCount, executionSource);
+        return;
+      }
+      if (ghRecoveryState === 'failed' || (ghRecoveryState === 'continue' && ghRecoveryContinuationIssued)) {
+        patchMessage(assistantMessageId, message => finalizeChatMessageState({
+          ...message,
+          content: [normalizeVisibleChatText(message.content), 'GH ???????????? GH2 ?????????????????????????????????? Rhino??????????????'].filter(Boolean).join('\n\n'),
+        }, 'error', Date.now(), 'GH2 recovery round did not build a graph'), true);
+        updateConversationBusy(conversationId, false);
+        return;
+      }
+      const unresolvedArguments = ghRecoveryState === 'complete' ? undefined
+        : executionSource === 'rhino' ? unresolvedRhinoArgumentRejection(currentTurnToolCalls) : undefined;
+      if (unresolvedArguments) {
+        patchMessage(assistantMessageId, message => finalizeChatMessageState({
+          ...message,
+          content: JSON.parse(unresolvedArguments.resultJson || '{}').kind === RHINO_SCRIPT_PREFLIGHT_REJECTION ? `Rhino 脚本预检未通过：${unresolvedArguments.toolName}\n本次被拒绝的脚本没有发送到 Rhino，尚未执行。请查看工具回执中的导入或 API 诊断；先前成功的步骤已保留，不会重放。` : JSON.parse(unresolvedArguments.resultJson || '{}').kind === GEOMETRY_PREFLIGHT_REJECTION ? `Rhino 几何预检未通过：${unresolvedArguments.toolName}\n本次几何计划未提交；请查看具体冲突，现有模型保持不变。` : `Rhino MCP 参数检查未通过：${unresolvedArguments.toolName}\n本次调用未发送到 Rhino，请查看工具参数诊断。`,
+        }, 'error', Date.now(), 'Native Rhino arguments remain unresolved'), true);
+        updateConversationBusy(conversationId, false);
+        return;
+      }
       const missingPresentationFile = needsPresentationDeliveryRecovery({
         requested: Boolean(presentationText),
         createFileAvailable: tools.some(tool => tool.function.name === 'create_file'),
@@ -1774,7 +2051,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           patchThinkingStep(assistantMessageId, 'presentation-delivery', { type: 'finalizing',
             title: '正在补全 PPT 文件交付', detail: '已提供文件工具；保留现有检索资料和配图，仅重试文件生成', status: 'running' });
           await runModelLoopRef.current(conversationId, assistantMessageId, userText, requestModel,
-            providerMessages, depth, undefined, emptyRecoveryCount + 1);
+            providerMessages, depth, undefined, emptyRecoveryCount + 1, executionSource);
           return;
         }
         patchMessage(assistantMessageId, message => finalizeChatMessageState({
@@ -1824,6 +2101,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           depth,
           undefined,
           emptyRecoveryCount + 1,
+          executionSource,
         );
         return;
       }
@@ -1841,16 +2119,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       if (call.name !== 'generate_image_variants') return call;
       try {
         const args = parseArguments(call.arguments || '{}');
-        const fallbackVariants = independentImageVariantsRequested
-          && missingVisualToolFallback
-          && 'variants' in missingVisualToolFallback
-          ? missingVisualToolFallback.variants
-          : undefined;
-        const route = resolveImageVariantToolRoute({
-          args,
-          fallbackVariants,
-          requireMultiple: independentImageVariantsRequested,
-        });
+        const route = resolveImageVariantToolRoute({ args, requireMultiple: false });
         return {
           ...call,
           name: route.toolName,
@@ -1942,6 +2211,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         toolMessages: [],
         depth,
         emptyRecoveryCount,
+        executionSource,
       });
       updateConversationBusy(conversationId, false);
       return;
@@ -1968,6 +2238,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       toolMessages: [],
       depth,
       emptyRecoveryCount,
+      executionSource,
     });
   }, [
     continueToolCalls,
@@ -1987,10 +2258,12 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     selectedModel?: string,
     onAccepted?: () => void,
     resumeRequestId?: string,
+    executionSource: ChatExecutionSource = 'desktop',
+    targetConversationId?: string,
   ) => {
     const text = content.trim();
     if (!text && pendingAttachments.length === 0) return false;
-    let conversation = conversationsRef.current.find(item => item.id === activeConversationIdRef.current);
+    let conversation = conversationsRef.current.find(item => item.id === (targetConversationId || activeConversationIdRef.current));
     const pendingPlan = conversation
       ? pendingApprovalsRef.current.get(conversation.id)
       : undefined;
@@ -2167,7 +2440,10 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       }
     }
     const conversationId = conversation.id;
-    if (!resumeRequestId) recoverableRequestIdsRef.current.delete(conversationId);
+    if (!resumeRequestId) {
+      recoverableRequestIdsRef.current.delete(conversationId);
+      cancelledToolRunsRef.current.delete(conversationId);
+    }
     const requestSummary = summaryRef.current?.conversationId === conversationId
       ? summaryRef.current
       : null;
@@ -2338,6 +2614,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         providerMessages,
         0,
         resumeRequestId,
+        0,
+        executionSource,
       );
       if (optionsRef.current.cloudWalletMode) {
         optionsRef.current.onWalletSettlementComplete?.();
@@ -2350,6 +2628,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       const currentAssistantMessage = messageCacheRef.current.get(assistantMessage.id);
       const interruptedPresentation = resolvePresentationTurnText(userMessage.content, getConversationMessages(conversationId));
       const pendingPresentation = shouldContinuePresentationAfterMedia(interruptedPresentation, currentAssistantMessage?.toolCalls || []);
+      const hasNativeCheckpoint = executionSource === 'rhino' && currentAssistantMessage?.toolCalls.some(call => (
+        call.toolName.startsWith('rhino_native_') && call.status === 'completed'
+      ));
       const visibleCompletion = pendingPresentation ? null : summarizeCompletedVisibleToolCalls(
         currentAssistantMessage?.toolCalls || [],
       );
@@ -2366,7 +2647,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         }, 'completed')
         : finalizeChatMessageState({
           ...message,
-          content: pendingPresentation ? presentationInterruptedMessage(message.toolCalls) + '\n' + visibleChatRequestError(error) : message.content.trim() || (cancelled ? '已停止生成。' : visibleChatRequestError(error)),
+          content: hasNativeCheckpoint && !cancelled
+            ? [message.content.trim(), `Rhino MCP \u540e\u7eed\u6b65\u9aa4\u672a\u5b8c\u6210\uff1a${visibleChatRequestError(error)}\n\u5df2\u6267\u884c\u7684\u5de5\u5177\u6b65\u9aa4\u5df2\u4fdd\u7559\uff0c\u4e0d\u4f1a\u81ea\u52a8\u91cd\u653e\u3002`].filter(Boolean).join('\n\n')
+            : pendingPresentation ? presentationInterruptedMessage(message.toolCalls) + '\n' + visibleChatRequestError(error) : message.content.trim() || (cancelled ? '已停止生成。' : visibleChatRequestError(error)),
         }, cancelled ? 'cancelled' : 'error', Date.now(), cancelled ? '用户停止生成' : '连接中断'), true);
       const failedRequest = activeRequestsRef.current.get(conversationId);
       if (failedRequest?.messageId === assistantMessage.id) {
@@ -2408,8 +2691,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     updateConversationBusy,
   ]);
 
-  const stop = useCallback(async () => {
-    const conversationId = activeConversationIdRef.current;
+  const stop = useCallback(async (targetConversationId?: string) => {
+    const conversationId = targetConversationId || activeConversationIdRef.current;
     const activeBatch = activeBatchRunsRef.current.get(conversationId);
     if (activeBatch) {
       activeBatch.controller.abort();
@@ -2420,7 +2703,13 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       return;
     }
     const active = activeRequestsRef.current.get(conversationId);
-    if (!active) return;
+    if (!active) {
+      if (activeToolMessagesRef.current.has(conversationId)) {
+        cancelledToolRunsRef.current.add(conversationId);
+        syncActiveConversationActivity(conversationId);
+      }
+      return;
+    }
     activeRequestsRef.current.delete(conversationId);
     flushStreamDelta(active.messageId);
     patchMessage(active.messageId, message => finalizeChatMessageState({
@@ -2504,27 +2793,44 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     })), undefined, undefined, resumeRequestId);
   }, [sendMessage]);
 
-  const selectConversation = useCallback((id: string) => {
+  const selectConversation = useCallback(async (id: string) => {
     if (id === activeConversationIdRef.current) return;
-    void loadConversation(id);
-  }, [loadConversation]);
-
-  const removeConversation = useCallback(async (id: string) => {
-    if (busyConversationIdsRef.current.has(id) || pendingApprovalsRef.current.has(id)) {
-      optionsRef.current.onNotice?.('该对话仍有任务在运行，请等待完成或先停止任务。');
+    const conversation = conversationsRef.current.find(item => item.id === id);
+    if (!conversation || !chatConversationInScope(conversation, conversationScope)) {
+      optionsRef.current.onNotice?.('? Chat ??????????????');
       return;
     }
-    await deleteChatConversation(id);
+    await loadConversation(id);
+  }, [conversationScope, loadConversation]);
+
+  const removeConversation = useCallback(async (id: string) => {
+    const conversation = conversationsRef.current.find(item => item.id === id);
+    if (!conversation || !chatConversationInScope(conversation, conversationScope)) return false;
+    if (busyConversationIdsRef.current.has(id) || pendingApprovalsRef.current.has(id) || activeToolMessagesRef.current.has(id)) {
+      optionsRef.current.onNotice?.('\u8be5\u5bf9\u8bdd\u4ecd\u6709\u4efb\u52a1\u5728\u8fd0\u884c\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210\u6216\u5148\u505c\u6b62\u4efb\u52a1\u3002');
+      return false;
+    }
+    if (!await deleteChatConversation(id)) return false;
     for (const [messageId, message] of messageCacheRef.current) {
-      if (message.conversationId === id) messageCacheRef.current.delete(messageId);
+      if (message.conversationId !== id) continue;
+      const persistTimer = persistTimersRef.current.get(messageId);
+      const streamTimer = streamFlushTimersRef.current.get(messageId);
+      if (persistTimer !== undefined) window.clearTimeout(persistTimer);
+      if (streamTimer !== undefined) window.clearTimeout(streamTimer);
+      persistTimersRef.current.delete(messageId);
+      streamFlushTimersRef.current.delete(messageId);
+      streamBuffersRef.current.delete(messageId);
+      messageCacheRef.current.delete(messageId);
     }
     const next = conversationsRef.current.filter(item => item.id !== id);
     conversationsRef.current = next;
     setConversations(next);
-    if (id !== activeConversationIdRef.current) return;
-    if (next[0]) await loadConversation(next[0].id);
-    else await createConversation();
-  }, [createConversation, loadConversation]);
+    if (id === activeConversationIdRef.current) {
+      if (next[0]) await loadConversation(next[0].id);
+      else await createConversation(optionsRef.current.model, conversationScope === 'rhino' ? 'Rhino \u5bf9\u8bdd' : undefined);
+    }
+    return true;
+  }, [conversationScope, createConversation, loadConversation]);
 
   const removeConversations = useCallback(async (ids: string[]) => {
     const requested = new Set(ids);
@@ -2581,5 +2887,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     setConversationModel,
     searchConversations,
     setWebSearchEnabled,
+    messagesForConversation: (id: string) => getConversationMessages(id),
+    isConversationBusy: (id: string) => busyConversationIdsRef.current.has(id) || pendingApprovalsRef.current.has(id),
+    isConversationStoppable: (id: string) => activeRequestsRef.current.has(id) || activeBatchRunsRef.current.has(id)
+      || (activeToolMessagesRef.current.has(id) && !cancelledToolRunsRef.current.has(id)),
   };
 }

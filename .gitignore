@@ -50,3 +50,7 @@ native-winui/**/obj/
 integrations/rhino/**/bin/
 integrations/rhino/**/obj/
 integrations/rhino/artifacts/
+
+release-assets/
+
+src-tauri/target-*/

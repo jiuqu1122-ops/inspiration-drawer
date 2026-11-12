@@ -10,6 +10,20 @@ export const TRIGGER_RESHOW_HOVER_GUARD_MS = 1200;
 export const TRIGGER_POSITION_DEFAULT_VERSION = '2026-05-right-bottom-float-center-edge';
 export type TriggerMode = 'edge' | 'float';
 
+export type TriggerDragState = 'idle' | 'ready' | 'saving' | 'success' | 'error';
+/** Float-only palette; keep capture success/error feedback and edge-strip colors. */
+export const floatingTriggerAppearance = (state: TriggerDragState) => ({
+  surface: state === 'ready'
+    ? 'bg-amber-500 border-amber-300 dark:bg-amber-400 dark:border-amber-300/55'
+    : state === 'success'
+      ? 'bg-emerald-500 border-emerald-300 dark:bg-emerald-400 dark:border-emerald-300/55'
+      : state === 'error'
+        ? 'bg-red-500 border-red-300 dark:bg-red-400 dark:border-red-300/55'
+        : 'bg-yellow-400 border-yellow-200/90 dark:bg-yellow-400 dark:border-yellow-200/65',
+  foreground: state === 'success' || state === 'error' ? 'text-white dark:text-stone-950' : 'text-white',
+});
+
+
 export const shouldAllowTriggerHoverOpen = (
   shownAt: number,
   now = Date.now(),
