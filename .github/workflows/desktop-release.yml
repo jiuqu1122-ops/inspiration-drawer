@@ -21,6 +21,7 @@ jobs:
     runs-on: windows-latest
     env:
       RELEASE_VERSION: ${{ inputs.version }}
+      VITE_DISABLE_APP_UPDATES: 'false'
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
     steps:
@@ -34,7 +35,7 @@ jobs:
           cache: npm
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Verify release version
         shell: pwsh
