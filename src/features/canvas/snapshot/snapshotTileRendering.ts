@@ -49,3 +49,17 @@ export const sameSnapshotTileContent = (a: SnapshotTileContent, b: SnapshotTileC
       && item.rotation === other.rotation && item.background === other.background;
   })
 );
+
+/** An appended item is painted above the existing pixels, so the old prefix
+ * need not be leased, cleared or rasterized again. Geometry/theme/removals and
+ * reordering still require a complete repaint to avoid stale ghost pixels. */
+export const getSnapshotTileAppendStart = (previous: SnapshotTileContent, next: SnapshotTileContent): number | null => {
+  if (previous.items.length >= next.items.length || previous.x !== next.x || previous.y !== next.y
+    || previous.width !== next.width || previous.height !== next.height || previous.dark !== next.dark) return null;
+  for (let index = 0; index < previous.items.length; index++) {
+    const a = previous.items[index], b = next.items[index];
+    if (a.source !== b.source || a.maxEdge !== b.maxEdge || a.x !== b.x || a.y !== b.y
+      || a.width !== b.width || a.height !== b.height || a.rotation !== b.rotation || a.background !== b.background) return null;
+  }
+  return previous.items.length;
+};

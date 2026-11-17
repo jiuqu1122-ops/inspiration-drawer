@@ -185,6 +185,7 @@ export const finalizeChatMessageState = (
     ...message,
     status,
     reasoningStatus,
+    ...(message.htmlDrafts && status !== 'streaming' ? { htmlDrafts: undefined } : {}),
     generationCompletedAt: message.generationCompletedAt || now,
     reasoningCompletedAt: message.reasoningCompletedAt || now,
   }, stepStatus, now, detail);

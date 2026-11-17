@@ -1,11 +1,15 @@
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
-import { Check, Download, ExternalLink, FileText, FolderOpen, LoaderCircle } from 'lucide-react';
+import { Check, Download, ExternalLink, FileText, FolderOpen, LoaderCircle, PanelsTopLeft } from 'lucide-react';
 import { useState } from 'react';
 import type { ChatGeneratedFile } from '../model/chatTypes';
 
 const FORMAT_LABELS: Record<string, string> = {
   pptx: 'PowerPoint 演示文稿',
+  sketch: 'Figma 可导入设计',
+  zip: '旧版 ZIP 原型包',
+  html: 'HTML 网页',
+  htm: 'HTML 网页',
   txt: 'TXT',
   md: 'Markdown',
   csv: 'CSV',
@@ -22,7 +26,7 @@ const formatBytes = (value?: number) => {
   return `${Math.round(value / 1024 / 102.4) / 10} MB`;
 };
 
-export function ChatGeneratedFileCard({ file }: { file: ChatGeneratedFile }) {
+export function ChatGeneratedFileCard({ file, onPreview }: { file: ChatGeneratedFile; onPreview?: () => void }) {
   const [busy, setBusy] = useState<'open' | 'save' | 'folder' | ''>('');
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
@@ -32,7 +36,7 @@ export function ChatGeneratedFileCard({ file }: { file: ChatGeneratedFile }) {
     setError('');
     try {
       if (action === 'open') {
-        await invoke('open_file', { path: file.path });
+        await invoke(file.format === 'sketch' || /\.sketch$/i.test(file.name) ? 'show_in_folder' : 'open_file', { path: file.path });
       } else if (action === 'folder') {
         await invoke('show_in_folder', { path: file.path });
       } else {
@@ -65,10 +69,12 @@ export function ChatGeneratedFileCard({ file }: { file: ChatGeneratedFile }) {
         {file.warnings?.length ? <small title={file.warnings.join('；')}>{file.warnings.join('；')}</small> : null}
         {error && <small title={error}>{error}</small>}
       </div>
+      {format === 'sketch' && <p className="chat-generated-file__import-hint">另存后，将 .sketch 文件拖入 Figma 文件列表即可。无需安装插件；复杂交互请在 Figma 中重新连接。</p>}
       <div className="chat-generated-file__actions">
-        <button type="button" onClick={() => void run('open')} disabled={Boolean(busy)} title="打开文件">
+        {onPreview && <button type="button" onClick={onPreview} title={['sketch', 'zip'].includes(format) ? '预览交互原型' : '预览 HTML'}><PanelsTopLeft size={13} /><span>预览</span></button>}
+        <button type="button" onClick={() => void run('open')} disabled={Boolean(busy)} title={format === 'sketch' ? '定位文件后拖入 Figma' : '打开文件'}>
           {busy === 'open' ? <LoaderCircle size={13} className="chat-spin" /> : <ExternalLink size={13} />}
-          <span>打开</span>
+          <span>{format === 'sketch' ? '定位文件' : '打开'}</span>
         </button>
         <button type="button" onClick={() => void run('save')} disabled={Boolean(busy)} title="另存为">
           {busy === 'save' ? <LoaderCircle size={13} className="chat-spin" /> : saved ? <Check size={13} /> : <Download size={13} />}

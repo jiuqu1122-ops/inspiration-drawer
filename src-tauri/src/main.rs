@@ -8,6 +8,7 @@ mod ai_credentials;
 mod ai_gateway;
 mod image_input;
 mod drawer_bounds;
+mod main_window_shape;
 mod browser_extension;
 mod commands;
 mod db;
@@ -19354,6 +19355,7 @@ fn main() {
             commands::chat::chat_upsert_summary,
             commands::chat::chat_migrate_legacy,
             commands::chat::chat_web_search,
+            commands::chat_prototypes::chat_create_prototype,
             commands::chat_files::chat_create_file,
             commands::chat_files::chat_copy_generated_file,
             browser_extension::browser_extension_get_status,
@@ -19579,6 +19581,9 @@ fn main() {
 
             if let Some(main) = app.get_webview_window("main") {
                 let _ = main.set_shadow(false);
+                if let Err(error) = main_window_shape::install(&main) {
+                    eprintln!("main window corner setup failed: {error}");
+                }
                 apply_main_workbench_mode(&main);
                 let _ = main.set_min_size(Some(tauri::LogicalSize::new(
                     DRAWER_MIN_WIDTH,

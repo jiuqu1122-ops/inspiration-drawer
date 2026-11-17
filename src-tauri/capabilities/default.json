@@ -24,6 +24,7 @@
     "core:window:allow-close",
     "core:window:allow-set-resizable",
     "core:window:allow-start-dragging",
+    "core:webview:allow-set-webview-background-color",
     "fs:default",
     "core:window:allow-show",
     "shell:default",

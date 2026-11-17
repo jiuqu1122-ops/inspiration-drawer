@@ -22,6 +22,14 @@ describe('snapshot overview residency', () => {
     expect(plan.sources.has('n1999')).toBe(true); expect(plan.uniqueCount).toBe(SNAPSHOT_MAX_RESIDENT_SOURCES);
     expect(plan.sources.has('n1500')).toBe(false);
   });
+  it('orders visible unique sources first for each continuous viewport update', () => {
+    const items = Array.from({ length: 300 }, (_, i) => image(i));
+    const first = planSnapshotResidency(items, { x: 0, y: 0, width: 300, height: 100 });
+    expect(first.prioritySources.slice(0, 3)).toEqual(['thumb-0', 'thumb-1', 'thumb-2']);
+    const next = planSnapshotResidency(items, { x: 120 * 240, y: 0, width: 300, height: 100 });
+    expect(next.prioritySources.slice(0, 3)).toEqual(['thumb-240', 'thumb-241', 'thumb-242']);
+    expect(next.prioritySources.every(source => next.sources.has('n' + Number(source.slice(6))))).toBe(true);
+  });
   it('uses hysteresis at both density thresholds', () => {
     expect(chooseSnapshotMaxEdge(81, 512)).toBe(256);
     expect(chooseSnapshotMaxEdge(79, 256)).toBe(256);

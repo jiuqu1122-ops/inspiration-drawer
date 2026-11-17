@@ -1,0 +1,25 @@
+﻿<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8" />
+<meta name="design-memory-isolated-probe" content="synthetic-only-v1" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://127.0.0.1:* ws://localhost:* ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'" />
+<title>ISOLATED Design Memory · synthetic SQLite only</title>
+<style>
+html,body,#root{margin:0;min-height:100%;background:#f3f4f6;color:#18212f;font:14px/1.5 system-ui,sans-serif}
+.probe-shell{max-width:1060px;margin:auto;padding:20px;display:grid;grid-template-columns:minmax(0,650px) minmax(240px,1fr);gap:16px}
+.probe-shell>header{grid-column:1/-1}.probe-shell h1{font-size:20px;font-weight:750;margin:0 0 8px}.probe-shell header p{margin:3px 0}
+.probe-panel,.probe-evidence{background:white;border:1px solid #cbd5e1;border-radius:12px;padding:18px;min-width:0}
+.probe-evidence{position:sticky;top:14px;align-self:start;max-height:calc(100vh - 32px);overflow:auto}
+.probe-evidence h2{font-size:15px;font-weight:700}.probe-evidence ol{padding-left:20px;font-size:12px}.probe-evidence li{margin:7px 0;overflow-wrap:anywhere}
+.probe-evidence pre{white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.45 ui-monospace,monospace}.probe-pass{color:#067647}.probe-fail{color:#b42318}
+.probe-caution{color:#775308}.probe-evidence button{padding:6px 10px;border:1px solid #94a3b8;border-radius:5px}
+@media(max-width:800px){.probe-shell{grid-template-columns:1fr}.probe-evidence{position:static;max-height:none}}
+</style></head><body><div id="root"></div><script type="module">
+// Reject the production origin BEFORE importing any production module. No app
+// bootstrap, history importer, provider, shell/fs plugin or production DB is used.
+if(location.protocol!=='http:'||location.hostname!=='127.0.0.1'||['','1420','1461','1463'].includes(location.port)){
+  document.getElementById('root').textContent='REFUSED: dedicated 127.0.0.1 probe port required (default 1465).';
+  throw new Error('Design-memory probe isolation gate rejected origin');
+}
+await import('./design-memory-probe.tsx');
+</script></body></html>

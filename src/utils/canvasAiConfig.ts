@@ -260,6 +260,7 @@ export const canvasAiProviderForGateway = (
 export const canvasAiProviderForCloudKind = (provider?: string | null): CanvasAiProvider => {
   const normalized = String(provider || '').trim().toUpperCase();
   if (normalized === 'NEW_API') return 'new-api';
+  if (normalized === 'OPENAI_COMPATIBLE') return 'openai-compatible';
   if (normalized === 'XAIS') return 'xais-chat';
   if (normalized === 'MIKOTO') return 'mikoto';
   if (normalized === 'MINIMAX') return 'minimax';

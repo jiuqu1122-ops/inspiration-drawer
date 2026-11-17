@@ -67,6 +67,7 @@ describe('canvas AI config', () => {
     expect(canvasAiProviderForGateway('new_api')).toBe('new-api');
     expect(canvasAiProviderForGateway('custom', 'openai-compatible')).toBe('openai-compatible');
     expect(canvasAiProviderForCloudKind('XAIS')).toBe('xais-chat');
+    expect(canvasAiProviderForCloudKind('OPENAI_COMPATIBLE')).toBe('openai-compatible');
     expect(canvasAiProviderForCloudKind('MIKOTO')).toBe('mikoto');
     expect(canvasAiProviderForCloudKind('Bigmodel')).toBe('bigmodel');
     expect(normalizeCanvasAiProvider('bigmodel')).toBe('bigmodel');

@@ -2298,3 +2298,17 @@
 @container chat-shell (max-width: 360px) {
   .chat-image-settings__title svg { width: 12px; }
 }
+
+/* HTML artifacts reuse the compact chat controls, without changing host HTML rendering. */
+.chat-markdown__code-actions { display: flex; align-items: center; gap: 8px; }
+.chat-html-artifact-trigger { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--chat-border); border-radius: 6px; background: var(--chat-sidebar); color: var(--chat-text-soft); font-size: 11px; }
+.chat-html-artifact-trigger span { margin-left: auto; color: var(--chat-accent); }
+
+@container chat-shell (max-width: 420px) {
+  .chat-header__actions .chat-agent-trigger span { display: none; }
+  .chat-generated-file:has(.chat-generated-file__actions button[title="预览 HTML"]) { flex-wrap: wrap; }
+  .chat-generated-file:has(.chat-generated-file__actions button[title="预览 HTML"]) .chat-generated-file__actions { margin-left: auto; }
+}
+
+.chat-generated-file:has(.chat-generated-file__import-hint) { flex-wrap: wrap; }
+.chat-generated-file__import-hint { order: 3; flex-basis: 100%; margin: 0; color: var(--chat-muted); font-size: 9px; line-height: 1.6; }

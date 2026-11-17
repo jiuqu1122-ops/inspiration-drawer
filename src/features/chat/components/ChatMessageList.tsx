@@ -18,6 +18,7 @@ export function ChatMessageList({
   onRegenerateMedia,
   onEditMedia,
   onStop,
+  onPreviewHtml,
   workflowResult,
 }: {
   messages: ChatMessageType[];
@@ -32,6 +33,7 @@ export function ChatMessageList({
   onRegenerateMedia?: (media: ChatGeneratedMedia) => void;
   onEditMedia?: (media: ChatGeneratedMedia) => void;
   onStop?: () => void;
+  onPreviewHtml?: (id: string) => void;
   workflowResult?: WorkflowResultCardData;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
@@ -49,6 +51,7 @@ export function ChatMessageList({
       lastMessage.status,
       lastMessage.content.length,
       lastMessage.reasoning?.length || 0,
+      lastMessage.htmlDrafts?.map(draft => `${draft.id}:${draft.source.length}`).join(',') || '',
       lastMessage.thinkingSteps?.map(step => `${step.id}:${step.status}`).join(',') || '',
       ...lastMessage.toolCalls.flatMap(call => [call.id, call.status, call.resultJson || '']),
     ].join(':')
@@ -113,6 +116,7 @@ export function ChatMessageList({
               message={message}
               onResolveTool={onResolveTool}
               onRetry={message.role === 'assistant' && index === messages.length - 1 ? onRetry : undefined}
+              onPreviewHtml={onPreviewHtml}
               onAddToCanvas={onAddToCanvas}
               onRegenerateMedia={onRegenerateMedia}
               onEditMedia={onEditMedia}

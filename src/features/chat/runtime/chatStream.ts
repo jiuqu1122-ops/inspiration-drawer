@@ -28,6 +28,7 @@ export type ChatStreamEvent = {
   kind: ChatStreamEventKind;
   delta?: string;
   toolCallId?: string;
+  argumentsDelta?: string;
   toolName?: string;
   toolIndex?: number;
   toolStatus?: string;
@@ -65,6 +66,7 @@ export const normalizeChatStreamEvent = (payload: unknown): ChatStreamEvent | nu
     requestId,
     kind: kind as ChatStreamEventKind,
     delta: typeof value.delta === 'string' ? value.delta : undefined,
+    argumentsDelta: typeof toolCall.argumentsDelta === 'string' ? toolCall.argumentsDelta : undefined,
     toolCallId: String(value.toolCallId || toolCall.id || '').trim() || undefined,
     toolName: String(value.toolName || toolCall.name || '').trim() || undefined,
     toolIndex: Number.isFinite(Number(value.toolIndex ?? toolCall.index))

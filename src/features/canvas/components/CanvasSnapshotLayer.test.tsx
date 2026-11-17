@@ -1,4 +1,4 @@
-﻿import type { ReactElement, RefObject } from 'react';
+import type { ReactElement, RefObject } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SnapshotBitmapCache, SnapshotBitmapLease } from '../snapshot/snapshotBitmapCache';
 import type { SnapshotTile } from '../snapshot/snapshotScene';
@@ -107,6 +107,33 @@ afterEach(() => {
   expect(vi.getTimerCount()).toBe(0);
   vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+
+describe('incremental snapshot insertion paint', () => {
+  it('paints only appended images without clearing or leasing the unchanged tile prefix', () => {
+    const h = mountTile();
+    const old = h.props.tile;
+    const previousAllocations = h.allocations.length;
+    const previousClears = h.context.clearRect.mock.calls.length;
+    h.cached.pin.mockClear(); h.context.drawImage.mockClear();
+    const extra = { ...old.items[0], source: 'added.png', item: { ...old.items[0].item, id: 'added', x: 200 } };
+    h.update({ tile: { ...old, items: [...old.items, extra] } });
+    expect(h.cached.pin).toHaveBeenCalledExactlyOnceWith('added.png', 512);
+    expect(h.context.drawImage).toHaveBeenCalledTimes(1);
+    expect(h.context.clearRect).toHaveBeenCalledTimes(previousClears);
+    expect(h.allocations).toHaveLength(previousAllocations);
+    expect(h.drawCount).toBe(2);
+  });
+
+  it('repaints fully for removal/reordering instead of retaining old pixels', () => {
+    const h = mountTile(); const old = h.props.tile;
+    const extra = { ...old.items[0], source: 'added.png', item: { ...old.items[0].item, id: 'added', x: 200 } };
+    h.update({ tile: { ...old, items: [...old.items, extra] } });
+    h.cached.pin.mockClear(); h.context.clearRect.mockClear();
+    h.update({ tile: { ...old, items: [extra] } });
+    expect(h.cached.pin).toHaveBeenCalledExactlyOnceWith('added.png', 512);
+    expect(h.context.clearRect).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('CanvasSnapshotTile actual effect hot path (deterministic hook commits)', () => {
@@ -301,7 +328,8 @@ describe('CanvasSnapshotTile actual effect hot path (deterministic hook commits)
 
   it('releases all pins on missing sources before clearing or reallocating visible pixels', () => {
     const h = mountTile();
-    const next = makeTile(); next.items.push({ ...next.items[0], source: 'missing.png' });
+    const next = makeTile(); next.items[0] = { ...next.items[0], source: 'changed.png' };
+    next.items.push({ ...next.items[0], source: 'missing.png' });
     h.cached.pin.mockImplementationOnce(() => {
       const release = vi.fn(); h.cached.releases.push(release);
       return { bitmap: { key: 'key', drawable: {} as CanvasImageSource, width: 100, height: 80, bytes: 32_000 }, release };

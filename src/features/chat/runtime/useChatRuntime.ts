@@ -1,3 +1,5 @@
+import { mergeHtmlToolDraft, type HtmlToolDraftState } from '../html/chatHtmlToolDraft';
+import { collectChatHtmlArtifacts } from '../html/chatHtmlArtifacts';
 import { rhinoPostprocessFailure } from '../../rhino/rhinoPostprocessFailure';
 import { readableRhinoMcpFailure } from '../../rhino/rhinoErrorDiagnostic';
 import { geometryFailureReceipt, geometryFailureSummary, MAX_GEOMETRY_PREFLIGHT_CORRECTIONS } from '../../rhino/rhinoGeometryRecovery';
@@ -208,6 +210,7 @@ type ActiveChatRequest = {
   streamed: boolean;
   streamedContent: boolean;
   streamedReasoning: boolean;
+  htmlToolDrafts?: HtmlToolDraftState;
 };
 
 type ActiveBatchRun = {
@@ -799,6 +802,10 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         return;
       }
       if (streamEvent.kind === 'tool_call_delta' || streamEvent.kind === 'tool_started') {
+        const draft = mergeHtmlToolDraft(active.htmlToolDrafts ||= new Map(), streamEvent);
+        if (draft) patchMessage(active.messageId, message => ({ ...message,
+          htmlDrafts: [...(message.htmlDrafts || []).filter(previous => previous.id !== draft.id), draft],
+        }));
         const toolName = streamEvent.toolName || '';
         const toolIndex = Math.max(0, streamEvent.toolIndex || 0);
         patchThinkingStep(active.messageId, `tool-${toolIndex}`, {
@@ -1662,9 +1669,11 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         agentCreationFollowup,
         userText,
         currentImageAttachmentCount > 0 || (hasRecentMedia && (isShortVisualFollowup(userText) || isVisualRevisionFollowup(userText) || isVisualEditFollowup(userText))),
+        collectChatHtmlArtifacts(conversationMessages, conversationId).length > 0,
+        collectChatHtmlArtifacts(conversationMessages, conversationId).some(artifact => Boolean(artifact.prototype)),
       ).filter(tool => (
         (!rhinoGeometryRequest || !['generate_image', 'edit_image', 'generate_image_variants', 'generate_video', 'batch_image_operation'].includes(tool.function.name))
-        && (!(recoverSearchSynthesis || recoverPresentationDelivery) || tool.function.name === 'create_file')
+        && (!(recoverSearchSynthesis || recoverPresentationDelivery) || tool.function.name === 'create_file' || (!recoverPresentationDelivery && tool.function.name === 'create_ui_prototype'))
         && (previousBatchImageOperationCount === 0 || tool.function.name !== 'batch_image_operation')
         && (presentationText || previousImageVariantCount === 0 || tool.function.name !== 'generate_image_variants')
       ));
@@ -1922,7 +1931,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     let acceptedBatchImageOperationInResponse = previousBatchImageOperationCount > 0;
     let acceptedImageVariantInResponse = !presentationText && previousImageVariantCount > 0;
     const toolCalls = (result.toolCalls || []).filter(call => {
-      if (call.name === 'create_file') {
+      if (['create_file', 'create_ui_prototype'].includes(call.name)) {
         if (!fileCreationTurn.canAttempt || acceptedFileCreateInResponse) return false;
         acceptedFileCreateInResponse = true;
         return true;

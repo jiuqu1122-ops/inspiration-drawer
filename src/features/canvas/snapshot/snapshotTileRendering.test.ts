@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SnapshotTile } from './snapshotScene';
-import { captureSnapshotTileContent, getSnapshotTileRasterSize, sameSnapshotTileContent, sameSnapshotTileRasterSize } from './snapshotTileRendering';
+import { captureSnapshotTileContent, getSnapshotTileAppendStart, getSnapshotTileRasterSize, sameSnapshotTileContent, sameSnapshotTileRasterSize } from './snapshotTileRendering';
 
 const tile = (): SnapshotTile => ({
   id: '0:0', box: { x: 0, y: 0, width: 768, height: 768 },
@@ -101,5 +101,23 @@ describe('snapshot tile pixel content identity', () => {
     const ordered = captureSnapshotTileContent(added, false);
     added.items.reverse();
     expect(sameSnapshotTileContent(ordered, captureSnapshotTileContent(added, false))).toBe(false);
+  });
+});
+
+describe('append-only tile paint validation', () => {
+  it('allows only an unchanged pixel prefix', () => {
+    const original = tile(), before = captureSnapshotTileContent(original, false);
+    const appended = { ...original, items: [...original.items, { ...original.items[0], source: 'new.png' }] };
+    expect(getSnapshotTileAppendStart(before, captureSnapshotTileContent(appended, false))).toBe(1);
+    expect(getSnapshotTileAppendStart(before, before)).toBeNull();
+    expect(getSnapshotTileAppendStart(before, captureSnapshotTileContent(appended, true))).toBeNull();
+    for (const field of ['x', 'y', 'width', 'height'] as const) {
+      const changed = { ...appended, box: { ...appended.box, [field]: appended.box[field] + 1 } };
+      expect(getSnapshotTileAppendStart(before, captureSnapshotTileContent(changed, false))).toBeNull();
+    }
+    const moved = { ...appended, items: [{ ...original.items[0], item: { ...original.items[0].item, x: 500 } }, appended.items[1]] };
+    expect(getSnapshotTileAppendStart(before, captureSnapshotTileContent(moved, false))).toBeNull();
+    const retiered = { ...appended, items: [{ ...original.items[0], maxEdge: 128 }, appended.items[1]] };
+    expect(getSnapshotTileAppendStart(before, captureSnapshotTileContent(retiered, false))).toBeNull();
   });
 });

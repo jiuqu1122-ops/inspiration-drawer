@@ -1,3 +1,5 @@
+import { CREATE_UI_PROTOTYPE_TOOL } from '../prototypes/prototypeTools';
+import { hasChatHtmlContext } from '../html/chatHtmlArtifacts';
 import { defersVisualGeneration, isImagePromptTextRequest, isShortVisualFollowup, isVisualCreationIntent, isVisualEditFollowup, isVisualRevisionFollowup } from '../context/chatVisualIntent';
 import type { ChatMessage } from '../model/chatTypes';
 import { MAX_WEB_SEARCH_QUERIES_PER_TURN } from '../runtime/chatTurnPolicy';
@@ -13,8 +15,9 @@ const objectSchema = (properties: Record<string, unknown>, required: string[] = 
 });
 
 export const CHAT_TOOL_DEFINITIONS: ChatToolDefinition[] = [
+  CREATE_UI_PROTOTYPE_TOOL,
   { type: 'function', function: { name: 'web_search', description: `通用互联网搜索，可查询新闻、网页、资料、行情等公开信息，并返回摘要、正文摘录、发布时间和来源链接。同一条用户消息最多使用 ${MAX_WEB_SEARCH_QUERIES_PER_TURN} 个不同关键词。`, parameters: objectSchema({ query: { type: 'string', description: '完整、具体的搜索词；涉及相对日期时必须写成明确日期。' }, limit: { type: ['number', 'null'], minimum: 1, maximum: 8 } }, ['query']) } },
-  { type: 'function', function: { name: 'create_file', description: '创建一个可打开、下载和另存为的真实文件。仅当用户明确要求生成文件、文档、报告、表格、PPT/PowerPoint 演示文稿或可下载内容时调用。DOCX/PDF 的 content 使用 Markdown；XLSX 使用 sheets；PPTX 使用 presentation 创建可编辑幻灯片；不要返回 Base64、XML 或伪造下载链接。', parameters: objectSchema({ fileName: { type: 'string', description: '用户可见的文件名，包含对应扩展名。' }, format: { type: 'string', enum: ['txt', 'md', 'csv', 'json', 'docx', 'xlsx', 'pdf', 'pptx'] }, content: { type: ['string', 'null'], description: 'TXT/MD/CSV/JSON 的文件正文；DOCX/PDF 使用 Markdown 正文；XLSX/PPTX 可为 null。' }, sheets: { type: ['array', 'null'], description: '仅 XLSX 使用。第一行应为表头。', items: { type: 'object', properties: { name: { type: 'string' }, rows: { type: 'array', items: { type: 'array', items: { type: ['string', 'number', 'boolean', 'null'] } } } }, required: ['name', 'rows'], additionalProperties: false } }, presentation: CHAT_PRESENTATION_SCHEMA }, ['fileName', 'format']) } },
+  { type: 'function', function: { name: 'create_file', description: '创建一个可打开、下载和另存为的真实文件。仅当用户明确要求生成文件、文档、报告、表格、PPT/PowerPoint 演示文稿、HTML 网页/交互文档（非 Figma 结构化原型）或可下载内容时调用。HTML 使用完整的单文件 HTML（内联 CSS/JS），可在 Canvas 预览中交互；不依赖 CDN、联网 API 或本地路径。DOCX/PDF 的 content 使用 Markdown；XLSX 使用 sheets；PPTX 使用 presentation 创建可编辑幻灯片；不要返回 Base64、XML 或伪造下载链接。', parameters: objectSchema({ fileName: { type: 'string', description: '用户可见的文件名，包含对应扩展名。' }, format: { type: 'string', enum: ['txt', 'md', 'html', 'csv', 'json', 'docx', 'xlsx', 'pdf', 'pptx'] }, content: { type: ['string', 'null'], description: 'HTML 的完整源代码（不带 Markdown 围栏）；TXT/MD/CSV/JSON 的文件正文；DOCX/PDF 使用 Markdown 正文；XLSX/PPTX 可为 null。' }, sheets: { type: ['array', 'null'], description: '仅 XLSX 使用。第一行应为表头。', items: { type: 'object', properties: { name: { type: 'string' }, rows: { type: 'array', items: { type: 'array', items: { type: ['string', 'number', 'boolean', 'null'] } } } }, required: ['name', 'rows'], additionalProperties: false } }, presentation: CHAT_PRESENTATION_SCHEMA }, ['fileName', 'format']) } },
   { type: 'function', function: { name: 'create_agent', description: '当用户用普通对话明确要求新建可复用的 Chat 智能体、技能、skill、skills（也兼容 skllis）时调用，真实保存到智能体列表。根据用户需求生成具体的名称、适用场景、触发关键词和可执行的 Markdown 技能指令。指令应写清角色、步骤、输出格式及成功标准；涉及软件操作时仅使用灵感抽屉 Chat 已提供的画布、素材、图片、视频、工作流和文件工具，不要编造脚本、插件或不存在的能力。默认只创建不启用；用户明确要求立即使用时才传 activate=true。', parameters: objectSchema({ name: { type: 'string', maxLength: 80, description: '简洁的智能体名称，不超过 80 字。' }, description: { type: 'string', maxLength: 240, description: '智能体适用场景和职责，不超过 240 字。' }, triggers: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'string' }, description: '3 到 8 个具体任务关键词或短语，用于在 Chat 中推荐启用。' }, instructions: { type: 'string', maxLength: 16000, description: '完整的 Markdown 技能指令：角色、工作步骤、输出要求、边界和画布工具使用方式；仅写当前客户端支持的能力。' }, activate: { type: ['boolean', 'null'], description: '仅当用户明确要求创建后立即使用时为 true，否则为 false 或 null。' } }, ['name', 'description', 'triggers', 'instructions']) } },
   { type: 'function', function: { name: 'get_canvas_selection', description: '读取当前画布选中项的精简信息。仅在用户提到当前画布、当前节点或选中内容时使用。', parameters: objectSchema({}) } },
   { type: 'function', function: { name: 'search_assets', description: '在本地素材库中搜索少量相关素材。', parameters: objectSchema({ query: { type: 'string' }, limit: { type: ['number', 'null'], minimum: 1, maximum: 8 }, filter: { type: ['object', 'null'], additionalProperties: true } }, ['query']) } },
@@ -128,6 +131,8 @@ export const getChatToolDefinitions = (
   agentCreationFollowup = false,
   currentUserText = text,
   _imageContextAvailable = false,
+  hasHtmlArtifact = false,
+  hasPrototypeArtifact = false,
 ) => {
   const presentationRequested = isChatPresentationRequest(text);
   const exposePresentationImageTools = canGenerateChatPresentationImages(text);
@@ -147,11 +152,14 @@ export const getChatToolDefinitions = (
   // A prompt is a text artifact, not an implicit request to render its contents.
   const exposeImageTools = !presentationRequested && !isImagePromptTextRequest(currentUserText);
   const exposeFileCreation = FILE_CREATION_INTENT.test(text.replace(NEGATED_FILE_CREATION, ' ')) || presentationRequested
-    || isChatFileDeliveryRequest(text) || skillEnabled;
+    || isChatFileDeliveryRequest(text) || skillEnabled || hasChatHtmlContext(text) || hasHtmlArtifact;
+  const exposePrototype = !presentationRequested && (hasPrototypeArtifact || hasChatHtmlContext(text) || /figma|交互原型|可点击|产品原型/i.test(text));
   const exposeAgentCreation = isChatAgentCreationRequest(text) || agentCreationFollowup;
   const exposeWebSearch = !webSearchBlocked && (webSearchEnabled || shouldExposeWebSearch(text));
   return CHAT_TOOL_DEFINITIONS.filter(tool => (
-    tool.function.name === 'web_search'
+    tool.function.name === 'create_ui_prototype'
+      ? exposePrototype
+      : tool.function.name === 'web_search'
       ? exposeWebSearch
       : tool.function.name === 'create_file'
         ? exposeFileCreation

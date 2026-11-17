@@ -49,9 +49,10 @@ export const listChatMessages = (
   },
 });
 
-export const upsertChatMessage = (message: ChatMessage) => (
-  invoke<ChatMessage>('chat_upsert_message', { message })
-);
+export const upsertChatMessage = (message: ChatMessage) => {
+  const { htmlDrafts: _ephemeralPreview, ...persisted } = message;
+  return invoke<ChatMessage>('chat_upsert_message', { message: persisted });
+};
 
 export const upsertChatAttachment = (attachment: ChatAttachment) => (
   invoke<ChatAttachment>('chat_upsert_attachment', { attachment })

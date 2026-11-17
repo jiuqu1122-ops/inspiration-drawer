@@ -1,3 +1,5 @@
+import { createPrototypePackage } from '../prototypes/prototypePackage';
+import { parsePrototype } from '../prototypes/prototypeSchema';
 import { canUseCanvasItemAsFrameInterpolationVideoInput, canUseCanvasItemAsImageEnhancementInput, canUseCanvasItemAsVideoEnhancementInput } from '../../../utils/canvasItemSelectors';
 import type { CanvasImageItem } from '../../canvasModel';
 import { getGeneratedMediaFromToolCall, type ChatGeneratedMedia, type ChatToolExecutor, type ChatToolExecutionContext } from '../model/chatTypes';
@@ -87,6 +89,7 @@ export const createInspirationChatToolExecutor = (input: {
   ) => Promise<unknown>;
   listWorkflowDescriptors: () => WorkflowDescriptor[];
   searchWeb: (query: string, limit: number) => Promise<unknown>;
+  createPrototype?: typeof createPrototypePackage;
   createFile: (request: Record<string, unknown>) => Promise<unknown>;
   getCanvasItems?: () => CanvasImageItem[];
   getSelectedCanvasIds?: () => string[];
@@ -98,6 +101,9 @@ export const createInspirationChatToolExecutor = (input: {
       String(args.query || '').trim(),
       Math.min(8, Math.max(1, Number(args.limit) || 6)),
     );
+  }
+  if (name === 'create_ui_prototype') {
+    return (input.createPrototype || createPrototypePackage)(parsePrototype(args.prototype), context.conversationId);
   }
   if (name === 'create_file') {
     return input.createFile({

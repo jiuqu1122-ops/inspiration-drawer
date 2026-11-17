@@ -61,6 +61,9 @@ export interface SnapshotBitmapCache {
   peek(source: string, maxEdge?: number): SnapshotBitmap | null;
   /** Reserves ownership before decoding, so another completion cannot evict this result. */
   acquire(source: string, maxEdge?: number): Promise<SnapshotBitmapLease | null>;
+  /** Reorders queued decodes for the current viewport and settles obsolete queued work as null.
+   * Pass null to leave the queue untouched until a viewport is available. Active decodes are never canceled. */
+  prioritize(sources: readonly string[] | null): void;
   pin(source: string, maxEdge?: number): SnapshotBitmapLease | null;
   touch(source: string, maxEdge?: number): void;
   subscribe(listener: (event: SnapshotBitmapCacheEvent) => void): () => void;
@@ -257,9 +260,29 @@ export const createSnapshotBitmapCache = (options: SnapshotBitmapCacheOptions = 
     } catch { /* A clock failure must not strand a job or reject a caller. */ }
     return Date.now();
   };
-  const keyFor = (source: string, maxEdge?: number) => (
-    getSnapshotBitmapCacheKey(source, normalizeMaxEdge(maxEdge, defaultMaxEdge))
-  );
+  // Inline thumbnails can be hundreds of KB each. Serializing [tier, source]
+  // on every peek/touch/pin used to rescan the whole document's base64 strings
+  // several times whenever a single node was inserted. Reuse exact keys while
+  // bounding metadata independently of the bitmap LRU (including cold misses).
+  const sourceKeys = new Map<string, Map<number, string>>();
+  const sourceKeyLimit = Math.min(16384, Math.max(32, maxEntries + maxPending + maxFailures));
+  const keyFor = (source: string, maxEdge?: number) => {
+    const tier = normalizeMaxEdge(maxEdge, defaultMaxEdge);
+    let tiers = sourceKeys.get(source);
+    const existing = tiers?.get(tier);
+    if (existing !== undefined) return existing;
+    const key = getSnapshotBitmapCacheKey(source, tier);
+    if (!tiers) {
+      if (sourceKeys.size >= sourceKeyLimit) sourceKeys.delete(sourceKeys.keys().next().value!);
+      tiers = new Map();
+      sourceKeys.set(source, tiers);
+    }
+    // Callers use a few discrete tiers; arbitrary requests must not turn one
+    // source into an unbounded map of serialized copies either.
+    if (tiers.size >= 8) tiers.delete(tiers.keys().next().value!);
+    tiers.set(tier, key);
+    return key;
+  };
   const isCurrentEntry = (entry: Entry) => (
     !disposed && !clearing && !entry.retired && entries.get(entry.bitmap.key) === entry
   );
@@ -437,6 +460,15 @@ export const createSnapshotBitmapCache = (options: SnapshotBitmapCacheOptions = 
     }
     settle(job, null);
   };
+  const prioritize = (sources: readonly string[] | null) => {
+    if (disposed || clearing || sources === null) return;
+    const rank = new Map<string, number>();
+    sources.forEach((source, index) => { if (!rank.has(source)) rank.set(source, index); });
+    // Settle obsolete queued work so canceled caller generations can exit immediately.
+    // Active browser decodes remain bounded and are allowed to finish normally.
+    for (const job of [...queue]) if (!rank.has(job.source)) cancel(job);
+    queue.sort((a, b) => rank.get(a.source)! - rank.get(b.source)!);
+  };
   const clear = () => {
     if (clearing) return;
     clearing = true;
@@ -445,6 +477,7 @@ export const createSnapshotBitmapCache = (options: SnapshotBitmapCacheOptions = 
       queue.length = 0;
       for (const entry of entries.values()) retire(entry);
       failures.clear();
+      sourceKeys.clear();
     } finally {
       clearing = false;
     }
@@ -469,6 +502,7 @@ export const createSnapshotBitmapCache = (options: SnapshotBitmapCacheOptions = 
       const job = getJob(source, maxEdge);
       return job ? new Promise(resolve => { job.acquirers.push(resolve); }) : Promise.resolve(null);
     },
+    prioritize,
     pin: (source, maxEdge) => {
       const entry = findEntry(source, maxEdge);
       return entry ? lease(entry) : null;

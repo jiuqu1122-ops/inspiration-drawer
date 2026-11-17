@@ -20,7 +20,7 @@ vi.mock('../snapshot/snapshotBitmapCache', () => ({
 }));
 const image = (i: number): CanvasImageItem => ({ id: `n${i}`, x: (i % 40) * 120, y: Math.floor(i / 40) * 100,
   width: 100, height: 80, item: { id: `a${i}`, type: 'image', content: '', createdAt: 1, thumbnail: `thumb-${i}` } });
-const fixture = (count: number, scale = .2, selected: string[] = []) => {
+const fixture = (count: number, scale = .6, selected: string[] = []) => {
   const items = Array.from({ length: count }, (_, i) => image(i));
   const source = vi.fn((node: CanvasImageItem) => node.item.thumbnail || '');
   const scope = { canvasRenderableItems: items, canvasSnapshotMode: true,
@@ -41,6 +41,23 @@ describe('actual snapshot node layer overview composition', () => {
     expect(tiles.length).toBeGreaterThan(0); expect(tiles.length).toBeLessThanOrEqual(48);
     expect(html).not.toContain('<img'); expect(f.source).not.toHaveBeenCalled();
     expect(state.options.maxEntries).toBe(1024); expect(state.options.maxPendingRequests).toBe(24);
+  });
+  it.each([1, 100, 500, 1000])('removes all %i ordinary image DOM roots at minimum zoom without hiding their pixels', count => {
+    const f = fixture(count, .08); const html = f.render();
+    expect(html).toContain('data-canvas-overview-active="true"');
+    expect(html).toContain('data-snapshot-dom-count="0"');
+    expect(html).not.toContain('data-canvas-item-id=');
+    expect(html).not.toContain('<img');
+    expect(html.match(/data-canvas-snapshot-tile=/g)?.length).toBeGreaterThan(0);
+    expect(html.match(/data-canvas-snapshot-tile=/g)?.length).toBeLessThanOrEqual(24);
+    expect(f.source).not.toHaveBeenCalled();
+  });
+  it('keeps selected images and missing-bitmap fallbacks interactive in the overview', () => {
+    state.unavailable.add('thumb-1'); const f = fixture(500, .08, ['n250']); const html = f.render();
+    expect(html).toContain('data-snapshot-dom-count="2"');
+    expect(html).toContain('data-canvas-item-id="n1"');
+    expect(html).toContain('data-canvas-item-id="n250"');
+    expect(html).toContain('src="thumb-1"');
   });
   it('preserves original-image fallback for a missing bitmap without disabling every other picture', () => {
     state.unavailable.add('thumb-250'); const f = fixture(500); const html = f.render();

@@ -1,0 +1,10 @@
+﻿<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta name="probe" content="prompt-resize-isolated-v1"/><title>Prompt resize isolated probe</title>
+<style>html,body{margin:0;background:#f5f5f4;color:#222}body{font:13px system-ui}header{position:sticky;top:0;z-index:1000;background:#edf1f5;padding:10px 16px}#stage{position:relative;min-height:800px;overflow:visible}#results{white-space:pre-wrap;padding:16px}</style>
+</head><body><header><strong>ISOLATED prompt resize / native anchor probe</strong> — <span id="status">Starting…</span></header><div id="stage"></div><pre id="results"></pre>
+<script type="module">
+const marker=document.querySelector('meta[name="probe"]')?.content;
+if(marker!=='prompt-resize-isolated-v1'||location.hostname!=='127.0.0.1'||!location.port||location.port==='1420'||!window.__TAURI_INTERNALS__){document.getElementById('status').textContent='Refusing production origin / missing isolated native host';}
+else{import('/scripts/prompt-resize-probe.tsx').catch(error=>{document.getElementById('status').textContent=String(error);window.__TAURI_INTERNALS__.invoke('prompt_resize_probe_result',{result:{schemaVersion:1,probe:'prompt-resize-isolated',checksPassed:false,fatal:String(error)}});});}
+</script></body></html>

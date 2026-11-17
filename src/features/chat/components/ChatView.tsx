@@ -1,5 +1,7 @@
+import { collectChatHtmlArtifacts } from '../html/chatHtmlArtifacts';
+import { ChatHtmlPreview } from './ChatHtmlPreview';
 import { conversationDisplayTitle } from '../model/chatConversationTitle';
-import { Bot, Check, MessageSquarePlus, PanelLeft, Sparkles, Trash2, Workflow, X } from 'lucide-react';
+import { Bot, Check, MessageSquarePlus, PanelLeft, PanelsTopLeft, Sparkles, Trash2, Workflow, X } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import type { AgentCanvasSelectionItem, WorkflowResultCardData } from '../../agentModel';
 import type { ChatGeneratedMedia, ChatImageModelOption, PendingChatAttachment } from '../model/chatTypes';
@@ -98,6 +100,12 @@ export const ChatView = memo(function ChatView({
   workflowAttachmentOptions = [],
 }: ChatViewProps) {
   const [input, setInput] = useState('');
+  const htmlArtifacts = useMemo(() => collectChatHtmlArtifacts(runtime.messages, runtime.activeConversationId || ''), [runtime.messages, runtime.activeConversationId]);
+  const [htmlPreview, setHtmlPreview] = useState<{ conversationId: string; selectedId?: string; followLatest: boolean } | null>(null);
+  const openHtmlPreview = useCallback((id?: string) => {
+    setHtmlPreview({ conversationId: runtime.activeConversationId || '', selectedId: id, followLatest: !id || id === htmlArtifacts[htmlArtifacts.length - 1]?.id });
+  }, [runtime.activeConversationId, htmlArtifacts]);
+  useEffect(() => { setHtmlPreview(null); }, [runtime.activeConversationId]);
   const [selectedConversationIds, setSelectedConversationIds] = useState<string[]>([]);
   const conversationSelectionAnchor = useRef('');
   const deleteSelectedConversations = async (ids: string[]) => {
@@ -364,6 +372,7 @@ export const ChatView = memo(function ChatView({
             <div><strong>{runtime.activeConversation?.title || '新对话'}</strong><small>{selectedSkill ? `智能体 · ${selectedSkill.name}` : '通用 AI Chat'}</small></div>
           </div>
           <div className="chat-header__actions">
+            <button type="button" className="chat-agent-trigger" onClick={() => openHtmlPreview()} title="打开 HTML / UI 原型预览" aria-label="打开 Canvas 预览"><PanelsTopLeft size={14} /><span>Canvas</span></button>
             <button type="button" className={`chat-agent-trigger ${selectedSkill ? 'is-active' : ''}`} onClick={() => setAgentPanelOpen(value => !value)} title="选择或管理智能体" aria-label="选择或管理智能体" aria-expanded={agentPanelOpen}><Sparkles size={14} /><span>智能体</span></button>
             <button type="button" className="chat-icon-button" onClick={onClose} title="关闭聊天"><X size={16} /></button>
           </div>
@@ -376,6 +385,7 @@ export const ChatView = memo(function ChatView({
           loadingOlder={runtime.loadingOlder}
           hasMore={runtime.hasMoreMessages}
           onLoadOlder={loadOlderMessages}
+          onPreviewHtml={openHtmlPreview}
           onResolveTool={resolveToolApproval}
           onRetry={retryLastMessage}
           onAddToCanvas={onAddGeneratedToCanvas}
@@ -446,6 +456,12 @@ export const ChatView = memo(function ChatView({
           />
         </div>
       </div>
+      {visible && htmlPreview && htmlPreview.conversationId === (runtime.activeConversationId || '') && <ChatHtmlPreview
+        key={htmlPreview.conversationId} artifacts={htmlArtifacts} selectedId={htmlPreview.selectedId} followLatest={htmlPreview.followLatest}
+        conversationId={htmlPreview.conversationId} onClose={() => setHtmlPreview(null)}
+        onSelect={id => setHtmlPreview(current => current ? { ...current, selectedId: id, followLatest: false } : null)}
+        onFollowLatest={followLatest => setHtmlPreview(current => current ? { ...current, followLatest } : null)}
+      />}
     </section>
   );
 }, (previous, next) => previous.visible === false && next.visible === false);

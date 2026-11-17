@@ -1,5 +1,6 @@
+import { getMessageHtmlArtifacts } from '../html/chatHtmlArtifacts';
 import { hasSuccessfulSearchToolReceipt } from '../runtime/chatSearchContinuation';
-import { Check, Copy, RotateCcw, Square } from 'lucide-react';
+import { Check, Copy, RotateCcw, Square, PanelsTopLeft } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { memo, useState } from 'react';
 import { ChatAttachmentList } from './ChatAttachmentList';
@@ -50,6 +51,7 @@ export const ChatMessage = memo(function ChatMessage({
   onRegenerateMedia,
   onEditMedia,
   onStop,
+  onPreviewHtml,
 }: {
   message: ChatMessageType;
   onResolveTool: (id: string, approved: boolean) => void;
@@ -58,9 +60,11 @@ export const ChatMessage = memo(function ChatMessage({
   onRegenerateMedia?: (media: ChatGeneratedMedia) => void;
   onEditMedia?: (media: ChatGeneratedMedia) => void;
   onStop?: () => void;
+  onPreviewHtml?: (id: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const generated = message.toolCalls.flatMap(getGeneratedMediaFromToolCall);
+  const htmlArtifacts = getMessageHtmlArtifacts(message);
   const generatedFiles = message.toolCalls.flatMap(getGeneratedFilesFromToolCall);
   const copy = async () => {
     if (!message.content.trim()) return;
@@ -75,9 +79,12 @@ export const ChatMessage = memo(function ChatMessage({
         {message.role === 'assistant' && <ChatThinkingPanel message={message} />}
         {message.content && (
           message.role === 'assistant'
-            ? <ChatMarkdown content={message.content} />
+            ? <ChatMarkdown content={message.content} messageId={message.id} onPreviewHtml={onPreviewHtml} />
             : <ChatMessageText content={message.content} />
         )}
+        {onPreviewHtml && htmlArtifacts.filter(artifact => (artifact.id.endsWith(':document') || artifact.id.includes(':draft:'))).map(artifact => (
+          <button type="button" key={artifact.id} className="chat-html-artifact-trigger" onClick={() => onPreviewHtml(artifact.id)}><PanelsTopLeft size={14} />{artifact.name}<span>预览</span></button>
+        ))}
         {message.role === 'assistant' && message.status === 'streaming' && !message.content && message.toolCalls.length === 0 && !(message.thinkingSteps?.length) && (
           <div className="chat-thinking" aria-label="正在生成"><i /><i /><i /></div>
         )}
@@ -93,7 +100,10 @@ export const ChatMessage = memo(function ChatMessage({
             onEdit={onEditMedia}
           />
         ))}
-        {generatedFiles.map(file => <ChatGeneratedFileCard key={file.id} file={file} />)}
+        {generatedFiles.map(file => {
+          const artifact = htmlArtifacts.find(item => item.file?.id === file.id);
+          return <ChatGeneratedFileCard key={file.id} file={file} onPreview={onPreviewHtml && artifact ? () => onPreviewHtml(artifact.id) : undefined} />;
+        })}
         {message.role === 'assistant' && message.status === 'error' && (
           <div className="chat-message__error">{hasSuccessfulSearchToolReceipt(message.toolCalls)
             ? '检索步骤已完成，但后续回答或文件生成未完成。可重试或更换 Chat 模型。'

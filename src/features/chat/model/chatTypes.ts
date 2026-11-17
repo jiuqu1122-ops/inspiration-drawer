@@ -89,6 +89,8 @@ export type ChatMessage = {
   createdAt: number;
   attachments: ChatAttachment[];
   toolCalls: ChatToolCall[];
+  /** Ephemeral, non-executing view of streamed HTML tool arguments. */
+  htmlDrafts?: { id: string; name: string; source: string }[];
   reasoning?: string;
   reasoningStatus?: ChatReasoningStatus;
   thinkingSteps?: ChatThinkingStep[];
@@ -201,7 +203,7 @@ export const getGeneratedMediaFromToolCall = (call: ChatToolCall): ChatGenerated
 };
 
 export const getGeneratedFilesFromToolCall = (call: ChatToolCall): ChatGeneratedFile[] => {
-  if (call.toolName !== 'create_file' || call.status !== 'completed') return [];
+  if (!['create_file', 'create_ui_prototype'].includes(call.toolName) || call.status !== 'completed') return [];
   const parsed = parseChatToolResult(call.resultJson);
   if (!parsed || typeof parsed !== 'object') return [];
   const files = Array.isArray((parsed as Record<string, unknown>).files)

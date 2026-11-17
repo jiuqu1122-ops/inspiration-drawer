@@ -1,5 +1,6 @@
 import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import { emitTo } from '@tauri-apps/api/event';
+import { materializeCanvasOverviewItems } from '../canvasSnapshotOverview';
 import React,{ startTransition } from 'react';
 import { getAssetCount,listAssets } from '../../../services/assetsApi';
 import { type CanvasRecord } from '../../../services/canvasApi';
@@ -503,6 +504,7 @@ export const startCanvasItemDragImpl = (ctx: Pick<canvasInteractionsActionContex
       if (nextSelected.length === 0) nextSelected = itemSelectionIds;
     }
     nextSelected = expandCanvasSelectionIdsWithGroups(nextSelected);
+    materializeCanvasOverviewItems(canvasContentRef.current, nextSelected);
     const selectionChanged = currentSelected.length !== nextSelected.length
       || currentSelected.some((value, index) => value !== nextSelected[index]);
     if (selectionChanged) {

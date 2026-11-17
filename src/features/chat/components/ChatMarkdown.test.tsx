@@ -28,3 +28,11 @@ describe('ChatMarkdown', () => {
     expect(html).toContain('href="https://example.com"');
   });
 });
+
+
+it('offers interactive preview only on HTML fences and retains safe host rendering', () => {
+  const html = renderToStaticMarkup(<ChatMarkdown messageId="m" onPreviewHtml={() => {}} content={'```html\n<button onclick="this.textContent=2">1</button>\n```\n\n```js\nalert(1)\n```'} />);
+  expect(html.match(/aria-label="预览 HTML"/g)).toHaveLength(1);
+  expect(html).toContain('&lt;button');
+  expect(html).not.toContain('<button onclick=');
+});

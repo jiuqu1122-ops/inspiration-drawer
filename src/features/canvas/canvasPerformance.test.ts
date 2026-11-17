@@ -116,6 +116,44 @@ describe('canvas world box index', () => {
     expect(next.someAtPoint(700, 50, item => item.selected)).toBe(true);
     expect(next.someAtPoint(700, 50, item => !item.selected)).toBe(false);
   });
+  it('returns viewport intersections in stacking order and keeps forced offscreen items', () => {
+    const back = { id: 'back' }, middle = { id: 'middle' }, front = { id: 'front' }, forced = { id: 'forced' };
+    const index = new CanvasBoxIndex([
+      { item: back, box: { x: 0, y: 0, width: 100, height: 100 } },
+      { item: middle, box: { x: 120, y: 0, width: 100, height: 100 } },
+      { item: front, box: { x: 240, y: 0, width: 100, height: 100 } },
+      { item: forced, box: { x: 5000, y: 5000, width: 100, height: 100 } },
+    ]);
+    expect(index.intersecting({ x: -10, y: -10, width: 380, height: 120 })).toEqual([back, middle, front]);
+    expect(index.intersecting({ x: -10, y: -10, width: 380, height: 120 }, [forced])).toEqual([back, middle, front, forced]);
+    expect(index.intersecting({ x: -10, y: -10, width: 1, height: 1 }, [forced])).toEqual([forced]);
+    expect(index.intersecting({ x: -100000, y: -100000, width: 200000, height: 200000 })).toEqual([back, middle, front, forced]);
+  });
+  it('returns the topmost overlap in canvas order and prioritizes selected nodes', () => {
+    const back = { id: 'back', selected: false }, front = { id: 'front', selected: false }, selected = { id: 'selected', selected: true };
+    const index = new CanvasBoxIndex([back, front, selected].map(item => ({ item, box: { x: 0, y: 0, width: 100, height: 100 } })));
+    expect(index.topAtPoint(50, 50)?.id).toBe('selected');
+    expect(index.topAtPoint(50, 50, item => item.selected)?.id).toBe('selected');
+    expect(index.topAtPoint(150, 50)).toBeNull();
+  });
+  it('matches a full ordered scan for randomized viewport ranges', () => {
+    let seed = 9107;
+    const random = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    const nodes = Array.from({ length: 600 }, (_, id) => ({ id }));
+    const boxes = nodes.map((node, index) => ({ item: node, box: {
+      x: random() * 30000 - 15000, y: random() * 20000 - 10000,
+      width: index % 73 === 0 ? 5000 : random() * 900,
+      height: index % 73 === 0 ? 5000 : random() * 700,
+    } }));
+    const index = new CanvasBoxIndex(boxes);
+    for (let sample = 0; sample < 80; sample++) {
+      const view = { x: random() * 30000 - 15000, y: random() * 20000 - 10000,
+        width: 100 + random() * 4000, height: 100 + random() * 3000 };
+      const expected = boxes.filter(({ box }) => box.x <= view.x + view.width && box.x + box.width >= view.x
+        && box.y <= view.y + view.height && box.y + box.height >= view.y).map(({ item }) => item);
+      expect(index.intersecting(view)).toEqual(expected);
+    }
+  });
 });
 
 

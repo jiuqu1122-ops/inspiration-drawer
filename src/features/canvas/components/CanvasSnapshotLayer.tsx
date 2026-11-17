@@ -2,7 +2,7 @@ import { memo, useLayoutEffect, useRef } from 'react';
 import type { SnapshotBitmapCache, SnapshotBitmapLease } from '../snapshot/snapshotBitmapCache';
 import { drawSnapshotImage, type SnapshotTile } from '../snapshot/snapshotScene';
 import {
-  captureSnapshotTileContent, getSnapshotTileRasterSize, sameSnapshotTileContent, sameSnapshotTileRasterSize,
+  captureSnapshotTileContent, getSnapshotTileAppendStart, getSnapshotTileRasterSize, sameSnapshotTileContent, sameSnapshotTileRasterSize,
   type SnapshotTileContent, type SnapshotTileRasterSize,
 } from '../snapshot/snapshotTileRendering';
 
@@ -58,12 +58,12 @@ type TileProps = {
 type TileDrawRequest = TileProps & { content: SnapshotTileContent; size: SnapshotTileRasterSize };
 type PaintedTile = { cache: SnapshotBitmapCache; content: SnapshotTileContent; size: SnapshotTileRasterSize };
 
-const paintTile = (canvas: HTMLCanvasElement, request: TileDrawRequest, size: SnapshotTileRasterSize): boolean => {
+const paintTile = (canvas: HTMLCanvasElement, request: TileDrawRequest, size: SnapshotTileRasterSize, appendStart = 0): boolean => {
   const leases: SnapshotBitmapLease[] = [];
   try {
     // Validate and pin every source before clearing old pixels. Nothing is pinned
     // while queued, and partial acquisition/failure releases all earlier leases.
-    for (const entry of request.content.items) {
+    for (const entry of request.content.items.slice(appendStart)) {
       const lease = request.cache.pin(entry.source, entry.maxEdge);
       if (!lease) return false;
       leases.push(lease);
@@ -77,10 +77,10 @@ const paintTile = (canvas: HTMLCanvasElement, request: TileDrawRequest, size: Sn
     const box = request.tile.box;
     const xRatio = size.width / box.width, yRatio = size.height / box.height;
     ctx.setTransform(xRatio, 0, 0, yRatio, -box.x * xRatio, -box.y * yRatio);
-    ctx.clearRect(box.x, box.y, box.width, box.height);
-    for (let index = 0; index < request.tile.items.length; index++) {
+    if (appendStart === 0) ctx.clearRect(box.x, box.y, box.width, box.height);
+    for (let index = appendStart; index < request.tile.items.length; index++) {
       const { item } = request.tile.items[index];
-      const { bitmap } = leases[index];
+      const { bitmap } = leases[index - appendStart];
       if (!item.ai) {
         ctx.fillStyle = request.dark ? 'rgba(28,25,23,.88)' : 'rgba(255,255,255,.86)';
         ctx.fillRect(item.x, item.y, item.width, item.height);
@@ -127,7 +127,9 @@ export const CanvasSnapshotTile = memo(function CanvasSnapshotTile({ tile, cache
       // a wheel frame. A shrinking hard budget is the only necessary exception.
       const immediateSize = old && !overBudget ? old.size : size;
       cancelDeferredDraw(queueKey.current);
-      if (!paintTile(canvas, request, immediateSize)) {
+      const appendStart = old && !overBudget && old.cache === cache
+        ? getSnapshotTileAppendStart(old.content, content) ?? 0 : 0;
+      if (!paintTile(canvas, request, immediateSize, appendStart)) {
         painted.current = null;
         onFailure();
         return;

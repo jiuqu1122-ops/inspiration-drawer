@@ -1,0 +1,16 @@
+{
+  "upstream": "https://github.com/sketch-hq/sketch-document",
+  "schemaPackage": "@sketch-hq/sketch-file-format@6.5.0",
+  "typePackage": "@sketch-hq/sketch-file-format-ts@6.5.0",
+  "downloadedAt": "2026-11-17",
+  "license": "MIT",
+  "sha256": {
+    "document.schema.json": "cd473bf70970489436613d30baa92ed01381cc77615acb8e3b016e349467fdfe",
+    "file-format.schema.json": "563e7d563cdb4eae44a60f06f7bea7ae42cba415d094b918798753e43bcdd988",
+    "LICENSE.md": "159c4c49d3bebbc4de1dfb8ecc7509878c4e0735e082453a1df6bd86e3714b21",
+    "meta.schema.json": "b38628de7ab202c3a501c3586fe6d4a34a347aa18e05d6c7f1c4903a09c091d9",
+    "page.schema.json": "50ad1e9e239b253bc8d0d11bffed183efec739ae0e21803254331968137dbb22",
+    "types.d.ts": "8853e32af83c6d134d0c43ab783258834f370140fa4295fc1d01866f3ca95e97",
+    "user.schema.json": "0a7573336c9f59ab4dff5d6d26ce8b69a220ba3242a789a386af3902e47d0199"
+  }
+}

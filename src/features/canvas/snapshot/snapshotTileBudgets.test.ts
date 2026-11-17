@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { allocateSnapshotTileBudgets, SNAPSHOT_TOTAL_TILE_PIXELS } from './snapshotTileBudgets';
+import { allocateSnapshotTileBudgets, SNAPSHOT_TOTAL_TILE_PIXELS, SNAPSHOT_MIN_TILE_PIXELS } from './snapshotTileBudgets';
 const sum = (values: ReadonlyMap<string, number>) => [...values.values()].reduce((a, b) => a + b, 0);
 describe('incremental world tile admission', () => {
   it('does not resize old tiles just because a fifth tile crosses a power-of-two boundary', () => {
@@ -29,4 +29,16 @@ describe('incremental world tile admission', () => {
     expect(allocateSnapshotTileBudgets(['100'], same).get('100')).toBe(same.get('100'));
     expect(allocateSnapshotTileBudgets([], same).size).toBe(0);
   });
+  it('never starves retained viewport cells to a single pixel during rapid back-and-forth panning', () => {
+    let budgets = new Map<string, number>();
+    for (let offset = 0; offset < 160; offset++) {
+      const keys = Array.from({ length: 40 }, (_, i) => `tile-${i + (offset % 60)}`);
+      budgets = allocateSnapshotTileBudgets(keys, budgets);
+      expect(sum(budgets)).toBeLessThanOrEqual(SNAPSHOT_TOTAL_TILE_PIXELS);
+      expect([...budgets.values()].every(value => value >= SNAPSHOT_MIN_TILE_PIXELS)).toBe(true);
+    }
+    const repaired = allocateSnapshotTileBudgets(['starved', 'another'], new Map([['starved', 1], ['another', 1]]));
+    expect(repaired.get('starved')).toBeGreaterThanOrEqual(SNAPSHOT_MIN_TILE_PIXELS);
+  });
+
 });

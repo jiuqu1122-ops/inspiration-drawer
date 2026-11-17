@@ -21,15 +21,21 @@ const intersects = (a: CanvasItemBox, b: CanvasItemBox) => a.x <= b.x + b.width 
  * offscreen selected nodes must not evict the entire visible overview. */
 export const planSnapshotResidency = (items: readonly CanvasImageItem[], viewport: CanvasItemBox | null, previousMaxEdge = 512) => {
   const sources = new Map<string, string>();
+  const prioritySources: string[] = [];
+  const prioritized = new Set<string>();
   const admitted = new Set<string>();
   const append = (item: CanvasImageItem) => {
     const source = getCanvasInitialImageSource(item.item);
     if (!source || (!admitted.has(source) && admitted.size >= SNAPSHOT_MAX_RESIDENT_SOURCES)) return;
     admitted.add(source); sources.set(item.id, source);
   };
-  if (viewport) for (const item of items) if (intersects(item, viewport)) append(item);
+  if (viewport) for (const item of items) if (intersects(item, viewport)) {
+    append(item);
+    const source = sources.get(item.id);
+    if (source && !prioritized.has(source)) { prioritized.add(source); prioritySources.push(source); }
+  }
   for (const item of items) if (!sources.has(item.id)) append(item);
-  return { sources, maxEdge: chooseSnapshotMaxEdge(admitted.size, previousMaxEdge), uniqueCount: admitted.size };
+  return { sources, prioritySources, maxEdge: chooseSnapshotMaxEdge(admitted.size, previousMaxEdge), uniqueCount: admitted.size };
 };
 
 /** Compare only values used to paint a simple image. Event callbacks use the

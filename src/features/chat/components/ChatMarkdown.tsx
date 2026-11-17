@@ -1,4 +1,5 @@
-import { Check, Copy } from 'lucide-react';
+import { htmlCodeArtifactId, isHtmlLanguage } from '../html/chatHtmlArtifacts';
+import { Check, Copy, PanelsTopLeft } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { isValidElement, memo, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -12,7 +13,7 @@ const getNodeText = (node: ReactNode): string => {
   return '';
 };
 
-function MarkdownCodeBlock({ children }: { children?: ReactNode }) {
+function MarkdownCodeBlock({ children, onPreview }: { children?: ReactNode; onPreview?: () => void }) {
   const [copied, setCopied] = useState(false);
   const code = getNodeText(children).replace(/\n$/, '');
   const child = isValidElement<{ className?: string }>(children) ? children : null;
@@ -29,10 +30,13 @@ function MarkdownCodeBlock({ children }: { children?: ReactNode }) {
     <div className="chat-markdown__code-block">
       <div className="chat-markdown__code-head">
         <span>{language}</span>
-        <button type="button" onClick={() => void copy()} aria-label="复制代码">
-          {copied ? <Check size={11} /> : <Copy size={11} />}
-          {copied ? '已复制' : '复制'}
-        </button>
+        <div className="chat-markdown__code-actions">
+          {isHtmlLanguage(language) && onPreview && <button type="button" onClick={onPreview} aria-label="预览 HTML"><PanelsTopLeft size={12} />预览</button>}
+          <button type="button" onClick={() => void copy()} aria-label="复制代码">
+            {copied ? <Check size={11} /> : <Copy size={11} />}
+            {copied ? '已复制' : '复制'}
+          </button>
+        </div>
       </div>
       <pre>{children}</pre>
     </div>
@@ -49,7 +53,7 @@ const isSafeExternalUrl = (value?: string) => {
   }
 };
 
-export const ChatMarkdown = memo(function ChatMarkdown({ content }: { content: string }) {
+export const ChatMarkdown = memo(function ChatMarkdown({ content, messageId = '', onPreviewHtml }: { content: string; messageId?: string; onPreviewHtml?: (id: string) => void }) {
   return (
     <div className="chat-markdown">
       <ReactMarkdown
@@ -70,7 +74,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({ content }: { content: s
               {children}
             </a>
           ) : <span className="chat-markdown__unsafe-link">{children}</span>,
-          pre: ({ children }) => <MarkdownCodeBlock>{children}</MarkdownCodeBlock>,
+          pre: ({ children, node }) => <MarkdownCodeBlock onPreview={onPreviewHtml ? () => onPreviewHtml(htmlCodeArtifactId(messageId, node?.position?.start.offset || 0)) : undefined}>{children}</MarkdownCodeBlock>,
           code: ({ className, children }) => (
             <code className={['chat-markdown__code', className].filter(Boolean).join(' ')}>{children}</code>
           ),

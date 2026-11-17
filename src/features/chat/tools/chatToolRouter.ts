@@ -1,3 +1,4 @@
+import { parsePrototype } from '../prototypes/prototypeSchema';
 import { assertGeometryCorrection } from '../../rhino/rhinoGeometryRecovery';
 import { assertRhinoScriptPreflight } from '../../rhino/rhinoScriptPreflight';
 import { assertSafePlanarRoute, SAFE_PROFILE_TOOL } from '../../rhino/rhinoSafeModeling';
@@ -14,7 +15,7 @@ import { getRhinoNativeTool, isRhinoNativeTool, isRhinoReadTool } from '../../rh
 import { validateRhinoNativeArguments } from '../../rhino/rhinoWorkflow';
 
 const SUPPORTED_TOOLS = new Set([
-  'web_search', 'create_file', 'create_agent', 'get_canvas_selection', 'get_canvas_selected_shapes', 'search_assets', 'generate_image', 'generate_image_variants', 'edit_image', 'generate_video',
+  'create_ui_prototype', 'web_search', 'create_file', 'create_agent', 'get_canvas_selection', 'get_canvas_selected_shapes', 'search_assets', 'generate_image', 'generate_image_variants', 'edit_image', 'generate_video',
   'interpolate_video', 'enhance_image', 'enhance_video', 'fuse_images',
   'batch_image_operation', 'add_to_canvas', 'create_canvas_generator', 'create_workflow', 'list_workflows', 'run_workflow',
 ]);
@@ -32,7 +33,7 @@ const AUTO_EXECUTE_MEDIA_TOOLS = new Set([
 ]);
 
 const permissionActionForChatTool = (name: string, args: Record<string, unknown>): LegacyAgentAction => {
-  if (name === 'web_search' || name === 'create_file' || name === 'create_agent' || name === 'get_canvas_selection' || name === 'get_canvas_selected_shapes' || name === 'search_assets' || name === 'list_workflows') {
+  if (name === 'create_ui_prototype' || name === 'web_search' || name === 'create_file' || name === 'create_agent' || name === 'get_canvas_selection' || name === 'get_canvas_selected_shapes' || name === 'search_assets' || name === 'list_workflows') {
     return { tool: name === 'search_assets' ? 'drawer_search_inspirations' : 'app_get_context', arguments: args };
   }
   if (name === 'run_workflow') return { tool: 'canvas_run_workflow', arguments: args };
@@ -121,6 +122,7 @@ export const routeChatToolCall = async (input: {
   }
   if (name === 'search_assets' && !String(input.args.query || '').trim()) throw new Error('素材搜索词不能为空');
   if (name === 'web_search' && !String(input.args.query || '').trim()) throw new Error('联网搜索词不能为空');
+  if (name === 'create_ui_prototype') input.args.prototype = parsePrototype(input.args.prototype);
   if (name === 'create_file' && (!String(input.args.fileName || '').trim() || !String(input.args.format || '').trim())) {
     throw new Error('生成文件需要文件名和格式');
   }

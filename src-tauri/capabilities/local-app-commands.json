@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "local-app-commands",
+  "description": "Native app commands are available to trusted local windows only. Sandboxed HTML and remote pages receive no native app permissions.",
+  "local": true,
+  "windows": ["*"],
+  "permissions": ["local-app-commands"]
+}

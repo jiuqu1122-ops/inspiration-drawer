@@ -1,0 +1,26 @@
+﻿<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="canvas-highres-isolated-probe" content="synthetic-only-v1"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<!-- Loopback Vite HMR + Tauri IPC only. No network image/model/file/asset protocol. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' ws://127.0.0.1:* ws://localhost:* ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"/>
+<title>Isolated synthetic high-resolution canvas probe</title>
+<style>
+html,body,#root{margin:0;width:100%;height:100%;background:#f0f2f4;color:#1c2734;font:13px system-ui,sans-serif}
+.highres-probe{height:100%;display:flex;flex-direction:column;box-sizing:border-box;padding:12px;gap:8px}
+.highres-probe header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.highres-probe h1{font-size:19px;font-weight:750;margin:0 0 3px}.highres-probe p{margin:0}
+.highres-probe nav{display:flex;gap:8px}.highres-probe button{border:1px solid #a4b0bc;border-radius:5px;background:white;padding:7px 12px;color:#182b41;cursor:pointer}
+.highres-probe button:disabled{opacity:.45;cursor:default}.probe-warning{font-size:12px;color:#744d12}
+#probe-status{margin:0;min-height:64px;white-space:pre-wrap;padding:8px 12px;border:1px solid #b8c9d8;border-radius:5px;background:#fff;font:12px/1.5 ui-monospace,monospace}
+#probe-surface{flex:1;min-height:300px;position:relative;overflow:auto;border:1px solid #b8c9d8;background-color:#fafbfc;background-image:radial-gradient(#cad0d8 1px,transparent 1px);background-size:20px 20px;overscroll-behavior:none;overflow-anchor:none}
+.probe-result{flex-shrink:0;max-height:200px;overflow:auto;padding:4px 8px;background:#fff;border:1px solid #cbd3db}.probe-result summary{cursor:pointer;font-weight:650}
+#probe-result{margin:8px 0;white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.45 ui-monospace,monospace}
+</style></head><body><div id="root"></div><script type="module">
+// Gate BEFORE importing any Canvas/production helper modules. Never share the
+// production dev origin/profile or an existing workflow probe origin.
+const local = location.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname);
+if (!local || ['1420', '1461'].includes(location.port)) {
+  document.getElementById('root').textContent = 'REFUSED: use a dedicated loopback probe server (default port 1463), never production :1420 or existing probe :1461.';
+  throw new Error('Canvas highres probe isolation boundary rejected this origin');
+}
+await import('./canvas-highres-probe.tsx');
+</script></body></html>

@@ -5,6 +5,7 @@ const CHAT_TOOL_LABELS: Record<string, string> = {
   rhino_list_objects: '查询 Rhino 对象',
   rhino_list_layers: '查询 Rhino 图层',
   web_search: '联网搜索',
+  create_ui_prototype: '创建原型 / Figma 设计文件',
   create_file: '生成文件',
   create_agent: '创建智能体',
   get_canvas_selection: '读取画布选中项',

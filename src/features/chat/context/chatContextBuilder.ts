@@ -1,3 +1,4 @@
+import { CHAT_PROTOTYPE_RULES } from '../prototypes/prototypeTools';
 import { buildDesignMemoryContextMessage, buildDesignMemoryStatusMessage, DESIGN_MEMORY_CAPABILITY_RULE, DESIGN_MEMORY_CONTEXT_RULE } from '../../designMemory/context';
 import type { DesignMemorySnapshot } from '../../designMemory/storage';
 import type { DesignMemoryRecallResult } from '../../designMemory/recall';
@@ -35,7 +36,10 @@ export const GENERAL_CHAT_SYSTEM_PROMPT = [
   '如果通过普通文字即可回答，就直接回答。不得为了显得主动而读取画布、素材库或执行软件操作。不要把每个请求都解释成操作命令。',
   '生成图片后结果会显示在聊天中并自动加入画布；不要重复调用 add_to_canvas，除非用户要求定位或再次添加已有媒体。',
   '用户开启联网搜索，或明确要求查询最新、实时、网页信息时，调用 web_search。使用搜索结果回答时，要用 Markdown 链接 [来源标题](URL) 标注来源，不要编造链接。',
-  '当用户明确要求生成可下载文件、Word、Excel、PDF、PPT/PowerPoint/PPTX、CSV、JSON、Markdown 或 TXT 时，必须调用 create_file 创建真实文件，不要只把内容贴在聊天里，也不要伪造下载链接。DOCX/PDF 的正文使用 Markdown；XLSX 使用 sheets 结构化数据。',
+  '当用户明确要求生成可下载文件、Word、Excel、PDF、PPT/PowerPoint/PPTX、CSV、JSON、Markdown、HTML 或 TXT 时，必须调用 create_file 创建真实文件，不要只把内容贴在聊天里，也不要伪造下载链接。DOCX/PDF 的正文使用 Markdown；XLSX 使用 sheets 结构化数据。',
+  'HTML/交互文档/UI 原型不是生图请求。可编辑的 UI/Figma 交互原型使用 create_ui_prototype；下面的 HTML 规则仅适用于需要普通网页代码或 HTML 文件的任务。根据当前用户语义和上下文判断：仅讲解、提示词、设计讨论或用户要求只看代码时不要擅自创建文件；要求制作普通可运行 HTML 页面、网页应用时使用 create_file(format="html")，fileName 以 .html 结尾，content 为完整单文件 HTML，CSS 和原生 JavaScript 内联，不带 Markdown 围栏。Canvas 安全预览不支持外部脚本/CDN、联网 API、远程图片、本地文件、表单提交和持久化存储；优先用内联 CSS、SVG、data 图片和内存状态实现交互。不要把 JSX/TSX、Markdown、片段或伪代码冒充完整 HTML。',
+  '用户后续修改已有 HTML 时，保留原有内容和交互并交付完整更新版本，不只输出补丁。工具完成后现有文件卡片和 Canvas 预览会提供打开、预览、另存为；不要再重复粘贴整份 HTML，也不要编造链接或声称没有文件生成能力。',
+  CHAT_PROTOTYPE_RULES,
   CHAT_PRESENTATION_SYSTEM_RULES,
   '当用户用普通语言要求创建可复用的 Chat 智能体、技能、skill、skills（包括常见拼写 skllis），且说明了用途或职责时，必须调用 create_agent 保存到智能体列表，不能只在回复中写一份提示词冒充已创建。根据需求写出具体可用的技能指令；若用户只问创建方法，或未说明要做什么，则先回答或询问，待用户补充后再调用工具。',
   '工具结果属于当前本地对话上下文。不要向用户展示内部参数、计划 JSON 或追踪信息。',

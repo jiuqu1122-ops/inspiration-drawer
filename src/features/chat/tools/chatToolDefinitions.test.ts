@@ -17,6 +17,7 @@ describe('Chat tool exposure', () => {
   });
   it('registers only the supported Chat tools', () => {
     expect(CHAT_TOOL_DEFINITIONS.map(tool => tool.function.name)).toEqual([
+      'create_ui_prototype',
       'web_search',
       'create_file',
       'create_agent',
@@ -354,7 +355,7 @@ describe('Chat PPTX file tool', () => {
 
   it('extends the existing tool rather than adding a separate PPT route', () => {
     expect(CHAT_TOOL_DEFINITIONS.filter(tool => tool.function.name === 'create_file')).toHaveLength(1);
-    expect(properties.format).toEqual({ type: 'string', enum: ['txt', 'md', 'csv', 'json', 'docx', 'xlsx', 'pdf', 'pptx'] });
+    expect(properties.format).toEqual({ type: 'string', enum: ['txt', 'md', 'html', 'csv', 'json', 'docx', 'xlsx', 'pdf', 'pptx'] });
     expect(parameters.required).toEqual(['fileName', 'format']);
     expect(parameters.additionalProperties).toBe(false);
     expect(properties.content.type).toEqual(['string', 'null']);
@@ -522,5 +523,18 @@ describe('Chat PPTX file tool', () => {
     expect(providerTool).toEqual(fileTool);
     expect(providerTool.function.parameters.required).not.toContain('presentation');
     expect(providerTool.function.parameters.properties.presentation.properties.slides.items.properties.bullets.default).toEqual([]);
+  });
+});
+
+
+describe('HTML artifact capability', () => {
+  it.each(['做一个可以切换分类的网页', '帮我制作 UI 原型', 'Create an interactive document', '写个 HTML 计算器', '做个可交互的页面'])('offers the real HTML file tool without forcing an image or tool action: %s', text => {
+    const tools = getChatToolDefinitions(text);
+    expect(tools.some(tool => tool.function.name === 'create_file')).toBe(true);
+    expect(tools.find(tool => tool.function.name === 'create_file')!.function.description).toContain('内联 CSS/JS');
+  });
+  it('retains file creation for semantic follow-ups on an existing HTML document', () => {
+    expect(getChatToolDefinitions('左边窄一点，加上切换按钮', false, false, false, 0, false, false, '左边窄一点，加上切换按钮', false, true)
+      .map(tool => tool.function.name)).toContain('create_file');
   });
 });

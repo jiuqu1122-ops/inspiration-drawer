@@ -64,6 +64,7 @@ pub struct ChatGeneratedFileResult {
 enum GeneratedFormat {
     Text,
     Markdown,
+    Html,
     Csv,
     Json,
     Docx,
@@ -82,6 +83,7 @@ impl GeneratedFormat {
         {
             "txt" | "text" => Ok(Self::Text),
             "md" | "markdown" => Ok(Self::Markdown),
+            "html" | "htm" | "html5" => Ok(Self::Html),
             "csv" => Ok(Self::Csv),
             "json" => Ok(Self::Json),
             "docx" | "word" => Ok(Self::Docx),
@@ -89,7 +91,7 @@ impl GeneratedFormat {
             "pdf" => Ok(Self::Pdf),
             "pptx" | "powerpoint" => Ok(Self::Pptx),
             _ => Err(
-                "暂不支持该文件格式，可使用 TXT、Markdown、CSV、JSON、DOCX、XLSX、PDF 或 PPTX"
+                "暂不支持该文件格式，可使用 TXT、Markdown、CSV、JSON、DOCX、XLSX、HTML、PDF 或 PPTX"
                     .to_string(),
             ),
         }
@@ -99,6 +101,7 @@ impl GeneratedFormat {
         match self {
             Self::Text => "txt",
             Self::Markdown => "md",
+            Self::Html => "html",
             Self::Csv => "csv",
             Self::Json => "json",
             Self::Docx => "docx",
@@ -112,6 +115,7 @@ impl GeneratedFormat {
         match self {
             Self::Text => "text/plain",
             Self::Markdown => "text/markdown",
+            Self::Html => "text/html; charset=utf-8",
             Self::Csv => "text/csv",
             Self::Json => "application/json",
             Self::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -170,7 +174,7 @@ fn normalized_file_name(value: &str, format: GeneratedFormat) -> String {
     name
 }
 
-fn generated_root(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn generated_root(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     app_handle
         .path()
         .app_data_dir()
@@ -719,6 +723,9 @@ fn write_generated_file(
             MAX_SOURCE_BYTES / 1_000_000
         ));
     }
+    if format == GeneratedFormat::Html && (content.trim().is_empty() || content.trim_start().starts_with("```")) {
+        return Err("HTML 需要完整的非空源代码，不要在 content 中包裹 Markdown 代码围栏".to_string());
+    }
     if format == GeneratedFormat::Xlsx {
         let spreadsheet_bytes = serde_json::to_vec(request.sheets.as_deref().unwrap_or_default())
             .map_err(|error| format!("读取 Excel 数据失败：{error}"))?
@@ -731,7 +738,7 @@ fn write_generated_file(
         }
     }
     match format {
-        GeneratedFormat::Text | GeneratedFormat::Markdown => {
+        GeneratedFormat::Text | GeneratedFormat::Markdown | GeneratedFormat::Html => {
             fs::write(path, content).map_err(|error| format!("写入文本文件失败：{error}"))
         }
         GeneratedFormat::Csv => {
@@ -886,6 +893,26 @@ mod tests {
             normalized_file_name("数据", GeneratedFormat::Xlsx),
             "数据.xlsx"
         );
+    }
+
+    #[test]
+    fn html_format_writes_exact_interactive_source_with_safe_name() {
+        let source = "<!DOCTYPE html><html><meta charset=\"utf-8\"><title>中文交互</title><button onclick=\"this.textContent++\">0</button></html>";
+        let request: super::ChatCreateFileRequest = serde_json::from_value(json!({
+            "conversationId": "synthetic-html", "fileName": "../原型.exe", "format": "html", "content": source
+        })).unwrap();
+        for alias in ["html", ".HTM", "HTML5"] {
+            assert_eq!(GeneratedFormat::parse(alias).unwrap(), GeneratedFormat::Html);
+        }
+        assert_eq!(GeneratedFormat::Html.mime_type(), "text/html; charset=utf-8");
+        assert_eq!(normalized_file_name(&request.file_name, GeneratedFormat::Html), "原型.html");
+        let path = temp_path("html");
+        super::write_generated_file(&path, GeneratedFormat::Html, &request, &std::collections::HashMap::new()).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), source);
+        let mut oversized = request;
+        oversized.content = Some("中".repeat(700_000));
+        assert!(super::write_generated_file(&path, GeneratedFormat::Html, &oversized, &std::collections::HashMap::new()).err().unwrap().contains("2 MB"));
+        let _ = fs::remove_file(path);
     }
 
     #[test]

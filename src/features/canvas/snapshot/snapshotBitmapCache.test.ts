@@ -49,6 +49,43 @@ describe('snapshot cache admission and decoding', () => {
     expect(getSnapshotBitmapCacheKey('a', 512)).not.toBe(getSnapshotBitmapCacheKey('a', 1024));
     expect(getSnapshotBitmapCacheKey('a?x=1')).not.toBe(getSnapshotBitmapCacheKey('a?x=2'));
   });
+  it('does not reserialize inline image payloads for warm insertion/selection reads', async () => {
+    const source = 'data:image/png;base64,' + 'x'.repeat(120_000);
+    const cache = cacheWith({ decode: async () => decoded('cached') });
+    const bitmap = await cache.request(source, 128);
+    const stringify = vi.spyOn(JSON, 'stringify');
+    try {
+      for (let read = 0; read < 100; read++) {
+        expect(cache.peek(source, 128)).toBe(bitmap);
+        cache.touch(source, 128);
+        const lease = cache.pin(source, 128);
+        expect(lease?.bitmap).toBe(bitmap);
+        lease?.release();
+        expect(cache.getFailure(source, 128)).toBeNull();
+      }
+      expect(stringify).not.toHaveBeenCalled();
+      cache.clear();
+      expect(cache.peek(source, 128)).toBeNull();
+      expect(stringify).toHaveBeenCalledTimes(1);
+    } finally { stringify.mockRestore(); }
+  });
+
+  it('bounds key metadata for cold sources and arbitrary tiers', () => {
+    const cache = cacheWith({ maxEntries: 1, maxPendingRequests: 1, maxFailures: 1 });
+    cache.peek('old', 128);
+    const stringify = vi.spyOn(JSON, 'stringify');
+    try {
+      for (let id = 0; id < 100; id++) cache.peek(`cold-${id}`, 128);
+      stringify.mockClear();
+      cache.peek('old', 128);
+      expect(stringify).toHaveBeenCalledTimes(1);
+      for (let tier = 1; tier <= 100; tier++) cache.peek('tiers', tier);
+      stringify.mockClear();
+      cache.peek('tiers', 1);
+      expect(stringify).toHaveBeenCalledTimes(1);
+    } finally { stringify.mockRestore(); }
+  });
+
   it('deduplicates in-flight request/acquire callers and caches the result', async () => {
     const control = controlled(), cache = cacheWith({ decode: control.decode });
     const first = cache.request('a'); expect(cache.request('a')).toBe(first);
@@ -81,6 +118,37 @@ describe('snapshot cache admission and decoding', () => {
     control.calls[2].resolve(decoded('c')); control.calls[3].resolve(decoded('d'));
     expect((await Promise.all(results)).every(Boolean)).toBe(true); await flush();
     expect(cache.getStats()).toMatchObject({ active: 0, queued: 0 });
+  });
+  it('promotes newly visible decodes and settles queued work from the previous viewport', async () => {
+    const control = controlled(), cache = cacheWith({ concurrency: 1, decode: control.decode });
+    const active = cache.request('active');
+    const oldVisible = cache.request('old-visible');
+    const oldOffscreen = cache.request('old-offscreen');
+    const nextVisible = cache.request('next-visible');
+    await flush();
+    expect(control.calls.map(call => call.source)).toEqual(['active']);
+
+    cache.prioritize(['next-visible']);
+    expect(await oldVisible).toBeNull();
+    expect(await oldOffscreen).toBeNull();
+    expect(cache.getStats()).toMatchObject({ active: 1, queued: 1 });
+
+    control.calls[0].resolve(decoded('active'));
+    await active; await flush();
+    expect(control.calls.map(call => call.source)).toEqual(['active', 'next-visible']);
+    control.calls[1].resolve(decoded('next-visible'));
+    expect(await nextVisible).not.toBeNull();
+  });
+  it('does not cancel active decode work while reprioritizing queued sources', async () => {
+    const control = controlled(), cache = cacheWith({ concurrency: 1, decode: control.decode });
+    const active = cache.request('active');
+    const visible = cache.request('visible');
+    await flush();
+    cache.prioritize(['visible']);
+    control.calls[0].resolve(decoded('active'));
+    expect(await active).not.toBeNull(); await flush();
+    expect(control.calls.map(call => call.source)).toEqual(['active', 'visible']);
+    control.calls[1].resolve(decoded('visible')); expect(await visible).not.toBeNull();
   });
   it('honors single-flight and queued-plus-active admission without charging duplicates', async () => {
     const control = controlled(), cache = cacheWith({ concurrency: 1, maxPendingRequests: 2, decode: control.decode });
