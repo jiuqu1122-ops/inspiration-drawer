@@ -100,7 +100,7 @@ internal sealed class BetaServer : IDisposable
                 var allowed = origin == null || origin == Url.TrimEnd('/') || origin is "http://tauri.localhost" or "https://tauri.localhost" or "tauri://localhost" or "http://localhost:1420" or "http://127.0.0.1:1420";
                 if (!allowed) { origin = null; throw new ApiError(403, "不允许的连接来源"); }
                 if (first[0] == "OPTIONS") { await Respond(stream, 204, "", "text/plain", origin); return; }
-                if (first[0] == "GET" && uri.AbsolutePath is "/" or "/panel.js" or "/panel.css" or "/parts.css" or "/markdown.js" or "/markdown.css" or "/image-preview.js" or "/image-preview.css")
+                if (first[0] == "GET" && uri.AbsolutePath is "/" or "/panel.js" or "/panel.css" or "/panel-pickers.js" or "/parts.css" or "/markdown.js" or "/markdown.css" or "/image-preview.js" or "/image-preview.css")
                 {
                     var name = uri.AbsolutePath == "/" ? "index.html" : uri.AbsolutePath[1..];
                     var assembly = typeof(BetaServer).Assembly;
@@ -159,7 +159,7 @@ internal sealed class BetaServer : IDisposable
                             ["processId"] = Environment.ProcessId,
                             ["state"] = documentSnapshot,
                             ["context"] = context,
-                            ["commands"] = new JsonArray(documentCommands.Select(value => value.DeepClone()).ToArray()),
+                            ["commands"] = new JsonArray(documentCommands.Select(CommandReceipt).ToArray()),
                         };
                     }
                 }
@@ -231,12 +231,22 @@ internal sealed class BetaServer : IDisposable
         var documentId = body["documentId"]?.GetValue<uint>() ?? 0;
         if (documentId == 0) throw new ApiError(400, "Missing target document");
         if (kind == "send" && (string.IsNullOrWhiteSpace(body["content"]?.GetValue<string>()) || body["content"]!.GetValue<string>().Length > 12_000)) throw new ApiError(400, "Message length must be 1..12000 characters");
+        if (body["localImages"] is JsonNode imagesNode)
+        {
+            if (kind != "send" || imagesNode is not JsonArray images || images.Count > 6) throw new ApiError(400, "Invalid local reference images");
+            foreach (var image in images)
+            {
+                var data = image?["dataUrl"]?.GetValue<string>() ?? "";
+                var name = image?["name"]?.GetValue<string>() ?? "";
+                if (name.Length > 255 || data.Length > 1024 * 1024 || !System.Text.RegularExpressions.Regex.IsMatch(data, @"\Adata:image/(png|jpeg);base64,[A-Za-z0-9+/]+={0,2}\z")) throw new ApiError(400, "Invalid local reference image data");
+            }
+        }
         lock (gate)
         {
             if (commands.TryGetValue(id, out var duplicate))
             {
-                if (!JsonNodeCompat.DeepEquals(duplicate["request"], body)) throw new ApiError(409, "Command id was reused with a different payload");
-                return duplicate.DeepClone();
+                if (!JsonNodeCompat.DeepEquals(duplicate["identity"] ?? CommandIdentity(duplicate["request"]!.AsObject()), CommandIdentity(body))) throw new ApiError(409, "Command id was reused with a different payload");
+                return CommandReceipt(duplicate);
             }
             if (!Connected) throw new ApiError(503, "No live desktop Chat runtime is connected");
             var documentSnapshot = documentSnapshots.TryGetValue(documentId, out var saved)
@@ -292,10 +302,29 @@ internal sealed class BetaServer : IDisposable
                 command["status"]?.GetValue<string>() is "pending" or "accepted"))
                 throw new ApiError(409, "A stop has already been requested for this document");
             if (commands.Count >= 300) throw new ApiError(409, "Beta command history is full; restart the plugin after tasks finish");
-            var item = new JsonObject { ["id"] = id, ["status"] = "pending", ["request"] = body.DeepClone() };
+            var item = new JsonObject { ["id"] = id, ["status"] = "pending", ["request"] = body.DeepClone(), ["identity"] = CommandIdentity(body) };
             commands.Add(id, item);
-            return item.DeepClone();
+            return CommandReceipt(item);
         }
+    }
+
+    private static JsonObject CommandIdentity(JsonObject request)
+    {
+        var identity = request.DeepClone().AsObject();
+        if (identity["localImages"] is JsonArray images)
+            foreach (var image in images.OfType<JsonObject>())
+                image["dataUrl"] = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(image["dataUrl"]?.GetValue<string>() ?? "")));
+        return identity;
+    }
+
+    // Image bytes belong only to the one pending desktop delivery, never UI
+    // polling, acknowledgement history, or the bounded command ledger forever.
+    private static JsonNode CommandReceipt(JsonObject item)
+    {
+        var receipt = item.DeepClone().AsObject();
+        receipt.Remove("identity");
+        if (receipt["request"] is JsonObject request) request.Remove("localImages");
+        return receipt;
     }
 
     private static bool HasAwaitingNativeApproval(JsonObject snapshot, string toolCallId)
@@ -320,8 +349,9 @@ internal sealed class BetaServer : IDisposable
             if (!commands.TryGetValue(id, out var item)) throw new ApiError(404, "Command not found");
             var status = body["status"]?.GetValue<string>() ?? "";
             var previous = item["status"]?.GetValue<string>();
+            if (status == "accepted" && item["request"] is JsonObject acceptedRequest) acceptedRequest.Remove("localImages");
             if (status is not ("accepted" or "completed" or "failed")) throw new ApiError(400, "Invalid command status");
-            if (previous is "completed" or "failed") return item.DeepClone();
+            if (previous is "completed" or "failed") return CommandReceipt(item);
             if (status != "accepted" && previous != "accepted") throw new ApiError(409, "Command was not accepted by its runtime");
             if (item["request"]?["kind"]?.GetValue<string>() == "preview-image" && status == "completed")
             {
@@ -336,7 +366,7 @@ internal sealed class BetaServer : IDisposable
             }
             item["status"] = status;
             item["error"] = body["error"]?.GetValue<string>() is string error ? error[..Math.Min(error.Length, 800)] : null;
-            return item.DeepClone();
+            return CommandReceipt(item);
         }
     }
 
@@ -404,7 +434,7 @@ internal sealed class BetaServer : IDisposable
         if (method == "initialize") result = new JsonObject
         {
             ["protocolVersion"] = "2025-06-18", ["capabilities"] = new JsonObject { ["tools"] = new JsonObject() },
-            ["serverInfo"] = new JsonObject { ["name"] = "inspiration-drawer-rhino-beta", ["version"] = "0.1.0-beta.32" },
+            ["serverInfo"] = new JsonObject { ["name"] = "inspiration-drawer-rhino-beta", ["version"] = "0.1.0-beta.33" },
         };
         else if (method == "notifications/initialized") return new JsonObject();
         else if (method == "tools/list")

@@ -1,3 +1,4 @@
+import { recordedShortcut } from '../settings/shortcutRecording';
 import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { listen } from '@tauri-apps/api/event';
@@ -1151,18 +1152,20 @@ export const startResizingRightCornerImpl = (ctx: Pick<windowSnipActionContext, 
 
 };
 
-export const handleRecordShortcutImpl = (ctx: Record<never, never>, e: React.KeyboardEvent, setter: Function, submitterName: string) => {
-  const {  } = ctx;
-    e.preventDefault(); e.stopPropagation();
-    const key = e.key; if (['Control', 'Shift', 'Alt', 'Meta'].includes(key)) return;
-    const keys: string[] = [];
-    if (e.ctrlKey) keys.push('Ctrl'); if (e.altKey) keys.push('Alt'); if (e.shiftKey) keys.push('Shift');
-    if (e.metaKey) keys.push('Command');
-    let k = key.toUpperCase(); if (k === ' ') k = 'Space'; else if (k === 'ESCAPE') k = 'Esc'; else if (k.startsWith('ARROW')) k = k.replace('ARROW', '');
-    keys.push(k); const newShortcut = keys.join('+'); setter(newShortcut);
-    if (submitterName === 'update-trigger-shortcut') localStorage.setItem('drawer_trigger_shortcut', newShortcut);
-    invoke('update_shortcut', { name: submitterName.replace(/-/g, '_'), shortcut: newShortcut }).catch(()=>{});
-
+export const handleRecordShortcutImpl = (ctx: { onError?: (message: string) => void }, e: React.KeyboardEvent, setter: (shortcut: string) => void, submitterName: string) => {
+  e.preventDefault(); e.stopPropagation();
+  const target = e.currentTarget as HTMLElement;
+  if (e.key === 'Escape') { target.blur(); return; }
+  const native = e.nativeEvent;
+  let shortcut: string | null;
+  try { shortcut = recordedShortcut({ key: e.key, code: e.code, ctrlKey: e.ctrlKey, altKey: e.altKey, shiftKey: e.shiftKey, metaKey: e.metaKey, isComposing: native.isComposing, repeat: e.repeat }); }
+  catch (error) { ctx.onError?.(error instanceof Error ? error.message : String(error)); return; }
+  if (!shortcut || target.dataset.shortcutSaving === 'true') return;
+  target.dataset.shortcutSaving = 'true';
+  void invoke('update_shortcut', { name: submitterName.replace(/-/g, '_'), shortcut }).then(() => {
+    if (submitterName === 'update-trigger-shortcut') localStorage.setItem('drawer_trigger_shortcut', shortcut!);
+    setter(shortcut);
+  }, error => { ctx.onError?.('快捷键未保存：' + String(error)); }).finally(() => { delete target.dataset.shortcutSaving; });
 };
 
 export const createTextOrUrlItemImpl = (ctx: Pick<windowSnipActionContext, 'activeFolderId' | 'createAssetId'>, rawText: string, defaultName: string = '文本片段'): BufferItem => {

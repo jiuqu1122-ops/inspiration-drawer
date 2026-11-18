@@ -1,3 +1,4 @@
+import '../src/index.css';
 /** Synthetic only: real ChatView + preview, no DB, credentials, AI or paid calls. */
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -45,13 +46,75 @@ function Fixture(){
   newConversation:async()=>setConversation('probe-b'),selectConversation:setConversation,deleteConversations:async()=>[],loadOlderMessages:async()=>{},resolveToolApproval:async()=>{},retryLast:async()=>{},stop:async()=>{},setWebSearchEnabled:()=>{},setConversationModel:async()=>true,sendMessage:async()=>{setNotice('Probe: model requests are disabled');return false;}} as unknown as ChatViewProps['runtime'];
  useEffect(()=>{if(new URLSearchParams(location.search).has('autorun'))void runProbe().catch(error=>finish({pass:false,error:String(error),reports}));},[]);
  return <><div style={{padding:18,fontSize:12,display:'flex',gap:12,alignItems:'center'}}><b>HTML Canvas · isolated UI fixture</b><button onClick={()=>setMessages([msg(sample('B'))])}>更新原型 B</button><button onClick={()=>setConversation(conversationId==='probe-a'?'probe-b':'probe-a')}>切换对话</button><span>{notice}</span></div><pre id="probe-results" style={{position:'fixed',left:16,bottom:12,fontSize:10,maxHeight:180,overflow:'auto',maxWidth:500}} />
- <ChatView runtime={runtime} variant="canvas" width={460} onClose={()=>setNotice('关闭聊天')} selectedItems={[]} modelOptions={['default']} imageModel="" onImageModelChange={()=>{}} imageAspectRatio="1:1" onImageAspectRatioChange={()=>{}} imageResolution="1K" onImageResolutionChange={()=>{}} />
+ <ChatView runtime={runtime} variant="canvas" width={460} onClose={()=>setNotice('关闭聊天')} selectedItems={[]} modelOptions={['default', 'claude-opus-5', 'gemini-4-argon', 'grok-4-6', 'gpt-6-1-terra', 'gemini-3-8-flash-high', 'gemini-3-7-flash', 'gpt-6-astra', 'gpt-6-1-sol']} imageModel="" imageModelOptions={[{value:'',label:'自动选择（推荐）',meta:'智能匹配'},...['Nano Banana 2.1','Nano Banana Pro','Gpt image 2.6 high','Gpt image 2.5','Gpt image 2.5 Medium','seedream-5.5','Long model label for ellipsis verification'].map(label=>({value:label,label,meta:'账号额度'}))]} onImageModelChange={()=>{}} imageAspectRatio="1:1" imageAspectRatioOptions={[{value:"1:1",label:"自动匹配"},...Array.from({length:14},(_,i)=>({value:String(i),label:`${i+1}:9`}))]} onImageAspectRatioChange={()=>{}} imageResolution="1K" imageResolutionOptions={[{value:"1K",label:"自动匹配"},{value:"2K",label:"2K"},{value:"4K",label:"4K"}]} onImageResolutionChange={()=>{}} />
  </>;
 }
 async function finish(result: Record<string,unknown>){document.getElementById('probe-results')!.textContent=JSON.stringify(result,null,2);document.body.dataset.probePass=String(result.pass);if(isTauri())await invoke('chat_copy_generated_file',{result});}
+async function checkComposerPickers() {
+ click('.chat-image-settings-toggle'); await pause(100);
+ const llm = document.querySelector<HTMLButtonElement>('.chat-model-trigger')!;
+ const images = Array.from(document.querySelectorAll<HTMLButtonElement>('.chat-image-setting-trigger'));
+ const properties = ['fontSize','fontFamily','fontWeight','height','borderRadius','lineHeight'] as const;
+ const visual = (element: Element) => Object.fromEntries(properties.map(key => [key, getComputedStyle(element)[key]]));
+ const base = visual(llm);
+ for (const trigger of images) if(JSON.stringify(visual(trigger))!==JSON.stringify(base))throw Error('Picker styles differ '+JSON.stringify({base,image:visual(trigger)}));
+ const value = images[0].querySelector('.chat-image-setting-trigger__value')!;
+ if(getComputedStyle(value).fontSize!==base.fontSize||getComputedStyle(value).fontWeight!==base.fontWeight)throw Error('Image model label overrides compact type');
+ images[0].click(); await pause(100);
+ const imageOption = document.querySelector<HTMLButtonElement>('.chat-image-setting-menu button')!;
+ const imageOptionStyle = getComputedStyle(imageOption);
+ const optionType = { fontSize:imageOptionStyle.fontSize,fontWeight:imageOptionStyle.fontWeight,minHeight:imageOptionStyle.minHeight };
+ llm.click(); await pause(100);
+ if(document.querySelector('.chat-image-setting-menu'))throw Error('Image menu remained open after LLM menu opened');
+ const menu = document.querySelector<HTMLElement>('.chat-model-menu')!;
+ const option = menu.querySelector('button')!;
+ const style = getComputedStyle(option);
+ if(JSON.stringify(optionType)!==JSON.stringify({fontSize:style.fontSize,fontWeight:style.fontWeight,minHeight:style.minHeight}))throw Error('Image and LLM options use different type/row scales');
+ const rect=menu.getBoundingClientRect(), row=images[0].getBoundingClientRect();
+ const x=Math.min(rect.right-8,Math.max(rect.left+8,row.left+12));
+ const y=Math.min(rect.bottom-4,Math.max(rect.top+4,row.top+row.height/2));
+ if(y<row.top||y>row.bottom)throw Error('Layer check did not overlap image-setting row');
+ const hit=document.elementFromPoint(x,y);
+ if(!hit||!menu.contains(hit))throw Error('LLM menu is behind image settings at overlap '+JSON.stringify({x,y,hit:hit?.className}));
+ if(rect.left<0||rect.right>innerWidth+1||rect.top<0)throw Error('LLM picker escaped the viewport');
+ for (const trigger of images) {
+   trigger.click(); await pause(70);
+   if(document.querySelector('.chat-model-menu'))throw Error('LLM menu remained open after image picker opened');
+   const dropdown=document.querySelector<HTMLElement>('.chat-image-setting-menu')!;
+   const box=dropdown.getBoundingClientRect();
+   if(box.left<0||box.right>innerWidth+1||box.top<0)throw Error('Image picker escaped viewport');
+ }
+ window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'})); await pause(70);
+ if(document.querySelector('.chat-image-setting-menu'))throw Error('Escape did not close picker');
+ document.documentElement.classList.add('dark');
+ for(const trigger of images)if(JSON.stringify(visual(trigger))!==JSON.stringify(visual(llm)))throw Error('Dark theme changed picker metrics');
+ document.documentElement.classList.remove('dark');
+ // Pointer events (rather than .click only) cover capture/outside-close ordering.
+ llm.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})); llm.click(); await pause(70);
+ const menuToDismiss=document.querySelector('.chat-model-menu');
+ if(!menuToDismiss)throw Error('LLM menu did not reopen');
+ document.querySelector('textarea')!.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})); await pause(70);
+ if(document.querySelector('.chat-model-menu'))throw Error('Outside pointer did not dismiss LLM menu');
+ click('.chat-image-settings-toggle'); await pause(70);
+ return {base,optionType,layerHitTestPassed:true,mutualExclusionPassed:true,escapeAndOutsideClosePassed:true};
+}
 async function runProbe(){
  if(isTauri())await invoke('chat_create_file'); // trusted top-frame control must work once
  await waitFor(()=>Boolean(document.querySelector('[aria-label="打开 Canvas 预览"]')),'chat header');
+ const composer=document.querySelector<HTMLTextAreaElement>('[data-chat-composer-input="true"]')!;
+ const setValue=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!;
+ const setDraft=async(text:string)=>{setValue.call(composer,text);composer.dispatchEvent(new Event('input',{bubbles:true}));await pause(120);};
+ const originalHeight=composer.getBoundingClientRect().height;
+ const longDraft=Array.from({length:16},(_,i)=>`${i+1}. 本页面用于标准工作站相机与外参自动标定的完整流程，保留所有页面布局和交互。`).join('\n');
+ await setDraft(longDraft);
+ const expandedHeight=composer.getBoundingClientRect().height;
+ if(expandedHeight<=originalHeight+40||composer.scrollHeight<=composer.clientHeight||getComputedStyle(composer).overflowY!=='auto')throw Error('Long composer draft did not grow/cap/scroll');
+ await setDraft('短消息');
+ const shrunkHeight=composer.getBoundingClientRect().height;
+ if(shrunkHeight>=expandedHeight-30)throw Error('Composer did not shrink after shortening draft');
+ await setDraft('');
+ const composerLayout={originalHeight,expandedHeight,shrunkHeight};
+ const pickerLayout=await checkComposerPickers();
  click('[aria-label="预览 HTML"]');
  await waitFor(()=>reports.some(r=>r.version==='A'&&r.networkBlocked&&r.value===1),'interactive initial document');
  const first=reports[reports.length-1];
@@ -82,6 +145,10 @@ async function runProbe(){
  const panel=document.querySelector<HTMLElement>('.chat-html-preview')!;const rect=panel.getBoundingClientRect();
  const layout={width:innerWidth,height:innerHeight,panelWidth:rect.width,panelRight:rect.right,overflow:panel.scrollWidth>panel.clientWidth+1};
  if(layout.overflow||rect.right>innerWidth+1||rect.left<0)throw Error('Layout overflow '+JSON.stringify(layout));
- await finish({pass:true,checks:['inline JS interaction','parent DOM isolated','storage isolated','native IPC unavailable to sandbox (backend count)' ,'network blocked','streaming throttled','stable interaction','pause/manual refresh','follow-up revision','real file card preview','pin version','conversation isolation','responsive layout'],streamingRuns,layout,reports});
+ await setDraft(longDraft);
+ click('.chat-image-settings-toggle'); await pause(80);
+ if(innerWidth<600) { click('[aria-label="关闭预览"]'); await pause(80); click('.chat-image-setting-trigger'); } else click('.chat-model-trigger');
+ await pause(80);
+ await finish({pass:true,composerLayout,pickerLayout,checks:['unified picker fonts/weights/heights','LLM menu above image settings (pixel hit test)','exclusive dropdowns and dismissal','light/dark picker metrics','composer grows for multiline/pasted text','composer caps with scrollbar','composer shrinks after clearing','inline JS interaction','parent DOM isolated','storage isolated','native IPC unavailable to sandbox (backend count)' ,'network blocked','streaming throttled','stable interaction','pause/manual refresh','follow-up revision','real file card preview','pin version','conversation isolation','responsive layout'],streamingRuns,layout,reports});
 }
 createRoot(document.getElementById('root')!).render(<Fixture/>);

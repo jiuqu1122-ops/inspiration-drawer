@@ -15,7 +15,13 @@ assert "view.Size =" not in rhino8 and "view.Bounds =" not in rhino8, "Do not pi
 assert "Content = view;" in rhino9, "Keep the working Rhino 9 WebView host path unchanged."
 assert "MinimumWidth = 340" in layout and "MinimumHeight = 420" in layout
 assert "@media (max-width: 340px)" in css
-assert ".composer-model-settings { grid-template-columns:minmax(0,1fr);" in css
+assert ".image-settings-primary { display:grid;" in css
+assert ".rhino-composer { display:flex;" in css
+assert ".panel-picker-menu { position:fixed;" in css
+html = (ROOT / "integrations/rhino/InspirationDrawer.Rhino/Panel/index.html").read_text(encoding="utf-8")
+composer = html[html.index('<form id="composer"'):html.index("</form>")]
+for control in ["model", "image-model", "image-resolution", "image-aspect-ratio", "viewport", "canvas", "mask", "attach-local-image"]:
+    assert f'id="{control}"' in composer, control
 print("PASS Rhino 8 WebView is dynamically expanding with no fixed child bounds")
 print("PASS Rhino 9 direct WebView host path remains unchanged")
 print("PASS compact panel minimum and narrow-screen settings layout are present")

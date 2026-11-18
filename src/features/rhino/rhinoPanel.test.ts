@@ -45,13 +45,13 @@ async function setup(options: { busy?: boolean; connected?: boolean } = {}) {
   });
   let sequence = 0;
   const document = { getElementById: (id: string) => elements.get(id), createElement: () => new ElementFixture(), activeElement: null as ElementFixture | null };
-  const api = runInNewContext(source + '\n({ poll });', {
+  const api = runInNewContext(source + '\n({ poll, stageLocalImages: images => { localImages = images; renderLocalImages(); } });', {
     window: { rhinoMarkdown: { render: (_document: unknown, text: string) => { const p = new ElementFixture(); p.textContent = text; return p; } }, rhinoImagePreview: { sync: vi.fn(), configure: vi.fn() } },
     document,
     location: { hash: '#token=test', search: '?documentId=7', pathname: '/' },
     history: { replaceState: vi.fn() }, URLSearchParams, AbortSignal,
     crypto: { randomUUID: () => `request-test-${++sequence}` }, fetch, setTimeout: vi.fn(),
-  }) as { poll: () => Promise<void> };
+  }) as { poll: () => Promise<void>; stageLocalImages: (images: Array<{ name: string; dataUrl: string }>) => void };
   await settle();
   return { elements, requests, api, transport, document };
 }
@@ -183,15 +183,96 @@ describe('Rhino model choices in an existing conversation', () => {
   });
 });
 
-describe('compact bottom-anchored model settings',()=>{
- it('keeps all model controls at the composer instead of consuming the document header',()=>{
-  const settingsEnd=html.indexOf('</section>',html.indexOf('<section class="settings"'));
-  const footer=html.indexOf('<footer>');const model=html.indexOf('id="model"');const composer=html.indexOf('<form id="composer"');
-  expect(settingsEnd).toBeGreaterThan(0);expect(footer).toBeGreaterThan(settingsEnd);expect(model).toBeGreaterThan(footer);expect(model).toBeLessThan(composer);
-  for(const id of ['model','image-model','image-resolution','image-aspect-ratio'])expect(html.slice(footer,composer)).toContain('id="'+id+'"');
+describe('desktop-style Rhino composer layout', () => {
+ it('keeps image settings and the LLM model inside the composer below text input', () => {
+  const start=html.indexOf('<form id="composer"'), end=html.indexOf('</form>',start), input=html.indexOf('id="input"',start);
+  const toolbar=html.indexOf('class="composer-toolbar"',input);
+  expect(start).toBeGreaterThan(html.indexOf('<footer>'));
+  for(const id of ['image-model','image-resolution','image-aspect-ratio','image-quality','viewport','canvas','mask','mask-layer','model','attach-local-image']) {
+    const index=html.indexOf(`id="${id}"`); expect(index).toBeGreaterThan(input); expect(index).toBeLessThan(end);
+  }
+  expect(html.indexOf('id="image-model"')).toBeLessThan(toolbar);
+  expect(html.indexOf('id="model"')).toBeGreaterThan(toolbar);
+  expect(html.indexOf('id="send"')).toBeGreaterThan(toolbar);
  });
- it('keeps conversation selection at the top and a narrow-column fallback',()=>{
+ it('retains conversation navigation at the top and compact narrow-window styles', () => {
   expect(html.indexOf('id="conversation"')).toBeLessThan(html.indexOf('<footer>'));
-  expect(readFileSync(new URL('../../../integrations/rhino/InspirationDrawer.Rhino/Panel/panel.css',import.meta.url),'utf8')).toContain('@media(max-width:340px)');
+  const css=readFileSync(new URL('../../../integrations/rhino/InspirationDrawer.Rhino/Panel/panel.css', import.meta.url),'utf8');
+  expect(css).toContain('@media (max-width: 340px)');
+  expect(css).toContain('--picker-font-size:8px'); expect(css).toContain('--picker-height:27px');
+  expect(css).toContain('.panel-picker-menu { position:fixed');
+ });
+ it('expands the original reference controls from the composer without sending a command', async () => {
+  const { elements, requests }=await setup();
+  elements.get('reference-settings')!.hidden=true;
+  elements.get('reference-settings-toggle')!.click();
+  expect(elements.get('reference-settings')!.hidden).toBe(false);
+  elements.get('reference-settings-toggle')!.click();
+  expect(elements.get('reference-settings')!.hidden).toBe(true);
+  expect(requests).toEqual([]);
+ });
+ it('can collapse image settings without changing selected model or creating a task', async () => {
+  const { elements, requests }=await setup();
+  elements.get('image-settings')!.hidden=false;
+  elements.get('image-settings-toggle')!.click();
+  expect(elements.get('image-settings')!.hidden).toBe(true);
+  expect(elements.get('image-model')!.value).toBe('image-a');
+  expect(requests).toEqual([]);
+ });
+});
+
+
+describe('Rhino panel local image controls', () => {
+  it('opens a local file chooser and submits image data only as an explicit send attachment', async () => {
+    const { elements, requests, api } = await setup();
+    const choose = vi.spyOn(elements.get('local-image-input')!, 'click');
+    elements.get('attach-local-image')!.click(); expect(choose).toHaveBeenCalledOnce();
+    const image = { name: 'reference.png', dataUrl: 'data:image/png;base64,QUJD' };
+    api.stageLocalImages([image]);
+    expect(elements.get('local-image-list')!.hidden).toBe(false);
+    expect(elements.get('local-image-status')!.textContent).toContain('1');
+    elements.get('input')!.value = '根据参考图建模';
+    elements.get('input')!.listeners.get('input')?.();
+    elements.get('composer')!.listeners.get('submit')?.({ preventDefault: vi.fn() });
+    await settle();
+    expect(requests).toHaveLength(1); expect(requests[0]).toMatchObject({ kind: 'send', localImages: [image] });
+    expect(elements.get('local-image-list')!.hidden).toBe(true);
+  });
+});
+
+
+describe('Rhino panel CSP-safe icon and image assets', () => {
+ it('embeds trusted icon paths for all static controls instead of external SVG use URLs', () => {
+  expect(html).not.toMatch(/<use\b|icons\.svg/);
+  for (const icon of ['paperclip','layers','sliders','image','arrow-up','square','chevron-down','check']) {
+    expect(html).toContain(`id="panel-icon-${icon}"`);
+    expect(html).toContain(`data-panel-icon="${icon}"`);
+  }
+  expect(html).toContain('viewBox="0 0 24 24"');
+  expect(html).toContain('stroke="currentColor"');
+ });
+ it('clones inline geometry for dynamic menu chevrons/checkmarks without image fetches', () => {
+  const pickers=readFileSync(new URL('../../../integrations/rhino/InspirationDrawer.Rhino/Panel/panel-pickers.js', import.meta.url),'utf8');
+  expect(pickers).toContain('cloneNode(true)');
+  expect(pickers).toContain("getElementById('panel-icon-' + name)");
+  expect(pickers).not.toMatch(/icons\.svg|createElementNS[^\n]+['"]use['"]/);
+ });
+ it('reads local reference files through allowed data URLs rather than CSP-blocked blob images', () => {
+  expect(source).toContain('reader.readAsDataURL(file)');
+  expect(source).not.toContain('URL.createObjectURL(file)');
+  expect(source).not.toContain('URL.revokeObjectURL(url)');
+ });
+});
+
+
+describe('production CSP fixture parity', () => {
+ it('tests the panel with the same resource restrictions as the real Rhino bridge', () => {
+  const server=readFileSync(new URL('../../../integrations/rhino/InspirationDrawer.Rhino/BetaServer.cs',import.meta.url),'utf8');
+  const fixture=readFileSync(new URL('../../../scripts/rhino-panel-layout-probe.html',import.meta.url),'utf8');
+  const policy=server.match(/Content-Security-Policy: ([^\\]+)\\r\\n/)?.[1];
+  const tested=fixture.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)?.[1];
+  expect(policy).toBeDefined(); expect(tested).toBeDefined();
+  // frame-ancestors is only honored as an HTTP header, not a meta policy.
+  expect(policy?.replace(/; frame-ancestors 'none'$/, '')).toBe(tested);
  });
 });

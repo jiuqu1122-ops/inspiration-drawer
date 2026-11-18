@@ -11,6 +11,7 @@ export const CREATE_UI_PROTOTYPE_TOOL = {
   },
 };
 export const CHAT_PROTOTYPE_RULES = [
+  '用户要求 Figma 文件或 .fig 时，不要因为无法原生输出 .fig 就拒绝整个需求；可交付真正的 .sketch 供 Figma 导入，简明告知格式替代后按需求制作。若用户明确只接受 .fig、不接受替代格式，则如实说明限制，不擅自创建。',
   '可导入 Figma 的交互原型使用 create_ui_prototype，不调用生图，也不能把整页图片、HTML、JSX 或改后缀的 .fig 冒充可编辑设计。纯 HTML 需求仍使用 create_file(format="html")。用户只讨论如何制作或只要提示词时不执行工具。',
   '原型 schemaVersion=1，id/name/startScreenId/screens/nodes/interactions 全部提供。nodes 是扁平数组，parentId 指向 screen 或 frame/state，顺序即同级绘制顺序。所有 screen/node ID 全局唯一，以字母开头，只含英文数字、下划线和短横线。先完整规划页面/节点/交互，再一次提交。不输出包内源码或伪造链接。',
   '布局：screen 给出 width/height/background；frame 支持 absolute/horizontal/vertical 布局，padding/gap/align/justify。节点 width/height 固定像素；absolute 布局下 x/y 相对于直接父容器，Auto Layout 下按 nodes 顺序排布。文字使用 text，color/fontFamily/fontSize/fontWeight/textAlign/lineHeight；颜色只支持 #RRGGBB 或 transparent；不要创建尺寸为零的节点。多行文字的 height 必须容纳换行与 lineHeight，检查文本裁切、节点重叠和页面边界后再提交。图像仅使用真实内嵌 PNG/JPEG imageData，不猜本地路径/URL/图片 base64，不用生图截图替代 UI。没有素材时用矢量矩形和文字构建设计。',

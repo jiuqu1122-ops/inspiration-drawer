@@ -88,11 +88,21 @@ function missingPythonNamespaceImports(code: string): RhinoScriptIssue[] {
   return issues;
 }
 
-type KnownType = 'BrepFace' | 'Brep' | 'Brep[]' | 'Curve' | 'Vector3d' | 'Boolean' | 'Number';
+type KnownType = 'BrepFace' | 'Brep' | 'Brep[]' | 'Curve' | 'Vector3d' | 'Boolean' | 'Number' | 'RhinoObject' | 'AnalyticBrep' | 'NonUniformTransform';
 function expressionType(expression: string, known: Map<string, KnownType>): KnownType | undefined {
   let value = expression.trim();
   while (/^\([^()]*\)$/.test(value)) value = value.slice(1, -1).trim();
   if (/^[A-Za-z_]\w*$/.test(value) && known.has(value)) return known.get(value);
+  if (/\b(?:Sphere|Cylinder|Cone|Torus)\s*\([\s\S]*\)\s*\.ToBrep\s*\([^()]*\)$/.test(value)) return 'AnalyticBrep';
+  const duplicated = value.match(/^([A-Za-z_]\w*)\.DuplicateBrep\s*\(\s*\)$/);
+  if (duplicated) return known.get(duplicated[1]) === 'AnalyticBrep' ? 'AnalyticBrep' : 'Brep';
+  const scale = value.match(/\b(?:Rhino\.Geometry|rg)\.Transform\.Scale\s*\(/);
+  if (scale) {
+    const args = callArguments(value, scale.index! + scale[0].length);
+    const factors = args?.length === 4 ? args.slice(1) : [];
+    if (factors.length === 3 && factors.every(factor => /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(factor)) && new Set(factors.map(Number)).size > 1) return 'NonUniformTransform';
+  }
+  if (/\.Objects\.(?:FindId|Find|FindByRuntimeSerialNumber)\s*\([\s\S]*\)$/.test(value)) return 'RhinoObject';
   if (/\.Faces\s*\[[^\[\]]+\]$/.test(value)) return 'BrepFace';
   if (/\b(?:ToBrep|DuplicateFace)\s*\([^()]*\)$/.test(value)) return 'Brep';
   if (/\bCreatePlanarBreps\s*\([\s\S]*\)\s*\[[^\]]+\]$/.test(value)) return 'Brep';
@@ -149,6 +159,39 @@ function callArguments(code: string, start: number): string[] | undefined {
 
 const EXTRUSION_GUIDANCE = 'Surface.CreateExtrusion(profile: Curve, direction: Vector3d) only extrudes a curve. For a trimmed BrepFace (including holes), use face.CreateExtrusion(pathCurve: Curve, cap: bool), check the returned Brep for null/IsValid/IsSolid, and preserve all inner loops. Do not replace the face with only its outer boundary, delete holes, flatten freeform geometry, or commit objects until all in-memory parts validate.';
 
+const MESH_PARAMETER_GUIDANCE = 'Rhino DocObjects.BrepObject/RhinoObject has no SetMeshParameters method. For optional per-object render meshing use SetRenderMeshParameters(MeshingParameters) and check its boolean return value; omit cosmetic render-mesh tuning when it is not needed. Do not replace the model with a mesh or repeat completed geometry writes.';
+
+function inspectKnownRhinoApis(code: string, known: Map<string, KnownType>): RhinoScriptIssue[] {
+  const issues: RhinoScriptIssue[] = [];
+  for (const match of code.matchAll(/\b([A-Za-z_]\w*)\s*\.\s*SetMeshParameters\s*\(/g)) {
+    if (known.get(match[1]) !== 'RhinoObject') continue;
+    issues.push({ code: 'rhino_object_mesh_api', line: code.slice(0, match.index).split('\n').length,
+      api: `${match[1]}.SetMeshParameters`, actualType: 'RhinoObject/BrepObject', instruction: MESH_PARAMETER_GUIDANCE });
+  }
+  for (const match of code.matchAll(/\b([A-Za-z_]\w*)\s*\.Transform\s*\(/g)) {
+    if (known.get(match[1]) !== 'AnalyticBrep') continue;
+    const args = callArguments(code, match.index! + match[0].length);
+    if (args?.length !== 1 || expressionType(args[0], known) !== 'NonUniformTransform') continue;
+    if (new RegExp('\\b' + match[1] + '\\.MakeDeformable\\s*\\(').test(code.slice(0, match.index))) continue;
+    issues.push({ code: 'rhino_analytic_brep_deformation', line: code.slice(0, match.index).split('\n').length,
+      api: `${match[1]}.Transform`, actualType: 'analytic Brep under non-uniform scaling',
+      instruction: 'Duplicate the analytic Brep, call MakeDeformable() and check success before non-uniform Transform. Validate Transform success, IsValidWithLog, required IsSolid/orientation/bounds/volume for every staged part before committing the complete assembly. If conversion fails, reconstruct that part at target dimensions; never skip an invalid part or repeat completed document writes.' });
+  }
+  // Only literal Rhino scale factors are judged. Dynamic expressions, user
+  // geometry functions and unrelated Transform classes are not evaluated.
+  for (const match of code.matchAll(/\b(?:Rhino\.Geometry|rg)\.Transform\.Scale\s*\(/g)) {
+    const args = callArguments(code, match.index! + match[0].length);
+    if (!args) continue;
+    const factors = args.length === 4 ? args.slice(1) : args.length === 2 ? args.slice(1) : [];
+    if (!factors.length || !factors.every(value => /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value))) continue;
+    const values = factors.map(Number);
+    if (values.some(value => value === 0)) issues.push({ code: 'rhino_singular_scale', line: code.slice(0, match.index).split('\n').length,
+      api: 'Transform.Scale', actualType: 'zero scale factor collapses solid geometry',
+      instruction: 'Use finite non-zero scale factors for solid modeling. Never flatten or silently discard a failed part. Build and validate all parts in memory before committing any objects.' });
+  }
+  return issues;
+}
+
 export function inspectRhinoScript(name: string, script: string): RhinoScriptIssue[] {
   if (!['rhino_native_run_python', 'rhino_native_run_csharp'].includes(name)) return [];
   const code = maskNonCode(script, name.endsWith('run_csharp'));
@@ -164,8 +207,9 @@ export function inspectRhinoScript(name: string, script: string): RhinoScriptIss
       instruction: GH_REFLECTION_SCAN_GUIDANCE,
     });
   }
-  if (!script.includes('CreateExtrusion')) return [...issues,...imports];
   const known = knownAssignments(code);
+  issues.push(...inspectKnownRhinoApis(code, known));
+  if (!script.includes('CreateExtrusion')) return [...issues,...imports];
   const redefinedRoots = new Set<string>();
   for (const match of code.matchAll(/^\s*(?:(?:class|def)\s+([A-Za-z_]\w*)|(?:(?:var|dynamic)\s+)?([A-Za-z_]\w*)\s*=)/gm)) redefinedRoots.add(match[1] || match[2]);
   const surfaceNames = new Set(['Surface', 'Rhino.Geometry.Surface']);
@@ -211,6 +255,8 @@ export function assertRhinoScriptPreflight(name: string, args: Record<string, un
 /** Diagnostic only: a remote TypeError is NOT evidence that nothing was written. */
 export function rhinoScriptFailureExplanation(error: unknown): string | undefined {
   const text = rhinoDiagnosticText(error);
+  if (/BrepObject|RhinoObject/.test(text) && /SetMeshParameters/.test(text)) return '脚本调用了 Rhino 对象不存在的 SetMeshParameters。可选的渲染网格设置应使用 SetRenderMeshParameters；不能因此重放已经完成的几何建模。';
+  if (/Transformed solid invalid|transform(?:ed|ation)?[^\n]{0,60}(?:invalid|failed)/i.test(text)) return '实体在变换后未通过有效性检查。需核对缩放因子、变换矩阵、几何类型和实体朝向；不能只凭此错误认定参考图有问题，也不能忽略失败部件或自动重跑已执行脚本。';
   const missing = text.match(/(?:NameError:\s*)?name\s+['"]([A-Za-z_]\w*)['"]\s+is not defined/i);
   if (missing) {
     const name = missing[1];

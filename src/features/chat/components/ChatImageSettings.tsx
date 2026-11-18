@@ -1,8 +1,8 @@
 import { Check, ChevronDown, Image as ImageIcon } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChatImageModelOption } from '../model/chatTypes';
 
-type PickerName = 'model' | 'aspect-ratio' | 'resolution' | 'quality' | 'mask';
+export type ChatImagePickerName = 'model' | 'aspect-ratio' | 'resolution' | 'quality' | 'mask';
 
 function ImageSettingPicker({
   name,
@@ -15,12 +15,12 @@ function ImageSettingPicker({
   disabled,
   wide = false,
 }: {
-  name: PickerName;
+  name: ChatImagePickerName;
   label: string;
   value: string;
   options: ChatImageModelOption[];
-  openPicker: PickerName | null;
-  setOpenPicker: (value: PickerName | null) => void;
+  openPicker: ChatImagePickerName | null;
+  setOpenPicker: (value: ChatImagePickerName | null) => void;
   onChange: (value: string) => void;
   disabled: boolean;
   wide?: boolean;
@@ -40,7 +40,7 @@ function ImageSettingPicker({
         aria-label={`${label}：${selected?.label || '自动'}`}
       >
         <span className="chat-image-setting-trigger__label">{label}</span>
-        <strong>{selected?.label || '自动'}</strong>
+        <span className="chat-image-setting-trigger__value">{selected?.label || '自动'}</span>
         <ChevronDown size={12} className={open ? 'is-open' : ''} />
       </button>
       {open && (
@@ -88,6 +88,8 @@ export function ChatImageSettings({
   maskSupported = false,
   onMaskModeChange,
   busy,
+  openPicker: controlledOpenPicker,
+  onOpenPickerChange,
 }: {
   model: string;
   modelOptions: ChatImageModelOption[];
@@ -105,9 +107,16 @@ export function ChatImageSettings({
   maskSupported?: boolean;
   onMaskModeChange?: (value: 'off' | 'on') => void;
   busy: boolean;
+  openPicker?: ChatImagePickerName | null;
+  onOpenPickerChange?: (value: ChatImagePickerName | null) => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
-  const [openPicker, setOpenPicker] = useState<PickerName | null>(null);
+  const [localOpenPicker, setLocalOpenPicker] = useState<ChatImagePickerName | null>(null);
+  const openPicker = controlledOpenPicker === undefined ? localOpenPicker : controlledOpenPicker;
+  const setOpenPicker = useCallback((value: ChatImagePickerName | null) => {
+    if (onOpenPickerChange) onOpenPickerChange(value);
+    else setLocalOpenPicker(value);
+  }, [onOpenPickerChange]);
 
   useEffect(() => {
     if (!openPicker) return;
@@ -123,7 +132,7 @@ export function ChatImageSettings({
       window.removeEventListener('pointerdown', close);
       window.removeEventListener('keydown', closeOnEscape);
     };
-  }, [openPicker]);
+  }, [openPicker, setOpenPicker]);
 
   return (
     <div className="chat-image-settings" ref={rootRef}>

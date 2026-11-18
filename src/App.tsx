@@ -2809,7 +2809,7 @@ function MainApp() {
   const shouldAcceptMobilePayload = (data: any) => { return shouldAcceptMobilePayloadImpl({ recentMobilePayloadsRef }, data); };
 
   // 🌟 完美修复的快捷键注册逻辑
-  useEffect(() => { return runDrawerCoreEffect03({ canvasShortcut, createBlankFloatingNote, enforceAntiTouchClosed, enterCanvasMode, isCanvasModeRef, licenseGateActiveRef, markShortcutReveal, noteShortcut, requestExitCanvasMode, searchInputRef, searchShortcut, setIsAntiTouchMode, setIsOpen, setIsPinned, setIsSearchActive, setSearchQuery, setShowFolderModal, setShowSettings, setShowTextInput, setShowWebImageCollector, shortcut, showToast, snipShortcut, startSnip, stateRef, textShortcut, toggleTriggerMode, triggerShortcut }); }, [snipShortcut, shortcut, textShortcut, searchShortcut, triggerShortcut, noteShortcut, canvasShortcut]);
+  useEffect(() => { return runDrawerCoreEffect03({ shortcutRecording: isRecording || isRecordingSnip || isRecordingText || isRecordingSearch || isRecordingTrigger || isRecordingNote || isRecordingCanvas, canvasShortcut, createBlankFloatingNote, enforceAntiTouchClosed, enterCanvasMode, isCanvasModeRef, licenseGateActiveRef, markShortcutReveal, noteShortcut, requestExitCanvasMode, searchInputRef, searchShortcut, setIsAntiTouchMode, setIsOpen, setIsPinned, setIsSearchActive, setSearchQuery, setShowFolderModal, setShowSettings, setShowTextInput, setShowWebImageCollector, shortcut, showToast, snipShortcut, startSnip, stateRef, textShortcut, toggleTriggerMode, triggerShortcut }); }, [snipShortcut, shortcut, textShortcut, searchShortcut, triggerShortcut, noteShortcut, canvasShortcut, isRecording, isRecordingSnip, isRecordingText, isRecordingSearch, isRecordingTrigger, isRecordingNote, isRecordingCanvas]);
 
   useEffect(() => { return runDrawerCoreEffect04({ drawerHeightRef, drawerWidthRef, isPointerInsideDrawerRef, setConfirmDialog, setIsAntiTouchMode, setIsOpen, setIsPinned, setShowFolderModal, setShowHelp, setShowQR, setShowSettings, setShowTextInput, setShowUpdateLog, setShowWebImageCollector, startupAutoCloseSuppressedRef, stateRef, triggerModeRef }); }, []);
 
@@ -5478,7 +5478,7 @@ useEffect(() => {
 
   const startResizingRightCorner = (e: React.PointerEvent) => { return startResizingRightCornerImpl({ applyWindowBounds, drawerHeightRef, drawerWidthRef, finishResize, isGlobalMouseDown, isResizingState, setDrawerState, setIsOpen }, e); };
 
-  const handleRecordShortcut = (e: React.KeyboardEvent, setter: Function, submitterName: string) => { return handleRecordShortcutImpl({}, e, setter, submitterName); };
+  const handleRecordShortcut = (e: React.KeyboardEvent, setter: (shortcut: string) => void, submitterName: string) => { return handleRecordShortcutImpl({ onError: showToast }, e, setter, submitterName); };
 
   const createTextOrUrlItem = (rawText: string, defaultName = '文本片段'): BufferItem => { return createTextOrUrlItemImpl({ activeFolderId, createAssetId }, rawText, defaultName); };
 
@@ -5491,6 +5491,7 @@ useEffect(() => {
   useLayoutEffect(() => { return runWindowSnipEffect07({ STARTUP_CONSENT_DELAY_MS, finishLaunchIntro, isPinnedRef, isPointerInsideDrawerRef, isSplashVisibleRef, setIsPinned, setIsSplashVisible, showLaunchIntro, startupAutoCloseSuppressedRef }); }, [showLaunchIntro]);
 
   const isTextEntryActive = () => {
+    if (document.activeElement instanceof Element && document.activeElement.closest('[data-shortcut-recording="true"]')) return true;
     const element = document.activeElement as HTMLElement | null;
     if (!element) return false;
     const tag = element.tagName;

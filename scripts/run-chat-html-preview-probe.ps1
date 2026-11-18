@@ -1,7 +1,7 @@
-﻿param([int]$Width = 1240, [switch]$SkipBuild, [switch]$Prototype)
+﻿param([int]$Width = 1240, [switch]$SkipBuild, [switch]$Prototype, [switch]$RhinoPanel, [int]$Height = 820, [ValidateSet("light","dark")][string]$Theme = "light")
 $ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$out=Join-Path $root $(if($Prototype){'outputs/figma-prototype-verification'}else{'outputs/html-preview-verification'})
+$out=Join-Path $root $(if($RhinoPanel){'outputs/rhino-composer-layout'}elseif($Prototype){'outputs/figma-prototype-verification'}else{'outputs/html-preview-verification'})
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 if (-not $SkipBuild) {
     & cargo +1.98.0 build --manifest-path (Join-Path $root 'src-tauri/Cargo.toml') --locked --offline --example chat_html_preview_probe
@@ -32,10 +32,11 @@ public static class HtmlPreviewProbeResources {
         throw 'Could not update disposable probe CommonControls manifest.'
     }
     if (-not [HtmlPreviewProbeResources]::EndUpdateResource($resource, $false)) { throw 'Could not save disposable probe manifest.' }
-$result=Join-Path $out "native-$Width.json"
+$label = if($RhinoPanel){"native-$Width-$Height-$Theme"}else{"native-$Width"}
+$result=Join-Path $out "$label.json"
 $started=Get-Date
-$arguments=@("`"$result`"", "$Width"); if($Prototype){$arguments+='prototype'}
-$probe=Start-Process -FilePath $binary -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $out "native-$Width.stdout.log") -RedirectStandardError (Join-Path $out "native-$Width.stderr.log")
+$arguments=@("`"$result`"", "$Width"); if($RhinoPanel){$arguments+=@('rhino-panel',"$Height",$Theme)}elseif($Prototype){$arguments+='prototype'}
+$probe=Start-Process -FilePath $binary -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $out "$label.stdout.log") -RedirectStandardError (Join-Path $out "$label.stderr.log")
 $processHandle=$probe.Handle
 if(-not $probe.WaitForExit(100000)){throw 'Native UI probe timed out'}
 if(Test-Path -LiteralPath $result){ Get-Content -Raw -Encoding UTF8 $result }

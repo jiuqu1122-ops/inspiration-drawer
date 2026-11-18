@@ -1,3 +1,29 @@
+# Inspiration Drawer Rhino Beta.33 · desktop 8.0.29
+
+Release date: 2026-11-19 (Asia/Shanghai). Plugin: `0.1.0-beta.33`.
+
+- The desktop Chat-style input card includes image settings, local references, model selection, send/stop and reference controls.
+- Trusted Lucide SVG geometry is embedded inline. The strict `img-src data:` policy is unchanged; local raster imports use FileReader data URLs rather than blocked blob URLs.
+- Uploaded local pictures and selected canvas pictures use the same existing vision/modeling attachment pipeline. No arbitrary disk paths or active SVG uploads are accepted.
+- Known wrong Rhino APIs and analytic-Brep scaling hazards are checked before dispatch; remote partial writes are never blindly replayed. This does not guarantee photo-fidelity or arbitrary modeling success.
+
+## Install / update
+
+1. Save work and fully exit Rhino.
+2. Install Inspiration Drawer **8.0.29** using the normal desktop installer (same app identity and user data).
+3. In Settings > Rhino Plugin, choose Install / Update, then restart Rhino.
+4. The panel badge should read **BETA.33**. Desktop upgrades alone do not replace a plugin loaded inside a running Rhino process.
+
+Both Rhino 8/net7 and Rhino 9/net8 payloads are embedded in the desktop installer. Keep their RHP, deps, runtimeconfig, RUI and SVG toolbar files together; do not mix framework directories. No separate Yak publication is performed by the desktop release workflow.
+
+## Verification scope
+
+Automated tests cover native bridge authentication, document-bound requests, local image validation, idempotent commands and frontend workflow behavior. An isolated native WebView2 fixture uses the production Content-Security-Policy and tests wide/minimum windows in light/dark themes, painted icon geometry, local raster import, settings and send/stop. Both actual Rhino SDKs compile. These checks do not execute paid models, run the user's reference modeling commands in Rhino GUI, or certify arbitrary upstream tool support.
+
+---
+
+## Historical notes (not the current installer)
+
 # Inspiration Drawer Rhino Beta.32
 
 Release date: 2026-11-12  

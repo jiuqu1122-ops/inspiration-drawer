@@ -153,7 +153,9 @@ export const getChatToolDefinitions = (
   const exposeImageTools = !presentationRequested && !isImagePromptTextRequest(currentUserText);
   const exposeFileCreation = FILE_CREATION_INTENT.test(text.replace(NEGATED_FILE_CREATION, ' ')) || presentationRequested
     || isChatFileDeliveryRequest(text) || skillEnabled || hasChatHtmlContext(text) || hasHtmlArtifact;
-  const exposePrototype = !presentationRequested && (hasPrototypeArtifact || hasChatHtmlContext(text) || /figma|交互原型|可点击|产品原型/i.test(text));
+  // Expose the capability for semantic routing, including .fig/.sketch and indirect UI requests.
+  const exposePrototype = !presentationRequested;
+  void hasPrototypeArtifact;
   const exposeAgentCreation = isChatAgentCreationRequest(text) || agentCreationFollowup;
   const exposeWebSearch = !webSearchBlocked && (webSearchEnabled || shouldExposeWebSearch(text));
   return CHAT_TOOL_DEFINITIONS.filter(tool => (

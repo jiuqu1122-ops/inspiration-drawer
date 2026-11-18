@@ -172,6 +172,42 @@ async Task TestNativeMcpRebind()
         await serverLoop;
     }
 }
+async Task TestLocalReferenceImages()
+{
+    Func<string,JsonObject,Task<JsonNode>> tool = (_, args) => Task.FromResult<JsonNode>(args.DeepClone());
+    Func<uint,Task<JsonNode>> context = id => Task.FromResult<JsonNode>(new JsonObject { ["documentId"] = id });
+    using var imageServer = new BetaServer(Path.Combine(directory, "local-images.json"), tool, context, context);
+    using var http = new HttpClient { BaseAddress = new Uri(imageServer.Url) };
+    async Task<(HttpStatusCode Code, JsonNode Json)> Send(string path, JsonObject? body = null)
+    {
+        using var request = new HttpRequestMessage(body == null ? HttpMethod.Get : HttpMethod.Post, path);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", imageServer.Token);
+        if (body != null) request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
+        using var response = await http.SendAsync(request);
+        return (response.StatusCode, JsonNode.Parse(await response.Content.ReadAsStringAsync())!);
+    }
+    var owner = Guid.NewGuid().ToString();
+    JsonObject Heartbeat() => new() { ["owner"] = owner, ["state"] = new JsonObject { ["documentId"] = 7, ["busy"] = false } };
+    await Send("/drawer/heartbeat", Heartbeat());
+    var data = "data:image/png;base64,QUJD";
+    var command = new JsonObject { ["id"] = "local-image-request-001", ["kind"] = "send", ["documentId"] = 7, ["content"] = "Model this reference",
+        ["localImages"] = new JsonArray(new JsonObject { ["name"] = "reference.png", ["dataUrl"] = data }) };
+    var queued = await Send("/panel/command", command);
+    Check(queued.Code == HttpStatusCode.OK, "local reference image can be queued for a bound document");
+    Check(!queued.Json.ToJsonString().Contains(data), "local image bytes are not echoed in panel command receipts");
+    var delivered = await Send("/drawer/heartbeat", Heartbeat());
+    Check(delivered.Json["command"]?["localImages"]?[0]?["dataUrl"]?.GetValue<string>() == data, "local image bytes reach the owning desktop runtime");
+    var visible = await Send("/panel/state?documentId=7");
+    Check(!visible.Json.ToJsonString().Contains(data), "polling history never retransmits local reference bytes");
+    await Send("/drawer/ack", new JsonObject { ["id"] = "local-image-request-001", ["owner"] = owner, ["status"] = "accepted" });
+    await Send("/drawer/ack", new JsonObject { ["id"] = "local-image-request-001", ["owner"] = owner, ["status"] = "completed" });
+    Check((await Send("/panel/command", command)).Code == HttpStatusCode.OK, "idempotent image request is recognized after raw bytes are released");
+    var changed = command.DeepClone().AsObject(); changed["localImages"]![0]!["dataUrl"] = "data:image/png;base64,REVG";
+    Check((await Send("/panel/command", changed)).Code == HttpStatusCode.Conflict, "same image command ID cannot be reused for different image bytes");
+    var invalid = command.DeepClone().AsObject(); invalid["id"] = "local-image-invalid-001";
+    invalid["localImages"]![0]!["dataUrl"] = "data:image/svg+xml;base64,QUJD";
+    Check((await Send("/panel/command", invalid)).Code == HttpStatusCode.BadRequest, "active-content image uploads are rejected at the host boundary");
+}
 async Task TestIndependentRhinoInstances()
 {
     // Same serial on distinct listeners reproduces two independent Rhino.exe processes.
@@ -231,7 +267,7 @@ try
     var baseCss = await RequestText("/panel.css");
     Check(DrawerPanelLayout.MinimumWidth == 340 && DrawerPanelLayout.MinimumHeight == 420, "Rhino panel can shrink to the responsive 340x420 compact minimum");
     Check(baseCss.Code == HttpStatusCode.OK && !baseCss.Text.Contains("min-width:280px") && baseCss.Text.Contains("overflow-x:hidden"), "edge-docked panel does not enforce a horizontal minimum width");
-    Check(baseCss.Text.Contains("grid-template-columns:1fr 1fr") && baseCss.Text.Contains("@media (max-width: 340px)") && baseCss.Text.Contains("grid-template-columns:minmax(0,1fr)"), "edge-docked compact settings stay grouped in the bottom composer and stack only below 340px");
+    Check(baseCss.Text.Contains(".rhino-composer { display:flex;") && baseCss.Text.Contains("@media (max-width: 340px)") && baseCss.Text.Contains("grid-template-columns:minmax(0,1fr) minmax(56px,22%) minmax(54px,18%)"), "edge-docked image controls remain in one compact Chat-style composer row at the panel minimum");
     var panelCss = await RequestText("/parts.css");
     Check(panelCss.Code == HttpStatusCode.OK && panelCss.Text.Contains(".parts-list"), "panel part styles are served from the embedded plugin resources");
     Check((await Request("panel/parts?documentId=0")).Code == HttpStatusCode.BadRequest, "parts inventory rejects an invalid document binding");
@@ -403,6 +439,15 @@ try
     var panelHtml = await RequestText("/");
     Check(panelHtml.Code == HttpStatusCode.OK && panelHtml.Text.Contains("id=\"delete-conversation\"") && panelHtml.Text.Contains("id=\"delete-confirmation\""), "embedded panel exposes delete and inline confirmation controls");
     Check(panelHtml.Code == HttpStatusCode.OK && panelHtml.Text.Contains("id=\"image-preview\"") && panelHtml.Text.Contains("/markdown.js") && panelHtml.Text.Contains("/image-preview.js"), "embedded panel exposes Markdown messages and a full-size image preview");
+    Check(panelHtml.Text.IndexOf("id=\"model\"") > panelHtml.Text.IndexOf("<form id=\"composer\""), "Rhino model and reference controls live inside the desktop-style input card");
+    var pickerAsset = await RequestText("/panel-pickers.js");
+    Check(pickerAsset.Code == HttpStatusCode.OK && pickerAsset.Text.Contains("window.rhinoPickers"), "compact picker assets are embedded and served without a desktop API token");
+    Check(panelHtml.Text.Contains("id=\"panel-icon-arrow-up\"") && panelHtml.Text.Contains("id=\"panel-icon-paperclip\"") && !panelHtml.Text.Contains("icons.svg"), "Rhino composer embeds Lucide geometry inline without CSP-blocked external SVG references");
+    using (var panelResponse = await client.GetAsync("/"))
+    {
+        var csp = string.Join(";", panelResponse.Headers.GetValues("Content-Security-Policy"));
+        Check(csp.Contains("img-src data:") && !csp.Contains("unsafe-inline") && !csp.Contains("unsafe-eval"), "icon rendering fix preserves the strict panel image/script security policy");
+    }
     var markdownJs = await RequestText("/markdown.js");
     Check(markdownJs.Code == HttpStatusCode.OK && markdownJs.Text.Contains("rhinoMarkdown") && markdownJs.Text.Contains("createTextNode"), "Markdown rendering builds safe semantic DOM without displaying markup fences");
     var imagePreviewJs = await RequestText("/image-preview.js");
@@ -435,6 +480,7 @@ try
     deferred.Stop(); deferred.Complete(); deferred.Request(10);
     Check(!deferred.TryBegin(true, out _), "shutdown discards pending startup and prevents reactivation");
     NativeIdentityTests.Run(Check);
+    await TestLocalReferenceImages();
     await TestIndependentRhinoInstances();
     Console.WriteLine($"All {count} transport integration checks passed.");
 }

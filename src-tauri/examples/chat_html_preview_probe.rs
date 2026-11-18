@@ -50,7 +50,13 @@ fn capture_preview(app: tauri::AppHandle, passed: bool) { app.exit(if passed {0}
 fn main() {
     let width = std::env::args().nth(2).and_then(|value| value.parse::<f64>().ok()).unwrap_or(1240.0);
     let mode=std::env::args().nth(3).unwrap_or_default();
-    let frontend = match mode.as_str() { "prototype"=>"scripts/prototype-preview-probe.html", _=>"scripts/chat-html-preview-probe.html?autorun=1" };
+    let height = std::env::args().nth(4).and_then(|value| value.parse::<f64>().ok()).unwrap_or(820.0);
+    let theme = if std::env::args().nth(5).as_deref() == Some("dark") { "dark" } else { "light" };
+    let frontend = match mode.as_str() {
+        "prototype"=>"scripts/prototype-preview-probe.html".to_string(),
+        "rhino-panel"=>format!("scripts/rhino-panel-layout-probe.html?documentId=7&theme={theme}"),
+        _=>"scripts/chat-html-preview-probe.html?autorun=1".to_string(),
+    };
     let mut context=tauri::generate_context!();
     context.config_mut().app.windows.clear();
     context.config_mut().build.dev_url=Some("http://127.0.0.1:1468".parse().unwrap());
@@ -59,7 +65,7 @@ fn main() {
     context.config_mut().plugins.0.clear();
     tauri::Builder::default().invoke_handler(tauri::generate_handler![chat_copy_generated_file,chat_create_file]).setup(move |app|{
         WebviewWindowBuilder::new(app,"main",WebviewUrl::App(frontend.into()))
-            .title("ISOLATED HTML Canvas preview test").inner_size(width,820.0).focused(false).visible(false)
+            .title("ISOLATED HTML Canvas preview test").inner_size(width,height).focused(false).visible(false)
             .data_directory(app.path().app_local_data_dir()?.join(format!("probe-{}",std::process::id()))).build()?;
         let handle=app.handle().clone();std::thread::spawn(move||{std::thread::sleep(std::time::Duration::from_secs(90));handle.exit(2);});Ok(())
     }).run(context).expect("Isolated HTML fixture");

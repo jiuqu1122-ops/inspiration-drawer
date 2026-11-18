@@ -314,21 +314,21 @@ describe('Chat tool exposure', () => {
 
   it('exposes web search for explicit current-information requests or when enabled', () => {
     expect(shouldExposeWebSearch('联网查一下今天的 AI 新闻')).toBe(true);
-    expect(getChatToolDefinitions('hello', false, true).map(tool => tool.function.name)).toEqual(['web_search', ...imageToolNames]);
-    expect(getChatToolDefinitions('hello', false, false).map(tool => tool.function.name)).toEqual(imageToolNames);
-    expect(getChatToolDefinitions('current news', false, true, true).map(tool => tool.function.name)).toEqual(imageToolNames);
+    expect(getChatToolDefinitions('hello', false, true).map(tool => tool.function.name)).toEqual(['create_ui_prototype', 'web_search', ...imageToolNames]);
+    expect(getChatToolDefinitions('hello', false, false).map(tool => tool.function.name)).toEqual(['create_ui_prototype', ...imageToolNames]);
+    expect(getChatToolDefinitions('current news', false, true, true).map(tool => tool.function.name)).toEqual(['create_ui_prototype', ...imageToolNames]);
   });
 
   it('always exposes image capabilities for model-side intent classification', () => {
-    expect(getChatToolDefinitions('ordinary text query').map(tool => tool.function.name)).toEqual(imageToolNames);
+    expect(getChatToolDefinitions('ordinary text query').map(tool => tool.function.name)).toEqual(['create_ui_prototype', ...imageToolNames]);
   });
 
   it('exposes file creation on request while leaving visual intent to the model', () => {
     expect(getChatToolDefinitions('帮我生成一份可以下载的 Word 报告').map(tool => tool.function.name))
-      .toEqual(['create_file', ...imageToolNames]);
+      .toEqual(['create_ui_prototype', 'create_file', ...imageToolNames]);
     expect(getChatToolDefinitions('帮我做个 Excel 表格').map(tool => tool.function.name))
-      .toEqual(['create_file', ...imageToolNames]);
-    expect(getChatToolDefinitions('write a report').map(tool => tool.function.name)).toEqual(imageToolNames);
+      .toEqual(['create_ui_prototype', 'create_file', ...imageToolNames]);
+    expect(getChatToolDefinitions('write a report').map(tool => tool.function.name)).toEqual(['create_ui_prototype', ...imageToolNames]);
   });
 });
 
@@ -440,7 +440,7 @@ describe('Chat PPTX file tool', () => {
   it.each([
     '给我文件', '请给我可下载的文件', 'Give me the file', 'Export a downloadable file',
   ])('does not automatically execute image tools for a formatless file follow-up: %s', text => {
-    expect(getChatToolDefinitions(text).map(tool => tool.function.name)).toEqual(['create_file', ...imageToolNames]);
+    expect(getChatToolDefinitions(text).map(tool => tool.function.name)).toEqual(['create_ui_prototype', 'create_file', ...imageToolNames]);
   });
 
   it.each([
@@ -501,7 +501,7 @@ describe('Chat PPTX file tool', () => {
     '生成一份PPT，只要大纲', 'Create a PowerPoint outline',
     '生成一份PPT，先只给大纲，不要制作文件', '不要生成PPT',
   ])('does not expose file creation for advice, outline-only work, or cancellation: %s', text => {
-    expect(getChatToolDefinitions(text).map(tool => tool.function.name)).toEqual(imageToolNames);
+    expect(getChatToolDefinitions(text).map(tool => tool.function.name)).toEqual(['create_ui_prototype', ...imageToolNames]);
     expect(resolveDirectVisualTool(text)).toBeNull();
   });
 
@@ -515,7 +515,7 @@ describe('Chat PPTX file tool', () => {
     '帮我生成一份可以下载的 Word 报告', '帮我做个 Excel 表格', '帮我生成 PDF 文件',
     '帮我导出 CSV', '生成 JSON 文件', '创建 Markdown 文件', '给我 TXT 文件',
   ])('keeps existing non-PPT format exposure intact: %s', text => {
-    expect(getChatToolDefinitions(text).map(tool => tool.function.name)).toEqual(['create_file', ...imageToolNames]);
+    expect(getChatToolDefinitions(text).map(tool => tool.function.name)).toEqual(['create_ui_prototype', 'create_file', ...imageToolNames]);
   });
 
   it('keeps PPTX optional for other formats and survives provider JSON serialization', () => {

@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>灵感抽屉 Beta</title><link rel="stylesheet" href="/panel.css"><link rel="stylesheet" href="/parts.css"><link rel="stylesheet" href="/markdown.css"><link rel="stylesheet" href="/image-preview.css"></head>
 <body>
-  <header><div><strong>灵感抽屉</strong><span class="badge" title="Rhino 插件版本">BETA.32</span></div><button id="new" title="新建会话">新对话 ＋</button></header>
+  <header><div><strong>灵感抽屉</strong><span class="badge" title="Rhino 插件版本">BETA.33</span></div><button id="new" title="新建会话">新对话 ＋</button></header>
   <div class="connection"><span id="dot"></span><span id="connection" role="status">等待抽屉连接</span></div>
   <div id="document" class="document">正在读取 Rhino 文档…</div>
   <section class="settings" aria-label="会话与模型">
@@ -22,21 +22,56 @@
     <p class="image-preview-hint">点击空白处或按 Esc 关闭</p>
   </div>
   <footer>
-    <div class="references"><label><input id="viewport" type="checkbox" checked>附带当前视口</label><label><input id="canvas" type="checkbox" checked>画布选中图片 <span id="selected-count">0</span></label><label class="mask-toggle"><input id="mask" type="checkbox" disabled>自动导出对象遮罩</label><select id="mask-layer" aria-label="遮罩来源" disabled><option value="selection">当前选择</option></select></div>
-    <section class="composer-model-settings" aria-label="模型与出图设置">
-      <div class="models">
-        <label>聊天模型<select id="model" aria-label="聊天模型"><option>跟随抽屉</option></select></label>
-        <label>生图模型<select id="image-model" aria-label="生图模型"><option>跟随抽屉</option></select></label>
+    <form id="composer" class="rhino-composer" aria-label="聊天输入与模型设置">
+      <div id="local-image-list" class="local-image-list" aria-label="本地参考图片" hidden></div>
+      <span id="local-image-status" class="visually-hidden" role="status"></span>
+      <textarea id="input" rows="2" maxlength="12000" placeholder="发消息，或让 AI 使用 Rhino 与画布工具" aria-label="消息" title="Enter 发送 · Shift + Enter 换行"></textarea>
+      <section id="image-settings" class="composer-model-settings" aria-label="图像生成设置">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-image composer-section-icon" aria-hidden="true" focusable="false" data-panel-icon="image"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path></svg>
+        <div class="image-settings-controls">
+          <div class="image-settings-primary">
+            <label class="panel-picker is-wide"><span class="visually-hidden">生图模型</span><select id="image-model" aria-label="生图模型"><option>自动选择（推荐）</option></select></label>
+            <label class="panel-picker"><span class="visually-hidden">画面比例</span><select id="image-aspect-ratio" aria-label="生图比例" disabled><option value="">自动匹配</option></select></label>
+            <label class="panel-picker"><span class="visually-hidden">清晰度</span><select id="image-resolution" aria-label="生图清晰度" disabled><option value="">自动匹配</option></select></label>
+          </div>
+          <label id="image-quality-field" class="panel-picker quality-picker" hidden><span class="visually-hidden">生成质量</span><select id="image-quality" aria-label="生成质量" disabled></select></label>
+        </div>
+      </section>
+      <section id="reference-settings" class="composer-reference-settings" aria-label="参考图与视口设置" hidden>
+        <div class="references">
+          <label><input id="viewport" type="checkbox" checked>附带当前视口</label>
+          <label><input id="canvas" type="checkbox" checked>画布选中图片</label>
+          <label class="mask-toggle"><input id="mask" type="checkbox" disabled>自动导出对象遮罩</label>
+          <label class="panel-picker mask-source-picker"><span class="visually-hidden">遮罩来源</span><select id="mask-layer" aria-label="遮罩来源" disabled><option value="selection">当前选择</option></select></label>
+        </div>
+        <p id="beta-note" class="beta-note">普通参考图生成 · 未启用 Mask，不保证严格保形</p>
+      </section>
+      <div class="composer-toolbar">
+        <div class="composer-tools">
+          <button id="attach-local-image" class="composer-icon-button" type="button" title="上传本地参考图片" aria-label="上传本地图片"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-paperclip" aria-hidden="true" focusable="false" data-panel-icon="paperclip"><path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"></path></svg></button>
+          <input id="local-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/bmp" multiple hidden>
+          <button id="reference-settings-toggle" class="composer-icon-button" type="button" title="参考图与视口设置" aria-label="参考图与视口设置" aria-controls="reference-settings" aria-expanded="false"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-layers" aria-hidden="true" focusable="false" data-panel-icon="layers"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"></path><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"></path><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"></path></svg><span id="selected-count" class="reference-count" hidden>0</span></button>
+          <button id="image-settings-toggle" class="composer-image-toggle" type="button" title="图像生成设置" aria-label="图像生成设置" aria-controls="image-settings" aria-expanded="true"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-sliders-horizontal" aria-hidden="true" focusable="false" data-panel-icon="sliders"><path d="M10 5H3"></path><path d="M12 19H3"></path><path d="M14 3v4"></path><path d="M16 17v4"></path><path d="M21 12h-9"></path><path d="M21 19h-5"></path><path d="M21 5h-7"></path><path d="M8 10v4"></path><path d="M8 12H3"></path></svg><span>图片</span></button>
+          <label class="panel-picker composer-chat-model"><span class="visually-hidden">聊天模型</span><select id="model" aria-label="聊天模型"><option>自动选择（推荐）</option></select></label>
+        </div>
+        <div class="composer-send-actions">
+          <button id="stop" class="composer-send" type="button" title="停止生成" aria-label="停止生成" hidden><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-square" aria-hidden="true" focusable="false" data-panel-icon="square"><rect width="18" height="18" x="3" y="3" rx="2"></rect></svg></button>
+          <button id="send" class="composer-send" type="submit" title="发送 · Enter" aria-label="发送消息" disabled><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-arrow-up" aria-hidden="true" focusable="false" data-panel-icon="arrow-up"><path d="m5 12 7-7 7 7"></path><path d="M12 19V5"></path></svg></button>
+        </div>
       </div>
-      <div class="image-output-settings" aria-label="生图参数">
-        <label>清晰度<select id="image-resolution" aria-label="生图清晰度" disabled><option value="">跟随模型</option></select></label>
-        <label>画面比例<select id="image-aspect-ratio" aria-label="生图比例" disabled><option value="">跟随模型</option></select></label>
-        <label id="image-quality-field" hidden>生成质量<select id="image-quality" aria-label="生成质量" disabled></select></label>
-      </div>
-    </section>
-    <form id="composer"><textarea id="input" rows="3" maxlength="12000" placeholder="例如：参考画布材质，给选中的外壳生成一张效果图…" aria-label="消息"></textarea><div class="actions"><span>Enter 发送 · Shift + Enter 换行</span><button id="stop" type="button" hidden>停止</button><button id="send" type="submit" disabled>发送 ↑</button></div></form>
-    <p id="beta-note" class="beta-note">普通参考图生成 · 未启用 Mask，不保证严格保形</p>
+    </form>
   </footer>
+<!-- panel-icon-templates:start -->
+<template id="panel-icon-arrow-up"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-arrow-up" aria-hidden="true" focusable="false" data-panel-icon="arrow-up"><path d="m5 12 7-7 7 7"></path><path d="M12 19V5"></path></svg></template>
+<template id="panel-icon-check"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-check" aria-hidden="true" focusable="false" data-panel-icon="check"><path d="M20 6 9 17l-5-5"></path></svg></template>
+<template id="panel-icon-chevron-down"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-down" aria-hidden="true" focusable="false" data-panel-icon="chevron-down"><path d="m6 9 6 6 6-6"></path></svg></template>
+<template id="panel-icon-image"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-image" aria-hidden="true" focusable="false" data-panel-icon="image"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path></svg></template>
+<template id="panel-icon-layers"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-layers" aria-hidden="true" focusable="false" data-panel-icon="layers"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"></path><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"></path><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"></path></svg></template>
+<template id="panel-icon-paperclip"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-paperclip" aria-hidden="true" focusable="false" data-panel-icon="paperclip"><path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"></path></svg></template>
+<template id="panel-icon-sliders"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-sliders-horizontal" aria-hidden="true" focusable="false" data-panel-icon="sliders"><path d="M10 5H3"></path><path d="M12 19H3"></path><path d="M14 3v4"></path><path d="M16 17v4"></path><path d="M21 12h-9"></path><path d="M21 19h-5"></path><path d="M21 5h-7"></path><path d="M8 10v4"></path><path d="M8 12H3"></path></svg></template>
+<template id="panel-icon-square"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-square" aria-hidden="true" focusable="false" data-panel-icon="square"><rect width="18" height="18" x="3" y="3" rx="2"></rect></svg></template>
+<!-- panel-icon-templates:end -->
+  <script src="/panel-pickers.js"></script>
   <script src="/markdown.js"></script>
   <script src="/image-preview.js"></script>
   <script src="/panel.js"></script>

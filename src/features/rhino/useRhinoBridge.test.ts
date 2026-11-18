@@ -394,7 +394,7 @@ describe('Rhino desktop Chat bridge', () => {
     expect(mocks.call).toHaveBeenCalledWith(expect.anything(), 'rhino_list_parts', { limit: 60 });
     expect(mocks.call).not.toHaveBeenCalledWith(expect.anything(), 'rhino_capture_viewport', expect.anything());
     const [content, attachments] = runtime.sendMessage.mock.calls[0];
-    expect(content).toContain('Attached canvas images are modeling references');
+    expect(content).toContain('Attached local/canvas images are modeling references');
     expect(attachments).toEqual([expect.objectContaining({ path: 'C:/fixture/selected-reference.png', type: 'image' })]);
   });
 
@@ -618,4 +618,23 @@ describe('visual requests keep both uploaded canvas references and rendered Rhin
   const priorUser={attachments,toolCalls:[],role:'user'} as any;
   expect(source(priorUser)).toHaveLength(2);
  });
+});
+
+
+describe('Rhino local reference bridge', () => {
+  it('passes locally uploaded images into the normal native-modeling turn without an empty viewport prerequisite', async () => {
+    const { runtime } = setup({ content: '根据参考图片建模', includeViewport: true, includeCanvasSelection: false,
+      localImages: [{ name: 'reference.png', dataUrl: 'data:image/png;base64,QUJD' }] });
+    await settle();
+    expect(mocks.invoke).toHaveBeenCalledWith('save_dropped_file', expect.objectContaining({ dataUrl: 'data:image/png;base64,QUJD' }));
+    expect(mocks.call).not.toHaveBeenCalledWith(expect.anything(), 'rhino_capture_viewport', expect.anything());
+    const attachments = runtime.sendMessage.mock.calls[0][1];
+    expect(attachments).toHaveLength(1);
+    expect(JSON.parse(attachments[0].metadataJson)).toMatchObject({ source: 'rhino-local', documentId: 12 });
+  });
+  it('rejects malformed local uploads instead of submitting an attachment-less modeling request', async () => {
+    const { runtime } = setup({ content: '根据参考图片建模', localImages: [{ name: 'bad.svg', dataUrl: 'data:image/svg+xml;base64,QUJD' }] });
+    await settle(); expect(runtime.sendMessage).not.toHaveBeenCalled();
+    expect(mocks.request).toHaveBeenCalledWith(connection, '/drawer/ack', expect.objectContaining({ status: 'failed' }));
+  });
 });

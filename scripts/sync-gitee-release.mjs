@@ -2,10 +2,11 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { execSync } from 'node:child_process';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
-const distDir = path.join(repoRoot, 'dist-updater');
+const distDir = path.resolve(repoRoot, (process.env.GITEE_DIST_DIR || '').trim() || 'dist-updater');
 const latestPath = path.join(distDir, 'latest.json');
 const apiBase = (process.env.GITEE_API_BASE_URL || 'https://gitee.com/api/v5').replace(/\/+$/, '');
 const dryRun = process.argv.includes('--dry-run') || process.env.GITEE_DRY_RUN === '1';
@@ -79,7 +80,7 @@ const parseReleaseTagFromBaseUrl = () => {
 
 const readLatestJson = () => {
   if (!fs.existsSync(latestPath)) {
-    throw new Error('Missing ' + path.relative(repoRoot, latestPath) + '. Run npm run updater:prepare first.');
+    throw new Error('Missing ' + path.relative(repoRoot, latestPath) + '. Prepare the matching release assets or set GITEE_DIST_DIR to their directory.');
   }
   return JSON.parse(fs.readFileSync(latestPath, 'utf8'));
 };
@@ -113,6 +114,52 @@ const getPlatform = (latestJson) => {
     || null;
 };
 
+const containsVersion = (name, version) => {
+  const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp('(^|[^0-9.])' + escaped + '(?![0-9]|\\.[0-9])').test(name);
+};
+
+const validateReleaseVersion = (latestJson, tag, baseUrl) => {
+  const version = String(latestJson.version || '').trim();
+  if (!version) throw new Error('latest.json is missing its release version.');
+  if (tag.replace(/^v/, '') !== version) {
+    throw new Error(
+      `Release tag ${tag} does not match latest.json version ${version} in ${distDir}. `
+      + 'Changing GITEE_RELEASE_TAG does not build or select new installer files. '
+      + 'Set GITEE_DIST_DIR to the matching release assets; nothing was uploaded.',
+    );
+  }
+  const parts = new URL(baseUrl).pathname.split('/').filter(Boolean);
+  const downloadIndex = parts.indexOf('download');
+  const baseTag = downloadIndex >= 0 ? decodeURIComponent(parts[downloadIndex + 1] || '') : '';
+  if (baseTag && baseTag !== tag) {
+    throw new Error(`Release download URL tag ${baseTag} does not match requested tag ${tag}.`);
+  }
+};
+
+const validateInstaller = (latestJson, installerPath, installerUploadName, sigPath) => {
+  const version = String(latestJson.version).trim();
+  if (!containsVersion(installerUploadName, version)) {
+    throw new Error(`Installer upload name ${installerUploadName} does not match release version ${version}.`);
+  }
+  if (!fs.existsSync(sigPath)) throw new Error('Missing installer signature: ' + sigPath);
+  const platform = getPlatform(latestJson);
+  const signature = fs.readFileSync(sigPath, 'utf8').trim();
+  if (!signature || signature !== String(platform?.signature || '').trim()) {
+    throw new Error('Installer signature file does not match latest.json.');
+  }
+  const bytes = fs.readFileSync(installerPath);
+  const sha256 = createHash('sha256').update(bytes).digest('hex').toUpperCase();
+  const hashes = [latestJson.sha256, platform?.sha256].filter(value => value !== undefined && value !== null);
+  if (!hashes.length || hashes.some(value => String(value).toUpperCase() !== sha256)) {
+    throw new Error('Installer SHA256 does not match latest.json.');
+  }
+  const sizes = [latestJson.size, platform?.size].filter(value => value !== undefined && value !== null);
+  if (!sizes.length || sizes.some(value => Number(value) !== bytes.length)) {
+    throw new Error('Installer size does not match latest.json.');
+  }
+};
+
 const getInstallerLocalPath = (files, latestJson) => {
   const candidates = files
     .filter(file => path.basename(file) !== 'latest.json')
@@ -125,7 +172,7 @@ const getInstallerLocalPath = (files, latestJson) => {
   // selected artifact must match the version advertised by latest.json.
   const expectedVersion = String(latestJson?.version || '').trim();
   const matchingCandidates = expectedVersion
-    ? candidates.filter(file => path.basename(file).includes(expectedVersion))
+    ? candidates.filter(file => containsVersion(path.basename(file), expectedVersion))
     : candidates;
   if (expectedVersion && matchingCandidates.length === 0) {
     throw new Error(
@@ -182,7 +229,6 @@ const normalizeLatestJsonForGitee = (latestJson, giteeBaseUrl, installerUploadNa
     if (!platform.url) platform.url = giteeInstallerUrl;
   }
 
-  fs.writeFileSync(latestPath, JSON.stringify(latestJson, null, 2) + '\n', 'utf8');
   return latestJson;
 };
 
@@ -311,13 +357,29 @@ const createRelease = async ({ owner, repo, tag, latestJson, token }) => {
 
 const getReleaseId = (release) => release && (release.id || release.release_id || release.number);
 
-const getReleaseAttachments = (release) => {
-  const arrays = [
-    release && release.assets,
-    release && release.attach_files,
-    release && release.attachments,
-  ].filter(Array.isArray);
-  return arrays.flat();
+const listReleaseAttachments = async ({ owner, repo, releaseId, token }) => {
+  const pathname = '/repos/' + encodeURIComponent(owner) + '/' + encodeURIComponent(repo)
+    + '/releases/' + releaseId + '/attach_files';
+  const attachments = [];
+  for (let page = 1; ; page++) {
+    const batch = await request('GET', pathname, { token, query: { page, per_page: 100 } });
+    if (!Array.isArray(batch)) throw new Error('Gitee attachment list response was not an array.');
+    attachments.push(...batch);
+    if (batch.length < 100) return attachments;
+  }
+};
+
+const updateRelease = async ({ owner, repo, releaseId, tag, latestJson, token }) => {
+  await request('PATCH', '/repos/' + encodeURIComponent(owner) + '/' + encodeURIComponent(repo)
+    + '/releases/' + releaseId, {
+    token,
+    body: {
+      tag_name: tag,
+      name: optionalEnv('GITEE_RELEASE_NAME') || tag,
+      body: optionalEnv('GITEE_RELEASE_BODY') || latestJson.notes || ('Inspiration Drawer ' + latestJson.version),
+      prerelease: optionalEnv('GITEE_PRERELEASE') || 'false',
+    },
+  });
 };
 
 const getAttachmentName = (attachment) => (
@@ -369,7 +431,7 @@ const explainReleaseCreateFailure = async ({ owner, repo, token, error }) => {
 };
 
 const main = async () => {
-  const token = requiredEnv('GITEE_TOKEN');
+  const token = dryRun ? optionalEnv('GITEE_TOKEN') : requiredEnv('GITEE_TOKEN');
   const { owner, repo } = parseRepository();
   const latestJson = readLatestJson();
   const tag = optionalEnv('GITEE_RELEASE_TAG')
@@ -383,6 +445,8 @@ const main = async () => {
     || ('https://gitee.com/' + owner + '/' + repo + '/releases/download/' + tag)
   ).replace(/\/+$/, '');
 
+  validateReleaseVersion(latestJson, tag, giteeBaseUrl);
+
   const files = walkDistUpdaterAssets();
   const installerPath = getInstallerLocalPath(files, latestJson);
   const platform = getPlatform(latestJson);
@@ -394,16 +458,19 @@ const main = async () => {
     || decodeUrlAssetName(platform && platform.url)
     || encodeAssetName(path.basename(installerPath));
   const sigPath = installerPath + '.sig';
-  if (!fs.existsSync(sigPath)) throw new Error('Missing installer signature: ' + path.relative(repoRoot, sigPath));
+  validateInstaller(latestJson, installerPath, installerUploadName, sigPath);
 
   normalizeLatestJsonForGitee(latestJson, giteeBaseUrl, installerUploadName);
 
   const assets = [
-    { filePath: latestPath, uploadName: 'latest.json' },
     { filePath: installerPath, uploadName: installerUploadName },
     { filePath: sigPath, uploadName: installerUploadName + '.sig' },
+    // Publish update metadata only after both signed installer assets are available.
+    { filePath: latestPath, uploadName: 'latest.json' },
   ];
 
+  console.log('Release assets directory: ' + distDir);
+  console.log('Verified asset version: ' + latestJson.version);
   console.log('Gitee repository: ' + owner + '/' + repo);
   console.log('Gitee release tag: ' + tag);
   console.log('Gitee release base URL: ' + giteeBaseUrl);
@@ -413,9 +480,11 @@ const main = async () => {
   }
 
   if (dryRun) {
-    console.log('Dry run only. No network mutation performed.');
+    console.log('Dry run only. No files changed and no network requests performed.');
     return;
   }
+
+  fs.writeFileSync(latestPath, JSON.stringify(latestJson, null, 2) + '\n', 'utf8');
 
   let release = await findReleaseByTag({ owner, repo, tag, token });
   if (!release) {
@@ -434,7 +503,7 @@ const main = async () => {
   if (!releaseId) throw new Error('Gitee release response did not include an id.');
 
   const overwrite = optionalEnv('GITEE_OVERWRITE').toLowerCase() !== 'false';
-  const existingAttachments = getReleaseAttachments(release);
+  const existingAttachments = await listReleaseAttachments({ owner, repo, releaseId, token });
   for (const asset of assets) {
     if (overwrite) {
       const existing = existingAttachments.filter(attachment => getAttachmentName(attachment) === asset.uploadName);
@@ -450,10 +519,11 @@ const main = async () => {
     await uploadAsset({ owner, repo, releaseId, filePath: asset.filePath, uploadName: asset.uploadName, token });
   }
 
+  await updateRelease({ owner, repo, releaseId, tag, latestJson, token });
   console.log('Gitee Release upload complete.');
 };
 
 main().catch(error => {
   console.error(error.message || error);
-  process.exit(1);
+  process.exitCode = 1;
 });

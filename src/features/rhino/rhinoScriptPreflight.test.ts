@@ -196,3 +196,35 @@ describe('self-contained native Python imports before dispatch',()=>{
   expect(isConfirmedRhinoScriptFailure(remote)).toBe(true);expect(remote).not.toBeInstanceOf(RhinoNativeScriptPreflightError);
  });
 });
+
+
+describe('Rhino object API and singular-transform preflight', () => {
+  it('rejects the reported document-object mesh API before any model writes run', () => {
+    const script = 'import Rhino\nobj = __rhino_doc__.Objects.FindId(object_id)\nobj.SetMeshParameters(parameters)';
+    expect(inspectRhinoScript(python, script)).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'rhino_object_mesh_api', line: 3 })]));
+    expect(() => assertRhinoScriptPreflight(python, { script })).toThrow(RhinoNativeScriptPreflightError);
+  });
+  it('allows the real rendering method and does not guess custom receiver types', () => {
+    expect(inspectGeometryFragment(python, 'obj = doc.Objects.FindId(id)\nobj.SetRenderMeshParameters(mp)')).toEqual([]);
+    expect(inspectGeometryFragment(python, 'custom = custom_api()\ncustom.SetMeshParameters(mp)')).toEqual([]);
+    expect(inspectGeometryFragment(python, '# obj.SetMeshParameters(mp)\nsource = "rg.Transform.Scale(plane, 0, 1, 1)"')).toEqual([]);
+  });
+  it('rejects literal zero scale factors, but permits nonzero, negative and dynamic transforms', () => {
+    expect(inspectGeometryFragment(python, 'rg.Transform.Scale(rg.Plane.WorldXY, 1, 0, 1)')[0]).toMatchObject({ code: 'rhino_singular_scale' });
+    expect(inspectGeometryFragment(python, 'rg.Transform.Scale(origin, 0)')[0]).toMatchObject({ code: 'rhino_singular_scale' });
+    expect(inspectGeometryFragment(python, 'rg.Transform.Scale(plane, -1, 2, 3)')).toEqual([]);
+    expect(inspectGeometryFragment(python, 'rg.Transform.Scale(plane, factor, 1, 1)')).toEqual([]);
+  });
+});
+
+
+describe('analytic solid deformation preflight', () => {
+  const script = 'import Rhino.Geometry as rg\nsolid = rg.Sphere(rg.Point3d.Origin, 5).ToBrep()\ncopy = solid.DuplicateBrep()\nscale = rg.Transform.Scale(rg.Plane.WorldXY, 1, 2, 3)\ncopy.Transform(scale)';
+  it('catches a general analytic-Brep/non-uniform-scale hazard before execution', () => {
+    expect(inspectRhinoScript(python, script)).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'rhino_analytic_brep_deformation', line: 5 })]));
+  });
+  it('accepts explicit deformable preparation and does not guess unknown/dynamic geometry', () => {
+    expect(inspectRhinoScript(python, script.replace('copy.Transform(scale)', 'copy.MakeDeformable()\ncopy.Transform(scale)'))).toEqual([]);
+    expect(inspectGeometryFragment(python, 'solid = make_freeform()\nsolid.Transform(rg.Transform.Scale(plane, 1, 2, 3))')).toEqual([]);
+  });
+});

@@ -1,3 +1,4 @@
+import { makePrototypeFixture } from '../prototypes/prototypeFixture';
 import { registerRhinoNativeTools } from '../../rhino/rhinoProtocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatMessage } from '../model/chatTypes';
@@ -121,7 +122,7 @@ describe('PPT delivery through the real runtime (synthetic IPC)', () => {
     expect(harness.execute).not.toHaveBeenCalled();
     expect(harness.requests[0].toolChoice).toBeUndefined();
     await runtime.sendMessage(answer);
-    expect(harness.requests[1].tools.map((tool: any) => tool.function.name)).toEqual(['generate_image', 'generate_image_variants', 'edit_image']);
+    expect(harness.requests[1].tools.map((tool: any) => tool.function.name)).toEqual(['create_ui_prototype', 'generate_image', 'generate_image_variants', 'edit_image']);
     await runtime.sendMessage('开始做吧');
     const request = harness.requests[2];
     expect(request.tools.some((tool: any) => tool.function.name === 'create_file')).toBe(true);
@@ -212,4 +213,35 @@ describe('Rhino geometry success followed by failed view cleanup (synthetic IPC)
   if(verified){expect(assistant.status).toBe('completed');expect(assistant.content).toContain('后续“缩放到目标图层”未完成');expect(assistant.content).not.toContain('Rhino MCP 执行失败');}
   else{expect(assistant.status).toBe('error');expect(assistant.content).not.toContain('模型几何已写入，并通过结构检查');}
  });
+});
+
+
+describe('editable Figma alternative through the real runtime', () => {
+  it('recovers once from a provider capability refusal and executes the real prototype tool', async () => {
+    const runtime = setupRuntime();
+    harness.replies.push(textReply("I cannot create Figma files and do not have create_ui_prototype."),
+      { content: '', toolCalls: [{ id: 'prototype-fixture', name: 'create_ui_prototype', arguments: JSON.stringify({ prototype: makePrototypeFixture() }) }] },
+      textReply('已生成可导入 Figma 的 Sketch 文件。'));
+    harness.execute.mockResolvedValue({ files: [{ id: 'prototype-file', format: 'sketch', name: 'fixture.sketch', path: 'C:/synthetic/fixture.sketch' }] });
+    await runtime.sendMessage('帮我制作一套 Figma 交互原型，导出可编辑设计文件');
+    expect(harness.requests[0].messages.some((message: any) => String(message.content).includes('actual callable tool'))).toBe(true);
+    expect(harness.requests[1].toolChoice).toEqual({ type: 'function', function: { name: 'create_ui_prototype' } });
+    expect(harness.execute).toHaveBeenCalledTimes(1);
+    expect(lastAssistant().toolCalls.some(call => call.toolName === 'create_ui_prototype' && call.status === 'completed')).toBe(true);
+    expect(lastAssistant().content).not.toContain('I cannot create Figma files');
+  });
+  it('stops after one missing-delivery continuation without fabricated files or loops', async () => {
+    const runtime = setupRuntime();
+    harness.replies.push(textReply('不能做 fig'), textReply('没有工具'));
+    await runtime.sendMessage('帮我生成一个 .fig 文件');
+    expect(harness.requests).toHaveLength(2);
+    expect(harness.execute).not.toHaveBeenCalled();
+    expect(lastAssistant().status).toBe('error');
+    expect(lastAssistant().content).toContain('尚未生成');
+  });
+  it('does not force delivery when the user is only asking about the format', async () => {
+    const runtime = setupRuntime(); harness.replies.push(textReply('支持 Sketch 导出。'));
+    await runtime.sendMessage('如何导出 Figma 文件？');
+    expect(harness.requests).toHaveLength(1); expect(harness.execute).not.toHaveBeenCalled();
+  });
 });

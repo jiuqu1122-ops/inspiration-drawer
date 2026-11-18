@@ -9,6 +9,14 @@
   --chat-text: #262626;
   --chat-text-soft: #525252;
   --chat-muted: #949494;
+  /* All composer pickers use the compact LLM control scale. */
+  --chat-picker-font-size: 8px;
+  --chat-picker-font-weight: 400;
+  --chat-picker-meta-size: 7px;
+  --chat-picker-height: 27px;
+  --chat-picker-radius: 5px;
+  --chat-picker-menu-gap: 7px;
+  --chat-picker-option-height: 28px;
   position: absolute;
   z-index: 100040;
   display: grid;
@@ -312,7 +320,7 @@
 
 .chat-image-settings {
   position: relative;
-  z-index: 6;
+  z-index: auto;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -329,7 +337,7 @@
   justify-content: center;
   color: var(--chat-text-soft);
   align-self: flex-start;
-  margin-top: 8px;
+  margin-top: 7px;
 }
 
 .chat-image-settings__controls {
@@ -362,17 +370,19 @@
   gap: 6px 8px;
   margin-top: 6px;
   color: var(--chat-text-soft);
-  font-size: 11px;
+  font-size: var(--chat-picker-font-size);
 }
 
 .chat-image-mask-attachment select {
   width: 100%;
   min-width: 0;
-  padding: 5px 8px;
-  color: var(--chat-text);
+  height: var(--chat-picker-height);
+  padding: 0 7px;
+  color: var(--chat-text-soft);
   border: 1px solid var(--chat-border);
-  border-radius: 6px;
-  background: var(--chat-raised);
+  border-radius: var(--chat-picker-radius);
+  background: transparent;
+  font: inherit;
 }
 
 .chat-image-mask-attachment small {
@@ -403,26 +413,30 @@
 .chat-image-setting-trigger {
   width: 100%;
   min-width: 0;
-  height: 30px;
+  height: var(--chat-picker-height);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 5px;
-  padding: 0 8px;
+  gap: 6px;
+  padding: 0 7px;
   color: var(--chat-text-soft);
   border: 1px solid var(--chat-border);
-  border-radius: 6px;
-  background: var(--chat-raised);
+  border-radius: var(--chat-picker-radius);
+  background: transparent;
   font-family: inherit;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.25;
+  font-size: var(--chat-picker-font-size);
+  font-weight: var(--chat-picker-font-weight);
+  line-height: 1.3;
+  text-align: left;
+  outline: 0;
+  box-sizing: border-box;
 }
 
 .chat-image-setting-trigger:hover,
 .chat-image-setting-trigger[aria-expanded="true"] {
   color: var(--chat-text);
   border-color: var(--chat-border-strong);
+  background: var(--chat-soft);
 }
 
 .chat-image-setting-trigger:disabled {
@@ -433,19 +447,19 @@
 .chat-image-setting-trigger__label {
   flex: 0 0 auto;
   color: var(--chat-muted);
-  font-size: 10px;
-  font-weight: 500;
+  font-size: var(--chat-picker-meta-size);
+  font-weight: var(--chat-picker-font-weight);
   white-space: nowrap;
 }
 
-.chat-image-setting-trigger strong {
+.chat-image-setting-trigger__value {
   min-width: 0;
   flex: 1;
   overflow: hidden;
   color: inherit;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.25;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -462,10 +476,10 @@
 .chat-image-setting-menu {
   position: absolute;
   top: auto;
-  bottom: calc(100% + 6px);
+  bottom: calc(100% + var(--chat-picker-menu-gap));
   right: 0;
-  z-index: 20;
-  width: max(100%, 154px);
+  z-index: var(--chat-layer-menu);
+  width: max(100%, 168px);
   max-height: min(238px, 45vh);
   overflow: auto;
   padding: 4px;
@@ -473,40 +487,44 @@
   border: 1px solid var(--chat-border-strong);
   border-radius: 7px;
   background: var(--chat-raised);
-  box-shadow: 0 12px 28px rgb(28 25 23 / 0.13);
+  box-shadow: 0 12px 32px rgb(28 25 23 / 0.14);
   scrollbar-width: thin;
+  box-sizing: border-box;
+  overscroll-behavior: contain;
 }
 
 .chat-image-setting-picker.is-wide .chat-image-setting-menu {
   right: auto;
   left: 0;
-  width: max(100%, 210px);
+  width: max(100%, 168px);
 }
 
 .chat-image-setting-menu button {
   width: 100%;
-  min-height: 27px;
+  box-sizing: border-box;
+  min-height: var(--chat-picker-option-height);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 7px;
-  padding: 4px 6px;
+  gap: 8px;
+  padding: 4px 7px;
   color: var(--chat-text-soft);
   border-radius: 4px;
   font-family: inherit;
-  font-size: 11px;
-  font-weight: 500;
+  font-size: var(--chat-picker-font-size);
+  font-weight: var(--chat-picker-font-weight);
   line-height: 1.3;
   text-align: left;
 }
 
 .chat-image-setting-menu .chat-model-option-copy strong {
-  font-size: 11px;
-  font-weight: 500;
+  font-size: inherit;
+  font-weight: inherit;
 }
 
 .chat-image-setting-menu .chat-model-option-copy small {
-  font-size: 9px;
+  font-size: var(--chat-picker-meta-size);
+  font-weight: var(--chat-picker-font-weight);
   line-height: 1.35;
 }
 
@@ -1063,6 +1081,11 @@
 }
 
 .chat-composer {
+  /* A small local layer scale, independent of the app's overlay z-index. */
+  --chat-layer-controls: 1;
+  --chat-layer-settings: 2;
+  --chat-layer-active: 3;
+  --chat-layer-menu: 4;
   position: relative;
   z-index: 12;
   width: 100%;
@@ -1090,7 +1113,9 @@
 .chat-composer textarea {
   width: 100%;
   min-height: 46px;
-  max-height: 140px;
+  max-height: min(320px, 38vh);
+  box-sizing: border-box;
+  overflow-y: hidden;
   resize: none;
   appearance: none;
   padding: 3px 3px 7px !important;
@@ -1110,10 +1135,16 @@
 }
 
 .chat-composer__footer {
+  position: relative;
+  z-index: var(--chat-layer-controls);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 7px;
+}
+
+.chat-composer__footer.is-menu-open {
+  z-index: var(--chat-layer-active);
 }
 
 .chat-composer__tools {
@@ -1175,7 +1206,7 @@
 
 .chat-composer__image-settings {
   position: relative;
-  z-index: 14;
+  z-index: var(--chat-layer-settings);
   overflow: visible;
   margin: 1px 0 7px;
   border: 0;
@@ -1207,7 +1238,7 @@
 .chat-composer__tools .chat-model-trigger {
   width: 96px;
   min-width: 0;
-  height: 27px;
+  height: var(--chat-picker-height);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1215,10 +1246,15 @@
   padding: 0 7px;
   color: var(--chat-text-soft);
   border: 1px solid var(--chat-border);
-  border-radius: 5px;
+  border-radius: var(--chat-picker-radius);
   outline: 0;
   background: transparent;
-  font-size: 8px;
+  font-size: var(--chat-picker-font-size);
+  font-family: inherit;
+  font-weight: var(--chat-picker-font-weight);
+  line-height: 1.3;
+  text-align: left;
+  box-sizing: border-box;
 }
 
 .chat-composer__tools .chat-image-model-trigger {
@@ -1254,12 +1290,12 @@
 
 .chat-model-menu {
   position: absolute;
-  bottom: calc(100% + 7px);
+  bottom: calc(100% + var(--chat-picker-menu-gap));
   top: auto;
   left: 0;
-  z-index: 12;
+  z-index: var(--chat-layer-menu);
   width: 168px;
-  max-height: 238px;
+  max-height: min(238px, 45vh);
   overflow: auto;
   padding: 4px;
   color: var(--chat-text-soft);
@@ -1268,23 +1304,26 @@
   background: var(--chat-raised);
   box-shadow: 0 12px 32px rgb(28 25 23 / 0.14);
   scrollbar-width: thin;
-}
-
-.chat-composer.has-image-settings .chat-model-menu {
-  bottom: calc(100% + 52px);
+  box-sizing: border-box;
+  overscroll-behavior: contain;
 }
 
 .chat-composer__tools .chat-model-menu button {
   width: 100%;
-  height: 28px;
+  min-height: var(--chat-picker-option-height);
+  height: auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 0 7px;
+  padding: 4px 7px;
   color: var(--chat-text-soft);
   border-radius: 4px;
-  font-size: 8px;
+  font-size: var(--chat-picker-font-size);
+  font-family: inherit;
+  font-weight: var(--chat-picker-font-weight);
+  line-height: 1.3;
+  box-sizing: border-box;
   text-align: left;
 }
 
@@ -1296,7 +1335,7 @@
 .chat-composer__tools .chat-model-menu button.is-selected {
   color: var(--chat-text);
   background: var(--chat-soft);
-  font-weight: 650;
+  font-weight: var(--chat-picker-font-weight);
 }
 
 .chat-model-menu__title {
@@ -2284,14 +2323,7 @@
   }
 
   .chat-image-setting-trigger {
-    height: 28px;
-    padding-inline: 6px;
-  }
-
-  .chat-image-setting-trigger strong,
-  .chat-image-setting-menu button,
-  .chat-image-setting-menu .chat-model-option-copy strong {
-    font-size: 10px;
+    padding-inline: 7px;
   }
 }
 

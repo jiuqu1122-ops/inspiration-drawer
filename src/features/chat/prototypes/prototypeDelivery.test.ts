@@ -26,10 +26,10 @@ describe('real prototype delivery and conversation artifacts',()=>{
     expect(getChatFileCreationTurn(messages)).toEqual({attempts:1,completed:true,canAttempt:false});
     expect(getChatFileCreationTurn([...messages,{role:'user',content:'改成蓝色'}])).toEqual({attempts:0,completed:false,canAttempt:true});
   });
-  it('only exposes capability for relevant context, including follow-ups, without triggering a paid operation',()=>{
+  it('exposes prototype capability for semantic decisions and follow-ups without executing it',()=>{
     expect(getChatToolDefinitions('做个可以导入figma的交互原型').map(t=>t.function.name)).toContain('create_ui_prototype');
     expect(getChatToolDefinitions('右边改小一点',false,false,false,0,false,false,'右边改小一点',false,false,true).map(t=>t.function.name)).toContain('create_ui_prototype');
-    expect(getChatToolDefinitions('你好').map(t=>t.function.name)).not.toContain('create_ui_prototype');
+    expect(getChatToolDefinitions('你好').map(t=>t.function.name)).toContain('create_ui_prototype');
   });
   it('routes through the normal validation/execution boundary without Rhino access',async()=>{
     const createPrototype=vi.fn(async()=>({files:[file],prototype:{id:"p",name:"原型",screens:4,nodes:30,interactions:9}}));

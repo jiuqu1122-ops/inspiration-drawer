@@ -31,6 +31,7 @@ function choices(id, options, value) {
     select.dataset.options = signature;
   }
   if (!focused) select.value = pendingSettings.get(id)?.value ?? value ?? '';
+  window.rhinoPickers?.sync(select);
 }
 function reconcileSettings(commands) {
   for (const [kind, pending] of pendingSettings) {
@@ -41,7 +42,8 @@ function reconcileSettings(commands) {
   }
 }
 function updateButtons() {
-  byId('send').disabled = !connected || state.busy || submitting || !byId('input').value.trim();
+  byId('send').disabled = !connected || state.busy || submitting || preparingImages || !byId('input').value.trim();
+  byId('attach-local-image').disabled = !connected || state.busy || submitting || preparingImages;
   byId('new').disabled = !connected || state.busy || submitting || Boolean(deletingConversation);
   byId('delete-conversation').disabled = !connected || state.busy || submitting || Boolean(deletingConversation) || !state.conversationId
     || !(state.conversations || []).some(item => item.id === state.conversationId);
@@ -64,6 +66,9 @@ function updateButtons() {
   byId('beta-note').textContent = mask.checked
     ? `对象遮罩已开启 · 来源：${maskLayerLabel} · 遮罩语义由模型线路决定`
     : '普通参考图生成 · 未启用对象遮罩，不保证严格保形';
+  byId('reference-settings-toggle').disabled = !connected || state.busy || submitting;
+  byId('image-settings-toggle').disabled = !connected || state.busy || submitting;
+  window.rhinoPickers?.syncAll();
 }
 function renderParts(result) {
   const parts = result.parts || [];
@@ -81,6 +86,7 @@ function renderParts(result) {
     const option = document.createElement('option'); option.value = item.value; option.textContent = item.label; return option;
   }));
   layerSelect.value = layerOptions.some(item => item.value === previousLayer) ? previousLayer : 'selection';
+  window.rhinoPickers?.sync(layerSelect);
   const container = byId('parts-list');
   if (!parts.length) {
     container.replaceChildren(Object.assign(document.createElement('p'), { className:'parts-empty', textContent:'在 Rhino 中选择对象以读取分件' }));
@@ -158,6 +164,8 @@ async function poll() {
     if (result.processId) byId('document').textContent += ` \u00b7 \u7a97\u53e3 ${result.processId}`;
     byId('document').title = `Rhino ${result.instanceId || ''} / document ${documentId}`;
     byId('selected-count').textContent = state.selectedCount || 0;
+    byId('selected-count').hidden = !(state.selectedCount > 0);
+    byId('reference-settings-toggle').title = `参考设置 · 画布图片 ${state.selectedCount || 0} 张 · ${byId('viewport').checked ? '附带视口' : '不附带视口'}${state.imageMaskEnabled ? ' · 已开启遮罩' : ''}`;
     choices('conversation',(state.conversations || []).map(item=>({value:item.id,label:item.title || '\u65b0\u5bf9\u8bdd'})),state.conversationId);
     choices('model',(state.modelOptions || []).map(value=>({value,label:value})),state.model);
     choices('image-model',state.imageModelOptions || [],state.imageModel);
@@ -175,7 +183,7 @@ async function poll() {
     if(failed && byId('notice').dataset.error!==failed.id) { notice(failed.error || '操作失败，请检查抽屉设置');byId('notice').dataset.error=failed.id; }
     if (uncertain) {
       const found = (result.commands || []).find(command=>command.id===uncertain.id);
-      if (found) { if(uncertain.kind==='send')byId('input').value='';uncertain=undefined;submitting=false;notice('请求已收到，请等待结果。'); }
+      if (found) { if(uncertain.kind==='send')clearComposerDraft();uncertain=undefined;submitting=false;notice('请求已收到，请等待结果。'); }
     }
     updateButtons();
   } catch(error) { connected=false;byId('dot').classList.remove('online');byId('connection').textContent='连接中断，请检查 Rhino 文档是否仍然打开';updateButtons(); }
@@ -187,7 +195,7 @@ async function command(kind,extra={}) {
   const setting = settingFields[kind] && { id:payload.id, value:extra.value, at:Date.now(), conversationId:state.conversationId || '' };
   if (setting) pendingSettings.set(kind, setting);
   submitting=true;updateButtons();
-  try { await request('/panel/command',payload);if(kind==='send')byId('input').value='';notice('');return true; }
+  try { await request('/panel/command',payload);if(kind==='send')clearComposerDraft();notice('');return true; }
   catch(error) {
     // Do not automatically submit a new request after an ambiguous transport failure.
     if(error.name==='TimeoutError' || error instanceof TypeError) { uncertain=payload;notice('连接中断，正在确认请求状态。请勿重复发送；可在桌面 Chat 查看是否已经执行。');return false; }
@@ -221,8 +229,107 @@ byId('confirm-delete').addEventListener('click', () => {
   });
 });
 byId('messages').addEventListener('click',event=>{const button=event.target.closest('button[data-approve-tool]');if(!button)return;void command('approve-tool',{toolCallId:button.dataset.approveTool,approved:button.dataset.approved==='true'});});
-byId('composer').addEventListener('submit',event=>{event.preventDefault();if(!byId('send').disabled)void command('send',{content:byId('input').value.trim(),includeViewport:byId('viewport').checked,includeCanvasSelection:byId('canvas').checked});});
-byId('input').addEventListener('input',updateButtons);
+let localImages = [];
+let preparingImages = false;
+function resizeComposerInput() {
+  const input = byId('input');
+  if (!input.style) return;
+  input.style.height = 'auto';
+  const maxHeight = Math.max(64, Math.min(260, (globalThis.innerHeight || 800) * 0.32));
+  input.style.height = Math.min(maxHeight, Math.max(46, input.scrollHeight || 46)) + 'px';
+  input.style.overflowY = input.scrollHeight > (input.clientHeight || maxHeight) + 1 ? 'auto' : 'hidden';
+}
+function renderLocalImages() {
+  const list = byId('local-image-list');
+  list.replaceChildren(); list.hidden = localImages.length === 0;
+  for (const image of localImages) {
+    const item = document.createElement('div'); item.className = 'local-image-item';
+    const thumbnail = document.createElement('img'); thumbnail.src = image.dataUrl; thumbnail.alt = image.name;
+    const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '×'; remove.title = '移除 ' + image.name;
+    remove.addEventListener('click', () => { localImages = localImages.filter(value => value !== image); renderLocalImages(); });
+    item.append(thumbnail, remove); list.append(item);
+  }
+  byId('local-image-status').textContent = localImages.length ? localImages.length + ' 张本地参考图' : '';
+}
+function clearComposerDraft() { byId('input').value = ''; localImages = []; renderLocalImages(); resizeComposerInput(); }
+async function prepareLocalImage(file) {
+  if (!/image\/(?:png|jpeg|webp|bmp)$/i.test(file.type) || file.size > 20 * 1024 * 1024) throw new Error('请选择 20MB 以内的 PNG、JPG、WebP 或 BMP 图片');
+  // Match the host's img-src data: policy. blob: object URLs are deliberately
+  // not allowed there, so use FileReader before rasterizing/compressing.
+  const source = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('图片读取失败，请重新选择图片'));
+    reader.onabort = () => reject(new Error('图片读取已取消'));
+    reader.readAsDataURL(file);
+  });
+  const image = new Image(); image.src = source; await image.decode();
+  let scale = Math.min(1, 1600 / Math.max(image.naturalWidth, image.naturalHeight));
+  for (let attempt = 0; attempt < 5; attempt++, scale *= 0.72) {
+    const canvas = document.createElement('canvas'); canvas.width = Math.max(1, Math.round(image.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const context = canvas.getContext('2d'); context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const mimeType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+    const dataUrl = canvas.toDataURL(mimeType, 0.86);
+    if (dataUrl.length <= 1024 * 1024) return { name: file.name, dataUrl };
+  }
+  throw new Error('图片过大，压缩后仍无法添加，请缩小图片再试');
+}
+
+byId('attach-local-image').addEventListener('click', () => byId('local-image-input').click());
+byId('local-image-input').addEventListener('change', async event => {
+  if (preparingImages) return;
+  preparingImages = true; byId('attach-local-image').disabled = true; byId('send').disabled = true;
+  try {
+    for (const file of Array.from(event.target.files || [])) {
+      if (localImages.length >= 6) { notice('每次最多附带 6 张本地图片'); break; }
+      localImages.push(await prepareLocalImage(file)); renderLocalImages();
+    }
+  } catch (error) { notice(error.message || '图片读取失败'); }
+  finally { event.target.value = ''; preparingImages = false; byId('attach-local-image').disabled = false; updateButtons(); }
+});
+globalThis.addEventListener?.('resize', resizeComposerInput);
+
+byId('image-settings-toggle').addEventListener('click', () => {
+  window.rhinoPickers?.closeAll();
+  const panel = byId('image-settings'); panel.hidden = !panel.hidden;
+  byId('image-settings-toggle').setAttribute('aria-expanded', String(!panel.hidden));
+  resizeComposerInput();
+});
+function closeReferenceSettings() {
+  byId('reference-settings').hidden = true;
+  byId('reference-settings-toggle').setAttribute('aria-expanded', 'false');
+}
+function placeReferenceSettings() {
+  const panel = byId('reference-settings');
+  if (panel.hidden || !panel.style) return;
+  const anchor = byId('reference-settings-toggle').getBoundingClientRect();
+  const width = document.documentElement.clientWidth;
+  panel.style.maxHeight = Math.max(60, Math.min(180, anchor.top - 16)) + 'px';
+  const bounds = panel.getBoundingClientRect();
+  panel.style.left = Math.max(8, Math.min(anchor.left, width - bounds.width - 8)) + 'px';
+  panel.style.top = Math.max(8, anchor.top - 7 - bounds.height) + 'px';
+}
+byId('reference-settings-toggle').addEventListener('click', () => {
+  window.rhinoPickers?.closeAll();
+  const panel = byId('reference-settings'); panel.hidden = !panel.hidden;
+  byId('reference-settings-toggle').setAttribute('aria-expanded', String(!panel.hidden));
+  placeReferenceSettings();
+});
+document.addEventListener?.('click', event => {
+  const panel = byId('reference-settings');
+  if (panel.hidden || panel.contains(event.target) || byId('reference-settings-toggle').contains(event.target) || event.target.closest?.('.panel-picker-menu')) return;
+  closeReferenceSettings();
+});
+document.addEventListener?.('keydown', event => {
+  if (event.key === 'Escape' && !event.defaultPrevented && !byId('reference-settings').hidden) {
+    closeReferenceSettings(); byId('reference-settings-toggle').focus();
+  }
+});
+globalThis.addEventListener?.('resize', placeReferenceSettings);
+
+
+byId('composer').addEventListener('submit',event=>{event.preventDefault();if(!byId('send').disabled)void command('send',{content:byId('input').value.trim(),includeViewport:byId('viewport').checked,includeCanvasSelection:byId('canvas').checked,localImages:localImages.map(image=>({...image}))});});
+byId('input').addEventListener('input',()=>{resizeComposerInput();updateButtons();});
 byId('input').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();byId('composer').requestSubmit();}});
 byId('new').addEventListener('click',()=>void command('new'));
 byId('stop').addEventListener('click',()=>void command('stop'));

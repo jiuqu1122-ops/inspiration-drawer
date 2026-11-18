@@ -150,6 +150,8 @@ export const runCanvasInteractionsEffect03 = (ctx: Pick<canvasInteractionsEffect
     };
 
     const handleCanvasKeysDown = (event: KeyboardEvent) => {
+      const recorder = (event.target as HTMLElement | null)?.closest?.('[data-shortcut-recording="true"]');
+      if (recorder?.getAttribute?.('data-shortcut-recording') === 'true') return;
       if (shouldRouteShortcutToDoodle(event)) return;
       if (isCanvasModeRef.current && !isTextEntryActive()) {
         const key = event.key.toLowerCase();

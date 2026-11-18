@@ -1,3 +1,4 @@
+import { PROTOTYPE_DELIVERY_RECOVERY, prototypeCapabilityInstruction, requestsPrototypeArtifact } from '../prototypes/prototypeDeliveryPolicy';
 import { mergeHtmlToolDraft, type HtmlToolDraftState } from '../html/chatHtmlToolDraft';
 import { collectChatHtmlArtifacts } from '../html/chatHtmlArtifacts';
 import { rhinoPostprocessFailure } from '../../rhino/rhinoPostprocessFailure';
@@ -1769,6 +1770,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       patchThinkingStep(assistantMessageId, 'search-synthesis', { type: 'finalizing', title: presentationText ? '正在整理资料并制作 PPT' : '正在根据检索资料整理回答',
         detail: recoverSearchSynthesis ? '模型上一轮未返回有效内容，本轮切换兼容续接格式' : '搜索结果非空，等待模型输出', status: 'running' });
     }
+    const prototypeCapability = prototypeCapabilityInstruction(tools.map(tool => tool.function.name));
+    if (prototypeCapability) requestInstructions.push({ role: 'system', content: prototypeCapability });
+    const prototypeRecoveryIssued = providerMessages.some(message => message.role === 'system' && String(message.content || '').startsWith(PROTOTYPE_DELIVERY_RECOVERY));
     const requestMessages = requestInstructions.length > 0
       ? [...requestInstructions, ...normalizedProviderMessages]
       : normalizedProviderMessages;
@@ -1810,6 +1814,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       ? { type: 'function', function: { name: repairToolName } }
       : executionSource === 'rhino' && String(lastProviderMessage?.content || '').startsWith('Controlled profile validation is not a commit.') && tools.some(tool => tool.function.name === SAFE_PROFILE_TOOL)
         ? { type: 'function', function: { name: SAFE_PROFILE_TOOL } }
+      : prototypeRecoveryIssued && fileCreationTurn.canAttempt && tools.some(tool => tool.function.name === 'create_ui_prototype')
+        ? { type: 'function', function: { name: 'create_ui_prototype' } }
       : presentationToolChoice ? presentationToolChoice
       : continuePresentationTools ? 'required'
       : shouldForceChatAgentCreation(userText)
@@ -2043,6 +2049,23 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           ...message,
           content: JSON.parse(unresolvedArguments.resultJson || '{}').kind === RHINO_SCRIPT_PREFLIGHT_REJECTION ? `Rhino 脚本预检未通过：${unresolvedArguments.toolName}\n本次被拒绝的脚本没有发送到 Rhino，尚未执行。请查看工具回执中的导入或 API 诊断；先前成功的步骤已保留，不会重放。` : JSON.parse(unresolvedArguments.resultJson || '{}').kind === GEOMETRY_PREFLIGHT_REJECTION ? `Rhino 几何预检未通过：${unresolvedArguments.toolName}\n本次几何计划未提交；请查看具体冲突，现有模型保持不变。` : `Rhino MCP 参数检查未通过：${unresolvedArguments.toolName}\n本次调用未发送到 Rhino，请查看工具参数诊断。`,
         }, 'error', Date.now(), 'Native Rhino arguments remain unresolved'), true);
+        updateConversationBusy(conversationId, false);
+        return;
+      }
+      const missingPrototype = fileCreationTurn.attempts === 0 && requestsPrototypeArtifact(userText)
+        && tools.some(tool => tool.function.name === 'create_ui_prototype')
+        && !/(?:只(?:能|要)|必须|不要|不接受).{0,12}\.fig|(?:不要|不接受).{0,12}sketch/i.test(userText);
+      if (missingPrototype && !prototypeRecoveryIssued) {
+        patchMessage(assistantMessageId, message => ({ ...message, content: '' }));
+        await runModelLoopRef.current(conversationId, assistantMessageId, userText, requestModel,
+          [...providerMessages, { role: 'system', content: `${PROTOTYPE_DELIVERY_RECOVERY} The user requested an editable design deliverable, but no file tool was called. Use create_ui_prototype once to produce the .sketch alternative and Canvas preview, preserving the requested screens/content. Never emit fake tool tags, a renamed .fig or a fabricated link. If a required detail is genuinely missing, report it accurately.` }],
+          depth + 1, undefined, emptyRecoveryCount, executionSource);
+        return;
+      }
+      if (missingPrototype && prototypeRecoveryIssued) {
+        patchMessage(assistantMessageId, message => finalizeChatMessageState({ ...message,
+          content: '原型文件尚未生成。软件支持生成可导入 Figma 的 .sketch 文件，但当前模型/渠道没有返回有效的工具调用；一次续接仍未完成。请更换支持工具调用的 Chat 模型后重试。',
+        }, 'error', Date.now(), '模型未调用原型文件工具'), true);
         updateConversationBusy(conversationId, false);
         return;
       }

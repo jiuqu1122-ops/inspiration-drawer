@@ -1,11 +1,12 @@
+import { useAutosizeChatInput } from './useAutosizeChatInput';
 import { ArrowUp, Check, ChevronDown, FileJson, Globe2, LoaderCircle, Paperclip, SlidersHorizontal, Square, Workflow, X } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChatImageModelOption, PendingChatAttachment } from '../model/chatTypes';
 import { createPendingChatAttachments, SUPPORTED_CHAT_LOCAL_FILE_EXTENSIONS } from '../attachments/chatLocalFileAttachments';
 import { isAutomaticChatModel } from '../runtime/chatModelSelection';
 import { ChatAttachmentList } from './ChatAttachmentList';
-import { ChatImageSettings } from './ChatImageSettings';
+import { ChatImageSettings, type ChatImagePickerName } from './ChatImageSettings';
 
 const compactModelLabel = (value: string) => (
   isAutomaticChatModel(value)
@@ -91,12 +92,19 @@ export function ChatComposer({
   onChooseWorkflow?: () => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  useAutosizeChatInput(textareaRef, value);
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
-  const [modelOpen, setModelOpen] = useState(false);
+  const [openPicker, setOpenPicker] = useState<ChatImagePickerName | 'llm' | null>(null);
+  const modelOpen = openPicker === 'llm';
+  const setModelOpen = useCallback((next: boolean) => setOpenPicker(next ? 'llm' : null), []);
   const [imageSettingsOpen, setImageSettingsOpen] = useState(false);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const attachmentMenuRef = useRef<HTMLDivElement>(null);
+  const setImagePickerOpen = useCallback((value: ChatImagePickerName | null) => {
+    setOpenPicker(value);
+    if (value) setAttachmentMenuOpen(false);
+  }, []);
   useEffect(() => {
     if (!modelOpen) return;
     const close = (event: PointerEvent) => {
@@ -112,7 +120,7 @@ export function ChatComposer({
       window.removeEventListener('pointerdown', close);
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [modelOpen]);
+  }, [modelOpen, setModelOpen]);
   useEffect(() => {
     if (!attachmentMenuOpen) return;
     const close = (event: PointerEvent) => {
@@ -174,6 +182,8 @@ export function ChatComposer({
       {imageSettingsOpen && (
         <div className="chat-composer__image-settings" id="chat-image-settings-panel">
           <ChatImageSettings
+            openPicker={openPicker === 'llm' ? null : openPicker}
+            onOpenPickerChange={setImagePickerOpen}
             model={imageModel}
             modelOptions={imageModelOptions}
             onModelChange={value => {
@@ -208,10 +218,10 @@ export function ChatComposer({
           )}
         </div>
       )}
-      <div className="chat-composer__footer">
+      <div className={`chat-composer__footer ${modelOpen || attachmentMenuOpen ? 'is-menu-open' : ''}`}>
         <div className="chat-composer__tools">
           <div className="chat-attachment-picker" ref={attachmentMenuRef}>
-            <button type="button" onClick={() => setAttachmentMenuOpen(value => !value)} aria-haspopup="menu" aria-expanded={attachmentMenuOpen} title="添加附件"><Paperclip size={15} /></button>
+            <button type="button" onClick={() => { setAttachmentMenuOpen(value => !value); setOpenPicker(null); }} aria-haspopup="menu" aria-expanded={attachmentMenuOpen} title="添加附件"><Paperclip size={15} /></button>
             {attachmentMenuOpen && <div className="chat-attachment-menu" role="menu" aria-label="添加附件">
               <button type="button" role="menuitem" onClick={() => { setAttachmentMenuOpen(false); void chooseFiles(); }}><FileJson size={14} /><span>本地文件</span></button>
               <button type="button" role="menuitem" onClick={() => { setAttachmentMenuOpen(false); onChooseWorkflow?.(); }}><Workflow size={14} /><span>画布工作流</span></button>
@@ -232,7 +242,7 @@ export function ChatComposer({
             type="button"
             className="chat-image-settings-toggle"
             disabled={busy}
-            onClick={() => setImageSettingsOpen(value => !value)}
+            onClick={() => { setImageSettingsOpen(value => !value); setOpenPicker(null); setAttachmentMenuOpen(false); }}
             aria-expanded={imageSettingsOpen}
             aria-controls="chat-image-settings-panel"
             aria-label="图像生成设置"
@@ -248,7 +258,8 @@ export function ChatComposer({
               disabled={busy}
               onClick={() => {
                 if (!modelOpen) void onRefreshModelOptions?.();
-                setModelOpen(value => !value);
+                setAttachmentMenuOpen(false);
+                setModelOpen(!modelOpen);
               }}
               aria-haspopup="menu"
               aria-expanded={modelOpen}

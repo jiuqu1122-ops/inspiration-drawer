@@ -16297,13 +16297,24 @@ fn update_shortcut(
         return Err(format!("unknown shortcut name: {}", key));
     }
 
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
     let normalized = shortcut.trim().to_string();
-    if normalized.is_empty() {
-        return Err("shortcut cannot be empty".to_string());
-    }
-
-    let path = shortcut_config_path(&app_handle);
+    let parsed = normalized.parse::<Shortcut>().map_err(|e| format!("Invalid shortcut: {}", e))?;
     let mut shortcuts = read_shortcut_map(&app_handle);
+    for other in ["update_shortcut", "update_snip_shortcut", "update_text_shortcut", "update_note_shortcut", "update_search_shortcut", "update_trigger_shortcut", "update_canvas_shortcut"] {
+        if other == key { continue; }
+        let existing = shortcuts.get(other).and_then(|v| v.as_str()).or_else(|| default_shortcut(other));
+        if existing.and_then(|v| v.parse::<Shortcut>().ok()).is_some_and(|v| v == parsed) {
+            return Err(format!("Shortcut is already assigned to {}", other));
+        }
+    }
+    // Probe OS availability before saving; a failed change leaves the old config intact.
+    let manager = app_handle.global_shortcut();
+    if !manager.is_registered(parsed) {
+        manager.register(parsed).map_err(|e| format!("Shortcut unavailable: {}", e))?;
+        manager.unregister(parsed).map_err(|e| format!("Cannot release shortcut test: {}", e))?;
+    }
+    let path = shortcut_config_path(&app_handle);
     shortcuts.insert(key, serde_json::Value::String(normalized));
 
     let content = serde_json::to_string_pretty(&serde_json::Value::Object(shortcuts))

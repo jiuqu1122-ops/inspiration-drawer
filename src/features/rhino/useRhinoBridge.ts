@@ -1,3 +1,4 @@
+import { saveRhinoLocalImages } from './rhinoLocalImages';
 import { geometryFailureSummary } from './rhinoGeometryRecovery';
 import { conversationDisplayTitle } from '../chat/model/chatConversationTitle';
 import { assertRhinoScriptPreflight, isConfirmedRhinoScriptFailure } from './rhinoScriptPreflight';
@@ -468,6 +469,7 @@ export function useRhinoBridge(options: {
               return Array.isArray(payload.selection) && payload.selection.length > 0;
             } catch { return false; }
           });
+          const localReferences = await saveRhinoLocalImages(command, args => invoke<string>('save_dropped_file', args));
           const canvasReferences = command.includeCanvasSelection
             ? selectionToChatAttachments(selectedCanvasItems).filter(item => item.type === 'image')
             : [];
@@ -475,7 +477,10 @@ export function useRhinoBridge(options: {
           // Rhino document the user is asking us to populate. The checkbox is
           // normally on, but that must not make a viewport export a prerequisite.
           const shouldCaptureViewport = !geometryRequest && Boolean(command.includeViewport || visualCanvasRequest || useRhinoMask || selectedRhinoModel);
-          const attachments: PendingChatAttachment[] = canvasReferences.slice(0, shouldCaptureViewport ? (useRhinoMask ? 4 : 5) : 6);
+          const referenceLimit = shouldCaptureViewport ? (useRhinoMask ? 4 : 5) : 6;
+          if (localReferences.length > referenceLimit) throw new Error(`当前视口/遮罩需要预留附件位置，最多可附带 ${referenceLimit} 张本地参考图；请减少图片或关闭视口/遮罩。`);
+          const attachments: PendingChatAttachment[] = [...localReferences, ...canvasReferences.slice(0, referenceLimit - localReferences.length)];
+          if (localReferences.length + canvasReferences.length > referenceLimit) live.onNotice?.('附件数量已达上限；保留全部本地图片，部分画布图片未附带。');
           let viewportOmitted = false;
           if (shouldCaptureViewport) {
             const captureArguments = useRhinoMask
@@ -517,7 +522,7 @@ export function useRhinoBridge(options: {
             ? '[Native MCP capabilities: ' + binding.native.tools.map(tool => tool.name).join(', ') + '. Choose the appropriate advertised schema for the user task: queries, selection, layers/materials, views/cameras, files, geometry or GH. Do not force modeling or image generation for unrelated operations. Verify the actual requested property; unchanged geometry is expected for material, view and file operations.]'
             : '[Native MCP is unavailable for this bound document. Only local advertised read tools and canvas image tools can run. If the user asks for any unsupported Rhino operation, explain that it was not executed and advise updating/connecting RhinoAI / Rhino-MCP-Platform; do not invent success or substitute manual code.]' });
           const fidelityNote = geometryRequest
-            ? '[Rhino geometry modeling request: use the registered native Rhino/Grasshopper MCP tools to create or edit real geometry. Attached canvas images are modeling references, not an image-generation request. An empty target Rhino document is expected; do not replace modeling with generated pictures.]'
+            ? '[Rhino geometry modeling request: use the registered native Rhino/Grasshopper MCP tools to create or edit real geometry. Attached local/canvas images are modeling references, not an image-generation request. An empty target Rhino document is expected; do not replace modeling with generated pictures.]'
             : visualCanvasRequest && useRhinoMask
             ? '[Rhino canvas visual context: the attached Rendered viewport and same-camera object Mask are available as reference data. Decide from the users semantic request whether an image tool is appropriate; a capture or Mask is not itself a request to generate/edit.]'
             : visualCanvasRequest

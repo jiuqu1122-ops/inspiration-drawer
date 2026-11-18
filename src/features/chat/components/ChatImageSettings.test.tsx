@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { ChatImageSettings } from './ChatImageSettings';
-const stylesheet = readFileSync(new URL('./chat.css', import.meta.url), 'utf8');
+const stylesheet = readFileSync(new URL('./chat.css', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const props={ model:'image',modelOptions:[{value:'image',label:'Image model'}],onModelChange:vi.fn(),aspectRatio:'16:9',aspectRatioOptions:[{value:'16:9',label:'16:9'}],onAspectRatioChange:vi.fn(),resolution:'2K',resolutionOptions:[{value:'2K',label:'2K'}],onResolutionChange:vi.fn(),busy:false };
 describe('Chat image settings layout markup',()=>{
  it('keeps the unsupported mask out of the compact toolbar and removes its explanatory sentence',()=>{
@@ -30,27 +30,44 @@ describe('Chat image settings layout markup',()=>{
   expect(block).not.toContain('display: grid');
   expect(stylesheet).not.toContain('.chat-image-settings__mask-note');
  });
- it('keeps image controls compact with the inherited 11px medium type scale',()=>{
-  const triggerStart=stylesheet.indexOf('.chat-image-setting-trigger {');
-  const triggerEnd=stylesheet.indexOf('\n}',triggerStart)+2;
-  const trigger=stylesheet.slice(triggerStart,triggerEnd);
-  expect(trigger).toContain('font-family: inherit');
-  expect(trigger).toContain('height: 30px');
-  expect(trigger).toContain('font-size: 11px');
-  expect(trigger).toContain('font-weight: 500');
-  const valueStart=stylesheet.indexOf('.chat-image-setting-trigger strong {');
-  const valueEnd=stylesheet.indexOf('\n}',valueStart)+2;
-  const value=stylesheet.slice(valueStart,valueEnd);
-  expect(value).toContain('font-size: 11px');
-  expect(value).toContain('font-weight: 500');
-  const menuStart=stylesheet.indexOf('.chat-image-setting-menu button {');
-  const menuEnd=stylesheet.indexOf('\n}',menuStart)+2;
-  const menu=stylesheet.slice(menuStart,menuEnd);
-  expect(menu).toContain('font-family: inherit');
-  expect(menu).toContain('font-size: 11px');
-  expect(stylesheet).toContain('.chat-image-setting-menu .chat-model-option-copy strong {');
-  expect(stylesheet).toContain('height: 28px');
-  expect(stylesheet).toContain('.chat-image-setting-menu .chat-model-option-copy small {');
+ it('uses the same LLM font, weight, height and radius tokens for every image picker',()=>{
+  const block = (selector: string) => {
+    const start = stylesheet.indexOf('\n' + selector + ' {') + 1;
+    return stylesheet.slice(start, stylesheet.indexOf('\n}', start) + 2);
+  };
+  for (const selector of ['.chat-image-setting-trigger', '.chat-composer__tools .chat-model-trigger']) {
+    const trigger = block(selector);
+    expect(trigger).toContain('font-family: inherit');
+    expect(trigger).toContain('font-size: var(--chat-picker-font-size)');
+    expect(trigger).toContain('font-weight: var(--chat-picker-font-weight)');
+    expect(trigger).toContain('height: var(--chat-picker-height)');
+    expect(trigger).toContain('border-radius: var(--chat-picker-radius)');
+    expect(trigger).toContain('padding: 0 7px');
+  }
+  expect(block('.chat-image-setting-trigger__value')).toContain('font-size: inherit');
+  expect(block('.chat-image-setting-trigger__value')).toContain('font-weight: inherit');
+  for (const selector of ['.chat-image-setting-menu button', '.chat-composer__tools .chat-model-menu button']) {
+    const menu = block(selector);
+    expect(menu).toContain('font-size: var(--chat-picker-font-size)');
+    expect(menu).toContain('font-weight: var(--chat-picker-font-weight)');
+    expect(menu).toContain('min-height: var(--chat-picker-option-height)');
+  }
+  expect(stylesheet).toContain('--chat-picker-font-size: 8px');
+  expect(stylesheet).toContain('--chat-picker-height: 27px');
+  expect(block('.chat-image-setting-menu .chat-model-option-copy small')).toContain('font-size: var(--chat-picker-meta-size)');
+ });
+ it('raises the active footer stacking context above the image settings rather than offsetting the menu',()=>{
+  expect(stylesheet).toContain('.chat-composer__footer.is-menu-open {\n  z-index: var(--chat-layer-active)');
+  expect(stylesheet).toContain('--chat-layer-settings: 2');
+  expect(stylesheet).toContain('--chat-layer-active: 3');
+  expect(stylesheet).not.toContain('bottom: calc(100% + 52px)');
+ });
+ it('accepts a composer-owned open picker so image menus cannot stay open behind the LLM menu',()=>{
+  const open = renderToStaticMarkup(<ChatImageSettings {...props} openPicker="model" onOpenPickerChange={vi.fn()}/>);
+  expect(open).toContain('role="listbox"');
+  expect(open).toContain('aria-selected="true"');
+  const closed = renderToStaticMarkup(<ChatImageSettings {...props} openPicker={null} onOpenPickerChange={vi.fn()}/>);
+  expect(closed).not.toContain('role="listbox"');
  });
  it('disables all current image-setting pickers during generation',()=>{
   const html=renderToStaticMarkup(<ChatImageSettings {...props} busy/>);
