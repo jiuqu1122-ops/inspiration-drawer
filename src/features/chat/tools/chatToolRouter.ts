@@ -1,3 +1,4 @@
+import { validateSvgToolArguments } from './chatSvgTool';
 import { isGithubSkillTool, validateGithubSkillTool } from '../skills/githubSkillTools';
 import { parsePrototype } from '../prototypes/prototypeSchema';
 import { assertGeometryCorrection } from '../../rhino/rhinoGeometryRecovery';
@@ -16,7 +17,7 @@ import { getRhinoNativeTool, isRhinoNativeTool, isRhinoReadTool } from '../../rh
 import { validateRhinoNativeArguments } from '../../rhino/rhinoWorkflow';
 
 const SUPPORTED_TOOLS = new Set([
-  'create_ui_prototype', 'web_search', 'create_file', 'create_agent', 'get_canvas_selection', 'get_canvas_selected_shapes', 'search_assets', 'generate_image', 'generate_image_variants', 'edit_image', 'generate_video',
+  'create_svg', 'animate_ui_prototype', 'get_ui_prototype', 'create_ui_prototype', 'web_search', 'create_file', 'create_agent', 'get_canvas_selection', 'get_canvas_selected_shapes', 'search_assets', 'generate_image', 'generate_image_variants', 'edit_image', 'generate_video',
   'interpolate_video', 'enhance_image', 'enhance_video', 'fuse_images',
   'batch_image_operation', 'add_to_canvas', 'create_canvas_generator', 'create_workflow', 'list_workflows', 'run_workflow',
 ]);
@@ -34,7 +35,7 @@ const AUTO_EXECUTE_MEDIA_TOOLS = new Set([
 ]);
 
 const permissionActionForChatTool = (name: string, args: Record<string, unknown>): LegacyAgentAction => {
-  if (name === 'create_ui_prototype' || name === 'web_search' || name === 'create_file' || name === 'create_agent' || name === 'get_canvas_selection' || name === 'get_canvas_selected_shapes' || name === 'search_assets' || name === 'list_workflows') {
+  if (name === 'create_svg' || name === 'animate_ui_prototype' || name === 'get_ui_prototype' || name === 'create_ui_prototype' || name === 'web_search' || name === 'create_file' || name === 'create_agent' || name === 'get_canvas_selection' || name === 'get_canvas_selected_shapes' || name === 'search_assets' || name === 'list_workflows') {
     return { tool: name === 'search_assets' ? 'drawer_search_inspirations' : 'app_get_context', arguments: args };
   }
   if (name === 'run_workflow') return { tool: 'canvas_run_workflow', arguments: args };
@@ -68,6 +69,7 @@ export const routeChatToolCall = async (input: {
   onExecuting?: () => void | Promise<void>;
 }) => {
   const name = normalizeChatToolName(input.name);
+  if(name==='create_svg')validateSvgToolArguments(input.args);
   if (isImagePromptTextRequest(input.context.userText)
     && ['generate_image', 'generate_image_variants', 'edit_image', 'batch_image_operation'].includes(name)) {
     throw new Error('The user requested image-prompt text, not image generation. Return the prompt as text unless a separate image-render request is present.');

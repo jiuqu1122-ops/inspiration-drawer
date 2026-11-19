@@ -9,16 +9,19 @@ export type GithubSkillPackage = {
   id: string; repository: string; directory: string; originalRef: string; commit: string;
   name: string; description: string; sourceUrl: string; files: SkillFile[]; totalBytes: number;
   license: string; installedAt: number;
-  compatibility: { level: string; dependencies: string[]; notes: string[] };
+  compatibility: { level: string; dependencies: string[]; notes: string[]; scriptRequired?: boolean; mcpMentioned?: boolean; searchableResources?: number };
 };
 export type InstalledGithubSkill = { package: GithubSkillPackage; enabled: boolean; versions: string[] };
 export type GithubSkillInspection = { previewId: string; repository: string; originalRef: string; commit: string; candidates: GithubSkillPackage[]; expiresAt: number };
+export type SkillResourceSearch = { skillId:string; version:string; query:string; scannedFiles:number; matchedRecords:number; results:{path:string;offset:number;excerptEnd:number;recordEnd:number;content:string;header:string;partial:boolean;score:number}[];engine:string;notice:string };
+export const searchGithubSkillResources = (skillId:string,version:string,query:string,prefix='',limit=5,signal?:AbortSignal) => githubSkillRequest<SkillResourceSearch>({operation:'search_resources',skill_id:skillId,version,query,prefix,limit},signal);
 export type SkillResource = { skillId: string; version: string; path: string; content: string; totalCharacters: number; nextOffset: number | null };
 export type GithubSkillRequest =
   | { operation: 'list' }
   | { operation: 'inspect'; source: { url: string; reference?: string; directory?: string } }
   | { operation: 'install'; preview_id: string; skill_id: string; action: 'install' | 'update'; use_in_current_conversation?: boolean }
   | { operation: 'read'; skill_id: string; version: string; path: string; offset: number; limit: number }
+  | { operation: 'search_resources'; skill_id: string; version: string; query: string; prefix: string; limit: number }
   | { operation: 'manage'; skill_id: string; action: 'enable' | 'disable' | 'rollback' | 'uninstall'; version?: string };
 
 export type GithubSkillProgress = { completed: number; total: number };

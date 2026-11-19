@@ -1,7 +1,7 @@
 {
   "name": "inspiration-drawer",
   "private": true,
-  "version": "8.0.31",
+  "version": "8.0.32",
   "type": "module",
   "scripts": {
     "dev": "vite",

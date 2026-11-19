@@ -1,3 +1,5 @@
+import { svgPreviewDataUrl } from '../tools/chatSvgTool';
+import { ChatSvgPreview } from './ChatSvgPreview';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { Check, Download, ExternalLink, FileText, FolderOpen, LoaderCircle, PanelsTopLeft } from 'lucide-react';
@@ -9,6 +11,7 @@ const FORMAT_LABELS: Record<string, string> = {
   sketch: 'Figma 可导入设计',
   zip: '旧版 ZIP 原型包',
   html: 'HTML 网页',
+  svg: 'SVG 矢量图',
   htm: 'HTML 网页',
   txt: 'TXT',
   md: 'Markdown',
@@ -30,6 +33,8 @@ export function ChatGeneratedFileCard({ file, onPreview }: { file: ChatGenerated
   const [busy, setBusy] = useState<'open' | 'save' | 'folder' | ''>('');
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
+  const [svgOpen,setSvgOpen]=useState(false);
+  const svgUrl=file.format==='svg'?svgPreviewDataUrl(file.svgSource):undefined;
   const run = async (action: 'open' | 'save' | 'folder') => {
     if (busy) return;
     setBusy(action);
@@ -70,7 +75,10 @@ export function ChatGeneratedFileCard({ file, onPreview }: { file: ChatGenerated
         {error && <small title={error}>{error}</small>}
       </div>
       {format === 'sketch' && <p className="chat-generated-file__import-hint">另存后，将 .sketch 文件拖入 Figma 文件列表即可。无需安装插件；复杂交互请在 Figma 中重新连接。</p>}
+      {svgUrl && <button type="button" className="chat-generated-file__svg-thumbnail" onClick={()=>setSvgOpen(true)} aria-label="放大预览 SVG"><img src={svgUrl} alt={file.name}/></button>}
+      {svgOpen&&svgUrl&&file.svgSource&&<ChatSvgPreview name={file.name} source={file.svgSource} url={svgUrl} onClose={()=>setSvgOpen(false)}/>}
       <div className="chat-generated-file__actions">
+        {svgUrl&&<button type="button" onClick={()=>setSvgOpen(true)} title="预览 SVG 矢量图"><PanelsTopLeft size={13}/><span>预览</span></button>}
         {onPreview && <button type="button" onClick={onPreview} title={['sketch', 'zip'].includes(format) ? '预览交互原型' : '预览 HTML'}><PanelsTopLeft size={13} /><span>预览</span></button>}
         <button type="button" onClick={() => void run('open')} disabled={Boolean(busy)} title={format === 'sketch' ? '定位文件后拖入 Figma' : '打开文件'}>
           {busy === 'open' ? <LoaderCircle size={13} className="chat-spin" /> : <ExternalLink size={13} />}

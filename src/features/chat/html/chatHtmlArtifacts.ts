@@ -51,10 +51,10 @@ export function getMessageHtmlArtifacts(message: ChatMessage): ChatHtmlArtifact[
     artifacts.push({ id: `${message.id}:draft:${draft.id}`, messageId: message.id, name: draft.name, source: draft.source, streaming: true });
   }
   for (const call of message.toolCalls) {
-    if (call.toolName === 'create_ui_prototype' && call.status === 'completed') {
+    if (['create_ui_prototype','animate_ui_prototype'].includes(call.toolName) && call.status === 'completed') {
       const file = getGeneratedFilesFromToolCall(call)[0];
       if (file) try {
-        const prototype = parsePrototype(JSON.parse(call.argumentsJson).prototype);
+        const prototype = parsePrototype(call.toolName === 'animate_ui_prototype' ? JSON.parse(call.resultJson || '{}').prototypeDocument : JSON.parse(call.argumentsJson).prototype);
         artifacts.push({ id: `${message.id}:prototype:${call.id}`, messageId: message.id,
           name: `${prototypeFileName(prototype.name)}.html`, source: renderPrototypeHtml(prototype), prototype, file, streaming: false });
       } catch { /* Invalid data must not become executable artifacts. */ }

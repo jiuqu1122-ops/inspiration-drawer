@@ -1,8 +1,11 @@
 /** Versioned, data-only contract shared by the preview and offline Figma importer. */
 export const PROTOTYPE_VERSION = 1;
 export const MAX_PROTOTYPE_BYTES = 2_000_000;
-export type PrototypeKind = 'frame' | 'rect' | 'text' | 'button' | 'image' | 'stateGroup' | 'state';
+export type PrototypeKind = 'frame' | 'rect' | 'text' | 'button' | 'image' | 'stateGroup' | 'state' | 'vector';
 export type PrototypeScreen = { id: string; name: string; width: number; height: number; background?: string; overlay?: boolean };
+export type PrototypeShadow = { x: number; y: number; blur: number; spread: number; color: string; inset?: boolean };
+export type PrototypeGradient = { fromX: number; fromY: number; toX: number; toY: number; stops: { offset: number; color: string }[] };
+export type PrototypeMotion = { targetId: string; trigger: 'enter' | 'press' | 'hover'; effect: 'fade' | 'slide-up' | 'slide-down' | 'slide-left' | 'slide-right' | 'scale' | 'grow-x' | 'grow-y' | 'count-up'; duration: number; delay?: number; distance?: number; easing?: 'standard' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'linear' };
 export type PrototypeNode = {
   id: string; parentId: string; kind: PrototypeKind; name?: string;
   x?: number; y?: number; width: number; height: number;
@@ -12,6 +15,9 @@ export type PrototypeNode = {
   text?: string; color?: string; fontFamily?: string; fontSize?: number; fontWeight?: 400 | 500 | 600 | 700;
   textAlign?: 'left' | 'center' | 'right'; lineHeight?: number;
   imageData?: string; initialStateId?: string;
+  letterSpacing?: number; shadows?: PrototypeShadow[]; gradient?: PrototypeGradient; clip?: boolean;
+  points?: { x: number; y: number; inX?: number; inY?: number; outX?: number; outY?: number }[]; closed?: boolean;
+
 };
 export type PrototypeInteraction = {
   sourceId: string; action: 'navigate' | 'openOverlay' | 'closeOverlay' | 'back' | 'setState';
@@ -19,25 +25,37 @@ export type PrototypeInteraction = {
 };
 export type PrototypeDocument = {
   schemaVersion: 1; id: string; name: string; startScreenId: string;
-  screens: PrototypeScreen[]; nodes: PrototypeNode[]; interactions: PrototypeInteraction[];
+  screens: PrototypeScreen[]; nodes: PrototypeNode[]; interactions: PrototypeInteraction[]; motions?: PrototypeMotion[];
 };
 const idSchema = { type: 'string', pattern: '^[A-Za-z][A-Za-z0-9_-]{0,79}$', maxLength: 80 };
 const dimension = { type: 'number', minimum: 1, maximum: 8192 };
-const colorSchema = { type: 'string', pattern: '^(#[0-9a-fA-F]{6}|transparent)$' };
+const colorSchema = { type: 'string', pattern: '^(#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?|transparent)$' };
 const object = (properties: Record<string, unknown>, required: string[]) => ({ type: 'object', properties, required, additionalProperties: false });
+const normalized = { type: 'number', minimum: 0, maximum: 1 };
+export const PROTOTYPE_MOTION_SCHEMA = object({
+  targetId: idSchema, trigger: { type: 'string', enum: ['enter', 'press', 'hover'] },
+  effect: { type: 'string', enum: ['fade', 'slide-up', 'slide-down', 'slide-left', 'slide-right', 'scale', 'grow-x', 'grow-y', 'count-up'] },
+  duration: { type: 'number', minimum: 0, maximum: 2000 }, delay: { type: 'number', minimum: 0, maximum: 5000 }, distance: { type: 'number', minimum: 0, maximum: 200 },
+  easing: { type: 'string', enum: ['standard', 'ease-in', 'ease-out', 'ease-in-out', 'linear'] },
+}, ['targetId', 'trigger', 'effect', 'duration']);
 export const PROTOTYPE_JSON_SCHEMA = object({
   schemaVersion: { type: 'integer', enum: [1] }, id: idSchema, name: { type: 'string', maxLength: 120 }, startScreenId: idSchema,
   screens: { type: 'array', minItems: 1, maxItems: 24, items: object({ id: idSchema, name: { type: 'string', maxLength: 120 }, width: dimension, height: dimension, background: colorSchema, overlay: { type: 'boolean' } }, ['id', 'name', 'width', 'height']) },
   nodes: { type: 'array', minItems: 1, maxItems: 2000, items: object({
-    id: idSchema, parentId: idSchema, kind: { type: 'string', enum: ['frame', 'rect', 'text', 'button', 'image', 'stateGroup', 'state'] },
+    id: idSchema, parentId: idSchema, kind: { type: 'string', enum: ['frame', 'rect', 'text', 'button', 'image', 'stateGroup', 'state', 'vector'] },
     name: { type: 'string', maxLength: 120 }, x: { type: 'number', minimum: -8192, maximum: 8192 }, y: { type: 'number', minimum: -8192, maximum: 8192 }, width: dimension, height: dimension,
     fill: colorSchema, stroke: colorSchema, strokeWidth: { type: 'number', minimum: 0, maximum: 24 }, radius: { type: 'number', minimum: 0, maximum: 4096 }, opacity: { type: 'number', minimum: 0, maximum: 1 },
     layout: { type: 'string', enum: ['absolute', 'horizontal', 'vertical'] }, gap: { type: 'number', minimum: 0, maximum: 1024 }, padding: { type: 'number', minimum: 0, maximum: 1024 },
     align: { type: 'string', enum: ['start', 'center', 'end'] }, justify: { type: 'string', enum: ['start', 'center', 'end', 'space-between'] },
     text: { type: 'string', maxLength: 12000 }, color: colorSchema, fontFamily: { type: 'string', maxLength: 80 }, fontSize: { type: 'number', minimum: 8, maximum: 256 }, fontWeight: { type: 'integer', enum: [400, 500, 600, 700] },
     textAlign: { type: 'string', enum: ['left', 'center', 'right'] }, lineHeight: { type: 'number', minimum: 8, maximum: 512 },
+    letterSpacing: { type: 'number', minimum: -20, maximum: 100 }, clip: { type: 'boolean' },
+    shadows: { type: 'array', maxItems: 4, items: object({ x: { type: 'number', minimum: -256, maximum: 256 }, y: { type: 'number', minimum: -256, maximum: 256 }, blur: { type: 'number', minimum: 0, maximum: 256 }, spread: { type: 'number', minimum: -128, maximum: 128 }, color: colorSchema, inset: { type: 'boolean' } }, ['x','y','blur','spread','color']) },
+    gradient: object({ fromX: normalized, fromY: normalized, toX: normalized, toY: normalized, stops: { type: 'array', minItems: 2, maxItems: 12, items: object({ offset: normalized, color: colorSchema }, ['offset','color']) } }, ['fromX','fromY','toX','toY','stops']),
+    points: { type: 'array', minItems: 2, maxItems: 256, items: object({ x: normalized, y: normalized, inX: normalized, inY: normalized, outX: normalized, outY: normalized }, ['x','y']) }, closed: { type: 'boolean' },
     imageData: { type: 'string', maxLength: 1400000, description: '仅 data:image/png;base64 或 data:image/jpeg;base64；禁止远程/本地路径和 SVG。' }, initialStateId: idSchema,
   }, ['id', 'parentId', 'kind', 'width', 'height']) },
+  motions: { type: 'array', maxItems: 2000, items: PROTOTYPE_MOTION_SCHEMA },
   interactions: { type: 'array', maxItems: 2000, items: object({ sourceId: idSchema, action: { type: 'string', enum: ['navigate', 'openOverlay', 'closeOverlay', 'back', 'setState'] }, targetId: idSchema, stateId: idSchema }, ['sourceId', 'action']) },
 }, ['schemaVersion', 'id', 'name', 'startScreenId', 'screens', 'nodes', 'interactions']);
 
@@ -137,6 +155,19 @@ export function parsePrototype(input: unknown): PrototypeDocument {
         ancestor = all.get(ancestor.parentId);
       }
     } else if (action.targetId || action.stateId) throw new Error('返回/关闭弹窗不接受目标参数');
+  }
+  for (const node of doc.nodes) {
+    if (node.kind === 'vector' && !node.points) throw new Error('矢量节点需要归一化 points');
+    if (node.kind !== 'vector' && (node.points || node.closed !== undefined)) throw new Error('只有矢量节点可带 points/closed');
+    if (node.gradient?.stops.some((stop, index, list) => index > 0 && stop.offset < list[index-1].offset)) throw new Error('渐变色标必须按 offset 升序');
+  }
+  const motionKeys = new Set<string>();
+  for (const motion of doc.motions || []) {
+    const target = all.get(motion.targetId);
+    const key = motion.targetId + ':' + motion.trigger;
+    if (!target || !('kind' in target) || motionKeys.has(key)) throw new Error('动效目标无效或同一触发重复');
+    if (motion.effect === 'count-up' && (target.kind !== 'text' || motion.trigger !== 'enter' || !/\d/.test(target.text || ''))) throw new Error('数字滚动仅用于含数字的文字节点入场');
+    motionKeys.add(key);
   }
   return doc;
 }

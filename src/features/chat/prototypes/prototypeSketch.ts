@@ -11,7 +11,7 @@ export type SketchExportParts = {
   warnings: string[];
 };
 type Bounds = { x: number; y: number; width: number; height: number };
-type Layer = Sketch.Group | Sketch.Rectangle | Sketch.Text;
+type Layer = Sketch.Group | Sketch.Rectangle | Sketch.Text | Sketch.ShapePath;
 /** Stable IDs are independent of node ordering and satisfy the published Sketch
  * UUID schema. Hash collisions are detected before writing any output. */
 export function sketchId(key: string): string {
@@ -25,16 +25,17 @@ export function sketchId(key: string): string {
 const rect = (bounds: Bounds): Sketch.Rect => ({ _class: 'rect', constrainProportions: false, ...bounds });
 const color = (value = '#000000'): Sketch.Color => {
   const hex = value === 'transparent' ? '#000000' : value;
-  return { _class: 'color', alpha: value === 'transparent' ? 0 : 1, red: parseInt(hex.slice(1, 3), 16) / 255, green: parseInt(hex.slice(3, 5), 16) / 255, blue: parseInt(hex.slice(5, 7), 16) / 255 };
+  return { _class: 'color', alpha: value === 'transparent' ? 0 : hex.length === 9 ? parseInt(hex.slice(7,9),16)/255 : 1, red: parseInt(hex.slice(1, 3), 16) / 255, green: parseInt(hex.slice(3, 5), 16) / 255, blue: parseInt(hex.slice(5, 7), 16) / 255 };
 };
 const gradient = (): Sketch.Gradient => ({ _class: 'gradient', gradientType: 0, elipseLength: 0, from: '{0.5, 0}', to: '{0.5, 1}', stops: [{ _class: 'gradientStop', color: color(), position: 0 }, { _class: 'gradientStop', color: color('#ffffff'), position: 1 }] });
 const context = (opacity = 1): Sketch.GraphicsContextSettings => ({ _class: 'graphicsContextSettings', blendMode: 0, opacity });
 const fill = (value: string): Sketch.Fill => ({ _class: 'fill', isEnabled: value !== 'transparent', color: color(value), fillType: 0, noiseIndex: 0, noiseIntensity: 0, patternFillType: 1, patternTileScale: 1, contextSettings: context(), gradient: gradient() });
 function style(id: string, node: Partial<PrototypeNode> = {}): Sketch.Style {
   return { _class: 'style', do_objectID: id, borderOptions: { _class: 'borderOptions', isEnabled: true, dashPattern: [], lineCapStyle: 0, lineJoinStyle: 0 },
-    startMarkerType: 0, endMarkerType: 0, miterLimit: 10, windingRule: 1, innerShadows: [], shadows: [],
+    startMarkerType: 0, endMarkerType: 0, miterLimit: 10, windingRule: 1, innerShadows: (node.shadows || []).filter(s=>s.inset).map(s=>({ _class: 'innerShadow', isEnabled: true, blurRadius: s.blur, color: color(s.color), contextSettings: context(), offsetX:s.x, offsetY:s.y, spread:s.spread })),
+    shadows: (node.shadows || []).filter(s=>!s.inset).map(s=>({ _class: 'shadow', isEnabled: true, blurRadius: s.blur, color: color(s.color), contextSettings: context(), offsetX:s.x, offsetY:s.y, spread:s.spread })),
     colorControls: { _class: 'colorControls', isEnabled: false, brightness: 0, contrast: 1, hue: 0, saturation: 1 }, contextSettings: context(node.opacity ?? 1),
-    fills: node.fill ? [fill(node.fill)] : [], borders: node.stroke && node.stroke !== 'transparent' && (node.strokeWidth ?? 1) > 0 ? [{ _class: 'border', isEnabled: true, color: color(node.stroke), fillType: 0, position: 1, thickness: node.strokeWidth ?? 1, contextSettings: context(), gradient: gradient() }] : [],
+    fills: node.gradient ? [{ ...fill('#ffffff'), fillType: 1, gradient: { _class:'gradient', gradientType:0, elipseLength:0, from: '{'+node.gradient.fromX+', '+node.gradient.fromY+'}', to: '{'+node.gradient.toX+', '+node.gradient.toY+'}', stops: node.gradient.stops.map(s=>({_class:'gradientStop',color:color(s.color),position:s.offset})) } }] : node.fill ? [fill(node.fill)] : [], borders: node.stroke && node.stroke !== 'transparent' && (node.strokeWidth ?? 1) > 0 ? [{ _class: 'border', isEnabled: true, color: color(node.stroke), fillType: 0, position: 1, thickness: node.strokeWidth ?? 1, contextSettings: context(), gradient: gradient() }] : [],
   };
 }
 const ruler = (): Sketch.RulerData => ({ _class: 'rulerData', base: 0, guides: [] });
@@ -91,6 +92,7 @@ export function buildPrototypeSketch(input: PrototypeDocument): SketchExportPart
   const actions = new Map(doc.interactions.map(action => [action.sourceId, action]));
   const images: SketchExportParts['images'] = []; const imageRefs = new Map<string, string>();
   const warnings = [SKETCH_EXPORT_NOTICE, SKETCH_EXPORT_LIMITATIONS, '字体不嵌入文件，Figma 缺少字体时需要替换；不同字体度量可能影响换行。'];
+  if (doc.motions?.length) warnings.push('Canvas 动效基于同一设计数据运行；导出保留静态终态与可编辑图层，不转换为 Figma 原生动画。');
   const screenIds = new Map(doc.screens.map(screen => [screen.id, id(`screen:${screen.id}`)]));
   const makeRectangle = (key: string, name: string, bounds: Bounds, node: Partial<PrototypeNode>): Sketch.Rectangle => {
     const radius = Math.max(0, Math.min(node.radius || 0, bounds.width / 2, bounds.height / 2));
@@ -103,6 +105,7 @@ export function buildPrototypeSketch(input: PrototypeDocument): SketchExportPart
   const makeText = (key: string, node: PrototypeNode, bounds: Bounds): Sketch.Text => {
     const text = node.text || ''; const size = node.fontSize || 14; const lineHeight = node.lineHeight || Math.round(size * 1.4);
     const attributes: Sketch.StringAttribute['attributes'] = {
+      kerning: node.letterSpacing ?? 0,
       MSAttributedStringFontAttribute: { _class: 'fontDescriptor', attributes: { name: postscriptFont(node), size } },
       MSAttributedStringColorAttribute: color(node.color || '#262626'),
       paragraphStyle: { _class: 'paragraphStyle', alignment: (node.textAlign || (node.kind === 'button' ? 'center' : 'left')) === 'center' ? 2 : node.textAlign === 'right' ? 1 : 0, minimumLineHeight: lineHeight, maximumLineHeight: lineHeight, paragraphSpacing: 0 },
@@ -124,7 +127,10 @@ export function buildPrototypeSketch(input: PrototypeDocument): SketchExportPart
   const buildNode = (node: PrototypeNode, key: string, bounds: Bounds): Layer => {
     if (++count > 10000) throw new Error('导出图层过多，请减少页面和组件状态数量');
     let layer: Layer;
-    if (node.kind === 'text') layer = makeText(key, node, bounds);
+    if (node.kind === 'vector') {
+      layer = { ...layerBase(id(key), node.name || node.id, bounds), _class:'shapePath', style:style(id(key+':style'),node), edited:false, isClosed:Boolean(node.closed), pointRadiusBehaviour:1,
+        points:node.points!.map(p=>({_class:'curvePoint',cornerRadius:0,cornerStyle:0,point:'{'+p.x+', '+p.y+'}',curveFrom:'{'+(p.inX??p.x)+', '+(p.inY??p.y)+'}',curveTo:'{'+(p.outX??p.x)+', '+(p.outY??p.y)+'}',hasCurveFrom:p.inX!==undefined,hasCurveTo:p.outX!==undefined,curveMode:1})) };
+    } else if (node.kind === 'text') layer = makeText(key, node, bounds);
     else if (node.kind === 'rect' || node.kind === 'image') {
       layer = makeRectangle(key, node.name || node.id, bounds, node);
       if (node.kind === 'image') {
@@ -138,7 +144,7 @@ export function buildPrototypeSketch(input: PrototypeDocument): SketchExportPart
         layer.style!.fills = [{ ...fill('#ffffff'), fillType: 4, image: { _class: 'MSJSONFileReference', _ref_class: 'MSImageData', _ref: ref } }];
       }
     } else {
-      let background = node;
+      let background = node.kind === 'button' && !node.fill && !node.gradient ? { ...node, fill:'#e8e8e8' } : node;
       let descendants: Layer[];
       if (node.kind === 'stateGroup') {
         const state = children.get(node.id)!.find(state => state.id === node.initialStateId)!;
@@ -147,11 +153,11 @@ export function buildPrototypeSketch(input: PrototypeDocument): SketchExportPart
       } else if (node.kind === 'button') {
         descendants = [makeText(`${key}/label`, { ...node, opacity: 1, name: '文字' }, { x: 0, y: 0, width: node.width, height: node.height })];
       } else descendants = buildNodes(node.id, key, node);
-      const backdrop = makeRectangle(`${key}/background`, '背景 / 裁切边界', { x: 0, y: 0, width: bounds.width, height: bounds.height }, { ...background, opacity: 1 });
+      const backdrop = makeRectangle(`${key}/background`, '背景 / 裁切边界', { x: 0, y: 0, width: bounds.width, height: bounds.height }, { ...background, shadows: [], opacity: 1 });
       // A shape clipping mask keeps fixed-size containers from leaking children.
-      backdrop.hasClippingMask = true; backdrop.clippingMaskMode = 0;
+      backdrop.hasClippingMask = node.clip !== false; backdrop.clippingMaskMode = 0;
       layer = { ...layerBase(id(key), node.name || node.text || node.id, bounds), _class: 'group', hasClickThrough: false,
-        style: style(id(`${key}:style`), { opacity: node.opacity }), layers: [backdrop, ...descendants] };
+        style: style(id(`${key}:style`), { opacity: node.opacity, shadows:node.shadows }), layers: [backdrop, ...descendants] };
     }
     const action = actions.get(node.id);
     layer.userInfo = { 'com.inspirationdrawer.prototype': { nodeId: node.id, ...(action ? { interaction: action } : {}) } };

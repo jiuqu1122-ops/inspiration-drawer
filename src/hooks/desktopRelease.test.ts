@@ -6,14 +6,14 @@ import cargoSource from '../../src-tauri/Cargo.toml?raw';
 import cargoLock from '../../src-tauri/Cargo.lock?raw';
 import workflow from '../../.github/workflows/desktop-release.yml?raw';
 import readme from '../../README.md?raw';
-import releaseNotes from '../../docs/releases/8.0.31.md?raw';
+import releaseNotes from '../../docs/releases/8.0.32.md?raw';
 
-describe('8.0.31 formal desktop release', () => {
+describe('8.0.32 formal desktop release', () => {
   it('uses one version across the app, native crate and lockfiles without changing identity', () => {
     const pkg = JSON.parse(packageSource); const lock = JSON.parse(npmLock); const tauri = JSON.parse(tauriSource);
-    expect(pkg.version).toBe('8.0.31'); expect(lock.version).toBe(pkg.version); expect(lock.packages[''].version).toBe(pkg.version);
-    expect(tauri.version).toBe(pkg.version); expect(cargoSource).toMatch(/^version = "8\.0\.31"$/m);
-    expect(cargoLock.replace(/\r\n/g, '\n')).toContain('name = "inspiration-drawer"\nversion = "8.0.31"');
+    expect(pkg.version).toBe('8.0.32'); expect(lock.version).toBe(pkg.version); expect(lock.packages[''].version).toBe(pkg.version);
+    expect(tauri.version).toBe(pkg.version); expect(cargoSource).toMatch(/^version = "8\.0\.32"$/m);
+    expect(cargoLock.replace(/\r\n/g, '\n')).toContain('name = "inspiration-drawer"\nversion = "8.0.32"');
     expect(tauri.identifier).toBe('com.inspirationdrawer.app'); expect(tauri.productName).toBe('Inspiration Drawer');
     expect(tauri.bundle.createUpdaterArtifacts).toBe(true);
   });
@@ -21,13 +21,13 @@ describe('8.0.31 formal desktop release', () => {
     const version = JSON.parse(packageSource).version;
     expect(readme).toContain(`当前已发布版本：**${version}**`);
     expect(readme).toContain(`releases/download/v${version}/Inspiration.Drawer_${version}_x64-setup.exe`);
-    for (const feature of ['8.0.28 更新', '8.0.29 更新', '8.0.30 更新', '8.0.31 更新', 'Canvas 预览', '.sketch', 'Rhino 8/9', 'GitHub Skills']) expect(readme).toContain(feature);
+    for (const feature of ['8.0.28 更新', '8.0.29 更新', '8.0.30 更新', '8.0.32 更新', 'Canvas 预览', '.sketch', 'Rhino 8/9', 'GitHub Skills']) expect(readme).toContain(feature);
   });
   it('enables online updates and pins the native toolchain tested for release', () => {
     expect(workflow).toContain("VITE_DISABLE_APP_UPDATES: 'false'");
     expect(workflow).toContain('dtolnay/rust-toolchain@1.98.0');
     expect(workflow).toContain('--latest'); expect(workflow).toContain('TAURI_SIGNING_PRIVATE_KEY');
-    expect(releaseNotes).toContain('GitHub Skills'); expect(releaseNotes).toContain('画布');
-    expect(releaseNotes).toContain('语义修复'); expect(releaseNotes).toContain('脚本只保存不执行');
+    expect(releaseNotes).toContain('SVG 矢量创作'); expect(releaseNotes).toContain('画布');
+    expect(releaseNotes).toContain('原型视觉与动效'); expect(releaseNotes).toContain('不执行仓库脚本');
   });
 });

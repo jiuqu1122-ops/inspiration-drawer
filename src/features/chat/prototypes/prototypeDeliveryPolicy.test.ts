@@ -10,3 +10,8 @@ describe('editable design delivery routing', () => {
     expect(prototypeCapabilityInstruction(['create_ui_prototype'])).toContain('Native .fig export is unavailable, but .sketch export');
   });
 });
+
+it('keeps general SVG/vector artwork out of Figma recovery even when editable layers are requested',()=>{
+  for(const text of ['帮我制作有可编辑图层的 SVG 矢量小猫','Create an editable vector illustration with layers','帮我生成一个 SVG 图标文件']) expect(requestsPrototypeArtifact(text)).toBe(false);
+  expect(requestsPrototypeArtifact('帮我制作可导入 Figma 的交互原型')).toBe(true);
+});

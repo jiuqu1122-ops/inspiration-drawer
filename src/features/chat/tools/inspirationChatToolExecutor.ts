@@ -1,3 +1,6 @@
+import { validateSvgToolArguments } from './chatSvgTool';
+import { collectChatHtmlArtifacts } from '../html/chatHtmlArtifacts';
+import { applyPrototypeMotions } from '../prototypes/prototypeMotion';
 import { executeGithubSkillTool, isGithubSkillTool } from '../skills/githubSkillTools';
 import { createPrototypePackage } from '../prototypes/prototypePackage';
 import { parsePrototype } from '../prototypes/prototypeSchema';
@@ -104,14 +107,32 @@ export const createInspirationChatToolExecutor = (input: {
       Math.min(8, Math.max(1, Number(args.limit) || 6)),
     );
   }
+  if (name === 'get_ui_prototype' || name === 'animate_ui_prototype') {
+    const allowed=name==='get_ui_prototype'?['artifactId','offset','limit']:['artifactId','motions','replace'];
+    if(Object.keys(args).some(key=>!allowed.includes(key))||typeof args.artifactId!=='string')throw new Error('原型工具参数无效');
+    const artifact=collectChatHtmlArtifacts(context.recentMessages,context.conversationId).find(a=>a.id===args.artifactId&&a.prototype);
+    if(!artifact?.prototype)throw new Error('指定可编辑原型不属于当前对话或尚未完成；不能读取其他对话或普通 HTML');
+    if(name==='get_ui_prototype'){
+      const offset=Number(args.offset||0),limit=Number(args.limit??60);
+      if(!Number.isInteger(offset)||offset<0||!Number.isInteger(limit)||limit<1||limit>80)throw new Error('原型节点分页参数无效');
+      return {artifactId:artifact.id,name:artifact.prototype.name,screens:artifact.prototype.screens,interactions:artifact.prototype.interactions,motions:artifact.prototype.motions||[],nodes:artifact.prototype.nodes.slice(offset,offset+limit).map(({imageData,...n})=>({...n,hasImage:Boolean(imageData)})),totalNodes:artifact.prototype.nodes.length,nextOffset:offset+limit<artifact.prototype.nodes.length?offset+limit:null};
+    }
+    if(args.replace!==undefined&&typeof args.replace!=='boolean')throw new Error('replace 需要布尔值');
+    const prototype=applyPrototypeMotions(artifact.prototype,args.motions,args.replace===true);
+    const result=await (input.createPrototype||createPrototypePackage)(prototype,context.conversationId);
+    return {...result,prototypeDocument:prototype,sourceArtifactId:artifact.id,staticDesignPreserved:true};
+  }
   if (name === 'create_ui_prototype') {
     return (input.createPrototype || createPrototypePackage)(parsePrototype(args.prototype), context.conversationId);
   }
+  if(name==='create_svg'){
+    validateSvgToolArguments(args);
+    const result=await input.createFile({...args,format:'svg',conversationId:context.conversationId});
+    return result&&typeof result==='object'?{...result,svgSource:args.content}:result;
+  }
   if (name === 'create_file') {
-    return input.createFile({
-      ...preparePresentationFileRequest(args, context),
-      conversationId: context.conversationId,
-    });
+    const result=await input.createFile({...preparePresentationFileRequest(args,context),conversationId:context.conversationId});
+    return args.format==='svg'&&result&&typeof result==='object'?{...result,svgSource:args.content}:result;
   }
   if (name === 'create_agent') {
     const agentName = String(args.name || '').trim();

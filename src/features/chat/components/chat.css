@@ -2373,3 +2373,16 @@
 .github-skill-details summary { cursor: pointer; font-size: 10px; }
 .github-skill-details ul { padding-left: 15px; max-height: 170px; overflow: auto; }
 .github-skill-details li { margin: 4px 0; }
+
+.chat-generated-file:has(.chat-generated-file__svg-thumbnail) { flex-wrap: wrap; }
+.chat-generated-file__svg-thumbnail { order:3; flex-basis:100%; flex-shrink:0; width:100%; height:150px; display:grid; place-items:center; border:1px solid var(--chat-border); border-radius:7px; background:repeating-conic-gradient(#eeeeec 0% 25%,#fff 0% 50%) 50% / 18px 18px; cursor:zoom-in; }
+.chat-generated-file__svg-thumbnail img { max-width:100%; max-height:136px; object-fit:contain; }
+.chat-svg-preview-backdrop { position:fixed; inset:0; z-index:100300; display:grid; place-items:center; padding:24px; background:rgb(0 0 0 / .32); }
+.chat-svg-preview { width:min(800px,95vw); max-height:90vh; display:flex; flex-direction:column; overflow:hidden; color:#262626; background:#fafafa; border:1px solid #d8d8d8; border-radius:10px; box-shadow:0 15px 60px rgb(0 0 0 / .18); font-family:inherit; font-size:12px; line-height:1.5; }
+.chat-svg-preview header { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:10px 12px; border-bottom:1px solid #dedede; }
+.chat-svg-preview header div { display:flex; gap:8px; }
+.chat-svg-preview button { display:inline-flex; align-items:center; gap:5px; padding:5px 7px; border:0; background:transparent; color:inherit; cursor:pointer; }
+.chat-svg-preview__image { height:min(65vh,600px); display:grid; place-items:center; padding:20px; background:repeating-conic-gradient(#eeeeec 0% 25%,#fff 0% 50%) 50% / 22px 22px; }
+.chat-svg-preview__image img { max-width:100%; max-height:100%; object-fit:contain; }
+.chat-svg-preview footer { padding:8px 12px; font-size:10px; color:#737373; }
+.dark .chat-svg-preview { background:#242424; color:#eee; border-color:#454545; }

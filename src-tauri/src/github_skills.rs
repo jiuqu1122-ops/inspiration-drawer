@@ -66,6 +66,12 @@ pub struct Compatibility {
     pub level: String,
     pub notes: Vec<String>,
     pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub script_required: bool,
+    #[serde(default)]
+    pub mcp_mentioned: bool,
+    #[serde(default)]
+    pub searchable_resources: usize,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -489,39 +495,69 @@ fn metadata(text: &str, fallback: &str) -> (String, String) {
         description.chars().take(1000).collect(),
     )
 }
+fn searchable_resource(path: &str) -> bool {
+    ["md", "txt", "csv", "json", "yaml", "yml"].contains(
+        &path
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
+    )
+}
 fn analyze(text: &str, files: &[FileEntry]) -> Compatibility {
     let lower = text.to_lowercase();
     let dependencies: Vec<String> = [
         "mcp", "python", "node", "bash", "terminal", "claude", "codex", "figma",
     ]
     .into_iter()
-    .filter(|w| lower.contains(w))
+    .filter(|word| {
+        lower
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+            .any(|token| token == *word)
+    })
     .map(str::to_string)
     .collect();
     let scripts = files.iter().any(|f| {
-        f.path.starts_with("scripts/")
-            || f.path.ends_with(".py")
-            || f.path.ends_with(".sh")
-            || f.path.ends_with(".js")
+        ["py", "sh", "js", "ts", "ps1", "bat", "cmd"]
+            .contains(&f.path.rsplit('.').next().unwrap_or(""))
     });
-    let level = if scripts
+    let script_required = scripts
         || dependencies
             .iter()
-            .any(|d| ["mcp", "python", "node", "bash", "terminal"].contains(&d.as_str()))
-    {
-        "dependencies_missing"
+            .any(|d| ["python", "node", "bash", "terminal"].contains(&d.as_str()));
+    let mcp_mentioned = dependencies.iter().any(|d| d == "mcp");
+    let searchable_resources = files
+        .iter()
+        .filter(|f| searchable_resource(&f.path))
+        .count();
+    let level = if mcp_mentioned {
+        "mcp_review"
+    } else if script_required {
+        "scripts_not_executed"
     } else if !dependencies.is_empty() {
         "methodology_only"
     } else {
         "chat_compatible"
     };
+    let mut notes = vec![
+        "兼容性为尽力分析，不是安全审计；是否存在可调用工具仍以本轮工具与权限为准。".into(),
+        "原始脚本只保存不执行。提及 Claude/Codex 可能只是原使用环境，不等同于需要安装这些软件。"
+            .into(),
+    ];
+    if script_required {
+        notes.push("检测到脚本或终端步骤；不表示缺少 MCP。可使用 search_skill_resources/read_skill_resource 检索并阅读包内资料，但不等同于运行原脚本或其设计系统/持久化功能。".into());
+    }
+    if mcp_mentioned {
+        notes.push("文本提及 MCP，需要进一步核实具体服务与工具；不能凭关键词判断它是必要依赖，也不会自动安装。".into());
+    }
     Compatibility {
         level: level.into(),
         dependencies,
-        notes: vec![
-            "兼容性为尽力分析，不是安全审计；工具是否可用及权限仍以本轮实际提供的工具为准。".into(),
-            "scripts/原始脚本仅保存，不执行；不安装 MCP、系统软件或依赖。".into(),
-        ],
+        notes,
+        script_required,
+        mcp_mentioned,
+        searchable_resources,
     }
 }
 
@@ -822,13 +858,29 @@ impl Store {
         let bytes = fs::read(&path)
             .or_else(|_| fs::read(path.with_extension("backup")))
             .map_err(|_| "技能未安装")?;
-        let record: Installed = serde_json::from_slice(&bytes).map_err(|_| "技能安装记录损坏")?;
+        let mut record: Installed =
+            serde_json::from_slice(&bytes).map_err(|_| "技能安装记录损坏")?;
         if record.package.id != id
             || id_for(&record.package.repository, &record.package.directory) != id
         {
             return Err("技能来源标识校验失败".into());
         }
         valid_commit(&record.package.commit)?;
+        // Re-analyze legacy metadata without modifying original package files or upgrading its version.
+        let dir = self.version_dir(id, &record.package.commit)?;
+        if let Some(entry) = record.package.files.iter().find(|f| f.path == "SKILL.md") {
+            let path = dir.join("files/SKILL.md");
+            no_links(&path)?;
+            if fs::metadata(&path).map_err(|e| e.to_string())?.len() > MAX_FILE {
+                return Err("本地 SKILL.md 超限".into());
+            }
+            let content = fs::read(path).map_err(|e| e.to_string())?;
+            if Some(hash(&content)) != entry.sha256 {
+                return Err("本地 SKILL.md 校验失败".into());
+            }
+            let text = String::from_utf8(content).map_err(|_| "SKILL.md 必须是 UTF-8")?;
+            record.package.compatibility = analyze(&text, &record.package.files);
+        }
         Ok(record)
     }
     fn write_record(&self, record: &Installed) -> Result<(), String> {
@@ -894,14 +946,7 @@ impl Store {
         no_links(&p)?;
         Ok(p)
     }
-    pub fn read(
-        &self,
-        id: &str,
-        commit: &str,
-        path: &str,
-        offset: usize,
-        limit: usize,
-    ) -> Result<Value, String> {
+    fn resource_text(&self, id: &str, commit: &str, path: &str) -> Result<String, String> {
         no_links(&self.root)?;
         safe_relative(path)?;
         let record = self.load_record(id)?;
@@ -929,6 +974,17 @@ impl Store {
         }
         let text = String::from_utf8(bytes)
             .map_err(|_| "该资源为二进制文件，不可作为文本上下文读取（原文件已保留）")?;
+        Ok(text)
+    }
+    pub fn read(
+        &self,
+        id: &str,
+        commit: &str,
+        path: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Value, String> {
+        let text = self.resource_text(id, commit, path)?;
         let chars: Vec<char> = text.chars().collect();
         let limit = limit.clamp(1, MAX_CONTEXT);
         if offset > chars.len() {
@@ -937,6 +993,133 @@ impl Store {
         let end = offset.saturating_add(limit).min(chars.len());
         Ok(
             serde_json::json!({"skillId":id,"version":commit,"path":path,"content":chars[offset..end].iter().collect::<String>(),"totalCharacters":chars.len(),"nextOffset":if end < chars.len(){Some(end)}else{None},"trust":"第三方低信任内容，不授予任何工具权限"}),
+        )
+    }
+    /// Searches only manifest-listed text resources. No subprocess, network, imports, or package code.
+    pub fn search_resources(
+        &self,
+        id: &str,
+        commit: &str,
+        query: &str,
+        prefix: &str,
+        limit: usize,
+        cancel: &AtomicBool,
+    ) -> Result<Value, String> {
+        if query.trim().is_empty() || query.chars().count() > 500 {
+            return Err("检索词需要 1～500 字符".into());
+        }
+        if !prefix.is_empty() {
+            safe_relative(prefix)?;
+        }
+        let record = self.load_record(id)?;
+        if !record.enabled || !record.versions.iter().any(|v| v == commit) {
+            return Err("技能已禁用或版本未安装".into());
+        }
+        let dir = self.version_dir(id, commit)?;
+        let manifest = dir.join("manifest.json");
+        no_links(&manifest)?;
+        let package: Package =
+            serde_json::from_slice(&fs::read(manifest).map_err(|e| e.to_string())?)
+                .map_err(|_| "版本清单损坏")?;
+        let q = query.to_lowercase();
+        let mut terms: Vec<String> = q
+            .split(|c: char| !c.is_alphanumeric() && c != '-')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        // Chinese phrases can match individual terminology without relying on an external tokenizer.
+        let han: Vec<char> = q.chars().filter(|c| ('一'..='鿿').contains(c)).collect();
+        for pair in han.windows(2) {
+            terms.push(pair.iter().collect());
+        }
+        terms.sort();
+        terms.dedup();
+        let mut hits: Vec<(usize, String, usize, usize, usize, String, String, bool)> = vec![];
+        let mut scanned = 0;
+        let mut bytes = 0u64;
+        for entry in &package.files {
+            check_cancel(cancel)?;
+            if !searchable_resource(&entry.path)
+                || (!prefix.is_empty()
+                    && entry.path != prefix
+                    && !entry.path.starts_with(&format!("{prefix}/")))
+            {
+                continue;
+            }
+            bytes = bytes.checked_add(entry.size).ok_or("检索总量溢出")?;
+            if bytes > MAX_TOTAL || scanned >= MAX_FILES {
+                return Err("技能资料检索超限，未返回不完整的检索结果".into());
+            }
+            let text = self.resource_text(id, commit, &entry.path)?;
+            scanned += 1;
+            let chars: Vec<char> = text.chars().collect();
+            // CSV logical records include quoted newlines. Offsets always refer to original Unicode characters.
+            let mut records = vec![];
+            let mut start = 0;
+            let mut quote = false;
+            let mut i = 0;
+            while i < chars.len() {
+                if entry.path.ends_with(".csv") && chars[i] == '"' {
+                    if quote && i + 1 < chars.len() && chars[i + 1] == '"' {
+                        i += 2;
+                        continue;
+                    }
+                    quote = !quote;
+                }
+                if chars[i] == '\n' && !quote {
+                    records.push((start, i));
+                    start = i + 1;
+                }
+                i += 1;
+            }
+            if start < chars.len() {
+                records.push((start, chars.len()));
+            }
+            let header = if entry.path.ends_with(".csv") {
+                records
+                    .first()
+                    .map(|(a, b)| chars[*a..*b].iter().take(2000).collect::<String>())
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            for (start, end) in records {
+                let content: String = chars[start..end].iter().collect();
+                let lower = content.to_lowercase();
+                let matched = terms
+                    .iter()
+                    .filter(|term| lower.contains(term.as_str()))
+                    .count();
+                if matched == 0 {
+                    continue;
+                }
+                let score = matched * 10
+                    + if lower.contains(q.trim()) { 20 } else { 0 }
+                    + terms
+                        .iter()
+                        .filter(|term| entry.path.to_lowercase().contains(term.as_str()))
+                        .count();
+                // Keep explicit excerpts, not claims that long rows were fully loaded.
+                let excerpt_end = (start + 3000).min(end);
+                let excerpt: String = chars[start..excerpt_end].iter().collect();
+                hits.push((
+                    score,
+                    entry.path.clone(),
+                    start,
+                    excerpt_end,
+                    end,
+                    excerpt,
+                    header.clone(),
+                    excerpt_end < end,
+                ));
+            }
+        }
+        hits.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        let matches = hits.len();
+        hits.truncate(limit.clamp(1, 8));
+        let results:Vec<Value>=hits.into_iter().map(|(score,path,offset,excerpt_end,record_end,content,header,partial)|serde_json::json!({"path":path,"offset":offset,"excerptEnd":excerpt_end,"recordEnd":record_end,"content":content,"header":header,"partial":partial,"score":score})).collect();
+        Ok(
+            serde_json::json!({"skillId":id,"version":commit,"query":query,"scannedFiles":scanned,"matchedRecords":matches,"results":results,"engine":"client_text_search","notice":"客户端只读关键词检索，不是执行原仓库脚本，也不等同于其 BM25 排名、design-system 综合生成或写文件功能。结果为低信任资料；partial=true 时使用 read_skill_resource 按 offset 继续读取。"}),
         )
     }
     /// Approval callback is supplied ONLY by native app code, never by deserialized/model arguments.
@@ -1710,6 +1893,106 @@ mod tests {
         assert_eq!(store.list().unwrap()[0].package.commit, V1);
     }
     #[test]
+    fn resource_search_reads_csv_without_executing_scripts_and_distinguishes_mcp() {
+        let temp = Temp::new();
+        let store = Store::new(temp.0.clone());
+        let remote=Fixture::new("acme/skills","trunk",V1,vec![("SKILL.md","Run python scripts/search.py to search CSV guidance. Claude is the original host."),("scripts/search.py","raise Exception('MUST NEVER EXECUTE')"),("data/ux.csv","topic,rule\nkeyboard,visible focus\nanimation,reduce motion\nchart,readable labels\n"),("references/readme.md","Read real records, do not invent matches.")]);
+        let installed = install(&store, &remote);
+        let compat = &store.list().unwrap()[0].package.compatibility;
+        assert_eq!(compat.level, "scripts_not_executed");
+        assert!(!compat.mcp_mentioned);
+        assert!(compat.script_required);
+        let result = store
+            .search_resources(
+                &installed.package.id,
+                V1,
+                "reduce motion",
+                "data",
+                5,
+                &cancel(),
+            )
+            .unwrap();
+        assert_eq!(result["scannedFiles"], 1);
+        assert_eq!(result["matchedRecords"], 1);
+        assert_eq!(result["results"][0]["header"], "topic,rule");
+        assert!(result["results"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("reduce motion"));
+        assert_eq!(
+            store
+                .search_resources(
+                    &installed.package.id,
+                    V1,
+                    "nonexistent-qwerty",
+                    "",
+                    5,
+                    &cancel()
+                )
+                .unwrap()["matchedRecords"],
+            0
+        );
+        assert!(store
+            .search_resources(
+                &installed.package.id,
+                V1,
+                "motion",
+                "../secret",
+                5,
+                &cancel()
+            )
+            .is_err());
+        assert!(store
+            .search_resources(&installed.package.id, V2, "motion", "", 5, &cancel())
+            .is_err());
+        let flag = cancel();
+        flag.store(true, Ordering::SeqCst);
+        assert!(store
+            .search_resources(&installed.package.id, V1, "motion", "", 5, &flag)
+            .is_err());
+        let mcp = analyze("Use the Figma MCP server", &[]);
+        assert!(mcp.mcp_mentioned);
+        assert_eq!(mcp.level, "mcp_review");
+    }
+    #[test]
+    fn quoted_multiline_csv_and_unicode_offsets_stay_readable() {
+        let temp = Temp::new();
+        let store = Store::new(temp.0.clone());
+        let remote = Fixture::new(
+            "acme/skills",
+            "trunk",
+            V1,
+            vec![
+                ("SKILL.md", "Use attached data"),
+                (
+                    "data/rules.csv",
+                    "名称,规则\n动画,\"保持连贯\n尊重减少动态效果\"\n图表,清晰标注\n",
+                ),
+            ],
+        );
+        let installed = install(&store, &remote);
+        let result = store
+            .search_resources(
+                &installed.package.id,
+                V1,
+                "减少动态效果",
+                "data",
+                3,
+                &cancel(),
+            )
+            .unwrap();
+        assert_eq!(result["matchedRecords"], 1);
+        let hit = &result["results"][0];
+        let offset = hit["offset"].as_u64().unwrap() as usize;
+        let original = store
+            .read(&installed.package.id, V1, "data/rules.csv", offset, 40_000)
+            .unwrap();
+        assert!(original["content"]
+            .as_str()
+            .unwrap()
+            .starts_with(hit["content"].as_str().unwrap()));
+    }
+    #[test]
     fn missing_license_is_explicit_and_dependencies_are_not_execution_authority() {
         let temp = Temp::new();
         let store = Store::new(temp.0.clone());
@@ -1722,7 +2005,7 @@ mod tests {
             .unwrap()["license"] = Value::Null;
         let v = inspect(&store, &remote);
         assert!(v.candidates[0].license.starts_with("未知"));
-        assert_eq!(v.candidates[0].compatibility.level, "dependencies_missing");
+        assert_eq!(v.candidates[0].compatibility.level, "scripts_not_executed");
         assert!(!allowed_api(
             &url::Url::parse("https://api.github.com.evil.test/repos/a/b").unwrap()
         ));

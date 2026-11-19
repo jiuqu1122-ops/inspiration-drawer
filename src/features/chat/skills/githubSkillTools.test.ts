@@ -36,6 +36,7 @@ beforeEach(() => {
     if (request.operation === 'list') return records;
     if (request.operation === 'inspect') return makeSkillInspectionFixture();
     if (request.operation === 'install') { prompts++; if (!confirm) throw new Error('用户拒绝了技能操作'); records = [makeInstalledSkillFixture()]; return records[0]; }
+    if (request.operation === 'search_resources') return {skillId:id,version:request.version,query:request.query,scannedFiles:1,matchedRecords:1,results:[{path:'data/ux.csv',content:'animation,reduce motion',header:'topic,rule',offset:12,excerptEnd:35,recordEnd:35,partial:false,score:20}],engine:'client_text_search',notice:'Not the Python/BM25 script'};
     if (request.operation === 'read') return { skillId: id, version: request.version, path: request.path, content: request.path === 'SKILL.md' ? text : 'reference text', totalCharacters: text.length, nextOffset: null };
     if (request.operation === 'manage') { prompts++; if (!confirm) throw Error('用户拒绝'); if (request.action === 'uninstall') records = []; if (request.action === 'disable') records = records.map(s => ({ ...s, enabled: false })); return {}; }
     throw Error('Unexpected operation');
@@ -159,6 +160,14 @@ describe('GitHub Skills through the real router and executor (offline native fix
   it('reads only through ID/version/package-relative-path IPC, never a local arbitrary-file command', async () => {
     await readGithubSkillResource(id, commit, 'references/check.md', 5, 10);
     expect(invoke.mock.calls[0][0]).toBe('github_skills_request');expect(invoke.mock.calls[0][1].request).toEqual({ operation: 'read', skill_id: id, version: commit, path: 'references/check.md', offset: 5, limit: 10 });
+  });
+  it('searches installed resources with native read-only IPC and fixed-version/context guards',async()=>{
+    const response=await tool('search_skill_resources',{skillId:id,version:commit,query:'reduce motion',prefix:'data'});
+    expect(response.result).toMatchObject({engine:'client_text_search',results:[{path:'data/ux.csv',header:'topic,rule',content:'animation,reduce motion'}]});
+    expect(invoke.mock.calls.some(([command,args])=>command==='github_skills_request'&&args.request.operation==='search_resources')).toBe(true);
+    expect(prompts).toBe(0);
+    await expect(tool('search_skill_resources',{skillId:id,version:'2'.repeat(40),query:'motion'})).rejects.toThrow('版本已固定');
+    await expect(tool('search_skill_resources',{skillId:id,version:commit,query:'motion',approved:true})).rejects.toThrow('approved');
   });
   it('requires the existing recommendation rule or explicit selection to activate an installed skill', async () => {
     records=[makeInstalledSkillFixture()];await refreshGithubSkills();context.userText='Unrelated task';

@@ -2631,7 +2631,7 @@ dependencies = [
 
 [[package]]
 name = "inspiration-drawer"
-version = "8.0.31"
+version = "8.0.32"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2641,6 +2641,7 @@ dependencies = [
  "local-ip-address",
  "open",
  "printpdf",
+ "quick-xml 0.38.4",
  "rand 0.8.6",
  "rcgen",
  "reqwest 0.12.28",

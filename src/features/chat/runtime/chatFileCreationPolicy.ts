@@ -13,7 +13,7 @@ export const getChatFileCreationTurn = (messages: Array<Record<string, unknown>>
     if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
       for (const value of message.tool_calls) {
         const call = value as { id?: unknown; function?: { name?: unknown } };
-        if (['create_file', 'create_ui_prototype'].includes(String(call.function?.name)) && typeof call.id === 'string') calls.add(call.id);
+        if (['create_file', 'create_svg', 'create_ui_prototype', 'animate_ui_prototype'].includes(String(call.function?.name)) && typeof call.id === 'string') calls.add(call.id);
       }
     }
     if (message.role !== 'tool' || !calls.has(String(message.tool_call_id || ''))) continue;

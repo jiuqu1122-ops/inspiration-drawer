@@ -3,6 +3,7 @@ pub mod assets;
 pub mod canvas;
 pub mod chat;
 pub mod chat_files;
+pub mod chat_svg;
 pub mod chat_presentation;
 pub mod chat_presentation_graphics;
 mod chat_presentation_assets;

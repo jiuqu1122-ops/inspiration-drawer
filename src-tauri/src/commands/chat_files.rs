@@ -65,6 +65,7 @@ enum GeneratedFormat {
     Text,
     Markdown,
     Html,
+    Svg,
     Csv,
     Json,
     Docx,
@@ -84,6 +85,7 @@ impl GeneratedFormat {
             "txt" | "text" => Ok(Self::Text),
             "md" | "markdown" => Ok(Self::Markdown),
             "html" | "htm" | "html5" => Ok(Self::Html),
+            "svg" => Ok(Self::Svg),
             "csv" => Ok(Self::Csv),
             "json" => Ok(Self::Json),
             "docx" | "word" => Ok(Self::Docx),
@@ -91,7 +93,7 @@ impl GeneratedFormat {
             "pdf" => Ok(Self::Pdf),
             "pptx" | "powerpoint" => Ok(Self::Pptx),
             _ => Err(
-                "暂不支持该文件格式，可使用 TXT、Markdown、CSV、JSON、DOCX、XLSX、HTML、PDF 或 PPTX"
+                "暂不支持该文件格式，可使用 TXT、Markdown、CSV、JSON、DOCX、XLSX、HTML、SVG、PDF 或 PPTX"
                     .to_string(),
             ),
         }
@@ -102,6 +104,7 @@ impl GeneratedFormat {
             Self::Text => "txt",
             Self::Markdown => "md",
             Self::Html => "html",
+            Self::Svg => "svg",
             Self::Csv => "csv",
             Self::Json => "json",
             Self::Docx => "docx",
@@ -116,6 +119,7 @@ impl GeneratedFormat {
             Self::Text => "text/plain",
             Self::Markdown => "text/markdown",
             Self::Html => "text/html; charset=utf-8",
+            Self::Svg => "image/svg+xml",
             Self::Csv => "text/csv",
             Self::Json => "application/json",
             Self::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -741,6 +745,10 @@ fn write_generated_file(
         GeneratedFormat::Text | GeneratedFormat::Markdown | GeneratedFormat::Html => {
             fs::write(path, content).map_err(|error| format!("写入文本文件失败：{error}"))
         }
+        GeneratedFormat::Svg => {
+            super::chat_svg::validate_svg(content)?;
+            fs::write(path,content).map_err(|e|format!("写入 SVG 文件失败：{e}"))
+        }
         GeneratedFormat::Csv => {
             let mut bytes = vec![0xEF, 0xBB, 0xBF];
             bytes.extend_from_slice(content.as_bytes());
@@ -866,11 +874,12 @@ pub fn chat_copy_generated_file(
 #[cfg(test)]
 mod tests {
     use super::{
-        normalized_file_name, write_docx, write_pdf, write_xlsx, ChatSpreadsheetSheet,
+        normalized_file_name, write_docx, write_pdf, write_xlsx, write_generated_file, ChatCreateFileRequest, ChatSpreadsheetSheet,
         GeneratedFormat,
     };
     use serde_json::json;
     use std::fs;
+    use std::collections::HashMap;
     use std::path::PathBuf;
     use zip::ZipArchive;
 
@@ -895,6 +904,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn svg_format_writes_real_vectors_and_refuses_active_content(){
+        let source="<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\"><title>矢量小猫</title><path d=\"M10 80L20 10L50 35L80 10L90 80Z\" fill=\"#e5bd96\"/></svg>";
+        let mut request:ChatCreateFileRequest=serde_json::from_value(serde_json::json!({"conversationId":"svg-fixture","fileName":"../cat.exe","format":"svg","content":source})).unwrap();
+        assert_eq!(GeneratedFormat::parse("SVG").unwrap(),GeneratedFormat::Svg);assert_eq!(GeneratedFormat::Svg.mime_type(),"image/svg+xml");assert_eq!(normalized_file_name(&request.file_name,GeneratedFormat::Svg),"cat.svg");
+        let path=temp_path("svg");write_generated_file(&path,GeneratedFormat::Svg,&request,&HashMap::new()).unwrap();assert_eq!(fs::read_to_string(&path).unwrap(),source);fs::remove_file(&path).unwrap();
+        request.content=Some("<svg onload=\"alert(1)\"/>".into());assert!(write_generated_file(&path,GeneratedFormat::Svg,&request,&HashMap::new()).is_err());assert!(!path.exists());
+    }
     #[test]
     fn html_format_writes_exact_interactive_source_with_safe_name() {
         let source = "<!DOCTYPE html><html><meta charset=\"utf-8\"><title>中文交互</title><button onclick=\"this.textContent++\">0</button></html>";

@@ -1,3 +1,5 @@
+import { confirm } from '@tauri-apps/plugin-dialog';
+import { captureHtmlDesign } from '../html/htmlDesignCapture';
 import { SKETCH_EXPORT_NOTICE, SKETCH_EXPORT_LIMITATIONS } from '../prototypes/prototypeSketch';
 import { savePrototypePackage } from '../prototypes/prototypePackage';
 import { Check, Code2, Copy, Download, Eye, Maximize2, Minimize2, Monitor, RefreshCw, Smartphone, X } from 'lucide-react';
@@ -34,6 +36,8 @@ export function ChatHtmlPreview({ artifacts, selectedId, followLatest, conversat
   const [exported, setExported] = useState(false);
   const [error, setError] = useState('');
   const [position, setPosition] = useState({ x: 16, y: 56 });
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [captureNotice,setCaptureNotice]=useState('');
   const panelRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const dragRef = useRef<{ x: number; y: number; pointerX: number; pointerY: number } | null>(null);
@@ -44,7 +48,7 @@ export function ChatHtmlPreview({ artifacts, selectedId, followLatest, conversat
   }, []);
   useEffect(() => {
     setSnapshot({ id: artifact?.id, source: artifact?.source || '' });
-    setError(''); setSaved(false); setExported(false);
+    setError(''); setCaptureNotice(''); setSaved(false); setExported(false);
   }, [artifact?.id]); // A different artifact always starts a separate document.
   useEffect(() => {
     if (live && artifact && !artifact.streaming) setSnapshot({ id: artifact.id, source: artifact.source });
@@ -93,9 +97,20 @@ export function ChatHtmlPreview({ artifacts, selectedId, followLatest, conversat
     finally { setSaving(false); }
   };
   const exportFigma = async () => {
-    if (!artifact?.prototype || exporting) return;
+    if (!artifact || artifact.streaming || exporting) return;
     setExporting(true); setError('');
-    try { setExported(await savePrototypePackage(artifact.prototype, conversationId, artifact.file)); }
+    try {
+      if(artifact.prototype) setExported(await savePrototypePackage(artifact.prototype,conversationId,artifact.file));
+      else {
+        if(mode!=='preview')throw new Error('请切换到预览页，再导出当前静态设计');
+        const accepted=await confirm('将当前预览的静态页面导出为可导入 Figma 的 .sketch。保留支持的文字、形状、阴影、渐变和布局；不运行额外脚本，不重画原 HTML。隐藏页面和动画逻辑不转换；SVG/Canvas 可能是图片图层，滤镜等效果可能不保留。是否继续？',{title:'导出当前静态设计',kind:'info'});
+        if(!accepted)return;
+        if(!iframeRef.current)throw new Error('预览窗口尚未加载');
+        const captured=await captureHtmlDesign(iframeRef.current);
+        const saved=await savePrototypePackage(captured.prototype,conversationId);setExported(saved);
+        if(saved)setCaptureNotice(captured.warnings.join(' '));
+      }
+    }
     catch (cause) { setError(String(cause || 'Figma 设计文件导出失败')); }
     finally { setExporting(false); }
   };
@@ -119,7 +134,7 @@ export function ChatHtmlPreview({ artifacts, selectedId, followLatest, conversat
           <button type="button" aria-label={mobile ? '切换桌面宽度' : '切换手机宽度'} onClick={() => setMobile(value => !value)}>{mobile ? <Monitor size={14} /> : <Smartphone size={14} />}</button>
           <button type="button" disabled={!artifact} aria-label="刷新预览" onClick={() => { if (artifact) setSnapshot({ id: artifact.id, source: artifact.source }); setReload(value => value + 1); }}><RefreshCw size={13} /></button>
           <button type="button" disabled={!artifact} aria-label="复制 HTML" onClick={() => { if (artifact) void navigator.clipboard.writeText(artifact.source).catch(() => setError('复制失败，请在代码页手动复制')); }}><Copy size={13} /></button>
-          <button type="button" disabled={!artifact?.prototype || exporting || artifact.streaming} onClick={() => void exportFigma()} title={artifact?.prototype ? SKETCH_EXPORT_NOTICE : '普通 HTML 不能无损转换；请让 Chat 制作可导入 Figma 的交互原型'} aria-label="导出 Figma 设计文件"><Download size={13} />{exporting ? '导出中' : exported ? '已导出' : '导出 Figma'}</button>
+          <button type="button" disabled={!artifact || exporting || artifact.streaming || (!artifact.prototype && (mode !== 'preview' || !live))} onClick={() => void exportFigma()} title={artifact?.prototype ? SKETCH_EXPORT_NOTICE : '导出当前静态页面的可编辑图层；不是无损转换，动画保留在原 HTML'} aria-label="导出 Figma 设计文件"><Download size={13} />{exporting ? '导出中' : exported ? '已导出' : artifact?.prototype ? '导出 Figma' : '导出静态稿'}</button>
           <button type="button" disabled={!artifact || saving || artifact.streaming} onClick={() => void save()}><Download size={13} />{saving ? '保存中' : saved ? <><Check size={12} />已保存</> : '保存 HTML'}</button>
         </div>
       </div>
@@ -134,11 +149,12 @@ export function ChatHtmlPreview({ artifacts, selectedId, followLatest, conversat
         {!artifact ? <div className="chat-html-preview__empty"><Code2 size={28} /><strong>把想法做成可点击的页面</strong><p>在聊天中描述网页或交互原型。需要可编辑 Figma 设计时，请说明“制作可导入 Figma 的原型”，生成后可在这里预览并导出。</p></div>
           : tooLarge ? <p role="alert" className="chat-html-preview__empty">HTML 超过 2 MB，请精简后再预览。</p>
           : mode === 'code' ? <textarea className="chat-html-preview__source" aria-label="HTML 源代码" value={artifact.source} readOnly spellCheck={false} />
-          : <iframe key={`${artifact.id}:${reload}`} title="HTML 交互预览" sandbox={CHAT_HTML_PREVIEW_SANDBOX} srcDoc={srcDoc}
+          : <iframe ref={iframeRef} key={`${artifact.id}:${reload}`} title="HTML 交互预览" sandbox={CHAT_HTML_PREVIEW_SANDBOX} srcDoc={srcDoc}
             {...{ csp: CHAT_HTML_PREVIEW_CSP }} referrerPolicy="no-referrer"
             allow="camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; payment 'none'" />}
       </div>
       {artifact?.prototype && <div className="chat-html-preview__prototype-info">{artifact.prototype.screens.length} 个页面 · {artifact.prototype.interactions.length} 个交互 · 预览交互保留 · 导出可编辑图层<span>{SKETCH_EXPORT_NOTICE}<br />{SKETCH_EXPORT_LIMITATIONS}</span></div>}
+      {captureNotice && <div className="chat-html-preview__prototype-info" role="status">{captureNotice}</div>}
       {error && <div className="chat-html-preview__error" role="alert">{error}</div>}
       <footer className="chat-html-preview__footer"><span>{artifact?.streaming ? '生成中 · 每秒更新' : !live ? '自动刷新已暂停' : '可直接点击页面进行交互'}</span><span title="预览脚本与应用隔离，不能访问本地文件、MCP 或联网 API。外部资源可能无法显示。">隔离预览 · 仅内联资源</span></footer>
     </section>, document.body,

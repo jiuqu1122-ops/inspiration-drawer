@@ -4,12 +4,19 @@
 
 ## 下载
 
-当前已发布版本：**8.0.31**
+当前已发布版本：**8.0.32**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.31/Inspiration.Drawer_8.0.31_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.31)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.32/Inspiration.Drawer_8.0.32_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.32)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 8.0.32 更新
+
+- **SVG 矢量创作**：通用 Chat 可制作真正的 SVG 插画、图标等，支持缩略图、放大预览、复制、打开与另存为。
+- **原型视觉与动效**：补充阴影、渐变、字距和矢量图标；给已有原型加动效时保留原静态设计和可编辑图层。
+- **HTML 静态导出**：动效 HTML 可导出当前静态稿；动画和隐藏页面不转换，复杂效果会提示限制。
+- **技能资料检索**：可直接检索已安装技能包的文本和 CSV，区分脚本与 MCP 提示；不执行仓库脚本。
 
 ## 8.0.31 更新
 
@@ -161,7 +168,7 @@
 - **无限画布**：自由组织素材、图片生成节点、文字 Agent 节点和可复用工作流。
 - **生成工作流**：支持多参考图、节点/工作流预设 JSON、结果列表与批量下载。
 - **画布 Agent**：支持 OpenAI-compatible API 与 Codex App Server，通过受控工具操作画布和工作流。
-- **Chat 与交互原型**：多轮对话、智能体与 Markdown 技能，支持 HTML 实时预览和可导入 Figma 的 `.sketch` 导出。
+- **Chat 与交互原型**：多轮对话、SVG 矢量创作、智能体与 Markdown 技能，支持 HTML 实时预览和可导入 Figma 的 `.sketch` 导出。
 - **Rhino 插件**：设置中安装 Rhino 8/9 插件，支持 MCP 联动、本地参考图和独立对话。
 - **桌面工具**：提供截图、桌面便签、快捷记录、全局快捷键及手机局域网传输。
 - **本地优先**：画布和素材保存在本机；AI 结果与参考图只在需要公网访问时使用临时桥接。

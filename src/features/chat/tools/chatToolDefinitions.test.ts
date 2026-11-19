@@ -38,7 +38,8 @@ describe('Chat tool exposure', () => {
       'list_workflows',
       'run_workflow',
       'search_github_skills', 'inspect_github_skill', 'install_github_skill',
-      'list_installed_skills', 'read_skill_resource', 'activate_skill',
+      'list_installed_skills', 'search_skill_resources', 'read_skill_resource', 'activate_skill',
+      'get_ui_prototype', 'animate_ui_prototype', 'create_svg',
     ]);
   });
 
@@ -361,7 +362,7 @@ describe('Chat PPTX file tool', () => {
 
   it('extends the existing tool rather than adding a separate PPT route', () => {
     expect(CHAT_TOOL_DEFINITIONS.filter(tool => tool.function.name === 'create_file')).toHaveLength(1);
-    expect(properties.format).toEqual({ type: 'string', enum: ['txt', 'md', 'html', 'csv', 'json', 'docx', 'xlsx', 'pdf', 'pptx'] });
+    expect(properties.format).toEqual({ type: 'string', enum: ['txt', 'md', 'html', 'svg', 'csv', 'json', 'docx', 'xlsx', 'pdf', 'pptx'] });
     expect(parameters.required).toEqual(['fileName', 'format']);
     expect(parameters.additionalProperties).toBe(false);
     expect(properties.content.type).toEqual(['string', 'null']);

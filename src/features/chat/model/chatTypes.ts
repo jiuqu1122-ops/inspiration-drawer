@@ -69,6 +69,7 @@ export type ChatGeneratedFile = {
   mimeType?: string;
   size?: number;
   slideCount?: number;
+  svgSource?: string;
   warnings?: string[];
 };
 
@@ -203,7 +204,7 @@ export const getGeneratedMediaFromToolCall = (call: ChatToolCall): ChatGenerated
 };
 
 export const getGeneratedFilesFromToolCall = (call: ChatToolCall): ChatGeneratedFile[] => {
-  if (!['create_file', 'create_ui_prototype'].includes(call.toolName) || call.status !== 'completed') return [];
+  if (!['create_file', 'create_svg', 'create_ui_prototype', 'animate_ui_prototype'].includes(call.toolName) || call.status !== 'completed') return [];
   const parsed = parseChatToolResult(call.resultJson);
   if (!parsed || typeof parsed !== 'object') return [];
   const files = Array.isArray((parsed as Record<string, unknown>).files)
@@ -222,6 +223,7 @@ export const getGeneratedFilesFromToolCall = (call: ChatToolCall): ChatGenerated
       mimeType: String(file.mimeType || '').trim() || undefined,
       size: Number.isFinite(Number(file.size)) ? Number(file.size) : undefined,
       slideCount: Number.isSafeInteger(file.slideCount) && Number(file.slideCount) > 0 ? Number(file.slideCount) : undefined,
+      svgSource: String(file.format||'').toLowerCase()==='svg'&&typeof (parsed as Record<string,unknown>).svgSource==='string'?(parsed as Record<string,unknown>).svgSource as string:undefined,
       warnings: Array.isArray((parsed as Record<string, unknown>).warnings)
         ? ((parsed as Record<string, unknown>).warnings as unknown[]).filter((value): value is string => typeof value === 'string').slice(0, 8)
         : undefined,

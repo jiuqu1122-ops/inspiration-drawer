@@ -3,7 +3,7 @@ import { Download, Github, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import { inspectGithubSkills, installGithubSkill, manageGithubSkill, refreshGithubSkills, type GithubSkillInspection, type GithubSkillPackage, type InstalledGithubSkill } from '../skills/githubSkillClient';
 import { selectChatSkill } from '../skills/chatSkills';
 
-export const compatibilityLabel = (level: string) => ({ chat_compatible: '可用于 Chat（工具仍需逐项校验）', methodology_only: '方法论可用，部分步骤不支持', dependencies_missing: '依赖缺失：脚本 / MCP 不可执行' })[level] || '兼容性未知';
+export const compatibilityLabel = (level: string) => ({ chat_compatible: '可用于 Chat（工具仍需逐项校验）', methodology_only: '方法论可用，部分步骤不支持', dependencies_missing: '部分步骤需检查（旧版分析）', scripts_not_executed: '资料可用；脚本步骤未执行', mcp_review: '提及 MCP，需核对具体工具' })[level] || '兼容性未知';
 export function GithubSkillDetails({ value }: { value: GithubSkillPackage }) {
   return <div className="github-skill-details">
     <strong>{value.name}</strong><p>{value.description || '仓库未提供技能说明'}</p>
@@ -12,6 +12,8 @@ export function GithubSkillDetails({ value }: { value: GithubSkillPackage }) {
       <dt>文件</dt><dd>{value.files.length} 个 · {(value.totalBytes / 1024).toFixed(1)} KiB</dd>
       <dt>兼容性</dt><dd>{compatibilityLabel(value.compatibility.level)}</dd><dt>依赖线索</dt><dd>{value.compatibility.dependencies.join('、') || '未发现（不代表完全兼容）'}</dd>
       <dt>来源链接</dt><dd>{value.sourceUrl}</dd><dt>许可证</dt><dd>{value.license}</dd></dl>
+    {value.compatibility.searchableResources !== undefined && <p>可只读检索资料：{value.compatibility.searchableResources} 个文件；无需 Python 或 MCP。此能力不等同于执行原脚本。</p>}
+    {value.compatibility.notes.map(note=><p className="github-skill-risk" key={note}>{note}</p>)}
     <p className="github-skill-risk">第三方低信任内容。兼容性分析不是安全审计。原始脚本会保存，但不会执行，也不会安装任何 MCP 或依赖。</p>
     <details><summary>完整文件清单与校验信息</summary><ul>{value.files.map(f => <li key={f.path}><code>{f.path}</code> · {f.size} B<small>{f.sha256 ? `SHA256 ${f.sha256}` : `Git blob ${f.blob}`}</small></li>)}</ul></details>
   </div>;

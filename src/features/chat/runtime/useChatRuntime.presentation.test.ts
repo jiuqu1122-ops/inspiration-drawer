@@ -123,7 +123,7 @@ describe('PPT delivery through the real runtime (synthetic IPC)', () => {
     expect(harness.execute).not.toHaveBeenCalled();
     expect(harness.requests[0].toolChoice).toBeUndefined();
     await runtime.sendMessage(answer);
-    expect(harness.requests[1].tools.filter((tool: any) => !isGithubSkillTool(tool.function.name)).map((tool: any) => tool.function.name)).toEqual(['create_ui_prototype', 'generate_image', 'generate_image_variants', 'edit_image']);
+    expect(harness.requests[1].tools.filter((tool: any) => !isGithubSkillTool(tool.function.name) && tool.function.name !== 'create_svg').map((tool: any) => tool.function.name)).toEqual(['create_ui_prototype', 'generate_image', 'generate_image_variants', 'edit_image']);
     await runtime.sendMessage('开始做吧');
     const request = harness.requests[2];
     expect(request.tools.some((tool: any) => tool.function.name === 'create_file')).toBe(true);
@@ -298,4 +298,19 @@ describe('agent semantics and image delivery through the real runtime', () => {
     const next=harness.requests[2];expect(next.toolChoice).toBeUndefined();expect(next.tools.some((tool: any)=>tool.function.name==='generate_image')).toBe(true);
     expect(harness.execute.mock.calls.map(([name])=>name)).toEqual(['create_agent','generate_image']);expect(lastAssistant().status).toBe('completed');
   });
+});
+
+describe('general Chat SVG creation through the real runtime',()=>{
+ const svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="M10 80L20 10L50 35L80 10L90 80Z" fill="#e5bd96"/></svg>';
+ const reply=()=>({content:'',toolCalls:[{id:'svg-vector',name:'create_svg',arguments:JSON.stringify({fileName:'vector-cat.svg',content:svg})}]});
+ it('offers and executes true vector artwork without a prototype or a paid image request',async()=>{
+   const runtime=setupRuntime();harness.execute.mockResolvedValue({files:[{id:'svg-file',name:'vector-cat.svg',format:'svg',path:'C:/fixture/vector-cat.svg',mimeType:'image/svg+xml'}],svgSource:svg});harness.replies.push(reply());
+   await runtime.sendMessage('帮我画一只可编辑的矢量小猫');
+   expect(harness.requests[0].toolChoice).toBeUndefined();expect(harness.requests[0].tools.some((t:any)=>t.function.name==='create_svg')).toBe(true);
+   expect(harness.execute.mock.calls.map(([name])=>name)).toEqual(['create_svg']);expect(lastAssistant().status).toBe('completed');
+   expect(lastAssistant().toolCalls[0]).toMatchObject({toolName:'create_svg',status:'completed'});
+ });
+ it('allows semantic discussion without automatically creating SVG or images',async()=>{
+   const runtime=setupRuntime();harness.replies.push(textReply('SVG 是矢量图格式，这里先只解释。'));await runtime.sendMessage('矢量图是什么？先别制作。');expect(harness.execute).not.toHaveBeenCalled();expect(lastAssistant().status).toBe('completed');
+ });
 });

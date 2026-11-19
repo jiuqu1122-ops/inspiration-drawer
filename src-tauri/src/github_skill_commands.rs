@@ -29,6 +29,13 @@ pub enum Request {
         offset: usize,
         limit: usize,
     },
+    SearchResources {
+        skill_id: String,
+        version: String,
+        query: String,
+        prefix: String,
+        limit: usize,
+    },
     Manage {
         skill_id: String,
         action: String,
@@ -117,7 +124,16 @@ pub async fn github_skills_request(
                 &skill_id,
                 &action,
                 &cancel,
-                |message| confirm(&format!("{message}\n会话使用：{}", if use_in_current_conversation { "用户确认安装后还将请求在当前对话使用此固定技能；不覆盖已选其他技能。" } else { "仅安装，不在当前对话启用。" })),
+                |message| {
+                    confirm(&format!(
+                        "{message}\n会话使用：{}",
+                        if use_in_current_conversation {
+                            "用户确认安装后还将请求在当前对话使用此固定技能；不覆盖已选其他技能。"
+                        } else {
+                            "仅安装，不在当前对话启用。"
+                        }
+                    ))
+                },
             )?)
             .map_err(|e| e.to_string()),
             Request::Read {
@@ -129,6 +145,15 @@ pub async fn github_skills_request(
             } => service
                 .store
                 .read(&skill_id, &version, &path, offset, limit),
+            Request::SearchResources {
+                skill_id,
+                version,
+                query,
+                prefix,
+                limit,
+            } => service
+                .store
+                .search_resources(&skill_id, &version, &query, &prefix, limit, &cancel),
             Request::Manage {
                 skill_id,
                 action,

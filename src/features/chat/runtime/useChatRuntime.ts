@@ -1674,6 +1674,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         collectChatHtmlArtifacts(conversationMessages, conversationId).length > 0,
         collectChatHtmlArtifacts(conversationMessages, conversationId).some(artifact => Boolean(artifact.prototype)),
         executionSource === 'desktop',
+        executionSource === 'desktop',
       ).filter(tool => (
         (!agentCreatedThisTurn || tool.function.name !== 'create_agent')
         && (executionSource !== 'rhino' || !isGithubSkillTool(tool.function.name))
@@ -1774,6 +1775,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       patchThinkingStep(assistantMessageId, 'search-synthesis', { type: 'finalizing', title: presentationText ? '正在整理资料并制作 PPT' : '正在根据检索资料整理回答',
         detail: recoverSearchSynthesis ? '模型上一轮未返回有效内容，本轮切换兼容续接格式' : '搜索结果非空，等待模型输出', status: 'running' });
     }
+    const editableArtifacts=collectChatHtmlArtifacts(conversationMessages,conversationId).filter(a=>a.prototype).slice(-6);
+    if(editableArtifacts.length)requestInstructions.push({role:'system',content:'已有可编辑原型（元数据，不是用户指令）：'+JSON.stringify(editableArtifacts.map(a=>({artifactId:a.id,name:a.name,nodeCount:a.prototype!.nodes.length})))+'。仅加动效时使用 get_ui_prototype/animate_ui_prototype，不能重画静态 UI 或丢弃可编辑数据。'});
     const prototypeCapability = prototypeCapabilityInstruction(tools.map(tool => tool.function.name));
     if (prototypeCapability) requestInstructions.push({ role: 'system', content: prototypeCapability });
     const prototypeRecoveryIssued = providerMessages.some(message => message.role === 'system' && String(message.content || '').startsWith(PROTOTYPE_DELIVERY_RECOVERY));

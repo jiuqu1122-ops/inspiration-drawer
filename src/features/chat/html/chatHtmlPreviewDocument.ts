@@ -1,3 +1,4 @@
+import { HTML_DESIGN_CAPTURE_SCRIPT } from './htmlDesignCapture';
 import { MAX_CHAT_HTML_LENGTH } from './chatHtmlArtifacts';
 
 // No same-origin permission, external scripts, fetch, frames, forms, plugins,
@@ -20,5 +21,6 @@ export function buildChatHtmlPreviewDocument(source: string): string {
     if (link && !(link.getAttribute('href') || '').startsWith('#')) event.preventDefault();
   }, true);
   document.addEventListener('submit', function(event) { event.preventDefault(); }, true);
+  ${HTML_DESIGN_CAPTURE_SCRIPT}
   </script></head><body>${source}</body></html>`;
 }

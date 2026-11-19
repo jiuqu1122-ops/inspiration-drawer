@@ -134,6 +134,11 @@ export const compactChatToolResult = (name: string, value: unknown): unknown => 
 
 export const compactChatToolResultForProvider = (name: string, value: unknown): unknown => {
   const compact = compactChatToolResult(name, value);
+  if((name==='create_svg'||name==='create_file')&&compact&&typeof compact==='object'){const {svgSource: _source,...receipt}=compact as Record<string,unknown>;void _source;return receipt;}
+  if(name==='animate_ui_prototype'&&compact&&typeof compact==='object'){
+    const {prototypeDocument: _document,...receipt}=compact as Record<string,unknown>;
+    void _document;return receipt;
+  }
   if (!['batch_image_operation', 'generate_image_variants'].includes(name)
     || !compact || typeof compact !== 'object') return compact;
   const record = compact as Record<string, unknown>;
