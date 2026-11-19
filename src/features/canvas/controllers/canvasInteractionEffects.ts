@@ -402,6 +402,9 @@ export const runCanvasInteractionsEffect04 = (ctx: Pick<canvasInteractionsEffect
       if (!(target instanceof Element)) return;
       const focusable = target.closest('button, a, [role="button"]');
       if (!(focusable instanceof HTMLElement)) return;
+      // Settings controls need keyboard focus. In particular, pointer-up runs
+      // before click enables a shortcut recorder; do not wait for value=true.
+      if (focusable.closest('[data-drawer-settings-panel="true"], [data-shortcut-recording]')) return;
       window.requestAnimationFrame(() => {
         if (document.activeElement === focusable) focusable.blur();
       });

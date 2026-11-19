@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resolveCanvasPasteClient, runCanvasInteractionsEffect03 } from './canvasInteractionEffects';
+import { resolveCanvasPasteClient, runCanvasInteractionsEffect03, runCanvasInteractionsEffect04 } from './canvasInteractionEffects';
 
 const rect = {
   left: 100,
@@ -195,5 +195,56 @@ describe('canvas Ctrl+C integration', () => {
     h.key(h.canvas);
     expect(h.copy).toHaveBeenCalledWith(['selected-image']);
     h.cleanup?.();
+  });
+});
+
+
+describe('canvas pointer-up focus cleanup', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  function setup({ settings = false, recorder = false, canvas = true } = {}) {
+    const events = new Map<string, (event: unknown) => void>();
+    const frames: FrameRequestCallback[] = [];
+    class ElementFixture {
+      blur = vi.fn();
+      closest(selector: string): ElementFixture | null {
+        if (selector === 'button, a, [role="button"]') return this;
+        if (selector.includes('data-drawer-settings-panel') && settings) return this;
+        if (selector.includes('data-shortcut-recording') && recorder) return this;
+        return null;
+      }
+    }
+    const button = new ElementFixture();
+    vi.stubGlobal('Element', ElementFixture); vi.stubGlobal('HTMLElement', ElementFixture);
+    vi.stubGlobal('document', { activeElement: button });
+    vi.stubGlobal('window', { addEventListener: (key: string, fn: (event: unknown) => void) => events.set(key, fn),
+      removeEventListener: (key: string) => events.delete(key), requestAnimationFrame: (fn: FrameRequestCallback) => { frames.push(fn); return frames.length; } });
+    const cleanup = runCanvasInteractionsEffect04({ isCanvasModeRef: { current: canvas } } as Parameters<typeof runCanvasInteractionsEffect04>[0]);
+    return { button, cleanup, frames, pointerUp: () => events.get('pointerup')?.({ target: button }) };
+  }
+  it('does not blur the settings shortcut button on the frame after click starts recording', () => {
+    const h = setup({ settings: true, recorder: true });
+    h.pointerUp(); for (const frame of h.frames) frame(0);
+    expect(h.button.blur).not.toHaveBeenCalled(); h.cleanup?.();
+  });
+  it('preserves recorder focus before its recording attribute switches from false to true', () => {
+    const h = setup({ recorder: true });
+    h.pointerUp(); for (const frame of h.frames) frame(0);
+    expect(h.button.blur).not.toHaveBeenCalled(); h.cleanup?.();
+  });
+  it('preserves focus of other settings controls for keyboard interaction', () => {
+    const h = setup({ settings: true });
+    h.pointerUp(); for (const frame of h.frames) frame(0);
+    expect(h.button.blur).not.toHaveBeenCalled(); h.cleanup?.();
+  });
+  it('still blurs ordinary canvas action buttons after pointer-up', () => {
+    const h = setup(); h.pointerUp();
+    expect(h.button.blur).not.toHaveBeenCalled(); for (const frame of h.frames) frame(0);
+    expect(h.button.blur).toHaveBeenCalledOnce(); h.cleanup?.();
+  });
+  it('does not steal focus from a new active element or a non-canvas window', () => {
+    const h = setup(); h.pointerUp(); (document as unknown as {activeElement:unknown}).activeElement = null;
+    for (const frame of h.frames) frame(0); expect(h.button.blur).not.toHaveBeenCalled(); h.cleanup?.();
+    const normal = setup({ canvas: false }); normal.pointerUp();
+    expect(normal.frames).toHaveLength(0); normal.cleanup?.();
   });
 });

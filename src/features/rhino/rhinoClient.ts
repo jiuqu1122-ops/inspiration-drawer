@@ -114,7 +114,7 @@ export async function callRhinoTool(binding: RhinoBinding, name: string, args: R
     const init = (async () => {
       const response = await rhinoRequest<{ result?: unknown; error?: { message: string } }>(connection, '/mcp', {
         jsonrpc: '2.0', id: crypto.randomUUID(), method: 'initialize',
-        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'inspiration-drawer', version: '8.0.29' } },
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'inspiration-drawer', version: '8.0.30' } },
       });
       if (response.error || !response.result) throw new Error(response.error?.message || 'Rhino MCP \u521d\u59cb\u5316\u5931\u8d25');
       await rhinoRequest(connection, '/mcp', { jsonrpc: '2.0', method: 'notifications/initialized' });
