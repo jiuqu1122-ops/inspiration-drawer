@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readableRhinoMcpFailure, rhinoDiagnosticText } from './rhinoErrorDiagnostic';
+import { readableRhinoMcpFailure, rhinoDiagnosticText, rhinoGeometryFailureExplanation } from './rhinoErrorDiagnostic';
 import { rhinoScriptFailureExplanation } from './rhinoScriptPreflight';
 const receipt = 'RhinoNativeMcpToolError: '+JSON.stringify({error:'Failed',message:"name 'System' is not defined"})+'\n'+JSON.stringify({stdout:'',stderr:'Traceback (most recent call last):\r\n  File "file:///C:/fixture/script.py", line 65, in <module>\r\nNameError: name \'System\' is not defined\r\n'});
 describe('readable native MCP diagnostics without changing raw receipts',()=>{
@@ -17,4 +17,17 @@ describe('readable native MCP diagnostics without changing raw receipts',()=>{
  it('does not blame a missing import for timeouts or arbitrary text',()=>{
   expect(rhinoScriptFailureExplanation('Timeout: outcome unknown')).toBeUndefined();expect(readableRhinoMcpFailure(new Error('Timeout: outcome unknown'))).toContain('Timeout');
  });
+});
+
+
+describe('geometry assertion failures are not generic MCP or conversation failures',()=>{
+ it('explains a failed solid with the actual part and source line, without allowing replay',()=>{
+  const error='Traceback (most recent call last):\n  File "private.py", line 13, in build\nException: Open solid: Pendant leaf_0';
+  const text=rhinoGeometryFailureExplanation(error)!;expect(text).toContain('Pendant leaf_0');expect(text).toContain('13');expect(text).toContain('裸边');expect(text).toContain('不能自动重放');expect(text).not.toContain('private.py');
+ });
+ it('distinguishes straight-wall validation from missing context',()=>{
+  const text=rhinoGeometryFailureExplanation('Traceback:\n line 51\nAssertionError: External wall is curved')!;
+  expect(text).toContain('曲率');expect(text).toContain('51');expect(text).toContain('不能跳过直壁约束');
+ });
+ it.each(['Timeout: completion unknown','NameError: missing namespace'])('does not misdiagnose unrelated errors: %s',error=>expect(rhinoGeometryFailureExplanation(error)).toBeUndefined());
 });

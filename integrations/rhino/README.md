@@ -1,3 +1,13 @@
+# Rhino Beta.34 · desktop 8.0.33
+
+2026-11-19 · Paired Rhino8/net7 and Rhino9/net8 payloads. Improves fresh-window keyboard ownership and duplicate MCP warmup; adds staged ordinary-geometry construction and accurate follow-up failure diagnostics. Existing running plugins are not replaced automatically.
+
+Install desktop 8.0.33, save work and exit Rhino, then use Settings → Rhino Plugin → Install / Update and restart Rhino. The panel badge should read **BETA.34**. Fresh-window/IME and original reference-modeling GUI acceptance remains unverified; do not treat SDK builds and mocked geometry tests as that acceptance.
+
+See [repair scope and real test results](../../docs/rhino-svg-reference-fix-2026-11-19.md).
+
+---
+
 # Inspiration Drawer Rhino Beta.33 · desktop 8.0.29
 
 Release date: 2026-11-19 (Asia/Shanghai). Plugin: `0.1.0-beta.33`.

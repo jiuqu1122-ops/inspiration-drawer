@@ -485,3 +485,21 @@ describe('research clarification remains conversation content, not global produc
       });
   });
 });
+
+
+describe('reference image to editable SVG, not free-form image generation', () => {
+  it('provides the actual reference pixels in high detail with stable ID and no local path', async () => {
+    const latest=message('svg-reference','user','帮我把图片转换成矢量图 svg文件',{attachments:[{id:'logo-image',messageId:'svg-reference',type:'image',path:'C:/private/logo.png',createdAt:1}]});
+    const context=await buildChatContext({messages:[latest],latestUserMessage:latest,resolveAttachmentUrl:async()=> 'data:image/png;base64,fixture'});
+    expect(context[context.length - 1]).toMatchObject({role:'user',content:expect.arrayContaining([{type:'image_url',image_url:{url:'data:image/png;base64,fixture',detail:'high'}},{type:'text',text:'图片附件 1\nattachmentId: logo-image'}])});
+    expect(JSON.stringify(context)).not.toContain('C:/private');
+    for(const rule of ['参考图转 SVG 是矢量重绘','不得擅自重新设计','paint-order','禁止将参考位图嵌入 SVG']) {
+      expect(GENERAL_CHAT_SYSTEM_PROMPT + JSON.stringify(context)).toContain(rule);
+    }
+  });
+  it('does not pretend to have seen the image when resolution fails',async()=>{
+    const latest=message('svg-unavailable','user','把这个转成SVG',{attachments:[{id:'logo-missing',messageId:'svg-unavailable',type:'image',path:'C:/private/missing.png',createdAt:1}]});
+    const context=await buildChatContext({messages:[latest],latestUserMessage:latest,resolveAttachmentUrl:async()=>{throw Error('offline');}});
+    expect(JSON.stringify(context)).toContain('本轮未收到该图片像素');expect(JSON.stringify(context)).not.toContain('"type":"image_url"');
+  });
+});

@@ -38,16 +38,18 @@ public sealed class DrawerPlugin : PlugIn
         if (Volatile.Read(ref stopping) != 0 || !loaded) return;
         if (!startup.TryBegin(RhinoDoc.ActiveDoc != null && RhinoApp.InCommand == 0, out var targetId)) return;
         var owner = startup;
-        if (RhinoDoc.FromRuntimeSerialNumber(targetId) == null) { owner.Complete(); return; }
+        if (RhinoDoc.FromRuntimeSerialNumber(targetId) == null) { owner.Complete(false); return; }
         // Never invoke commands, construct a WebView or wait for HTTP in OnLoad.
         _ = WarmupAsync(targetId, owner);
     }
     private static async Task WarmupAsync(uint targetId, DeferredMcpStartup owner)
     {
+        var success = false;
         try
         {
             StartupDiagnostics.Write("mcp.warmup.begin");
             await EnsureServer().WarmNativeMcp(targetId, () => Volatile.Read(ref stopping) == 0);
+            success = true;
             StartupDiagnostics.Write("mcp.warmup.completed");
         }
         catch (Exception error)
@@ -55,7 +57,7 @@ public sealed class DrawerPlugin : PlugIn
             StartupDiagnostics.Write("mcp.warmup.failed", error);
             try { RhinoApp.WriteLine($"[InspirationDrawer] MCP startup deferred/failed: {error.Message}. Log: {StartupDiagnostics.PathName}"); } catch { }
         }
-        finally { owner.Complete(); }
+        finally { owner.Complete(success); }
     }
 
     private static void OnActiveDocumentChanged(object? sender, DocumentEventArgs e) => EnsureNativeMcp(e.Document);
@@ -132,6 +134,7 @@ public sealed class DrawerPanel : Eto.Forms.Panel
     public DrawerPanel(RhinoDoc doc) : this(doc.RuntimeSerialNumber) { }
     private readonly uint requestedDocument;
     private bool initialized;
+    private PanelKeyboardFocus? keyboardFocus;
     public DrawerPanel(uint documentSerialNumber)
     {
         requestedDocument = documentSerialNumber;
@@ -144,7 +147,7 @@ public sealed class DrawerPanel : Eto.Forms.Panel
     }
     protected override void Dispose(bool disposing)
     {
-        if (disposing) RhinoApp.Idle -= InitializeWhenIdle;
+        if (disposing) { RhinoApp.Idle -= InitializeWhenIdle; keyboardFocus?.Dispose(); keyboardFocus = null; }
         base.Dispose(disposing);
     }
     private void InitializeWhenIdle(object? sender, EventArgs e)
@@ -159,6 +162,8 @@ public sealed class DrawerPanel : Eto.Forms.Panel
             DrawerPlugin.EnsureNativeMcp(doc);
             var server = DrawerPlugin.EnsureServer();
             var view = new WebView();
+            keyboardFocus?.Dispose();
+            keyboardFocus = new PanelKeyboardFocus(view);
             // Token remains in the fragment and is never written to startup logs.
             var target = new Uri($"{server.Url}?documentId={doc.RuntimeSerialNumber}#token={server.Token}");
             view.DocumentLoading += (_, args) =>

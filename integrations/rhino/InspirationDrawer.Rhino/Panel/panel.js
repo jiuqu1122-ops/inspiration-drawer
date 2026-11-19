@@ -329,8 +329,22 @@ globalThis.addEventListener?.('resize', placeReferenceSettings);
 
 
 byId('composer').addEventListener('submit',event=>{event.preventDefault();if(!byId('send').disabled)void command('send',{content:byId('input').value.trim(),includeViewport:byId('viewport').checked,includeCanvasSelection:byId('canvas').checked,localImages:localImages.map(image=>({...image}))});});
+// A narrow native focus signal; no text or keystrokes leave the page through this bridge.
+let keyboardFocusSequence = 0;
+function notifyKeyboardOwner(active) {
+  const message = active ? 'idraw:keyboard-focus' : 'idraw:keyboard-release';
+  if (typeof window.eto?.postMessage === 'function') window.eto?.postMessage?.(message);
+  else document.title = message + ':' + (++keyboardFocusSequence); // Rhino 8 Eto compatibility, no navigation.
+}
+document.addEventListener?.('focusin', event => {
+  if (event.target?.matches?.('input,textarea,select,button,[contenteditable="true"]')) notifyKeyboardOwner(true);
+});
+globalThis.addEventListener?.('blur', () => notifyKeyboardOwner(false));
+let composingInput = false;
+byId('input').addEventListener('compositionstart', () => { composingInput = true; });
+byId('input').addEventListener('compositionend', () => { composingInput = false; });
 byId('input').addEventListener('input',()=>{resizeComposerInput();updateButtons();});
-byId('input').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();byId('composer').requestSubmit();}});
+byId('input').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&!composingInput&&event.keyCode!==229){event.preventDefault();byId('composer').requestSubmit();}});
 byId('new').addEventListener('click',()=>void command('new'));
 byId('stop').addEventListener('click',()=>void command('stop'));
 byId('conversation').addEventListener('change',event=>void command('select',{value:event.target.value}));

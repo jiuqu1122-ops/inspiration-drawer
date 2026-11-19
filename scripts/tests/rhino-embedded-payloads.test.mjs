@@ -7,9 +7,9 @@ describe('current paired Rhino payloads', () => {
     const folder = new URL(`src-tauri/resources/rhino/${major}/`, root);
     const bytes = readFileSync(new URL('InspirationDrawer.Rhino.rhp', folder));
     const deps = JSON.parse(readFileSync(new URL('InspirationDrawer.Rhino.deps.json', folder), 'utf8'));
-    expect(deps.libraries).toHaveProperty('InspirationDrawer.Rhino/0.1.0-beta.33');
-    for (const marker of ['BETA.33', 'data-panel-icon="arrow-up"', 'id="panel-icon-paperclip"',
-      'window.rhinoPickers', 'cloneNode(true)', 'reader.readAsDataURL(file)', 'id="reference-settings-toggle"']) {
+    expect(deps.libraries).toHaveProperty('InspirationDrawer.Rhino/0.1.0-beta.34');
+    for (const marker of ['BETA.34', 'data-panel-icon="arrow-up"', 'id="panel-icon-paperclip"',
+      'window.rhinoPickers', 'cloneNode(true)', 'reader.readAsDataURL(file)', 'id="reference-settings-toggle"', 'idraw:keyboard-focus', 'compositionstart']) {
       expect(bytes.includes(Buffer.from(marker)), `Rhino ${major} missing embedded marker ${marker}`).toBe(true);
     }
     expect(bytes.includes(Buffer.from('icons.svg#'))).toBe(false);

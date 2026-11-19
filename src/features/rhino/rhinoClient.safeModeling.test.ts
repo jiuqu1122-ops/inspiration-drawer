@@ -141,3 +141,16 @@ it('accepts a self-contained corrected System import exactly once rather than si
  await callRhinoTool(binding,'rhino_native_run_python',{script});
  const writes=invoke.mock.calls.map(([,args])=>args.body).filter(request=>request.params?.name==='rhino_call_native_tool');expect(writes).toHaveLength(1);expect(writes[0].params.arguments.arguments.script).toBe(script);
 });
+
+
+describe('reported geometry assertions remain failed writes, not successful modeling receipts',()=>{
+ it.each(['Exception: Open solid: Pendant leaf_0','AssertionError: External wall is curved'])('detects %s in a completed native stderr receipt',async message=>{
+  invoke.mockResolvedValue({result:{content:[{type:'text',text:JSON.stringify({stdout:'',stderr:'Traceback (most recent call last):\n line 13\n'+message})}]}});
+  await expect(callRhinoTool(binding,'rhino_native_run_python',{script:'build_candidates()'})).rejects.toMatchObject({name:'RhinoNativeMcpToolError'});
+ });
+ it('sends staged follow-up source only to the original document binding',async()=>{
+  await callRhinoTool(binding,'rhino_native_run_python',{script:'stage=DrawerGeometryStage()\nprint(stage.commit())'});
+  const call=invoke.mock.calls.map(([,args])=>args.body).find(request=>request.params?.name==='rhino_call_native_tool');
+  expect(call.params.arguments.documentId).toBe(12);expect(call.params.arguments.arguments.script).toContain('<drawer-geometry-stage>');expect(call.params.arguments.arguments.script).toContain('<drawer-user-script>');
+ });
+});

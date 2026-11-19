@@ -1,3 +1,4 @@
+import { RHINO_GEOMETRY_STAGE_INSTRUCTION } from './rhinoGeometryStage';
 import type { RhinoNativeTool } from './rhinoProtocol';
 
 export type RhinoNativeWorkflowPhase =
@@ -102,6 +103,7 @@ export const describeRhinoNativeTool = (tool: {
 };
 
 export const buildRhinoWorkflowInstruction = () => [
+  RHINO_GEOMETRY_STAGE_INSTRUCTION,
   'You are operating the Rhino plugin Chat through the official RhinoAI MCP tools.',
   'The complete discovered MCP catalog is available, not only geometry/GH tools. Select by tool descriptions and input schemas. Layer/material edits, selection, camera/view changes, file operations and read-only queries are first-class tasks; do not replace them with generated images or force geometry verification. Verify the actual requested state with an appropriate read tool; geometry may remain unchanged. Unknown workflow phase is a hint, never a capability restriction.',
   'Treat every native tool result as a workflow step receipt, not automatically as the final answer.',

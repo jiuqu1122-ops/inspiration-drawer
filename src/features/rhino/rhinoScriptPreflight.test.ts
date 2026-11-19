@@ -228,3 +228,11 @@ describe('analytic solid deformation preflight', () => {
     expect(inspectGeometryFragment(python, 'solid = make_freeform()\nsolid.Transform(rg.Transform.Scale(plane, 1, 2, 3))')).toEqual([]);
   });
 });
+
+
+it.each(['Exception: Open solid: Pendant leaf_0','AssertionError: External wall is curved','ZeroDivisionError: division by zero'])('allows only settled error inspection, not replay, for %s',message=>{
+ const error=new RhinoNativeMcpToolError('Traceback (most recent call last):\n line 13\n'+message);
+ expect(isConfirmedRhinoScriptFailure(error)).toBe(true);
+ expect(isConfirmedRhinoScriptFailure(new RhinoNativeMcpToolError('TimeoutException: '+error.message))).toBe(false);
+ expect(isConfirmedRhinoScriptFailure(new Error(error.message))).toBe(false);
+});

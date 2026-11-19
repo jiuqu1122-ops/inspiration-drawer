@@ -1,4 +1,5 @@
-﻿import {describe,expect,it,vi} from 'vitest';
+import { isConfirmedRhinoScriptFailure, RhinoNativeMcpToolError } from './rhinoScriptPreflight';
+import {describe,expect,it,vi} from 'vitest';
 import {compareDocumentGeometrySnapshots,hasExplicitRhinoGeometryMutation,RhinoDocumentGeometryWriteError,isRhinoDocumentGeometryWrite,parseDocumentGeometrySnapshot,runWithDocumentGeometryVerification,type DocumentGeometrySnapshot,SNAPSHOT_DOCUMENT_GEOMETRY_TOOL} from './rhinoDocumentGeometry';
 const object=(id:string,overrides:Record<string,unknown>={})=>({id,type:'Brep',valid:true,isValid:true,isBrep:true,isSolid:true,solidOrientation:'Outward',faceCount:6,loopCount:6,edgeCount:12,min:[0,0,0],max:[10,10,10],volume:600,fingerprint:'box-10',...overrides});
 const snapshot=(objects:Record<string,unknown>[],documentId=1)=>({version:1,documentId,units:'Millimeters',tolerance:.01,objectCount:objects.length,objects,documentChanged:false,readOnly:true}) as DocumentGeometrySnapshot;
@@ -77,4 +78,15 @@ describe('failed geometry write inspection, never replay', () => {
 describe('geometry checks selected by dispatched script, not product nouns',()=>{
  it.each(['__rhino_doc__.Objects.AddBrep(solid)','doc.Objects.AddMesh(mesh)','doc.Objects.Transform(id,xform,True)','rs.AddSphere((0,0,0),2)'])('recognizes actual geometry mutation: %s',script=>expect(hasExplicitRhinoGeometryMutation('rhino_native_run_python',{script})).toBe(true));
  it.each(['# doc.Objects.AddBrep(solid)','print("doc.Objects.AddBrep(solid)")','doc.Views.Redraw()','attrs.ObjectColor = System.Drawing.Color.Red','doc.Objects.Select(id)'])('does not apply a geometry-delta requirement to nongeometry code: %s',script=>expect(hasExplicitRhinoGeometryMutation('rhino_native_run_python',{script})).toBe(false));
+});
+
+
+it.each([false,true])('inspects generic geometry assertion failures once and preserves an earlier successful model: partial write=%s',async partial=>{
+ const original=object('earlier-success');const after=partial?[original,object('partial-write')]:[original];
+ const snapshots=vi.fn().mockResolvedValueOnce(snapshot([original])).mockResolvedValueOnce(snapshot(after));
+ const failure=new RhinoNativeMcpToolError('Traceback (most recent call last):\n line 13\nException: Open solid: ornament');
+ const write=vi.fn(async()=>{throw failure;});
+ const error=await runWithDocumentGeometryVerification({snapshot:snapshots,write,inspectFailure:isConfirmedRhinoScriptFailure}).catch(error=>error);
+ expect(error).toBeInstanceOf(RhinoDocumentGeometryWriteError);expect(error.geometryVerification).toMatchObject({documentChanged:partial,deletedCount:0,writeFailed:true,unchangedCount:1});
+ expect(write).toHaveBeenCalledOnce();expect(snapshots).toHaveBeenCalledTimes(2);
 });

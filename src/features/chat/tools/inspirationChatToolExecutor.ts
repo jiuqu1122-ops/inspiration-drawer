@@ -1,4 +1,4 @@
-import { validateSvgToolArguments } from './chatSvgTool';
+import { validateSvgToolArguments, svgCreationFailure } from './chatSvgTool';
 import { collectChatHtmlArtifacts } from '../html/chatHtmlArtifacts';
 import { applyPrototypeMotions } from '../prototypes/prototypeMotion';
 import { executeGithubSkillTool, isGithubSkillTool } from '../skills/githubSkillTools';
@@ -127,8 +127,15 @@ export const createInspirationChatToolExecutor = (input: {
   }
   if(name==='create_svg'){
     validateSvgToolArguments(args);
-    const result=await input.createFile({...args,format:'svg',conversationId:context.conversationId});
-    return result&&typeof result==='object'?{...result,svgSource:args.content}:result;
+    try {
+      const result = await input.createFile({ ...args, format: 'svg', conversationId: context.conversationId });
+      if (!result || typeof result !== 'object' || !('files' in result) || !Array.isArray(result.files) || result.files.length === 0) {
+        throw new Error('原生文件工具没有返回可下载文件，不能视为已保存');
+      }
+      return { ...result, svgSource: args.content };
+    } catch (error) {
+      throw svgCreationFailure(error);
+    }
   }
   if (name === 'create_file') {
     const result=await input.createFile({...preparePresentationFileRequest(args,context),conversationId:context.conversationId});

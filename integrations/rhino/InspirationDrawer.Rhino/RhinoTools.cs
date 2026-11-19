@@ -288,6 +288,7 @@ internal static class RhinoTools
     {
         await OnUi(id, doc =>
         {
+            using var focus = PanelKeyboardFocus.PreserveBrowserFocus(() => RhinoApp.InCommand == 0 && RhinoDoc.ActiveDoc?.RuntimeSerialNumber == id);
             var started = RhinoApp.RunScript(doc.RuntimeSerialNumber, "_MCPStart _Enter", false);
             if (!started) throw new InvalidOperationException("RhinoAI MCP could not bind to the requested document. Confirm RhinoAI is loaded.");
             return JsonValue.Create(true)!;

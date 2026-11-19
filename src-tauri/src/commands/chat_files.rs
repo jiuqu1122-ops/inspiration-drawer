@@ -913,6 +913,15 @@ mod tests {
         request.content=Some("<svg onload=\"alert(1)\"/>".into());assert!(write_generated_file(&path,GeneratedFormat::Svg,&request,&HashMap::new()).is_err());assert!(!path.exists());
     }
     #[test]
+    fn svg_reference_lettering_writes_exact_source_with_effects_and_editable_text() {
+        let source=include_str!("../../../src/features/chat/tools/fixtures/reference-lettering.svg");
+        let request:ChatCreateFileRequest=serde_json::from_value(serde_json::json!({"conversationId":"svg-reference-fixture","fileName":"reference-lettering.svg","format":"svg","content":source})).unwrap();
+        let path=temp_path("svg");
+        write_generated_file(&path,GeneratedFormat::Svg,&request,&HashMap::new()).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(),source);
+        fs::remove_file(&path).unwrap();
+    }
+    #[test]
     fn html_format_writes_exact_interactive_source_with_safe_name() {
         let source = "<!DOCTYPE html><html><meta charset=\"utf-8\"><title>中文交互</title><button onclick=\"this.textContent++\">0</button></html>";
         let request: super::ChatCreateFileRequest = serde_json::from_value(json!({

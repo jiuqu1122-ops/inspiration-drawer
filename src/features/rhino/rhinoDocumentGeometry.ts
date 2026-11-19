@@ -63,6 +63,8 @@ export const runWithDocumentGeometryVerification=async <T>(input:{snapshot:()=>P
 export const hasExplicitRhinoGeometryMutation = (name: string, args: Record<string,unknown>) => {
   if (!['rhino_native_run_python','rhino_native_run_csharp'].includes(name) || typeof args.script !== 'string') return false;
   const code = rhinoExecutableScriptCode(name,args.script);
-  return /\.\s*Objects\s*\.\s*(?:Add[A-Za-z]*|Delete|Transform|Replace|ModifyGeometry)\s*\(/.test(code)
+  const staged = [...code.matchAll(/\b([A-Za-z_]\w*)\s*=\s*DrawerGeometryStage\s*\(/g)]
+    .some(match => new RegExp('\\b' + match[1] + '\\s*\\.\\s*commit\\s*\\(').test(code));
+  return staged || /\.\s*Objects\s*\.\s*(?:Add[A-Za-z]*|Delete|Transform|Replace|ModifyGeometry)\s*\(/.test(code)
     || /\b(?:rs|rhinoscriptsyntax)\s*\.\s*(?:Add[A-Za-z]+|DeleteObjects?|MoveObjects?|RotateObjects?|ScaleObjects?|TransformObjects?)\s*\(/.test(code);
 };

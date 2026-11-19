@@ -4,7 +4,7 @@ import { PROTOTYPE_DELIVERY_RECOVERY, prototypeCapabilityInstruction, requestsPr
 import { mergeHtmlToolDraft, type HtmlToolDraftState } from '../html/chatHtmlToolDraft';
 import { collectChatHtmlArtifacts } from '../html/chatHtmlArtifacts';
 import { rhinoPostprocessFailure } from '../../rhino/rhinoPostprocessFailure';
-import { readableRhinoMcpFailure } from '../../rhino/rhinoErrorDiagnostic';
+import { readableRhinoMcpFailure, rhinoGeometryFailureExplanation } from '../../rhino/rhinoErrorDiagnostic';
 import { geometryFailureReceipt, geometryFailureSummary, MAX_GEOMETRY_PREFLIGHT_CORRECTIONS } from '../../rhino/rhinoGeometryRecovery';
 import { isShortVisualFollowup, isVisualEditFollowup, isVisualRevisionFollowup } from '../context/chatVisualIntent';
 import { firstRequestTitle } from '../model/chatConversationTitle';
@@ -1473,7 +1473,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           let inspectedFailure = false;
           try {
             const failureReceipt = JSON.parse(errorDetail);
-            errorDetail = rhinoScriptFailureExplanation(failureReceipt.error) || readableRhinoMcpFailure(failureReceipt.error || errorDetail);
+            errorDetail = rhinoGeometryFailureExplanation(failureReceipt.error) || rhinoScriptFailureExplanation(failureReceipt.error) || readableRhinoMcpFailure(failureReceipt.error || errorDetail);
             const verification = failureReceipt.geometryVerification;
             inspectedFailure = Boolean(verification?.writeFailed && verification.status !== 'inspection_failed');
             if (verification?.writeFailed) errorDetail += verification.status === 'inspection_failed'

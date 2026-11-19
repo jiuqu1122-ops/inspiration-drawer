@@ -279,7 +279,7 @@ export class RhinoNativeMcpToolError extends Error {
 
 /** Allows inspection only, NEVER retries. Timeouts/disconnects stay uncertain. */
 export const isConfirmedRhinoScriptFailure = (error: unknown): boolean => error instanceof RhinoNativeMcpToolError
-  && /Traceback[\s\S]{0,20000}\b(?:TypeError|SyntaxError|ValueError|AttributeError|NameError|IndexError|RuntimeError)\s*:/.test(error.message)
+  && /Traceback[\s\S]{0,20000}\b(?:TypeError|SyntaxError|ValueError|AttributeError|NameError|IndexError|RuntimeError|Exception|AssertionError|ZeroDivisionError|NotImplementedError)\s*:/.test(error.message)
   && !/(?:timed?\s*out|TimeoutException|TaskCanceledException|OperationCanceledException)/i.test(error.message);
 
 /** Reuse the conservative lexical mask for document-write evidence, never evaluate code. */

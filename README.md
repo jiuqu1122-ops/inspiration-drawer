@@ -4,12 +4,18 @@
 
 ## 下载
 
-当前已发布版本：**8.0.32**
+当前已发布版本：**8.0.33**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.32/Inspiration.Drawer_8.0.32_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.32)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.33/Inspiration.Drawer_8.0.33_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.33)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 8.0.33 更新
+
+- **参考图转 SVG**：补充文字描边、绘制顺序和常用静态滤镜，修复部分导出失败；参考图使用更高读取精度，保留原图设计。
+- **Rhino Beta.34**：改进新窗口输入焦点与重复 MCP 启动，增加连续建模的分阶段校验、保留对象属性的替换流程及具体失败提示。
+- Rhino 升级后需退出，再到「设置 → Rhino 插件」安装／更新。原失败模型与新窗口输入仍需实机复测，SVG 不保证无损描摹。
 
 ## 8.0.32 更新
 

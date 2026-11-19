@@ -1,3 +1,4 @@
+import { guardRhinoGeometryStageScript } from './rhinoGeometryStage';
 import { assertRhinoScriptPreflight, isConfirmedRhinoScriptFailure, RhinoNativeMcpToolError } from './rhinoScriptPreflight';
 import { buildDocumentGeometrySnapshotScript, SNAPSHOT_DOCUMENT_GEOMETRY_TOOL } from './rhinoDocumentGeometry';
 import { buildGhVerificationScript, guardRhinoGhScript, ghVerificationTool, VERIFY_GH_TOOL } from './rhinoGhSafety';
@@ -102,7 +103,7 @@ export async function callRhinoTool(binding: RhinoBinding, name: string, args: R
   if (name === VERIFY_GH_TOOL) {
     return callRhinoTool(binding, 'rhino_call_native_tool', { toolName: 'run_python', arguments: { script: buildGhVerificationScript(args) } });
   }
-  if (name === 'rhino_native_run_python' && typeof args.script === 'string') args = { ...args, script: guardRhinoGhScript(args.script) };
+  if (name === 'rhino_native_run_python' && typeof args.script === 'string') args = { ...args, script: guardRhinoGeometryStageScript(guardRhinoGhScript(args.script)) };
   if (name === SAFE_PROFILE_TOOL) {
     return callRhinoTool(binding, 'rhino_native_run_python', { script: buildSafeProfileScript(args) });
   }
@@ -114,7 +115,7 @@ export async function callRhinoTool(binding: RhinoBinding, name: string, args: R
     const init = (async () => {
       const response = await rhinoRequest<{ result?: unknown; error?: { message: string } }>(connection, '/mcp', {
         jsonrpc: '2.0', id: crypto.randomUUID(), method: 'initialize',
-        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'inspiration-drawer', version: '8.0.30' } },
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'inspiration-drawer', version: '8.0.33' } },
       });
       if (response.error || !response.result) throw new Error(response.error?.message || 'Rhino MCP \u521d\u59cb\u5316\u5931\u8d25');
       await rhinoRequest(connection, '/mcp', { jsonrpc: '2.0', method: 'notifications/initialized' });

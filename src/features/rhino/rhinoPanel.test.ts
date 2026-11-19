@@ -27,7 +27,7 @@ class ElementFixture {
 }
 const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 
-async function setup(options: { busy?: boolean; connected?: boolean } = {}) {
+async function setup(options: { busy?: boolean; connected?: boolean; nativeBridge?: boolean } = {}) {
   const elements = new Map<string, ElementFixture>();
   for (const match of html.matchAll(/id="([^"]+)"/g)) elements.set(match[1], new ElementFixture());
   const initialState = {
@@ -44,16 +44,17 @@ async function setup(options: { busy?: boolean; connected?: boolean } = {}) {
     return { ok: true, json: async () => path.startsWith('/panel/state') ? transport : path.startsWith('/panel/parts') ? { parts: [] } : {} };
   });
   let sequence = 0;
-  const document = { getElementById: (id: string) => elements.get(id), createElement: () => new ElementFixture(), activeElement: null as ElementFixture | null };
-  const api = runInNewContext(source + '\n({ poll, stageLocalImages: images => { localImages = images; renderLocalImages(); } });', {
-    window: { rhinoMarkdown: { render: (_document: unknown, text: string) => { const p = new ElementFixture(); p.textContent = text; return p; } }, rhinoImagePreview: { sync: vi.fn(), configure: vi.fn() } },
+  const postMessage = vi.fn();
+  const document = { title: '', getElementById: (id: string) => elements.get(id), createElement: () => new ElementFixture(), activeElement: null as ElementFixture | null };
+  const api = runInNewContext(source + '\n({ poll, notifyKeyboardOwner, stageLocalImages: images => { localImages = images; renderLocalImages(); } });', {
+    window: { eto: options.nativeBridge ? { postMessage } : undefined, rhinoMarkdown: { render: (_document: unknown, text: string) => { const p = new ElementFixture(); p.textContent = text; return p; } }, rhinoImagePreview: { sync: vi.fn(), configure: vi.fn() } },
     document,
     location: { hash: '#token=test', search: '?documentId=7', pathname: '/' },
     history: { replaceState: vi.fn() }, URLSearchParams, AbortSignal,
     crypto: { randomUUID: () => `request-test-${++sequence}` }, fetch, setTimeout: vi.fn(),
-  }) as { poll: () => Promise<void>; stageLocalImages: (images: Array<{ name: string; dataUrl: string }>) => void };
+  }) as { poll: () => Promise<void>; notifyKeyboardOwner: (active: boolean) => void; stageLocalImages: (images: Array<{ name: string; dataUrl: string }>) => void };
   await settle();
-  return { elements, requests, api, transport, document };
+  return { elements, requests, api, transport, document, postMessage };
 }
 
 describe('Rhino panel deletion UI (synthetic DOM and transport)', () => {
@@ -274,5 +275,32 @@ describe('production CSP fixture parity', () => {
   expect(policy).toBeDefined(); expect(tested).toBeDefined();
   // frame-ancestors is only honored as an HTTP header, not a meta policy.
   expect(policy?.replace(/; frame-ancestors 'none'$/, '')).toBe(tested);
+ });
+});
+
+
+describe('Rhino composer native input ownership and IME',()=>{
+ it('signals the native bridge only from focus events, not the one-second heartbeat',()=>{
+  expect(source).toContain("window.eto?.postMessage?.");expect(source).toContain("'focusin'");expect(source).toContain('idraw:keyboard-focus');
+  const pollSource=source.slice(source.indexOf('async function poll'),source.indexOf('async function poll')+2000);
+  expect(pollSource).not.toContain('notifyKeyboardOwner');
+ });
+ it('never sends Enter during IME composition or for keyCode 229, but submits once after composition',async()=>{
+  const {elements}=await setup();const input=elements.get('input')!;const composer=elements.get('composer')! as ElementFixture & {requestSubmit:ReturnType<typeof vi.fn>};composer.requestSubmit=vi.fn();
+  const key=input.listeners.get('keydown')!;const event={key:'Enter',shiftKey:false,isComposing:false,keyCode:13,preventDefault:vi.fn()};
+  input.listeners.get('compositionstart')!();key(event);expect(composer.requestSubmit).not.toHaveBeenCalled();
+  input.listeners.get('compositionend')!();key({...event,keyCode:229});expect(composer.requestSubmit).not.toHaveBeenCalled();
+  key(event);expect(composer.requestSubmit).toHaveBeenCalledOnce();
+ });
+});
+
+
+describe('native focus bridge compatibility',()=>{
+ it('uses the Eto message bridge in Rhino 9 without sending text',async()=>{
+  const {api,postMessage,document}=await setup({nativeBridge:true});api.notifyKeyboardOwner(true);api.notifyKeyboardOwner(false);
+  expect(postMessage.mock.calls).toEqual([['idraw:keyboard-focus'],['idraw:keyboard-release']]);expect(document.title).toBe('');
+ });
+ it('uses a title signal rather than navigating or requiring new Eto APIs in Rhino 8',async()=>{
+  const {api,postMessage,document}=await setup();api.notifyKeyboardOwner(true);expect(document.title).toBe('idraw:keyboard-focus:1');api.notifyKeyboardOwner(false);expect(document.title).toBe('idraw:keyboard-release:2');expect(postMessage).not.toHaveBeenCalled();
  });
 });

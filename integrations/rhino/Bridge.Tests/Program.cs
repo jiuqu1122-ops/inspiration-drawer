@@ -479,6 +479,22 @@ try
     Check(deferred.TryBegin(true, out queuedDoc) && queuedDoc == 9, "a document switch during warmup resumes on the next ready idle");
     deferred.Stop(); deferred.Complete(); deferred.Request(10);
     Check(!deferred.TryBegin(true, out _), "shutdown discards pending startup and prevents reactivation");
+    var dedup = new DeferredMcpStartup();
+    dedup.Request(11); Check(dedup.TryBegin(true, out _), "first fresh-document warmup runs");
+    dedup.Request(11); dedup.Complete(); dedup.Request(11);
+    Check(!dedup.TryBegin(true, out _), "panel/new-document duplicate events never replay MCPStart after warmup");
+    dedup.Request(12); Check(dedup.TryBegin(true, out _), "new document still warms automatically");
+    dedup.Request(13); dedup.Request(12); dedup.Complete();
+    Check(!dedup.TryBegin(true, out _), "return to running document supersedes intermediate queued switch");
+    dedup.Request(14); dedup.TryBegin(true, out _); dedup.Complete(false); dedup.Request(14);
+    Check(dedup.TryBegin(true, out _), "failed warmup may be requested again; it is not cached as success");
+    foreach (var key in new uint[] { 0x100, 0x101, 0x102, 0x103, 0x109, 0x286, 0x290, 0x291 })
+        Check(PanelKeyboardPolicy.ShouldDispatch(0, true, key, true, true), "focused browser owns text/navigation/IME message " + key);
+    foreach (var state in new[] { (-1, true, true, true), (0, false, true, true), (0, true, false, true), (0, true, true, false) })
+        Check(!PanelKeyboardPolicy.ShouldDispatch(state.Item1, state.Item2, 0x100, state.Item3, state.Item4), "keyboard hook never consumes unowned, peeked, or inactive messages");
+    foreach (var message in new uint[] { 0x104, 0x105, 0x106, 0x200, 0x201 })
+        Check(!PanelKeyboardPolicy.ShouldDispatch(0, true, message, true, true), "OS Alt shortcuts and mouse messages remain with the host");
+    Check(!PanelKeyboardPolicy.IsBrowserClass("RhinoWindow") && PanelKeyboardPolicy.IsBrowserClass("Chrome_WidgetWin_0") && PanelKeyboardPolicy.IsBrowserClass("Internet Explorer_Server"), "native browser classes do not include Rhino command window");
     NativeIdentityTests.Run(Check);
     await TestLocalReferenceImages();
     await TestIndependentRhinoInstances();

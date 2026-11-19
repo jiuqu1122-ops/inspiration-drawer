@@ -434,7 +434,7 @@ internal sealed class BetaServer : IDisposable
         if (method == "initialize") result = new JsonObject
         {
             ["protocolVersion"] = "2025-06-18", ["capabilities"] = new JsonObject { ["tools"] = new JsonObject() },
-            ["serverInfo"] = new JsonObject { ["name"] = "inspiration-drawer-rhino-beta", ["version"] = "0.1.0-beta.33" },
+            ["serverInfo"] = new JsonObject { ["name"] = "inspiration-drawer-rhino-beta", ["version"] = "0.1.0-beta.34" },
         };
         else if (method == "notifications/initialized") return new JsonObject();
         else if (method == "tools/list")
