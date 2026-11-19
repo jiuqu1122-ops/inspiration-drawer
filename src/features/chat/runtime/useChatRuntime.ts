@@ -1,3 +1,5 @@
+import { hydrateGithubSkill, refreshGithubSkills } from '../skills/githubSkillClient';
+import { isGithubSkillTool, pinGithubSkillForTurn } from '../skills/githubSkillTools';
 import { PROTOTYPE_DELIVERY_RECOVERY, prototypeCapabilityInstruction, requestsPrototypeArtifact } from '../prototypes/prototypeDeliveryPolicy';
 import { mergeHtmlToolDraft, type HtmlToolDraftState } from '../html/chatHtmlToolDraft';
 import { collectChatHtmlArtifacts } from '../html/chatHtmlArtifacts';
@@ -55,7 +57,6 @@ import { formatReferenceUploadFailureNotice } from '../../referenceUploadError';
 import {
   getChatToolDefinitions,
   isChatAgentCreationFollowup,
-  shouldForceChatAgentCreation,
   shouldExposeBatchImageOperation,
   shouldExposeWebSearch,
 } from '../tools/chatToolDefinitions';
@@ -1022,7 +1023,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           detail: '工具调用已准备',
           status: 'pending',
         });
-        const batchController = ['batch_image_operation', 'generate_image_variants'].includes(call.toolName)
+        const batchController = (['batch_image_operation', 'generate_image_variants'].includes(call.toolName) || isGithubSkillTool(call.toolName))
           ? new AbortController()
           : null;
         const notifiedMediaIds = new Set<string>();
@@ -1658,7 +1659,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       && webSearchCount < MAX_WEB_SEARCH_QUERIES_PER_TURN && !recoverSearchSynthesis;
     const batchImageOperationAvailable = batchImageOperationRequested
       && previousBatchImageOperationCount === 0;
-    const tools = !fileCreationTurn.canAttempt || agentCreatedThisTurn
+    const tools = !fileCreationTurn.canAttempt
       ? []
       : getChatToolDefinitions(
         toolIntentText,
@@ -1672,8 +1673,11 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         currentImageAttachmentCount > 0 || (hasRecentMedia && (isShortVisualFollowup(userText) || isVisualRevisionFollowup(userText) || isVisualEditFollowup(userText))),
         collectChatHtmlArtifacts(conversationMessages, conversationId).length > 0,
         collectChatHtmlArtifacts(conversationMessages, conversationId).some(artifact => Boolean(artifact.prototype)),
+        executionSource === 'desktop',
       ).filter(tool => (
-        (!rhinoGeometryRequest || !['generate_image', 'edit_image', 'generate_image_variants', 'generate_video', 'batch_image_operation'].includes(tool.function.name))
+        (!agentCreatedThisTurn || tool.function.name !== 'create_agent')
+        && (executionSource !== 'rhino' || !isGithubSkillTool(tool.function.name))
+        && (!rhinoGeometryRequest || !['generate_image', 'edit_image', 'generate_image_variants', 'generate_video', 'batch_image_operation'].includes(tool.function.name))
         && (!(recoverSearchSynthesis || recoverPresentationDelivery) || tool.function.name === 'create_file' || (!recoverPresentationDelivery && tool.function.name === 'create_ui_prototype'))
         && (previousBatchImageOperationCount === 0 || tool.function.name !== 'batch_image_operation')
         && (presentationText || previousImageVariantCount === 0 || tool.function.name !== 'generate_image_variants')
@@ -1755,7 +1759,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     if (agentCreatedThisTurn) {
       requestInstructions.push({
         role: 'system',
-        content: '本轮智能体创建工具已经执行。不要再调用工具；根据工具结果准确告诉用户是否新建成功，以及可在 Chat 顶部的“智能体”入口查看和选择。不要声称已启用，除非工具结果中的 activated 为 true。',
+        content: '本轮 create_agent 已执行，不要重复创建。根据真实结果报告是否保存、是否启用（仅 activated=true 才可称已启用）。如果用户同时要求封面、图片、文件或其他交付，继续使用本轮实际提供的工具完成尚未完成的需求；创建智能体不代表整项任务完成，也不意味着其他工具不可用。没有其他需求时直接总结，不要自行增加任务。',
       });
     }
     const normalizedProviderMessages = buildChatSearchContinuation(
@@ -1818,9 +1822,6 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         ? { type: 'function', function: { name: 'create_ui_prototype' } }
       : presentationToolChoice ? presentationToolChoice
       : continuePresentationTools ? 'required'
-      : shouldForceChatAgentCreation(userText)
-      && !agentCreatedThisTurn && tools.some(tool => tool.function.name === 'create_agent')
-      ? { type: 'function', function: { name: 'create_agent' } }
       : undefined;
     let result: ChatProviderResult | undefined;
     let expectedRequestId = requestId;
@@ -2598,6 +2599,12 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         designMemoryProjectId(conversationId, memoryOptions.projectId),
         conversationId,
       );
+      if (executionSource === 'desktop') await refreshGithubSkills().catch(error => console.warn('GitHub 技能元数据刷新失败', error));
+      const selectedSkill = getSelectedChatSkill(conversation.id);
+      const turnSkill = selectedSkill?.source === 'github'
+        ? executionSource === 'desktop' ? await hydrateGithubSkill(selectedSkill) : undefined
+        : selectedSkill;
+      if (turnSkill?.github) pinGithubSkillForTurn({ conversationId, messageId: assistantMessage.id, userText: userMessage.content, executionSource, recentMessages: [] }, turnSkill.id, turnSkill.github.version, turnSkill.instructions.length);
       const providerMessages = await buildChatContext({
         messages: nextMessages,
         latestUserMessage: userMessage,
@@ -2607,7 +2614,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         resolveAttachmentUrl: visionResolver?.resolve || optionsRef.current.resolveAttachmentUrl,
         visionAttachments: imageSelection.attachments,
         reusedVisionAttachments: imageSelection.reusedFromHistory,
-        skill: getSelectedChatSkill(conversation.id),
+        skill: turnSkill,
+        githubSkillsEnabled: executionSource === 'desktop',
       });
       const memoryReport = getDesignMemoryTurnReport(providerMessages);
       if (memoryReport) {

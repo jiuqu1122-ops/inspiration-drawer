@@ -1,6 +1,9 @@
 // src-tauri/src/main.rs
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod github_skills;
+mod github_skill_commands;
+
 mod agent;
 mod canvas_background;
 mod canvas_view_state;
@@ -19216,6 +19219,8 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
+            github_skill_commands::github_skills_request,
+            github_skill_commands::github_skills_cancel,
             rhino_installer::rhino_plugin_status,
             rhino_installer::install_rhino_plugin,
             rhino_beta::rhino_beta_get_connection,

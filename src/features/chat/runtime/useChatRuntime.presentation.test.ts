@@ -1,3 +1,4 @@
+import { isGithubSkillTool } from '../skills/githubSkillTools';
 import { makePrototypeFixture } from '../prototypes/prototypeFixture';
 import { registerRhinoNativeTools } from '../../rhino/rhinoProtocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -122,7 +123,7 @@ describe('PPT delivery through the real runtime (synthetic IPC)', () => {
     expect(harness.execute).not.toHaveBeenCalled();
     expect(harness.requests[0].toolChoice).toBeUndefined();
     await runtime.sendMessage(answer);
-    expect(harness.requests[1].tools.map((tool: any) => tool.function.name)).toEqual(['create_ui_prototype', 'generate_image', 'generate_image_variants', 'edit_image']);
+    expect(harness.requests[1].tools.filter((tool: any) => !isGithubSkillTool(tool.function.name)).map((tool: any) => tool.function.name)).toEqual(['create_ui_prototype', 'generate_image', 'generate_image_variants', 'edit_image']);
     await runtime.sendMessage('开始做吧');
     const request = harness.requests[2];
     expect(request.tools.some((tool: any) => tool.function.name === 'create_file')).toBe(true);
@@ -243,5 +244,58 @@ describe('editable Figma alternative through the real runtime', () => {
     const runtime = setupRuntime(); harness.replies.push(textReply('支持 Sketch 导出。'));
     await runtime.sendMessage('如何导出 Figma 文件？');
     expect(harness.requests).toHaveLength(1); expect(harness.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('agent semantics and image delivery through the real runtime', () => {
+  const agentArgs = { name: '品牌助手', description: '分析品牌设计需求', triggers: ['品牌设计'], instructions: '先分析需求，再给出建议。' };
+  const agentReply = () => ({ content: '', toolCalls: [{ id: 'semantic-agent', name: 'create_agent', arguments: JSON.stringify(agentArgs) }] });
+  const imageReply = () => ({ content: '', toolCalls: [{ id: 'semantic-cover', name: 'generate_image', arguments: JSON.stringify({ prompt: 'An editorial brand cover, no unnecessary words', count: 1 }) }] });
+  const imageReceipt = { media: [{ id: 'fixture-cover', type: 'image', url: 'https://fixture.invalid/cover.png' }] };
+  it.each([
+    '我做了个玄学事务所的智能体，帮我做一个封面',
+    '我做了个旅行规划智能体，帮我做个头像',
+    'Make a cover for my research agent',
+  ])('lets the model choose a real image tool without creating an agent or requiring 出图: %s', async text => {
+    const runtime = setupRuntime();harness.execute.mockResolvedValue(imageReceipt);harness.replies.push(imageReply());
+    await runtime.sendMessage(text);
+    const request = harness.requests[0];const names=request.tools.map((tool: any)=>tool.function.name);
+    expect(request.toolChoice).toBeUndefined();expect(names).toContain('generate_image');expect(names).not.toContain('create_agent');
+    expect(harness.execute).toHaveBeenCalledOnce();expect(harness.execute.mock.calls[0][0]).toBe('generate_image');
+    expect(lastAssistant().status).toBe('completed');expect(lastAssistant().toolCalls.map(call=>call.toolName)).toEqual(['generate_image']);
+  });
+  it('blocks a hallucinated new-agent write and continues with the cover tool instead', async () => {
+    const runtime=setupRuntime();harness.execute.mockResolvedValue(imageReceipt);harness.replies.push(agentReply(),imageReply());
+    await runtime.sendMessage('我做了个玄学事务所的智能体，帮我做一个封面');
+    expect(harness.execute.mock.calls.map(([name])=>name)).toEqual(['generate_image']);
+    expect(lastAssistant().toolCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({toolName:'create_agent',status:'error',resultJson:expect.stringContaining('没有要求新建智能体')}),
+      expect.objectContaining({toolName:'generate_image',status:'completed'}),
+    ]));
+    expect(harness.requests[1].tools.some((tool: any)=>tool.function.name==='generate_image')).toBe(true);
+    expect(harness.requests[1].toolChoice).toBeUndefined();expect(lastAssistant().status).toBe('completed');
+  });
+  it('does not withdraw image capabilities after a genuine agent-creation step in a compound task', async () => {
+    const runtime=setupRuntime();harness.execute.mockImplementation(async name=>name==='create_agent'?{created:true,id:'fixture-agent',name:'品牌助手',activated:false}:imageReceipt);
+    harness.replies.push(agentReply(),imageReply());
+    await runtime.sendMessage('帮我创建一个品牌设计智能体，然后帮它做一张封面');
+    expect(harness.requests[0].toolChoice).toBeUndefined();
+    const next=harness.requests[1];const names=next.tools.map((tool: any)=>tool.function.name);
+    expect(names).toContain('generate_image');expect(names).not.toContain('create_agent');
+    expect(JSON.stringify(next.messages)).toContain('创建智能体不代表整项任务完成');
+    expect(harness.execute.mock.calls.map(([name])=>name)).toEqual(['create_agent','generate_image']);expect(lastAssistant().status).toBe('completed');
+  });
+  it('keeps normal create_agent saving without forcing it or inventing an unrequested image task', async () => {
+    const runtime=setupRuntime();harness.execute.mockResolvedValue({created:true,id:'fixture-agent',name:'品牌助手',activated:false});
+    harness.replies.push(agentReply(),textReply('智能体已保存，未启用。'));
+    await runtime.sendMessage('帮我创建一个品牌设计智能体');
+    expect(harness.requests[0].toolChoice).toBeUndefined();expect(harness.execute.mock.calls.map(([name])=>name)).toEqual(['create_agent']);expect(lastAssistant().status).toBe('completed');
+  });
+  it('a completed create_agent in old conversation history cannot hide image tools in a later turn', async () => {
+    const runtime=setupRuntime();harness.execute.mockImplementation(async name=>name==='create_agent'?{created:true,id:'fixture-agent',name:'品牌助手',activated:false}:imageReceipt);
+    harness.replies.push(agentReply(),textReply('已保存。'));await runtime.sendMessage('帮我创建一个品牌设计智能体');
+    harness.replies.push(imageReply());await runtime.sendMessage('生成一张封面');
+    const next=harness.requests[2];expect(next.toolChoice).toBeUndefined();expect(next.tools.some((tool: any)=>tool.function.name==='generate_image')).toBe(true);
+    expect(harness.execute.mock.calls.map(([name])=>name)).toEqual(['create_agent','generate_image']);expect(lastAssistant().status).toBe('completed');
   });
 });

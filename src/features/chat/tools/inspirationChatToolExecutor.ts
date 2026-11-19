@@ -1,3 +1,4 @@
+import { executeGithubSkillTool, isGithubSkillTool } from '../skills/githubSkillTools';
 import { createPrototypePackage } from '../prototypes/prototypePackage';
 import { parsePrototype } from '../prototypes/prototypeSchema';
 import { canUseCanvasItemAsFrameInterpolationVideoInput, canUseCanvasItemAsImageEnhancementInput, canUseCanvasItemAsVideoEnhancementInput } from '../../../utils/canvasItemSelectors';
@@ -95,6 +96,7 @@ export const createInspirationChatToolExecutor = (input: {
   getSelectedCanvasIds?: () => string[];
 }): ChatToolExecutor => async (rawName, args, context) => {
   const name = normalizeChatToolName(rawName);
+  if (isGithubSkillTool(name)) return executeGithubSkillTool(name, args, context, input.searchWeb);
   const execution = { userRequest: context.userText };
   if (name === 'web_search') {
     return input.searchWeb(

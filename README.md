@@ -4,12 +4,34 @@
 
 ## 下载
 
-当前版本：**8.0.27**
+当前已发布版本：**8.0.31**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.27/Inspiration.Drawer_8.0.27_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.27)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.31/Inspiration.Drawer_8.0.31_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.31)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 8.0.31 更新
+
+- **GitHub Skills**：桌面 Chat 可搜索或粘贴公开技能仓库，检查固定版本后由用户确认下载完整包；支持按需读取、会话选用、启用／禁用、更新、回退和卸载。仅支持技能包，脚本只保存不执行，不自动安装 MCP。
+- **Chat 语义修复**：区分已有智能体背景与新建请求，避免把“给智能体做封面”误判为创建智能体；创建后可继续处理图片等交付需求。
+
+## 8.0.30 更新
+
+- 修复画布模式下快捷键录入失焦、无法修改的问题，支持组合键录入、Esc 取消和保存失败提示。
+
+## 8.0.29 更新
+
+- Rhino 插件支持上传、预览和移除本地参考图；输入区与桌面 Chat 统一，改善窄窗口、明暗模式和下拉菜单遮挡。
+- 加强建模参数与实体有效性检查，减少失败后的重复建模；优化 Figma 导出需求识别、Chat 长文本输入框和图片设置。
+- 增加安装包版本、签名与校验值一致性检查。
+
+## 8.0.28 更新
+
+- **Canvas 预览**：Chat 生成的 HTML 可实时交互，支持代码切换、手机宽度、历史版本、复制与保存；预览页面与本地权限隔离。
+- **原型与 Figma**：支持页面跳转、弹窗等交互原型，直接导出可编辑的 `.sketch` 导入 Figma，无需插件；不冒充原生 `.fig`，复杂交互需在 Figma 中重新连接。
+- **画布性能**：优化快速、连续缩放与平移、大画布总览及图片缓存，减少卡顿、闪烁和新增节点停顿，恢复窗口圆角。
+- **Rhino 8/9**：支持在设置中安装插件，完善 MCP 调用、文档隔离、图片预览、回复排版与执行结果识别；补充 OpenAI Compatible 渠道的客户端映射。
 
 ## 8.0.27 更新
 
@@ -139,6 +161,8 @@
 - **无限画布**：自由组织素材、图片生成节点、文字 Agent 节点和可复用工作流。
 - **生成工作流**：支持多参考图、节点/工作流预设 JSON、结果列表与批量下载。
 - **画布 Agent**：支持 OpenAI-compatible API 与 Codex App Server，通过受控工具操作画布和工作流。
+- **Chat 与交互原型**：多轮对话、智能体与 Markdown 技能，支持 HTML 实时预览和可导入 Figma 的 `.sketch` 导出。
+- **Rhino 插件**：设置中安装 Rhino 8/9 插件，支持 MCP 联动、本地参考图和独立对话。
 - **桌面工具**：提供截图、桌面便签、快捷记录、全局快捷键及手机局域网传输。
 - **本地优先**：画布和素材保存在本机；AI 结果与参考图只在需要公网访问时使用临时桥接。
 

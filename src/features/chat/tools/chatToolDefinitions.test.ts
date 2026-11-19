@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '../model/chatTypes';
-import { CHAT_TOOL_DEFINITIONS, getChatToolDefinitions, isChatAgentCreationFollowup, isChatAgentCreationRequest, resolveDirectVisualTool, shouldComposeImageVariants, shouldDirectGenerateImage, shouldExposeBatchImageOperation, shouldExposeChatTools, shouldExposeWebSearch, shouldForceChatAgentCreation, shouldUseIndependentImageVariants } from './chatToolDefinitions';
+import { CHAT_TOOL_DEFINITIONS, getChatToolDefinitions, isChatAgentCreationFollowup, isChatAgentCreationRequest, resolveDirectVisualTool, shouldComposeImageVariants, shouldDirectGenerateImage, shouldExposeBatchImageOperation, shouldExposeChatTools, shouldExposeWebSearch, shouldUseIndependentImageVariants } from './chatToolDefinitions';
 
 const imageToolNames = ['generate_image', 'generate_image_variants', 'edit_image'];
 
@@ -37,6 +37,8 @@ describe('Chat tool exposure', () => {
       'create_workflow',
       'list_workflows',
       'run_workflow',
+      'search_github_skills', 'inspect_github_skill', 'install_github_skill',
+      'list_installed_skills', 'read_skill_resource', 'activate_skill',
     ]);
   });
 
@@ -85,8 +87,8 @@ describe('Chat tool exposure', () => {
     expect(isChatAgentCreationRequest('帮我用智能体创建一个工作流')).toBe(false);
     expect(isChatAgentCreationRequest('如何创建一个智能体？')).toBe(false);
     expect(isChatAgentCreationRequest('创建一个智能体要怎么做？')).toBe(false);
-    expect(shouldForceChatAgentCreation('创建一个产品设计智能体')).toBe(true);
-    expect(shouldForceChatAgentCreation('创建一个智能体')).toBe(false);
+    expect(isChatAgentCreationRequest('创建一个产品设计智能体')).toBe(true);
+    expect(isChatAgentCreationRequest('创建一个智能体')).toBe(true);
     expect(getChatToolDefinitions('如何创建一个智能体？').map(tool => tool.function.name))
       .not.toContain('create_agent');
   });
@@ -108,6 +110,10 @@ describe('Chat tool exposure', () => {
     expect(getChatToolDefinitions('负责产品外观分析', false, false, false, 0, false, true)
       .map(tool => tool.function.name)).toContain('create_agent');
     expect(isChatAgentCreationFollowup([user, assistant], '算了')).toBe(false);
+    expect(isChatAgentCreationFollowup([user, assistant], '先别创建了，帮我做个封面')).toBe(false);
+    expect(isChatAgentCreationFollowup([user, assistant], '帮我做一个封面')).toBe(false);
+    expect(isChatAgentCreationFollowup([user, assistant], '帮我导出一个 PDF 文件')).toBe(false);
+    expect(isChatAgentCreationFollowup([user, assistant], '负责帮用户生成产品外观图片')).toBe(true);
   });
 
   it.each([
@@ -536,5 +542,45 @@ describe('HTML artifact capability', () => {
   it('retains file creation for semantic follow-ups on an existing HTML document', () => {
     expect(getChatToolDefinitions('左边窄一点，加上切换按钮', false, false, false, 0, false, false, '左边窄一点，加上切换按钮', false, true)
       .map(tool => tool.function.name)).toContain('create_file');
+  });
+});
+
+describe('agent background versus the requested deliverable', () => {
+  it.each([
+    '我做了个玄学事务所的智能体，帮我做一个封面',
+    '我做了一个旅行规划智能体，帮我做个头像',
+    '我已经创建了一个客服智能体，给它做一张封面',
+    '我已经创建一个助手智能体，帮我做个封面',
+    '我做的智能体需要一个封面',
+    '帮我做一个智能体的封面',
+    '帮我设计智能体封面',
+    '帮我写一个技能的介绍',
+    '不要创建智能体，帮我做一个封面',
+    '我不想新建智能体，帮我设计海报',
+    'I created an assistant agent. Make a cover for it.',
+    'I already have an agent. Make a banner.',
+    'Make a cover for my research agent',
+    'Write an introduction for this skill',
+    'Do not create an agent. Make a cover instead.',
+  ])('does not expose a persistent creation tool for context/another artifact: %s', text => {
+    expect(isChatAgentCreationRequest(text)).toBe(false);
+    const tools = getChatToolDefinitions(text).map(tool => tool.function.name);
+    expect(tools).not.toContain('create_agent');
+  });
+  it.each([
+    '我做了个玄学事务所的智能体，帮我做一个封面',
+    '我已经有个客服智能体，给它做一张封面',
+    'Make a cover for my research agent',
+  ])('keeps image capability available for model semantic routing: %s', text => {
+    expect(getChatToolDefinitions(text).map(tool => tool.function.name)).toContain('generate_image');
+  });
+  it.each([
+    '我已有一个客服智能体，再帮我创建一个负责品牌设计的智能体',
+    '帮我创建一个品牌设计智能体，然后帮它做一张封面',
+    '创建一个可以先分析工业设计需求、再整理参考素材、最后提出三套 CMF 方案的智能体',
+    'Create a research agent and then make a cover for it',
+  ])('preserves genuine new-agent or compound requests: %s', text => {
+    expect(isChatAgentCreationRequest(text)).toBe(true);
+    expect(getChatToolDefinitions(text).map(tool => tool.function.name)).toContain('create_agent');
   });
 });

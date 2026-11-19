@@ -6,7 +6,9 @@ export type ChatSkill = {
   description: string;
   triggers: string[];
   instructions: string;
-  source: 'created' | 'imported';
+  source: 'created' | 'imported' | 'github';
+  github?: { version: string; repository: string; directory: string; enabled: boolean };
+  disabled?: boolean;
   sourceFile?: string;
   sourceShareId?: string;
   conversionNotes: string[];
@@ -20,13 +22,20 @@ export const MAX_SKILL_MARKDOWN_LENGTH = 40_000;
 export const MAX_CHAT_SKILL_INSTRUCTION_LENGTH = 16_000;
 const MAX_IMPORTED_BODY_LENGTH = 15_000;
 
-const notifyChange = () => window.dispatchEvent(new Event(CHAT_SKILLS_CHANGED_EVENT));
+let githubSkills: ChatSkill[] = [];
+export const setGithubChatSkills = (skills: ChatSkill[]) => { githubSkills = skills; notifyChange(); };
+export const clearChatSkillSelections = (id: string) => {
+  const selections = loadSelections();
+  for (const [key, value] of Object.entries(selections)) if (value === id) delete selections[key];
+  localStorage.setItem(SELECTION_KEY, JSON.stringify(selections));
+};
+const notifyChange = () => { if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') window.dispatchEvent(new Event(CHAT_SKILLS_CHANGED_EVENT)); };
 
 export const loadChatSkills = (): ChatSkill[] => {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(SKILLS_KEY) || '[]');
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((value): value is ChatSkill => (
+    if (!Array.isArray(parsed)) return [...githubSkills];
+    return [...githubSkills, ...parsed.filter((value): value is ChatSkill => (
       value && typeof value === 'object'
       && typeof value.id === 'string'
       && typeof value.name === 'string'
@@ -37,12 +46,13 @@ export const loadChatSkills = (): ChatSkill[] => {
       triggers: Array.isArray(value.triggers) ? value.triggers.filter(trigger => typeof trigger === 'string') : [],
       conversionNotes: Array.isArray(value.conversionNotes) ? value.conversionNotes.filter(note => typeof note === 'string') : [],
       sourceShareId: typeof value.sourceShareId === 'string' ? value.sourceShareId : undefined,
-    }));
-  } catch { return []; }
+    }))];
+  } catch { return [...githubSkills]; }
 };
 
 export const saveChatSkill = (skill: ChatSkill) => {
-  const current = loadChatSkills();
+  if (skill.source === 'github') throw new Error('GitHub 原始包不可通过单文件编辑覆盖');
+  const current = loadChatSkills().filter(item => item.source !== 'github');
   localStorage.setItem(SKILLS_KEY, JSON.stringify([
     skill,
     ...current.filter(item => item.id !== skill.id),
@@ -72,7 +82,7 @@ export const chatSkillToMarkdown = (skill: ChatSkill): string => {
 };
 
 export const removeChatSkill = (id: string) => {
-  localStorage.setItem(SKILLS_KEY, JSON.stringify(loadChatSkills().filter(item => item.id !== id)));
+  localStorage.setItem(SKILLS_KEY, JSON.stringify(loadChatSkills().filter(item => item.source !== 'github' && item.id !== id)));
   const selections = loadSelections();
   for (const [conversationId, selectedId] of Object.entries(selections)) {
     if (selectedId === id) delete selections[conversationId];
@@ -92,7 +102,7 @@ const loadSelections = (): Record<string, string> => {
 export const getSelectedChatSkill = (conversationId: string): ChatSkill | undefined => {
   if (!conversationId) return undefined;
   const id = loadSelections()[conversationId];
-  return loadChatSkills().find(skill => skill.id === id);
+  return loadChatSkills().find(skill => skill.id === id && !skill.disabled);
 };
 
 export const selectChatSkill = (conversationId: string, skillId: string | null) => {
@@ -217,7 +227,7 @@ export const suggestChatSkill = (message: string, skills: ChatSkill[]): ChatSkil
   const text = message.trim().toLowerCase();
   if (!text) return undefined;
   const messageTerms = textTerms(text);
-  const ranked = skills.map(skill => {
+  const ranked = skills.filter(skill => !skill.disabled).map(skill => {
     if (skill.name.length >= 2 && text.includes(skill.name.toLowerCase())) return { skill, score: 100 };
     const matchingTriggers = skill.triggers.filter(trigger => trigger.length >= 2 && text.includes(trigger.toLowerCase()));
     if (matchingTriggers.length) return { skill, score: 20 + matchingTriggers.length * 5 };

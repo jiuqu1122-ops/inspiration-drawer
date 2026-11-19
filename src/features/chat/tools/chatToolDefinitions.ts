@@ -1,3 +1,4 @@
+import { GITHUB_SKILL_TOOL_DEFINITIONS, isGithubSkillTool } from '../skills/githubSkillTools';
 import { CREATE_UI_PROTOTYPE_TOOL } from '../prototypes/prototypeTools';
 import { hasChatHtmlContext } from '../html/chatHtmlArtifacts';
 import { defersVisualGeneration, isImagePromptTextRequest, isShortVisualFollowup, isVisualCreationIntent, isVisualEditFollowup, isVisualRevisionFollowup } from '../context/chatVisualIntent';
@@ -18,7 +19,7 @@ export const CHAT_TOOL_DEFINITIONS: ChatToolDefinition[] = [
   CREATE_UI_PROTOTYPE_TOOL,
   { type: 'function', function: { name: 'web_search', description: `通用互联网搜索，可查询新闻、网页、资料、行情等公开信息，并返回摘要、正文摘录、发布时间和来源链接。同一条用户消息最多使用 ${MAX_WEB_SEARCH_QUERIES_PER_TURN} 个不同关键词。`, parameters: objectSchema({ query: { type: 'string', description: '完整、具体的搜索词；涉及相对日期时必须写成明确日期。' }, limit: { type: ['number', 'null'], minimum: 1, maximum: 8 } }, ['query']) } },
   { type: 'function', function: { name: 'create_file', description: '创建一个可打开、下载和另存为的真实文件。仅当用户明确要求生成文件、文档、报告、表格、PPT/PowerPoint 演示文稿、HTML 网页/交互文档（非 Figma 结构化原型）或可下载内容时调用。HTML 使用完整的单文件 HTML（内联 CSS/JS），可在 Canvas 预览中交互；不依赖 CDN、联网 API 或本地路径。DOCX/PDF 的 content 使用 Markdown；XLSX 使用 sheets；PPTX 使用 presentation 创建可编辑幻灯片；不要返回 Base64、XML 或伪造下载链接。', parameters: objectSchema({ fileName: { type: 'string', description: '用户可见的文件名，包含对应扩展名。' }, format: { type: 'string', enum: ['txt', 'md', 'html', 'csv', 'json', 'docx', 'xlsx', 'pdf', 'pptx'] }, content: { type: ['string', 'null'], description: 'HTML 的完整源代码（不带 Markdown 围栏）；TXT/MD/CSV/JSON 的文件正文；DOCX/PDF 使用 Markdown 正文；XLSX/PPTX 可为 null。' }, sheets: { type: ['array', 'null'], description: '仅 XLSX 使用。第一行应为表头。', items: { type: 'object', properties: { name: { type: 'string' }, rows: { type: 'array', items: { type: 'array', items: { type: ['string', 'number', 'boolean', 'null'] } } } }, required: ['name', 'rows'], additionalProperties: false } }, presentation: CHAT_PRESENTATION_SCHEMA }, ['fileName', 'format']) } },
-  { type: 'function', function: { name: 'create_agent', description: '当用户用普通对话明确要求新建可复用的 Chat 智能体、技能、skill、skills（也兼容 skllis）时调用，真实保存到智能体列表。根据用户需求生成具体的名称、适用场景、触发关键词和可执行的 Markdown 技能指令。指令应写清角色、步骤、输出格式及成功标准；涉及软件操作时仅使用灵感抽屉 Chat 已提供的画布、素材、图片、视频、工作流和文件工具，不要编造脚本、插件或不存在的能力。默认只创建不启用；用户明确要求立即使用时才传 activate=true。', parameters: objectSchema({ name: { type: 'string', maxLength: 80, description: '简洁的智能体名称，不超过 80 字。' }, description: { type: 'string', maxLength: 240, description: '智能体适用场景和职责，不超过 240 字。' }, triggers: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'string' }, description: '3 到 8 个具体任务关键词或短语，用于在 Chat 中推荐启用。' }, instructions: { type: 'string', maxLength: 16000, description: '完整的 Markdown 技能指令：角色、工作步骤、输出要求、边界和画布工具使用方式；仅写当前客户端支持的能力。' }, activate: { type: ['boolean', 'null'], description: '仅当用户明确要求创建后立即使用时为 true，否则为 false 或 null。' } }, ['name', 'description', 'triggers', 'instructions']) } },
+  { type: 'function', function: { name: 'create_agent', description: '仅当用户明确要求新建并保存可复用的 Chat 智能体、技能、skill、skills（也兼容 skllis）时调用。描述“我做了个智能体”“已有一个技能”，或者给已有智能体做封面/介绍/图片，都不是新建授权；不能把这些背景或其他交付物误保存为新智能体。真实新建时保存到智能体列表。根据用户需求生成具体的名称、适用场景、触发关键词和可执行的 Markdown 技能指令。指令应写清角色、步骤、输出格式及成功标准；涉及软件操作时仅使用灵感抽屉 Chat 已提供的画布、素材、图片、视频、工作流和文件工具，不要编造脚本、插件或不存在的能力。默认只创建不启用；用户明确要求立即使用时才传 activate=true。', parameters: objectSchema({ name: { type: 'string', maxLength: 80, description: '简洁的智能体名称，不超过 80 字。' }, description: { type: 'string', maxLength: 240, description: '智能体适用场景和职责，不超过 240 字。' }, triggers: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'string' }, description: '3 到 8 个具体任务关键词或短语，用于在 Chat 中推荐启用。' }, instructions: { type: 'string', maxLength: 16000, description: '完整的 Markdown 技能指令：角色、工作步骤、输出要求、边界和画布工具使用方式；仅写当前客户端支持的能力。' }, activate: { type: ['boolean', 'null'], description: '仅当用户明确要求创建后立即使用时为 true，否则为 false 或 null。' } }, ['name', 'description', 'triggers', 'instructions']) } },
   { type: 'function', function: { name: 'get_canvas_selection', description: '读取当前画布选中项的精简信息。仅在用户提到当前画布、当前节点或选中内容时使用。', parameters: objectSchema({}) } },
   { type: 'function', function: { name: 'search_assets', description: '在本地素材库中搜索少量相关素材。', parameters: objectSchema({ query: { type: 'string' }, limit: { type: ['number', 'null'], minimum: 1, maximum: 8 }, filter: { type: ['object', 'null'], additionalProperties: true } }, ['query']) } },
   { type: 'function', function: { name: 'generate_image', description: 'Only call when semantic reading of the latest request and relevant conversation context indicates the user wants a new image; do not require fixed output keywords or subject nouns, and do not use this for analysis, advice, requests to wait, or prompt-writing. Writing, drafting, translating, or improving an image-generation prompt is a text task; do not render the described image unless the user separately asks for image output. 使用灵感抽屉现有生图系统执行一个图片任务，结果显示在聊天中并自动加入画布。count>1 只表示同一提示词的随机候选，不得用它承载多个独立任务；如果用户明确要求把多个方向放进同一张对比图、拼版或方案板，也使用本工具并固定 count=1，在 prompt 中描述同图布局。当前附件默认自动作为共同参考；只有用户明确说不要使用附件时才传 useAttachedImages=false。只参考部分当前附件时传 attachmentIds，不要猜测本地路径。模型、比例和清晰度由图片设置控制；只有用户在对话里明确指定不同值时才填写对应参数。自动模式下省略这些参数。', parameters: objectSchema({ prompt: { type: 'string' }, model: { type: ['string', 'null'], description: '仅当用户在对话里明确指定模型时填写，否则为 null。' }, aspectRatio: { type: ['string', 'null'], description: '仅当用户明确指定比例时填写，例如 16:9；自动模式或手动设置默认值时省略。' }, resolution: { type: ['string', 'null'], description: '仅当用户明确指定清晰度或分辨率时填写；自动模式或手动设置默认值时省略。' }, referenceImages: { type: 'array', items: { type: 'string' } }, attachmentIds: { type: ['array', 'null'], items: { type: 'string' } }, useAttachedImages: { type: ['boolean', 'null'], description: '仅当用户明确要求忽略、不参考当前或历史附件时传 false；其他情况为 null。' }, count: { type: ['number', 'null'], minimum: 1, maximum: 4 } }, ['prompt']) } },
@@ -35,26 +36,44 @@ export const CHAT_TOOL_DEFINITIONS: ChatToolDefinition[] = [
   { type: 'function', function: { name: 'create_workflow', description: '用户明确要求在灵感抽屉里创建可复用工作流时调用。规划有顺序的文字分析或生图步骤，创建工作流模块并保存到工作流列表；不会自动运行或产生费用。至少包含一个生图步骤。不要只返回文字方案来冒充已创建。', parameters: objectSchema({ label: { type: 'string', description: '工作流名称，最多 32 字。' }, hint: { type: ['string', 'null'], description: '简短说明工作流用途。' }, steps: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false, properties: { id: { type: 'string', description: '步骤唯一英文 ID，供后续步骤引用。' }, type: { type: 'string', enum: ['text', 'image-generator'] }, label: { type: 'string' }, prompt: { type: 'string', description: '该步骤可直接执行的完整指令。' }, inputStepIds: { type: 'array', items: { type: 'string' }, description: '依赖的前序步骤 ID；留空时自动连接上一可连接步骤。' }, aspectRatio: { type: ['string', 'null'], description: '仅生图步骤使用，默认采用客户端设置。' }, count: { type: ['number', 'null'], minimum: 1, maximum: 4, description: '仅生图步骤使用。' } }, required: ['id', 'type', 'label', 'prompt'] } }, inputIds: { type: 'array', items: { type: 'string' }, description: '用户明确指定的现有画布输入节点 ID。' } }, ['label', 'steps']) } },
   { type: 'function', function: { name: 'list_workflows', description: '列出灵感抽屉中可用的工作流。', parameters: objectSchema({ query: { type: ['string', 'null'] }, limit: { type: ['number', 'null'], minimum: 1, maximum: 20 } }) } },
   { type: 'function', function: { name: 'run_workflow', description: '运行指定工作流。可能产生费用，继续使用现有确认机制。', parameters: objectSchema({ workflowId: { type: 'string' }, inputIds: { type: 'array', items: { type: 'string' } }, projectBrief: { type: ['string', 'null'] } }, ['workflowId']) } },
+  ...GITHUB_SKILL_TOOL_DEFINITIONS,
 ];
 
 const EXPLICIT_TOOL_INTENT = /((当前|我的|这个|这块|现有).{0,4}画布|画布.{0,8}(选中|节点|内容|添加|放入|放进|创建|运行|有什么|看看|读取|操作)|素材库|(生成|做|画|绘制|制作|渲染).{0,40}(图|图片|视频|照片|风景照|海报|插画|封面|头像|壁纸)|(?:generate|create|render|make).{0,40}(?:images?|pictures?|photos?|posters?|illustrations?|covers?|wallpapers?|videos?)|生图|放进画布|发送到画布|选中.{0,4}(图|节点)|当前节点|(列出|查看|运行|执行|有哪些|使用).{0,8}(工作流|workflow)|(工作流|workflow).{0,8}(列表|运行|执行|有哪些)|查找.{0,8}素材|搜索.{0,8}素材|补帧|插帧|视频补帧|帧率提升|图片增强|图增强|提高清晰度|超清|视频增强|视频.{0,6}清晰|溶图|图.{0,4}溶|融合图片|融合两张图)/i;
 const WORKFLOW_CREATION_INTENT = /(?:创建|新建|设计|搭建|制作|生成|保存(?:为|成)?).{0,20}(?:工作流|workflow)|(?:工作流|workflow).{0,10}(?:创建|新建|搭建|设计|生成|保存)|(?:create|build|design|make|save).{0,20}workflow/i;
-const AGENT_CREATION_INTENT = /(?:创建|新建|新增|制作|做|定制|设计|生成|建立|搭建|写|配置|添加)[^，,。；;！？!?\n]{0,80}(?:智能体|技能|agents?|skills?|skllis)(?!\s*(?:的)?(?:图标|头像|界面|页面))|(?:create|build|make|add|write|set up)[^,.!?;\n]{0,80}(?:agents?|skills?|skllis)/i;
-export const isChatAgentCreationRequest = (text: string) => (
-  AGENT_CREATION_INTENT.test(text)
-  && !/(?:如何|怎么|怎样|教程|步骤|方法|how\s+to|explain).{0,12}(?:创建|新建|制作|做|create|build)/i.test(text)
-  && !/(?:创建|新建|新增|制作|做).{0,24}(?:智能体|技能|agents?|skills?|skllis).{0,12}(?:怎么|如何|步骤|方法|要怎么|how)/i.test(text)
-  && !/(?:需要什么信息|需要哪些信息|先讨论|先规划|暂不创建|先不要创建)/i.test(text)
-);
-export const shouldForceChatAgentCreation = (text: string) => (
-  isChatAgentCreationRequest(text)
-  && !/(?:用|让|通过|使用|启用|切换到)(?:现有|已有|这个|那个)?(?:智能体|技能|agents?|skills?|skllis)/i.test(text)
-  && /(?:创建|新建|新增|制作|做|定制|设计|生成|建立|搭建|写|配置|添加)[^，,。；;！？!?\n]{0,32}(?:智能体|技能|agents?|skills?|skllis)|(?:create|build|make|add|write|set up)[^,.!?;\n]{0,32}(?:agents?|skills?|skllis)/i.test(text)
-  && !/^(?:(?:请|帮我|给我|我想|我要|我需要|可以|能不能)\s*)?(?:创建|新建|新增|做)(?:一个|个|一位|位)?\s*(?:智能体|技能|agents?|skills?|skllis)\s*[。！？!?，,]?$/i.test(text.trim())
-);
-
+// Match the requested action/object, not an agent merely mentioned as background.
+// This is a conservative capability hint and write guard, never a forced model tool choice.
+const AGENT_CREATION_INTENT = /(创建|新建|新增|制作|做|定制|设计|生成|建立|搭建|写|配置|添加)([^，,。；;！？!?\n]{0,80}?)(智能体|技能|agents?\b|skills?\b|skllis\b)|\b(create|build|make|add|write|set up)\b([^,.!?;\n]{0,80}?)(agents?\b|skills?\b|skllis\b)/gi;
+export const isChatAgentCreationRequest = (text: string) => {
+  for (const match of text.matchAll(AGENT_CREATION_INTENT)) {
+    const gap = match[2] ?? match[5] ?? '';
+    const start = match.index ?? 0;
+    const prefix = text.slice(0, start).split(/[，,。；;！？!?\n]/).pop() || '';
+    const trailing = text.slice(start + match[0].length);
+    // Completed/possessive descriptions: “我做了个…”, “已经创建…”, “我做的…”.
+    if (/^\s*(?:了|过|好(?:了)?|完(?:了)?|成了|的)/.test(gap)
+      || /(?:已(?:经)?|刚(?:刚)?|早就|之前)(?:\s*(?:为|给)[^，,。；;！？!?\n]{0,20})?\s*$/.test(prefix)) continue;
+    // The requested object is the agent's cover/name/copy/etc., not a new agent.
+    if (/^\s*的/.test(trailing)
+      || /^\s*(?:封面|图标|头像|界面|页面|海报|介绍|说明|文案|名称|名字|提示词)/.test(trailing)
+      || /\b(?:for|about|of|using|with)\b/i.test(gap)) continue;
+    if (/(?:不要|不用|无需|不需要|别|暂不|先不|不是要|并非要|不想|不打算)\s*(?:再|帮我|给我)?\s*$/.test(prefix)
+      || /\b(?:do not|don't|never|not asking to|already|previously)\s*$/i.test(prefix)) continue;
+    const clause = prefix + match[0] + trailing.split(/[，,。；;！？!?\n]/)[0];
+    if (/(?:如何|怎么|怎样|教程|步骤|方法|how\s+to|explain).{0,12}(?:创建|新建|制作|做|create|build)/i.test(clause)
+      || /(?:创建|新建|新增|制作|做).{0,24}(?:智能体|技能|agents?|skills?|skllis).{0,12}(?:怎么|如何|步骤|方法|要怎么|how)/i.test(clause)
+      || /(?:需要什么信息|需要哪些信息|先讨论|先规划|暂不创建|先不要创建)/i.test(clause)) continue;
+    return true;
+  }
+  return false;
+};
 export const isChatAgentCreationFollowup = (messages: ChatMessage[], currentText: string) => {
-  if (!currentText.trim() || /^(?:算了|取消|不用|不要|先不|没事|不知道|还没想好)/.test(currentText.trim())) return false;
+  if (!currentText.trim() || /^(?:算了|取消|不用|不要|先不|先别|暂不|没事|不知道|还没想好)/.test(currentText.trim())) return false;
+  // A clarification is not blanket authorization for every later message. A new
+  // deliverable request must not be consumed as the missing agent purpose.
+  const describesAgentPurpose = /(?:负责|职责|用途|希望它|想让它|用于|用来|帮助用户|帮用户|专门|任务是|它(?:需要|可以|应该)|it should|its (?:role|task)|speciali[sz]e)/i.test(currentText);
+  if (!describesAgentPurpose && !isChatAgentCreationRequest(currentText)
+    && (EXPLICIT_TOOL_INTENT.test(currentText) || isChatFileDeliveryRequest(currentText) || isImagePromptTextRequest(currentText))) return false;
   const history = messages.filter(message => (
     (message.role === 'user' || message.role === 'assistant') && message.status === 'completed'
   )).slice(-10);
@@ -133,6 +152,7 @@ export const getChatToolDefinitions = (
   _imageContextAvailable = false,
   hasHtmlArtifact = false,
   hasPrototypeArtifact = false,
+  githubSkillsEnabled = false,
 ) => {
   const presentationRequested = isChatPresentationRequest(text);
   const exposePresentationImageTools = canGenerateChatPresentationImages(text);
@@ -159,7 +179,7 @@ export const getChatToolDefinitions = (
   const exposeAgentCreation = isChatAgentCreationRequest(text) || agentCreationFollowup;
   const exposeWebSearch = !webSearchBlocked && (webSearchEnabled || shouldExposeWebSearch(text));
   return CHAT_TOOL_DEFINITIONS.filter(tool => (
-    tool.function.name === 'create_ui_prototype'
+    isGithubSkillTool(tool.function.name) ? githubSkillsEnabled : tool.function.name === 'create_ui_prototype'
       ? exposePrototype
       : tool.function.name === 'web_search'
       ? exposeWebSearch

@@ -1,6 +1,14 @@
 export const compactChatToolResult = (name: string, value: unknown): unknown => {
   if (!value || typeof value !== 'object') return value;
   const record = value as Record<string, unknown>;
+  if (name === 'inspect_github_skill') {
+    return { ...record, candidates: (Array.isArray(record.candidates) ? record.candidates : []).map((p: Record<string, unknown>) => ({
+      ...p, fileCount: Array.isArray(p.files) ? p.files.length : 0,
+      files: Array.isArray(p.files) ? p.files.slice(0, 24) : [],
+      fileListPartial: Array.isArray(p.files) && p.files.length > 24,
+    })) };
+  }
+  // Skill text is budgeted/paginated before execution. Never silently clip instructions or resources.
   if (name === 'web_search') {
     const results = Array.isArray(record.results) ? record.results : [];
     const clip = (value: unknown, limit: number) => {

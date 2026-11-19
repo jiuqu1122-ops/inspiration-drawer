@@ -1,3 +1,4 @@
+import { refreshGithubSkills } from '../skills/githubSkillClient';
 import { collectChatHtmlArtifacts } from '../html/chatHtmlArtifacts';
 import { ChatHtmlPreview } from './ChatHtmlPreview';
 import { conversationDisplayTitle } from '../model/chatConversationTitle';
@@ -115,6 +116,7 @@ export const ChatView = memo(function ChatView({
   };
   useEffect(() => { setSelectedConversationIds(current => current.filter(id => runtime.conversations.some(item => item.id === id))); }, [runtime.conversations]);
   const [skills, setSkills] = useState<ChatSkill[]>(loadChatSkills);
+  useEffect(() => { void refreshGithubSkills().catch(() => {}); }, []);
   const [skillRevision, setSkillRevision] = useState(0);
   const [agentPanelOpen, setAgentPanelOpen] = useState(false);
   const [agentImportFeedback, setAgentImportFeedback] = useState('');

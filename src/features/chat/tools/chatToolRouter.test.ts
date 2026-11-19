@@ -199,3 +199,27 @@ describe('Chat tool router', () => {
     expect(result.result).toEqual({ name: 'get_canvas_selection' });
   });
 });
+
+describe('agent creation write guard', () => {
+  const args = { name: 'An agent', description: 'A reusable assistant', triggers: ['research'], instructions: 'Analyze the task.' };
+  const context = { conversationId: 'intent-test', messageId: 'assistant-current', recentMessages: [] };
+  it.each([
+    '我做了个玄学事务所的智能体，帮我做一个封面',
+    '帮我做一个智能体的封面',
+    '不要创建智能体，帮我做个封面',
+    'Make a cover for my research agent',
+  ])('rejects a model-misrouted persistence call before any executor write: %s', async userText => {
+    const executor = vi.fn();
+    await expect(routeChatToolCall({ name: 'create_agent', args, context: { ...context, userText }, executor, approved: true, approvalMode: 'auto' })).rejects.toThrow('没有要求新建智能体');
+    expect(executor).not.toHaveBeenCalled();
+  });
+  it('preserves agent-purpose clarification using real conversation history', async () => {
+    const executor = vi.fn(async () => ({ created: true }));
+    const messages = [
+      { id: 'u', conversationId: 'intent-test', role: 'user' as const, content: '帮我创建一个技能', status: 'completed' as const, createdAt: 1, attachments: [], toolCalls: [] },
+      { id: 'a', conversationId: 'intent-test', role: 'assistant' as const, content: '你希望这个技能负责什么任务？', status: 'completed' as const, createdAt: 2, attachments: [], toolCalls: [] },
+    ];
+    const result = await routeChatToolCall({ name: 'create_agent', args, context: { ...context, userText: '负责产品外观分析', recentMessages: messages }, executor });
+    expect(result.requiresApproval).toBe(false);expect(executor).toHaveBeenCalledOnce();
+  });
+});

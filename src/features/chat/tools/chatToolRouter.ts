@@ -1,3 +1,4 @@
+import { isGithubSkillTool, validateGithubSkillTool } from '../skills/githubSkillTools';
 import { parsePrototype } from '../prototypes/prototypeSchema';
 import { assertGeometryCorrection } from '../../rhino/rhinoGeometryRecovery';
 import { assertRhinoScriptPreflight } from '../../rhino/rhinoScriptPreflight';
@@ -8,7 +9,7 @@ import type { LegacyAgentAction } from '../../appAgent/commands/commandTypes';
 import type { ChatToolExecutionContext, ChatToolExecutor } from '../model/chatTypes';
 import { compactChatToolResult } from './chatToolResult';
 import { isImagePromptTextRequest } from '../context/chatVisualIntent';
-import { shouldComposeImageVariants, shouldUseIndependentImageVariants } from './chatToolDefinitions';
+import { isChatAgentCreationFollowup, isChatAgentCreationRequest, shouldComposeImageVariants, shouldUseIndependentImageVariants } from './chatToolDefinitions';
 import { normalizeImageVariants } from './imageVariantNormalization';
 import { normalizeChatToolName } from './chatToolNames';
 import { getRhinoNativeTool, isRhinoNativeTool, isRhinoReadTool } from '../../rhino/rhinoProtocol';
@@ -70,6 +71,25 @@ export const routeChatToolCall = async (input: {
   if (isImagePromptTextRequest(input.context.userText)
     && ['generate_image', 'generate_image_variants', 'edit_image', 'batch_image_operation'].includes(name)) {
     throw new Error('The user requested image-prompt text, not image generation. Return the prompt as text unless a separate image-render request is present.');
+  }
+  if (name === 'create_agent') {
+    if (!isChatAgentCreationRequest(input.context.userText)
+      && !isChatAgentCreationFollowup(input.context.recentMessages, input.context.userText)) {
+      throw new Error('用户本轮没有要求新建智能体；提到已有或已完成的智能体只是背景。不要保存新智能体，请根据用户实际请求选择工具，例如制作封面或生成图片。');
+    }
+    if (input.context.recentMessages.some(message => message.id === input.context.messageId
+      && message.toolCalls.some(call => call.toolName === 'create_agent' && call.status === 'completed'))) {
+      throw new Error('本轮智能体创建已完成，不要重复保存；继续处理用户尚未完成的其他需求。');
+    }
+  }
+  if (isGithubSkillTool(name)) {
+    if (input.context.executionSource !== 'desktop') throw new Error('GitHub Skills 仅支持桌面 Chat；Rhino 和 HTML 无权访问');
+    validateGithubSkillTool(name, input.args);
+    // Never accept approved or auto mode as a grant. Persistence always opens a native Rust-owned confirmation.
+    const writes = name === 'install_github_skill';
+    const permission = { riskLevel: writes ? 'safe_write' as const : 'read' as const, requiresConfirmation: writes, reasons: [writes ? 'native-snapshot-bound-confirmation' : 'skills-package-read-only'] };
+    await input.onExecuting?.();
+    return { requiresApproval: false, result: compactChatToolResult(name, await input.executor(name, input.args, input.context)), permission };
   }
   const rhinoTool = isRhinoReadTool(name) || isRhinoNativeTool(name, input.context.conversationId);
   if (rhinoTool && input.context.executionSource !== 'rhino') throw new Error('Rhino MCP tools are only available in Rhino plugin mode; desktop Chat cannot access Rhino.');

@@ -1,3 +1,4 @@
+import { GithubSkillManager } from './GithubSkillManager';
 import { Check, FileUp, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useRef, useState, type ChangeEvent } from 'react';
 import {
@@ -81,6 +82,7 @@ export function ChatAgentPanel({
     </div>
     {error && <p className="chat-agent-panel__error" role="alert">{error}</p>}
     {importedSkillId && <p className="chat-agent-panel__notice" role="status">已按现有 Chat/画布能力适配导入内容。请检查转换提示，再编辑或启用。</p>}
+    {!editor && <GithubSkillManager conversationId={conversationId} selectedId={selectedSkill?.id} onChange={onChange} />}
     {editor ? <div className="chat-agent-panel__editor">
       <label>名称<input value={editor.name} maxLength={80} onChange={event => setEditor({ ...editor, name: event.target.value })} placeholder="例如：产品外观设计师" /></label>
       <label>适用场景<input value={editor.description} maxLength={240} onChange={event => setEditor({ ...editor, description: event.target.value })} placeholder="简单描述这个智能体负责什么" /></label>
@@ -92,7 +94,7 @@ export function ChatAgentPanel({
       <button type="button" className={`chat-agent-panel__item ${!selectedSkill ? 'is-selected' : ''}`} onClick={() => { selectChatSkill(conversationId, null); onChange(); onClose(); }}>
         <span><strong>通用 Chat</strong><small>不启用自定义智能体</small></span>{!selectedSkill && <Check size={14} />}
       </button>
-      {skills.map(skill => <div className={`chat-agent-panel__item ${selectedSkill?.id === skill.id ? 'is-selected' : ''}`} key={skill.id}>
+      {skills.filter(skill => skill.source !== 'github').map(skill => <div className={`chat-agent-panel__item ${selectedSkill?.id === skill.id ? 'is-selected' : ''}`} key={skill.id}>
         <button type="button" className="chat-agent-panel__select" onClick={() => { selectChatSkill(conversationId, skill.id); onChange(); onClose(); }}>
           <strong>{skill.name}</strong><small>{skill.description || (skill.source === 'imported' ? `导入自 ${skill.sourceFile || 'Markdown'}` : '自定义智能体')}</small>
         </button>

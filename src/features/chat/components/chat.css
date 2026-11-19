@@ -2344,3 +2344,32 @@
 
 .chat-generated-file:has(.chat-generated-file__import-hint) { flex-wrap: wrap; }
 .chat-generated-file__import-hint { order: 3; flex-basis: 100%; margin: 0; color: var(--chat-muted); font-size: 9px; line-height: 1.6; }
+
+/* GitHub package management extends the existing compact Chat controls. */
+.github-skills { padding: 10px 13px; border-bottom: 1px solid var(--chat-border); color: var(--chat-text); font-size: 11px; }
+.github-skills button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; padding: 5px 7px; background: var(--chat-soft); color: var(--chat-text); border: 1px solid var(--chat-border); border-radius: 6px; font-size: 10px; cursor: pointer; }
+.github-skills button:disabled { opacity: .45; cursor: default; }
+.github-skills button.is-primary { background: var(--chat-text); color: var(--chat-bg); }
+.github-skills__heading { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 8px; }
+.github-skills__heading > span { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; }
+.github-skills__source { display: grid; gap: 7px; margin-bottom: 10px; }
+.github-skills label { display: grid; gap: 4px; min-width: 0; }
+.github-skills input { width: 100%; box-sizing: border-box; min-width: 0; padding: 6px 7px; border: 1px solid var(--chat-border); background: var(--chat-bg); color: var(--chat-text); border-radius: 6px; font: inherit; }
+.github-skills__fields { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.github-skills small { display: block; color: var(--chat-muted); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.github-skills__status { display: flex; gap: 6px; align-items: center; padding: 8px 0; }
+.github-skills__status span { flex: 1; }
+.github-skills__candidate, .github-skills__installed-item { border-top: 1px solid var(--chat-border); padding: 9px 0; }
+.github-skills__installed > strong { display: block; padding: 7px 0; font-size: 11px; font-weight: 600; }
+.github-skills__title { border: 0 !important; padding: 0 !important; background: transparent !important; display: block !important; text-align: left; margin-bottom: 4px; }
+.github-skills__buttons { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 7px; }
+.github-skill-details { margin: 7px 0; line-height: 1.6; overflow-wrap: anywhere; }
+.github-skill-details p { margin: 4px 0; white-space: pre-wrap; }
+.github-skill-details dl { display: grid; grid-template-columns: 55px minmax(0, 1fr); gap: 3px 5px; margin: 7px 0; }
+.github-skill-details dt { color: var(--chat-muted); }
+.github-skill-details dd { margin: 0; min-width: 0; }
+.github-skill-commit { font-family: monospace; font-size: 10px; }
+.github-skill-risk { color: var(--chat-muted); font-size: 10px; }
+.github-skill-details summary { cursor: pointer; font-size: 10px; }
+.github-skill-details ul { padding-left: 15px; max-height: 170px; overflow: auto; }
+.github-skill-details li { margin: 4px 0; }
