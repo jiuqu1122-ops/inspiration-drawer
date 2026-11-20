@@ -63,6 +63,8 @@ def _g2v_audit(plan, document=None):
                            "preview": _g2v_preview(obj)})
         if "Placeholder" in obj.GetType().FullName:
             issue("component_unavailable", object_id, "This is a placeholder, not a loaded executable component")
+        if str(obj.Phase) != "Completed":
+            issue("component_not_solved", object_id, "The component has not completed its current solution; stale output cannot pass")
         if obj.State is not None and obj.State.FaultException is not None:
             issue("component_fault", object_id, str(obj.State.FaultException)[:500])
         parameters = obj.Parameters if hasattr(obj, "Parameters") else None
@@ -97,9 +99,6 @@ def _g2v_audit(plan, document=None):
                 scanned = 0
                 for raw_type, value in zip(raw_types, tree.NonNullItems):
                     scanned += 1
-                    if scanned > 10000:
-                        issue("inspection_incomplete", parameter_id, "Output exceeds the bounded full-item audit; do not claim it passed")
-                        break
                     raw_type = str(raw_type)
                     row["rawItemTypes"][raw_type] = row["rawItemTypes"].get(raw_type, 0) + 1
                     if raw_type.startswith("Rhino.Geometry.") or raw_type.startswith("Grasshopper2.Types.Shapes."):
@@ -108,6 +107,11 @@ def _g2v_audit(plan, document=None):
                             row["validGeometryItems" if bool(valid) else "invalidGeometryItems"] += 1
                         elif row["preview"]["boundsValid"]:
                             row["validGeometryItems"] += 1
+                row["nonNullItems"] = scanned
+                if scanned < tree.ItemCount:
+                    issue("geometry_output_nulls", parameter_id, "Final geometry contains null items")
+                if row["validGeometryItems"] + row["invalidGeometryItems"] < scanned:
+                    issue("non_geometry_output_items", parameter_id, "Final geometry output contains opaque or unsupported non-geometry items")
                 if any("Python.Runtime.PyObject" in name for name in row["rawItemTypes"]):
                     issue("python_output_not_marshaled", object_id, "The final output stores Python.Runtime.PyObject, not native GH/Rhino geometry. Inspect output marshalling; a nonzero item count is not usable geometry")
                 if row["validGeometryItems"] == 0:

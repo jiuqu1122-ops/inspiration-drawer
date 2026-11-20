@@ -9,7 +9,7 @@ export const GH2_MODEL_MARKER = 'INSPIRATION_GH2_MODEL_V1:';
 const ids = { type: 'array', minItems: 1, maxItems: 64, items: { type: 'string', pattern: '^[a-fA-F0-9-]{36}$' } };
 export const gh2ModelTools = (): RhinoNativeTool[] => [{
   name: GH2_VERIFY_MODEL_TOOL, readOnly: true, destructive: false, workflowPhase: 'verify',
-  description: 'Required post-build GH2 model acceptance. Read exact selected final components and geometry output parameter IDs from the current graph first. Checks real CLR output types (including opaque Python.Runtime.PyObject), every output item up to a bounded audit, valid native geometry, connected-empty inputs, unavailable components, component faults and actual preview caches/display settings. Solve success or a printed object count alone cannot pass. Does not change the graph. For any product or shape, diagnose and repair concrete issues, solve and reverify after the last write. This is structural/preview-data verification, not design fidelity or camera framing.',
+  description: 'Required post-build GH2 model acceptance. Read exact selected final components and geometry output parameter IDs from the current graph first. Checks real CLR output types (including opaque Python.Runtime.PyObject), every non-null output item, nulls, valid native geometry, connected-empty inputs, unavailable or unsolved components, faults and actual preview caches/display settings. There is no item-count quota; concrete native tool timeouts remain applicable. Solve success or a printed object count alone cannot pass. Does not change the graph. For any product or shape, diagnose and repair concrete issues, solve and reverify after the last write. This is structural/preview-data verification, not design fidelity or camera framing.',
   inputSchema: { type: 'object', additionalProperties: false, required: ['componentIds', 'geometryOutputIds'], properties: { componentIds: ids, geometryOutputIds: ids } },
 }, {
   name: GH2_REPAIR_OUTPUTS_TOOL, readOnly: false, destructive: false, workflowPhase: 'build',
@@ -73,6 +73,8 @@ export function gh2IssueSummary(report: Record<string, unknown> | undefined): st
     output_preview_hidden: '最终组件或输出的预览处于隐藏状态', document_preview_disabled: 'GH2 文档预览已关闭',
     preview_selection_filter: '仅预览选中对象的设置排除了最终组件', connected_input_empty: '有数据的来源未能传入下游端口',
     component_unavailable: '组件未加载，当前只是占位节点', component_fault: '组件存在实际运行错误',
+    component_not_solved: '组件当前求解尚未完成，旧输出不能作为验收结果',
+    geometry_output_nulls: '最终几何输出含有空数据', non_geometry_output_items: '最终几何端口混有原始对象或非几何数据',
     inspection_incomplete: '输出规模超出本次完整检查范围，尚未验证全部数据',
   };
   const issues = Array.isArray(report?.issues) ? report.issues as Array<{code?: string}> : [];

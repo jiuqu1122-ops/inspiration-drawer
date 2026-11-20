@@ -106,6 +106,20 @@ class AuditTests(unittest.TestCase):
         empty=parameter('input',[]); empty.Inputs.Forwards=['source-output']; final.Parameters.Inputs=[empty]
         doc=document([final,source])
         self.assertIn('connected_input_empty',[i['code'] for i in audit(plan,doc)['issues']])
+    def test_stale_completed_data_does_not_pass_an_unsolved_component(self):
+        final,_,doc=self.setup_model(); final.Phase='Expired'
+        self.assertIn('component_not_solved',[i['code'] for i in audit(plan,doc)['issues']])
+    def test_large_outputs_have_no_artificial_item_count_quota(self):
+        _,output,doc=self.setup_model()
+        values=[geometry('Rhino.Geometry.Point3d')]*10001
+        output.State.Data.Tree=lambda:NS(ItemCount=len(values),NonNullItems=values)
+        self.assertEqual(audit(plan,doc)['status'],'passed')
+    def test_null_or_non_geometry_items_cannot_hide_behind_one_valid_geometry(self):
+        _,output,doc=self.setup_model()
+        values=[geometry(),geometry('System.String')]
+        output.State.Data.Tree=lambda:NS(ItemCount=3,NonNullItems=values)
+        codes=[i['code'] for i in audit(plan,doc)['issues']]
+        self.assertIn('geometry_output_nulls',codes);self.assertIn('non_geometry_output_items',codes)
 
 if __name__=='__main__':
     result=unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(AuditTests))
