@@ -25,15 +25,22 @@ fn ordinary(path: &Path, directory: bool) -> bool {
     }
     true
 }
-fn safe_directory_chain(path: &Path) -> bool {
+pub(super) fn safe_directory_chain(path: &Path) -> bool {
     path.ancestors().filter(|part| !part.as_os_str().is_empty())
         .all(|part| !part.exists() || ordinary(part, true))
 }
+pub(super) fn managed_payload_hash(name: &str) -> Option<&str> {
+    let hash = match name.split_once("-repair-") {
+        Some((hash, nonce)) if nonce.len() == 16 && nonce.bytes().all(|byte| byte.is_ascii_hexdigit()) => hash,
+        Some(_) => return None,
+        None => name,
+    };
+    (hash.len() == 20 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(hash)
+}
 fn verified_managed_payload(path: &Path) -> bool {
     let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
-    if name.len() != 20 || !name.bytes().all(|value| value.is_ascii_hexdigit()) || !ordinary(path, true) {
-        return false;
-    }
+    let Some(hash_prefix) = managed_payload_hash(name) else { return false; };
+    if !ordinary(path, true) { return false; }
     let Ok(entries) = fs::read_dir(path) else { return false; };
     let mut count = 0;
     let mut total_bytes = 0u64;
@@ -60,7 +67,7 @@ fn verified_managed_payload(path: &Path) -> bool {
         content_hash.update(bytes);
     }
     let expected_hash = hex::encode(content_hash.finalize());
-    if !expected_hash.starts_with(name) { return false; }
+    if !expected_hash.starts_with(hash_prefix) { return false; }
     let rhp = path.join(PLUGIN);
     let Ok(meta) = fs::metadata(&rhp) else { return false; };
     if meta.len() > 32 * 1024 * 1024 { return false; }

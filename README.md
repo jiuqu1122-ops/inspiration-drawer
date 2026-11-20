@@ -4,12 +4,19 @@
 
 ## 下载
 
-当前已发布版本：**8.0.34**
+当前已发布版本：**8.0.35**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.34/Inspiration.Drawer_8.0.34_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.34)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.35/Inspiration.Drawer_8.0.35_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.35)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 8.0.35 更新
+
+- **Rhino 建模流程**：取消固定 24 轮工具调用上限，保留手动停止；纯文字建模不再要求参考图或初始视口。
+- **GH2 通用验收**：检查真实端口和输出类型、数据连通、几何有效性与预览数据。发现原始 Python 对象等问题时支持针对性输出转换修复；最后一次修改后必须重新求解验收，不能凭日志或“求解成功”报告完成。
+- **对话同步**：修复新建／切换 Rhino 对话后首次发送使用旧会话 ID 的问题，等待新会话就绪并保留草稿。
+- **独立更新**：新增签名 Rhino 建模模块和 Rhino 8/9 插件更新。软件升级后先检查插件，已有最新版保持不动，过期的受管插件才更新；支持回退。
 
 ## 8.0.34 更新
 

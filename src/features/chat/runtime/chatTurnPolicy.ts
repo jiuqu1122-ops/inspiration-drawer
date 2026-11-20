@@ -2,8 +2,24 @@ import { normalizeVisibleChatText } from './chatVisibleText';
 
 export const MAX_WEB_SEARCH_QUERIES_PER_TURN = 4;
 export const MAX_TOOL_ROUNDS = 8;
-export const MAX_RHINO_TOOL_ROUNDS = 24;
+// Native modeling can legitimately require many discovery/build/solve stages.
+// Cancellation and concrete failures bound execution; Rhino has no round quota.
+export const MAX_RHINO_TOOL_ROUNDS = null;
 export const MAX_EMPTY_RESPONSE_RECOVERIES = 1;
+
+export const preserveRhinoVisibleProgressForContinuation = (content: unknown) => {
+  const visible = normalizeVisibleChatText(content);
+  return visible ? `${visible}\n\n` : '';
+};
+
+export const appendRhinoVisibleProgress = (previous: unknown, next: unknown) => {
+  const current = normalizeVisibleChatText(previous);
+  const addition = normalizeVisibleChatText(next);
+  if (!current) return addition;
+  if (!addition || current === addition || current.endsWith(`\n\n${addition}`)) return current;
+  if (addition.startsWith(`${current}\n\n`)) return addition;
+  return `${current}\n\n${addition}`;
+};
 
 export const EMPTY_CHAT_RESULT_ERROR = '模型未返回有效结果，请重试。';
 
@@ -31,7 +47,10 @@ export const classifyChatProviderOutcome = (input: {
 export const chatToolRoundLimit = (executionSource: 'desktop' | 'rhino' = 'desktop') => (
   executionSource === 'rhino' ? MAX_RHINO_TOOL_ROUNDS : MAX_TOOL_ROUNDS
 );
-export const canRunChatToolRound = (depth: number, executionSource: 'desktop' | 'rhino' = 'desktop') => depth < chatToolRoundLimit(executionSource);
+export const canRunChatToolRound = (depth: number, executionSource: 'desktop' | 'rhino' = 'desktop') => {
+  const limit = chatToolRoundLimit(executionSource);
+  return limit === null || depth < limit;
+};
 
 export const buildRhinoTurnInstruction = () => [
   'Rhino/Grasshopper is a multi-step tool workflow. A successful native tool call is a completed STEP, not necessarily the completed user task.',

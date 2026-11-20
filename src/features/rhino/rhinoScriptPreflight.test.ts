@@ -288,3 +288,51 @@ describe('nonuniform Scale overload preflight',()=>{
   for(const script of ['rg.Transform.Scale(rg.Plane.WorldXY,2,3,4)','rg.Transform.Scale(rg.Point3d.Origin,2)','rg.Transform.Scale(pivot,2,3,4)'])expect(inspectGeometryFragment(python,script)).toEqual([]);
  });
 });
+
+describe('Rhino Python 3 None enum compatibility', () => {
+  it.each([
+    ['import Rhino.Geometry as rg\ncap = rg.PipeCapMode.None', 2],
+    ['import Rhino.Geometry as geo\ncap = getattr(geo.PipeCapMode, "None")', 2],
+    ['import Rhino\ncap = Rhino.Geometry.PipeCapMode.None', 2],
+    ['from Rhino import Geometry as geo\ncap = geo.PipeCapMode.None', 2],
+    ['from Rhino.Geometry import PipeCapMode as Cap\ncap = getattr(Cap, \'None\',)', 2],
+    ['from Rhino.Geometry import (\n PipeCapMode as Cap,\n)\ncap = Cap.None', 4],
+    ['import Rhino\nfilter = Rhino.DocObjects.ObjectType.None', 2],
+    ['import Rhino\nkind = Rhino.Geometry.Mesh.MeshType.None', 2],
+    ['import Rhino.Geometry as rg\ncap = getattr(\n rg.PipeCapMode,\n "None"\n)', 2],
+  ])('rejects the incompatible enum lookup before execution: %s', (script, line) => {
+    const issues = inspectRhinoScript(python, script);
+    expect(issues).toContainEqual(expect.objectContaining({ code: 'rhino_python_enum_none', line,
+      instruction: expect.stringContaining('PipeCapMode.NONE') }));
+    try {
+      assertRhinoScriptPreflight(python, { script });
+      throw new Error('expected rejection');
+    } catch (error) {
+      expect(error).toBeInstanceOf(RhinoNativeScriptPreflightError);
+      expect(rhinoArgumentRejection(native, error as Error)).toMatchObject({ dispatched: false, scriptExecuted: false, documentChanged: false, correctionTool: python });
+    }
+  });
+
+  it.each([
+    'import Rhino.Geometry as rg\ncap = rg.PipeCapMode.NONE',
+    'import Rhino.Geometry as rg\ncap = getattr(rg.PipeCapMode, "NONE")',
+    'import Rhino.Geometry as rg\nimport rhinocompat as compat\ncap = compat.ENUM_NONE(rg.PipeCapMode)',
+    'import Rhino.Geometry as rg\ncap = getattr(rg.PipeCapMode, "None", rg.PipeCapMode.NONE)',
+    'import Rhino.Geometry as rg\ncap = rg.PipeCapMode.Flat\nother = rg.PipeCapMode.Round',
+    '# rg.PipeCapMode.None\ntext = \'getattr(rg.PipeCapMode, "None")\'',
+    'source = """import Rhino.Geometry as rg\ncap = rg.PipeCapMode.None\ncap = getattr(rg.PipeCapMode, "None")"""',
+    'import Rhino.Geometry as rg\nrg = custom_api()\ncap = getattr(rg.PipeCapMode, "None")',
+    'def lookup(Rhino):\n return getattr(Rhino.CustomMode, "None")',
+    'from custom_library import CustomMode\ncap = getattr(CustomMode, "None")',
+    '#! python 2\nimport Rhino.Geometry as rg\ncap = getattr(rg.PipeCapMode, "None")',
+  ])('allows supported enums, intentional defaults, embedded text and unknown receivers: %s', script => {
+    expect(inspectRhinoScript(python, script)).toEqual([]);
+  });
+
+  it('leaves the C# spelling and original Python source intact', () => {
+    const script = 'import Rhino.Geometry as rg\ncap = rg.PipeCapMode.None';
+    expect(() => assertRhinoScriptPreflight(python, { script })).toThrow();
+    expect(script).toBe('import Rhino.Geometry as rg\ncap = rg.PipeCapMode.None');
+    expect(inspectRhinoScript('rhino_native_run_csharp', 'var cap = Rhino.Geometry.PipeCapMode.None;')).toEqual([]);
+  });
+});

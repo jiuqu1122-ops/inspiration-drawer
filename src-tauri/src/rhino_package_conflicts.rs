@@ -49,7 +49,7 @@ pub fn find_legacy_packages(packages: &Path) -> Result<Vec<PathBuf>, String> {
         let text = fs::read_to_string(&manifest).unwrap_or_default();
         if !text.lines().any(|line| line.trim_start_matches('\u{feff}').trim().strip_prefix("name:")
             .is_some_and(|value| value.trim().trim_matches(['\'', '"']) == PACKAGE)) { continue; }
-        let matching = [canonical.join(RHP), canonical.join("net7.0").join(RHP), canonical.join("net8.0").join(RHP)]
+        let matching = [canonical.join(RHP), canonical.join("net7.0").join(RHP), canonical.join("net8.0").join(RHP), canonical.join("net10.0").join(RHP)]
             .iter().any(|file| file.parent().is_some_and(ordinary_dir) && owned_rhp(file));
         if matching { result.push(canonical); }
     }

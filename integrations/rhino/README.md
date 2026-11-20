@@ -146,7 +146,7 @@ beta build and does not publish a stable auto-update or change the wallet backen
 4. 桌面端必须运行并完成正常登录与模型设置。原生 Rhino MCP 操作仍需要另外安装 RhinoAI / Rhino-MCP-Platform；本包不会替换它。
 5. Rhino 8 的原生 MCP 功能请使用 8.19 或更新版本。早期 Rhino 8.0 不应被当作可自动建模的支持环境。
 
-如果不使用设置中的一键安装，可选择对应 Rhino 主版本的插件 ZIP；RHP、deps、runtimeconfig、RUI 和 SVG 必须保留在同一目录。Rhino 8 使用 net7.0 包，Rhino 9 使用 net8.0 包，不要混用。
+如果不使用设置中的一键安装，可选择对应 Rhino 主版本的插件 ZIP；RHP、deps、runtimeconfig、RUI 和 SVG 必须保留在同一目录。Rhino 8 使用 net7.0 包，Rhino 9 使用 net8.0 包，不要混用。若出现缺少 `System.Runtime, Version=8.0.0.0` 并带有 FusionLog 绑定错误，应先用 Rhino 的 SystemInfo 核实实际加载的 .NET 运行模式与完整版本，再检查启动参数是否有 /netfx。本插件不支持旧 .NET Framework 模式；不要复制 System.Runtime.dll 作为修复，也不要只凭推荐运行时版本就认定目标框架错误。
 
 ## 本版改动
 
@@ -259,7 +259,7 @@ beta.7 adds direct execution of native RhinoAI MCP tools from Rhino plugin Chat.
 
 Native tools are mapped into Chat as `rhino_native_<name>`, for example `rhino_native_run_command`. Calls are forwarded to the matched official RhinoAI MCP listener and execute directly after the user sends the Chat request; there is no extra approval step. The bridge never substitutes its own command executor for the official MCP tool.
 
-Source integration, plugin compilation, transport checks, type checks, and focused frontend tests pass. Real Rhino GUI modeling execution is still not verified; first manual validation must use an empty or undoable document.
+Source integration, plugin compilation, transport checks, type checks, and frontend tests pass. The GH2 parameter-inspection helper and native Interval From Limits -> Triangle Grid data flow have also been verified in a disposable GH2 document inside Rhino 9. This does not certify completion of an arbitrary user model.
 ## 本版边界
 
 - 测试平台：Windows、Rhino 9，实际加载测试构建为 `9.0.26300.09401`，使用 .NET 8 插件运行时。
@@ -321,7 +321,7 @@ dotnet run -c Release --project integrations/rhino/Bridge.Tests/Bridge.Tests.csp
 
 ## One-click installation / Rhino 8 and 9 (beta.10)
 
-In desktop Settings, expand Rhino Plugin and click Install / Update. The desktop executable embeds separate Rhino 8 (.NET 7) and Rhino 9 (.NET 8) builds. Detection uses the local Rhino installation registry, not a hard-coded program path. Registration is per-user and offline. Content-addressed installation directories prevent overwriting an RHP currently loaded in Rhino; restart Rhino to pick up an update. Prior plugin registration paths are backed up next to each installed payload. Models, chats and canvas data are never touched. RhinoAI native MCP is a separate dependency and is not replaced by this installer.
+In desktop Settings, expand Rhino Plugin and click Install / Update. The desktop executable embeds separate Rhino 8 (.NET 7) and Rhino 9 (.NET 8) builds. After a desktop upgrade, it automatically synchronizes only previously managed, outdated plugins; it does not silently install for new Rhino versions or re-enable a disabled plugin. Detection uses the local Rhino installation registry, not a hard-coded program path. Registration is per-user and offline. Content-addressed installation directories prevent overwriting an RHP currently loaded in Rhino; restart Rhino to pick up an update. Prior plugin registration paths are backed up next to each installed payload. Models, chats and canvas data are never touched. RhinoAI native MCP is a separate dependency and is not replaced by this installer.
 
 Image settings in the Rhino panel now expose model-supported resolution, aspect ratio, and quality (when supported) via the same desktop Chat generation settings. Unsupported/stale choices are rejected without starting a generation request.
 
@@ -333,4 +333,49 @@ Release builds must run scripts/build-rhino-plugin-payload.ps1 before cargo buil
 Image tools are exposed based on actual visual context and explicit visual capability intent, not steering-wheel/object/domain keywords. A current attachment or recent generated result lets the model decide whether a request is an artifact/edit task, even when the user never says ?generate/render/image?. Capability visibility is not a dispatch and does not spend credits. Explicit analysis/questions/wait/no-generation instructions are guarded at the router before any image executor call. Unrelated new topics do not inherit old references.
 
 This release does not hard-code a product, industry, shape or object vocabulary. The model receives a generic multimodal policy and the actual reference context.
+
+## Rhino 独立更新（Host API 1）
+
+桌面首次升级到包含此机制的基础版本后，兼容的 Rhino 修复不再要求每次重新打包整个软件：
+
+- `runtime`：独立 ESM 建模模块，包含工作流提示词、API 预检、错误诊断、建模辅助 Python 和建模资料。桌面保留共享 Chat、权限、凭据和 MCP 传输。模块不包含 React 或桌面 IPC。
+- `plugin8` / `plugin9`：原生面板和桥接插件，各自保留版本与递增 revision。更新某个组件不会移除其它组件。
+- 启动时加载已验证的建模模块，然后查询独立渠道。软件升级后的既有自动同步在渠道查询之后执行：仅对现有启用的受管插件安装有变化的目标文件；最新插件保持不动，禁用插件不自动启用。查询失败继续使用已验证的本地缓存/内嵌包；不会用较旧缓存替换新桌面内嵌的插件。
+- 所有下载和校验完成后一次切换索引。建模模块重启桌面后启用；原生插件重启 Rhino 后启用。失败不标记桌面版本已同步；已下载但注册失败的独立插件也会在后续检查时重试。
+- 设置 → Rhino 插件提供“检查并更新 Rhino”和“回退上次更新”。回退保留 revision 上限，下次检查不会立即装回被回退的版本；更高 revision 仍可更新。
+- 固定发布渠道、公钥验签、SHA-256 与大小校验，每次加载也复核解出的文件。Host API 不兼容时需要升级桌面。缓存位于 `%LOCALAPPDATA%/InspirationDrawer/RhinoUpdates`，不写模型、聊天或画布。
+
+构建机首次初始化独立签名密钥（不覆盖已有密钥）：
+
+```powershell
+node scripts/rhino-updates.mjs init-key
+```
+
+公钥固定在 `update-channel.json`；私钥默认在 `%USERPROFILE%/.tauri/inspiration-drawer-rhino-updates.pem`，也可通过 `RHINO_UPDATE_SIGNING_KEY_PATH` 指定。备份私钥，不上传到仓库或发布包；更换公钥需要基础桌面升级。
+
+仅打包建模模块修复，不运行 Vite、Cargo 或安装包构建：
+
+```powershell
+npm run rhino:update:pack -- --component runtime --version 2026.11.20.2 --revision 2 --out outputs/rhino-updates --merge outputs/current/latest.json
+```
+
+首次发布没有旧索引时省略 `--merge`。之后先下载固定 `rhino-updates` Release 的当前 `latest.json`，通过 `--merge` 验签并保留其它组件。revision 针对所更新组件递增；相同/较低 revision 不会自动重装。
+
+修改 C# 时，先运行 `scripts/build-rhino-beta.ps1 -SkipDesktop -SkipYak` 单独构建插件，再用 `--component plugin8`、`plugin9` 或 `all` 打包。插件 version 必须与编译元数据一致；`all` 的 `--version` 只指定建模模块版本，插件版本从项目读取。
+
+把 `*.bundle.json` 上传到固定 GitHub `rhino-updates` Release，再替换 `latest.json`；先上传组件再更新索引。Gitee 可同步相同索引；索引中的组件 URL 必须指向已上传的文件，可通过 `--base-url` 指定发布地址。脚本只准备和签名，不上传或修改线上 Release。
+
+## 2026-11-20 text modeling and GH2 repairs
+
+Rhino/GH tasks have no fixed tool-round quota. Manual Stop and concrete tool failure/timeout handling remain active. A runtime integration test completes 32 consecutive tool rounds; another stops manually on round 27. Desktop Chat retains its own existing policy.
+
+Text modeling works in an empty Rhino document without a reference image or viewport export, including when an earlier image task left Mask enabled. A combined model/render request builds first and captures the resulting geometry later. Explicit screenshot and image-generation requests retain their image validation.
+
+New/select conversation commands keep the composer draft and wait for both the completed command receipt and the published target conversation ID. The desktop publishes saved conversations to its bridge references before returning the ID; document/instance ownership checks remain enforced.
+
+The read-only `rhino_native_g2_inspect_parameters` helper reports actual GH2 parameter types and solved data, even when native metadata leaves typeName empty. In the tested Rhino 9/GH2 build, Triangle Grid X Count/Y Count are IntervalParameter inputs. Native Interval From Limits components supply valid intervals; guessing integer conversions leaves them empty. Disposable real-GH2 verification produced 156 points and 264 cells while preserving the user's existing graph.
+
+These host/bridge changes require the initial desktop base upgrade. The independent runtime and Rhino 8/9 plugin packages then use the update channel above. Preparing packages does not publish them or replace the currently running application/plugin.
+
+GH2 completion now also requires a fresh `g2_verify_model` receipt after the final mutation. The fixed native helper audits exact final output IDs, CLR item types before Python.NET unwrapping, full-item geometry validity within a bounded audit, connected-empty inputs, unloaded placeholders, component faults and preview cache/display data. It applies to arbitrary models. `g2_repair_output_conversion` rechecks the diagnosed GH2 document and only enables output marshalling on selected final components that actually emit opaque Python objects; it preserves code, wires, intermediate Python data and all other conversion settings. A setting-change receipt never passes the model gate: solve and audit again. Failed or uncertain later writes invalidate previous acceptance. Premature completion text is withheld while acceptance is pending. Camera framing and full design fidelity remain separate checks.
 

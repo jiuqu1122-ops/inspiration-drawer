@@ -88,6 +88,48 @@ function missingPythonNamespaceImports(code: string): RhinoScriptIssue[] {
   return issues;
 }
 
+const PYTHON_ENUM_NONE_GUIDANCE = 'In Rhino Python 3 (Python.NET), .NET enum members named None are exposed as NONE. Use rg.PipeCapMode.NONE (no cap), not .None, .None_ or getattr(rg.PipeCapMode, "None"). For code shared with IronPython, explicitly import rhinocompat as compat and use compat.ENUM_NONE(rg.PipeCapMode). Preserve the requested cap behavior; Flat/Round change the geometry. This local rejection dispatched nothing; correct the complete script once without replaying earlier completed writes.';
+
+/** Check known Rhino namespace bindings only; never evaluate or rewrite Python. */
+function pythonEnumNoneIssues(script: string, code: string): RhinoScriptIssue[] {
+  if (/^\uFEFF?[ \t]*#![ \t]*python[ \t]+2\b/i.test(script)) return [];
+  const roots = new Map<string, string>([['Rhino', 'Rhino']]);
+  for (const match of code.matchAll(/\bimport\s+(Rhino(?:\.[A-Za-z_]\w*)*)(?:[ \t]+as[ \t]+([A-Za-z_]\w*))?/g)) {
+    roots.set(match[2] || 'Rhino', match[2] ? match[1] : 'Rhino');
+  }
+  for (const match of code.matchAll(/\bfrom\s+(Rhino(?:\.[A-Za-z_]\w*)*)\s+import\s*(?:\(([^)]*)\)|([^;\r\n]+))/g)) {
+    for (const item of (match[2] || match[3] || '').split(',')) {
+      const imported = item.trim().match(/^([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?$/);
+      if (imported) roots.set(imported[2] || imported[1], match[1] + '.' + imported[1]);
+    }
+  }
+  // A possible explicit rebinding anywhere makes the receiver ambiguous.
+  const shadowed = new Set<string>();
+  for (const match of code.matchAll(/\b(?:def|class)\s+([A-Za-z_]\w*)|\bfor\s+([A-Za-z_]\w*)\s+in|\b([A-Za-z_]\w*)\s*(?::[^=\r\n]+)?=(?!=)/g)) shadowed.add(match[1] || match[2] || match[3]);
+  for (const match of code.matchAll(/\bdef\s+\w+\s*\(([^)]*)\)|\blambda\s+([^:\r\n]+):/g)) {
+    for (const token of (match[1] || match[2] || '').matchAll(/[A-Za-z_]\w*/g)) shadowed.add(token[0]);
+  }
+  const rhinoPath = (receiver: string) => {
+    const [root, ...parts] = receiver.replace(/\s/g, '').split('.');
+    const namespace = roots.get(root);
+    return namespace && !shadowed.has(root) && (parts.length || namespace !== 'Rhino')
+      ? [namespace, ...parts].join('.') : undefined;
+  };
+  const issues: RhinoScriptIssue[] = [];
+  const add = (receiver: string, index: number) => {
+    const api = rhinoPath(receiver);
+    if (api) issues.push({ code: 'rhino_python_enum_none', line: code.slice(0, index).split('\n').length,
+      api: api + '.None', actualType: 'Python 3 keyword / missing Python.NET enum attribute', instruction: PYTHON_ENUM_NONE_GUIDANCE });
+  };
+  for (const match of code.matchAll(/\b([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*)\s*\.\s*None\b/g)) add(match[1], match.index!);
+  // The code mask locates the call; inspect only its literal member argument.
+  // A third/default argument may intentionally implement cross-runtime lookup.
+  for (const match of code.matchAll(/(^|[^\w.])getattr\s*\(\s*([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*)\s*,/gm)) {
+    if (/^\s*(['"])None\1\s*,?\s*\)/.test(script.slice(match.index! + match[0].length))) add(match[2], match.index! + match[1].length);
+  }
+  return issues;
+}
+
 type KnownType = 'Point3d' | 'Plane' | 'Ray3d' | 'RayShootEvent[]' | 'RayShootEvent' | 'BrepFace' | 'Brep' | 'Brep[]' | 'Curve' | 'Vector3d' | 'Boolean' | 'Number' | 'RhinoObject' | 'AnalyticBrep' | 'NonUniformTransform';
 function expressionType(expression: string, known: Map<string, KnownType>): KnownType | undefined {
   let value = expression.trim();
@@ -225,6 +267,7 @@ export function inspectRhinoScript(name: string, script: string): RhinoScriptIss
   const code = maskNonCode(script, name.endsWith('run_csharp'));
   const imports = name === 'rhino_native_run_python' ? missingPythonNamespaceImports(code) : [];
   const issues: RhinoScriptIssue[] = [];
+  if (name === 'rhino_native_run_python') issues.push(...pythonEnumNoneIssues(script, code));
   if (isRhinoGhAssemblyReflectionScan(name, script)) {
     const position = code.search(/\bGetTypes\s*\(\s*\)/);
     issues.push({
@@ -283,6 +326,7 @@ export function assertRhinoScriptPreflight(name: string, args: Record<string, un
 /** Diagnostic only: a remote TypeError is NOT evidence that nothing was written. */
 export function rhinoScriptFailureExplanation(error: unknown): string | undefined {
   const text = rhinoDiagnosticText(error);
+  if (/PipeCapMode/.test(text) && /has no attribute\s+['"]None['"]/.test(text)) return 'Rhino Python 3 将 .NET 枚举的 None 成员暴露为大写 NONE。无封口应使用 rg.PipeCapMode.NONE，getattr(rg.PipeCapMode, "None") 仍会失败；跨 Python 版本可显式导入 rhinocompat as compat 并调用 compat.ENUM_NONE(rg.PipeCapMode)。不要改成 Flat/Round 来绕过错误，这会改变封口形状。先核对当前文档和部分写入，再定向纠正，不能直接重放失败脚本。';
   if (/BrepObject|RhinoObject/.test(text) && /SetMeshParameters/.test(text)) return '脚本调用了 Rhino 对象不存在的 SetMeshParameters。可选的渲染网格设置应使用 SetRenderMeshParameters；不能因此重放已经完成的几何建模。';
   if (/Transformed solid invalid|transform(?:ed|ation)?[^\n]{0,60}(?:invalid|failed)/i.test(text)) return '实体在变换后未通过有效性检查。需核对缩放因子、变换矩阵、几何类型和实体朝向；不能只凭此错误认定参考图有问题，也不能忽略失败部件或自动重跑已执行脚本。';
   if (/RayShootEvent/.test(text) && /(?:has no attribute|does not contain|not.*member)[^\n]{0,80}['"]?[XYZ]/i.test(text)) return '脚本把 RayShootEvent 命中事件当作 Point3d 读取坐标。RhinoCommon 的 RayShoot(geometry, ray, maxReflections) 返回事件数组，应读取 event.Point.X/Y/Z；RayShoot(ray, geometry, maxReflections) 才返回点数组。先确认所调用重载、真实类型及当前文档部分写入，再做一次定向纠正，不能直接重放原脚本。';

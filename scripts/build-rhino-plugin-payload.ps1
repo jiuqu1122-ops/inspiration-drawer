@@ -20,5 +20,11 @@ foreach ($version in @(8,9)) {
   foreach ($name in @('InspirationDrawer.Rhino.rhp','InspirationDrawer.Rhino.deps.json','InspirationDrawer.Rhino.runtimeconfig.json','InspirationDrawer.Rhino.rui','InspirationDrawer.Rhino.svg')) {
     Copy-Item -LiteralPath (Join-Path $output $name) -Destination (Join-Path $payload $name) -Force
   }
+  $expectedFramework = if ($version -eq 8) { 'net7.0' } else { 'net8.0' }
+  $runtimeConfig = Get-Content -Raw (Join-Path $output 'InspirationDrawer.Rhino.runtimeconfig.json') | ConvertFrom-Json
+  $deps = Get-Content -Raw (Join-Path $output 'InspirationDrawer.Rhino.deps.json') | ConvertFrom-Json
+  if ($runtimeConfig.runtimeOptions.tfm -ne $expectedFramework -or $deps.runtimeTarget.name -notmatch [regex]::Escape("Version=v$($expectedFramework.Substring(3))")) {
+    throw "Rhino $version payload runtime mismatch: expected $expectedFramework, got runtimeconfig=$($runtimeConfig.runtimeOptions.tfm), deps=$($deps.runtimeTarget.name)"
+  }
   Get-FileHash -LiteralPath (Join-Path $payload 'InspirationDrawer.Rhino.rhp') -Algorithm SHA256
 }

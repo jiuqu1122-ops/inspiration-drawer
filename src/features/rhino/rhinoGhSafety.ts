@@ -3,6 +3,7 @@ import type { ChatToolCall } from '../chat/model/chatTypes';
 import guardSource from './modeling/gh_boolean_guard.py?raw';
 import hostSource from './modeling/gh_script_tools.py?raw';
 import { RHINO_REFERENCE_REVIEW_TOOL, type RhinoNativeTool } from './rhinoProtocol';
+import { GH2_VERIFY_MODEL_TOOL, parseGh2ModelReport } from './rhinoGh2Model';
 export const isRhinoViewportObservationTool = (name: string) => name === RHINO_REFERENCE_REVIEW_TOOL || name === 'rhino_native_get_viewport_image';
 
 export const VERIFY_GH_TOOL = 'rhino_native_verify_gh_geometry';
@@ -73,6 +74,7 @@ export const rhinoToolObservation=(name:string,blocks:Array<{type:string;text?:s
     && ['image/png','image/jpeg','image/webp'].includes(block.mimeType||'') && typeof block.data==='string'
     && block.data.length>0 && block.data.length<=3_300_000 && /^[A-Za-z0-9+/=\r\n]+$/.test(block.data)).slice(0,2).map(block=>({mimeType:block.mimeType!,data:block.data!.replace(/\s/g,'')}));
   return {source:'rhino',documentId,content:blocks.filter(block=>block.type==='text').map(block=>block.text).join('\n'),
+    ...(name === GH2_VERIFY_MODEL_TOOL && parseGh2ModelReport(blocks) ? {gh2Verification:parseGh2ModelReport(blocks)} : {}),
     ...(parseGhObservation(blocks)?{ghVerification:parseGhObservation(blocks)}:{}),
     ...(isRhinoViewportObservationTool(name)?{viewportImageCount:images.length}:{}),
     ...(images.length?{transientRhinoImages:images}:{}),

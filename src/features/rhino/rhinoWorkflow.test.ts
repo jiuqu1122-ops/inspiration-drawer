@@ -45,6 +45,9 @@ describe('Rhino native workflow policy', () => {
     expect(instruction).toContain('Do not hand-write BooleanDifference cutter loops');
     expect(instruction).toContain('Do not call RhinoCommon ObjectTable.FindByObjectName');
     expect(instruction).toContain('Objects.FindByFilter(ObjectEnumeratorSettings)');
+    expect(instruction).toContain('rg.PipeCapMode.NONE');
+    expect(instruction).toContain('compat.ENUM_NONE(rg.PipeCapMode)');
+    expect(instruction).toContain('C# still uses PipeCapMode.None');
   });
 });
 

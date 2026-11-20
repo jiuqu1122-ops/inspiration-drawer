@@ -237,7 +237,7 @@ internal static class RhinoTools
             {
                 cleanViewport.Dispose();
                 var captureKind = forceRendered ? "Rendered" : forceShaded ? "Shaded" : "current";
-                throw new InvalidOperationException($"Rhino {captureKind} viewport capture is blank. No reference image was uploaded and image generation was not started.");
+                throw new InvalidOperationException($"Rhino {captureKind} viewport capture is blank. No viewport image was exported. Native modeling does not require a reference image.");
             }
             foreach (var obj in selectedObjects) if (!obj.IsDeleted) obj.Select(true, true, false, true, true, true);
             doc.Views.Redraw();

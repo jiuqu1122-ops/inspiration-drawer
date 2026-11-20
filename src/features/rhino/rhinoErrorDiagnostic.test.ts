@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readableRhinoMcpFailure, rhinoDiagnosticText, rhinoGeometryFailureExplanation } from './rhinoErrorDiagnostic';
-import { rhinoScriptFailureExplanation } from './rhinoScriptPreflight';
+import { isConfirmedRhinoScriptFailure, RhinoNativeMcpToolError, rhinoScriptFailureExplanation } from './rhinoScriptPreflight';
 const receipt = 'RhinoNativeMcpToolError: '+JSON.stringify({error:'Failed',message:"name 'System' is not defined"})+'\n'+JSON.stringify({stdout:'',stderr:'Traceback (most recent call last):\r\n  File "file:///C:/fixture/script.py", line 65, in <module>\r\nNameError: name \'System\' is not defined\r\n'});
 describe('readable native MCP diagnostics without changing raw receipts',()=>{
  it('decodes mixed JSON, escaping and nested exceptions from the reported failure',()=>{
@@ -17,6 +17,21 @@ describe('readable native MCP diagnostics without changing raw receipts',()=>{
  it('does not blame a missing import for timeouts or arbitrary text',()=>{
   expect(rhinoScriptFailureExplanation('Timeout: outcome unknown')).toBeUndefined();expect(readableRhinoMcpFailure(new Error('Timeout: outcome unknown'))).toContain('Timeout');
  });
+});
+
+it('explains the reported escaped PipeCapMode receipt with the Python 3 spelling and no replay', () => {
+  const traceback = 'Traceback (most recent call last):\n  File "file:///C:/fixture/script.py", line 2, in <module>\nAttributeError: type object \'PipeCapMode\' has no attribute \'None\'';
+  const receipt = 'RhinoNativeMcpToolError: ' + JSON.stringify({ error: 'Failed', message: "type object 'PipeCapMode' has no attribute 'None'" })
+    + '\n' + JSON.stringify({ stdout: '', stderr: traceback });
+  const encoded = receipt.replace(/'/g, '\\u0027');
+  const explanation = rhinoScriptFailureExplanation(encoded)!;
+  expect(explanation).toContain('rg.PipeCapMode.NONE');
+  expect(explanation).toContain('compat.ENUM_NONE');
+  expect(explanation).toContain('不能直接重放');
+  expect(explanation).toContain('不要改成 Flat/Round');
+  expect(explanation).not.toContain('file:///');
+  expect(readableRhinoMcpFailure(encoded)).toContain('第 2 行');
+  expect(isConfirmedRhinoScriptFailure(new RhinoNativeMcpToolError(traceback))).toBe(true);
 });
 
 

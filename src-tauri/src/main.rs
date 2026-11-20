@@ -25,6 +25,7 @@ mod reference_upload;
 mod renderer_diagnostics;
 mod rhino_beta;
 mod rhino_installer;
+mod rhino_updates;
 use renderer_diagnostics::{window_action, WindowAction};
 mod services;
 mod shortcut_config;
@@ -19222,7 +19223,12 @@ fn main() {
             github_skill_commands::github_skills_request,
             github_skill_commands::github_skills_cancel,
             rhino_installer::rhino_plugin_status,
+            rhino_installer::auto_update_managed_rhino_plugins,
             rhino_installer::install_rhino_plugin,
+            rhino_updates::rhino_update_status,
+            rhino_updates::check_rhino_updates,
+            rhino_updates::rhino_runtime_location,
+            rhino_updates::rollback_rhino_update,
             rhino_beta::rhino_beta_get_connection,
             rhino_beta::rhino_beta_get_connections,
             rhino_beta::rhino_beta_request,

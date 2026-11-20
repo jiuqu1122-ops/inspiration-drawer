@@ -7,6 +7,7 @@ const byId = <T extends HTMLElement = HTMLElement>(id: string) => document.getEl
 const check = (value: unknown, label: string) => { if (!value) throw Error(label); };
 const wait = async (test: () => boolean, label: string) => { for (let i=0; i<90; i++) { if(test())return; await pause(50); } throw Error('Timeout: '+label); };
 const commands: Record<string, any>[] = [];
+const commandStatuses = new Map<string, string>();
 const iconViolations: string[] = [];
 document.addEventListener('securitypolicyviolation', event => { if(event.effectiveDirective==='img-src')iconViolations.push(event.blockedURI); });
 const checkIcons = () => {
@@ -29,10 +30,11 @@ let manyParts = false;
 const nativeFetch=window.fetch.bind(window);
 window.fetch = async (resource,init) => {
   const pathname=typeof resource==='string'?resource:'';
-  if(pathname.startsWith('/panel/state'))return Response.json({connected:true,instanceId:'synthetic-only',processId:12345,state,context:{name:'隔离测试 · 未连接 Rhino',selection:[]},commands:commands.map(request=>({id:request.id,status:'completed',request}))});
+  if(pathname.startsWith('/panel/state'))return Response.json({connected:true,instanceId:'synthetic-only',processId:12345,state,context:{name:'隔离测试 · 未连接 Rhino',selection:[]},commands:commands.map(request=>({id:request.id,status:commandStatuses.get(request.id)||'completed',request}))});
   if(pathname.startsWith('/panel/parts'))return Response.json({parts:manyParts?Array.from({length:12},(_,i)=>({id:String(i),name:`分件 ${i+1}`,kind:"object",type:"Brep",layer:"Default",material:{source:"layer"}})):[],layers:[{visible:true,path:'Default'},{visible:true,path:'外壳'}]});
   if(pathname==='/panel/command'){
     const command=JSON.parse(String(init?.body||'{}'));commands.push(command);
+    if(command.kind==='new'||command.kind==='select')commandStatuses.set(command.id,'accepted');
     const key=({'model':'model','image-model':'imageModel','image-aspect-ratio':'imageAspectRatio','image-resolution':'imageResolution','image-quality':'imageQuality'} as Record<string,string>)[command.kind];
     if(key)(state as Record<string,unknown>)[key]=command.value;
     if(command.kind==='mask-mode')state.imageMaskEnabled=command.value==='on';
@@ -105,12 +107,22 @@ async function run(){
  check(commands.filter(c=>c.kind==='send').length===1,'No duplicate sends');await wait(()=>input.value===''&&byId('local-image-list').hidden,'Accepted send clears text and images');
  state.busy=true;state.stoppable=true;await wait(()=>!byId('stop').hidden,'stop state');check(byId<HTMLButtonElement>('model-trigger').disabled,'Busy model disabled');
  state.busy=false;state.stoppable=false;await wait(()=>!byId<HTMLButtonElement>('model-trigger').disabled,'idle state');
+ // Reproduce queue acceptance/completion arriving before the new conversation snapshot.
+ input.value='帮我建一个花瓶，不需要图片';input.dispatchEvent(new Event('input',{bubbles:true}));
+ click('new');await wait(()=>commands.some(c=>c.kind==='new'),'new conversation queued');await pause(1150);
+ check(byId<HTMLButtonElement>('send').disabled,'Send must wait while new conversation is accepted');
+ const newCommand=commands.find(c=>c.kind==='new')!;commandStatuses.set(newCommand.id,'completed');await pause(1150);
+ check(byId<HTMLButtonElement>('send').disabled&&input.value==='帮我建一个花瓶，不需要图片','Completion alone must not submit a stale ID or lose the draft');
+ state.conversationId='fixture-chat-new';state.conversations.push({id:'fixture-chat-new',title:'新对话'});
+ await wait(()=>!byId<HTMLButtonElement>('send').disabled,'new conversation published');
+ composer.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await wait(()=>commands.filter(c=>c.kind==='send').length===2,'first send in new conversation');
+ check(commands.filter(c=>c.kind==='send').at(-1)!.conversationId==='fixture-chat-new','First message must carry the new conversation ID');
  if(!byId('reference-settings').hidden)click('reference-settings-toggle');
  input.value='参考画布图片，保留外壳比例与结构，为当前模型生成一张效果图。';input.dispatchEvent(new Event('input',{bubbles:true}));await pause();fits();
  // Menu remains open at capture to visually inspect the compact toolbar/layering.
  click(innerWidth<400?'model-trigger':'image-model-trigger');await pause();popupFits();
  checkIcons();check(iconViolations.length===0,'CSP blocked an icon/image resource');
  await finish({pass:true,icons,iconViolations,width:innerWidth,height:innerHeight,theme:document.documentElement.dataset.theme,base,expandedHeight,
-  checks:['icons paint under production img-src policy','all controls inside composer','desktop Chat control metrics','LLM above image settings','exclusive pickers','open menu survives catalog polling','escape/outside close','image model and resolution dispatch exactly once','local raster upload','reference/mask settings retained','quality capability retained','long input and many parts stay in viewport','send payload unchanged','busy/stop state'],commandKinds:commands.map(c=>c.kind)});
+  checks:['icons paint under production img-src policy','all controls inside composer','desktop Chat control metrics','LLM above image settings','exclusive pickers','open menu survives catalog polling','escape/outside close','image model and resolution dispatch exactly once','local raster upload','reference/mask settings retained','quality capability retained','long input and many parts stay in viewport','send payload unchanged','busy/stop state','new conversation waits for both receipt and fresh ID','draft retained during conversation synchronization','first send uses new ID'],commandKinds:commands.map(c=>c.kind)});
 }
 void run().catch(error=>finish({pass:false,error:String(error),iconViolations,commands:commands.map(c=>({kind:c.kind}))}));

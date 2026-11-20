@@ -11,6 +11,10 @@ describe('current paired Rhino payloads', () => {
     const deps = JSON.parse(readFileSync(new URL('InspirationDrawer.Rhino.deps.json', folder), 'utf8'));
     expect(pluginVersion).toBeTruthy();
     expect(deps.libraries).toHaveProperty(`InspirationDrawer.Rhino/${pluginVersion}`);
+    const expectedRuntime = major === 9 ? 'net8.0' : 'net7.0';
+    expect(deps.runtimeTarget.name).toContain(`Version=v${expectedRuntime.slice(3)}`);
+    const runtimeConfig = JSON.parse(readFileSync(new URL('InspirationDrawer.Rhino.runtimeconfig.json', folder), 'utf8'));
+    expect(runtimeConfig.runtimeOptions.tfm).toBe(expectedRuntime);
     expect(bytes.includes(Buffer.from(pluginVersion))).toBe(true);
     for (const marker of ['__RHINO_PLUGIN_VERSION_LABEL__', 'tool-history', 'history.open=active', 'reference-image-grid', 'data-panel-icon="arrow-up"', 'id="panel-icon-paperclip"',
       'window.rhinoPickers', 'cloneNode(true)', 'reader.readAsDataURL(file)', 'id="reference-settings-toggle"', 'idraw:keyboard-focus', 'compositionstart']) {

@@ -1,7 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import type { ChatMessage } from '../model/chatTypes';
-const h = vi.hoisted(() => ({ invoke: vi.fn(), replies: [] as Array<Record<string, unknown>>, requests: [] as Array<Record<string, any>>, messages: new Map<string, ChatMessage>() }));
-vi.mock('react', () => ({ useEffect: () => {}, useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => { let value = typeof initial === 'function' ? initial() : initial; return [value, (next: unknown) => { value = typeof next === 'function' ? next(value) : next; }]; }, useCallback: (callback: unknown) => callback, useMemo: (factory: () => unknown) => factory() }));
+const h = vi.hoisted(() => ({ invoke: vi.fn(), replies: [] as Array<Record<string, unknown> | Error>, requests: [] as Array<Record<string, any>>, messages: new Map<string, ChatMessage>(), deferStateUpdaters: false }));
+vi.mock('react', () => ({ useEffect: () => {}, useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => { let value = typeof initial === 'function' ? initial() : initial; return [value, (next: unknown) => { if (typeof next === 'function' && h.deferStateUpdaters) return; value = typeof next === 'function' ? next(value) : next; }]; }, useCallback: (callback: unknown) => callback, useMemo: (factory: () => unknown) => factory() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: h.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }));
 vi.mock('../../designMemory/context', async original => ({ ...await original<typeof import('../../designMemory/context')>(), recallDesignMemoryForTurn: vi.fn(async () => null), validateDesignMemoryMessages: vi.fn(async () => {}), designMemoryKindsInMessages: () => [], getDesignMemoryTurnReport: () => null }));
@@ -10,9 +10,14 @@ import { RHINO_REFERENCE_FIDELITY_ASSESSMENT_TOOL as quality } from '../../rhino
 import { useChatRuntime } from './useChatRuntime';
 import { registerRhinoNativeTools, rhinoToolDefinitions, RHINO_REFERENCE_REVIEW_TOOL, type RhinoNativeTool } from '../../rhino/rhinoProtocol';
 import { readRhinoModelingSkillResource, RHINO_MODELING_SKILL_RESOURCE_TOOL } from '../../rhino/rhinoProductModelingKnowledge';
+import { gh2ModelTools, GH2_VERIFY_MODEL_TOOL, GH2_REPAIR_OUTPUTS_TOOL } from '../../rhino/rhinoGh2Model';
 const executed=vi.fn(async(_name:string)=>({source:'rhino',content:'{"hits":[]}'}));
 const search='rhino_native_g1_search_components';
 const tools:RhinoNativeTool[]=[
+ ...gh2ModelTools(),
+ {name:'rhino_native_g2_get_canvas_graph',description:'Read GH2 graph',readOnly:true,destructive:false,inputSchema:{type:'object',properties:{}}},
+ {name:'rhino_native_g2_apply_graph',description:'Edit GH2 graph',readOnly:false,destructive:false,inputSchema:{type:'object',properties:{}}},
+ {name:'rhino_native_g2_solve_canvas',description:'Solve GH2 graph',readOnly:false,destructive:false,inputSchema:{type:'object',properties:{}}},
  {name:search,description:'Search components',readOnly:true,destructive:false,inputSchema:{type:'object',required:['query'],properties:{query:{type:'string'},limit:{type:'integer'}}}},
  {name:'rhino_native_g1_get_canvas_graph',description:'Read graph',readOnly:true,destructive:false,inputSchema:{type:'object',properties:{}}},
  {name:'rhino_native_g1_apply_graph',description:'Edit graph',readOnly:false,destructive:false,inputSchema:{type:'object',properties:{}}},
@@ -25,10 +30,11 @@ const setup=()=>useChatRuntime({model:'fixture',approvalMode:'auto',resolveAttac
 }});
 const call=(id:string,args:Record<string,unknown>,name=search)=>({content:'',toolCalls:[{id,name,arguments:JSON.stringify(args)}]});
 beforeEach(()=>{
+ h.deferStateUpdaters=false;
  const storage=new Map();vi.stubGlobal('localStorage',{getItem:(k:string)=>storage.get(k)||null,setItem:(k:string,v:string)=>storage.set(k,v)});vi.stubGlobal('window',{dispatchEvent:vi.fn(),setTimeout:()=>1,clearTimeout:()=>{}});
  h.messages.clear();h.replies.length=0;h.requests.length=0;h.invoke.mockReset();executed.mockReset();executed.mockImplementation(async()=>({source:'rhino',content:'{"hits":[]}'}));
  h.invoke.mockImplementation(async(command:string,args:Record<string,any>)=>{
-  if(command==='agent_openai_chat'){h.requests.push(args.request);const next=h.replies.shift();if(!next)throw Error('Unexpected extra model request');return {requestId:args.request.requestId,...next};}
+  if(command==='agent_openai_chat'){h.requests.push(args.request);const next=h.replies.shift();if(!next)throw Error('Unexpected extra model request');if(next instanceof Error)throw next;return {requestId:args.request.requestId,...next};}
   if(command==='chat_list_messages')return {messages:[...h.messages.values()],hasMore:false};
   if(command==='chat_upsert_message'){h.messages.set(args.message.id,args.message);return args.message;}
   if(command==='chat_upsert_conversation')return args.conversation;
@@ -39,6 +45,38 @@ beforeEach(()=>{
 });
 afterEach(()=>{vi.unstubAllGlobals();vi.restoreAllMocks();});
 const last=()=>[...h.messages.values()].filter(message=>message.role==='assistant').slice(-1)[0]!;
+
+it('finishes a Rhino turn with more than 24 consecutive tool rounds', async () => {
+  for (let round = 0; round < 32; round++) h.replies.push(call(`graph-${round}`, {}, 'rhino_native_g1_get_canvas_graph'));
+  h.replies.push({ content: 'All requested inspections completed.', toolCalls: [] });
+  await setup().sendMessage('Inspect the GH graph repeatedly to verify the requested workflow.', [], undefined, undefined, undefined, 'rhino');
+  expect(executed).toHaveBeenCalledTimes(32);
+  expect(h.requests).toHaveLength(33);
+  expect(last().status).toBe('completed');
+  expect(last().toolCalls).toHaveLength(32);
+});
+
+it('still honors manual stop after the former 24-round boundary', async () => {
+  const runtime = setup();
+  for (let round = 0; round < 32; round++) h.replies.push(call(`graph-${round}`, {}, 'rhino_native_g1_get_canvas_graph'));
+  executed.mockImplementation(async () => {
+    if (executed.mock.calls.length === 27) await runtime.stop();
+    return { source: 'rhino', content: '{"objects":[]}' };
+  });
+  await runtime.sendMessage('Inspect the current GH graph.', [], undefined, undefined, undefined, 'rhino');
+  expect(executed).toHaveBeenCalledTimes(27);
+  expect(last().status).toBe('cancelled');
+});
+
+it('publishes a newly saved conversation to the bridge before React runs state updater functions', async () => {
+  const runtime = setup();
+  h.deferStateUpdaters = true;
+  const created = await runtime.newConversation('新对话');
+  expect(created).toBeTruthy();
+  expect(runtime.conversations).toEqual([]);
+  expect(runtime.getConversationState().activeConversationId).toBe(created.id);
+  expect(runtime.getConversationState().conversations.map(item => item.id)).toContain(created.id);
+});
 describe('read-only GH discovery repairs in the actual Chat runtime, no native writes or paid calls',()=>{
  it('repairs two independent searches separated by successful results without exhausting a stale budget',async()=>{
   h.replies.push(call('bad-one',{}),call('fixed-one',{query:'Populate Geometry',limit:8}),call('graph',{},'rhino_native_g1_get_canvas_graph'),call('bad-two',{query:['Sphere']}),call('fixed-two',{query:'Sphere'}),{content:'已完成组件资料查询，未执行建模。',toolCalls:[]});
@@ -54,6 +92,47 @@ describe('read-only GH discovery repairs in the actual Chat runtime, no native w
   await setup().sendMessage('查询组件的端口资料。',[],undefined,undefined,undefined,'rhino');
   expect(last().status).toBe('error');expect(executed).not.toHaveBeenCalled();expect(h.requests).toHaveLength(2);
   expect(last().content).toContain('具体原因');expect(last().content).toContain('query');
+ });
+});
+
+describe('generic GH2 modeling acceptance in the actual Chat runtime',()=>{
+ const component='a1111111-1111-4111-8111-111111111111';
+ const output='b1111111-1111-4111-8111-111111111111';
+ const plan={componentIds:[component],geometryOutputIds:[output]};
+ const good={version:1,status:'passed',graphChanged:false,previewAvailable:true,issues:[],outputs:[{id:output,items:1,validGeometryItems:1,invalidGeometryItems:0,rawItemTypes:{'Rhino.Geometry.Brep':1}}]};
+ it('continues from premature completion through diagnosis, targeted conversion repair, solve and fresh verification',async()=>{
+  h.replies.push(call('build',{},'rhino_native_g2_apply_graph'),{content:'Done',toolCalls:[]},
+   call('diagnose',plan,GH2_VERIFY_MODEL_TOOL),
+   call('repair',{...plan,expectedDocumentId:component},GH2_REPAIR_OUTPUTS_TOOL),
+   call('solve',{},'rhino_native_g2_solve_canvas'),call('verify',plan,GH2_VERIFY_MODEL_TOOL),
+   {content:'The actual native geometry and preview data passed verification.',toolCalls:[]});
+  let verified=0;
+  executed.mockImplementation(async(name:string)=>name===GH2_VERIFY_MODEL_TOOL
+   ? {source:'rhino',content:'native receipt',gh2Verification:++verified===1?{...good,status:'needs_attention',previewAvailable:false,issues:[{code:'python_output_not_marshaled'}],outputs:[{...good.outputs[0],validGeometryItems:0,rawItemTypes:{'Python.Runtime.PyObject':1}}]}:good}
+   : {source:'rhino',content:name===GH2_REPAIR_OUTPUTS_TOOL?'settings_changed; modelVerified=false':'ok'});
+  await setup().sendMessage('Build an editable GH2 model with visible geometry.',[],undefined,undefined,undefined,'rhino');
+  expect(last().status).toBe('completed');
+  expect(executed.mock.calls.map(([name])=>name)).toEqual(['rhino_native_g2_apply_graph',GH2_VERIFY_MODEL_TOOL,GH2_REPAIR_OUTPUTS_TOOL,'rhino_native_g2_solve_canvas',GH2_VERIFY_MODEL_TOOL]);
+  expect(JSON.stringify(h.requests[2].messages)).toContain('GH2_MODEL_ACCEPTANCE_REQUIRED_V1');
+  expect(last().content).not.toContain('Done');
+ });
+ it('does not accept a console success or a setting change without an acceptance receipt',async()=>{
+  h.replies.push(call('build',{},'rhino_native_g2_apply_graph'),{content:'Done',toolCalls:[]},{content:'I changed the setting; done.',toolCalls:[]});
+  await setup().sendMessage('Build a GH2 model.',[],undefined,undefined,undefined,'rhino');
+  expect(last().status).toBe('error');expect(last().content).toContain('尚未通过最终输出验收');
+  expect(last().content).not.toContain('done.');
+ });
+ it('invalidates a passed audit when another write occurs afterwards',async()=>{
+  h.replies.push(call('build',{},'rhino_native_g2_apply_graph'),call('first-audit',plan,GH2_VERIFY_MODEL_TOOL),
+   call('later-write',{},'rhino_native_g2_apply_graph'),{content:'Done',toolCalls:[]},{content:'Done anyway',toolCalls:[]});
+  executed.mockImplementation(async(name:string)=>name===GH2_VERIFY_MODEL_TOOL?{source:'rhino',content:'receipt',gh2Verification:good}:{source:'rhino',content:'ok'});
+  await setup().sendMessage('Build and revise a GH2 model.',[],undefined,undefined,undefined,'rhino');
+  expect(last().status).toBe('error');expect(last().content).toContain('尚未通过最终输出验收');
+ });
+ it('does not gate read-only GH2 inspection on producing new geometry',async()=>{
+  h.replies.push(call('read',{},'rhino_native_g2_get_canvas_graph'),{content:'The existing graph has no output.',toolCalls:[]});
+  await setup().sendMessage('Inspect the existing GH2 graph only.',[],undefined,undefined,undefined,'rhino');
+  expect(last().status).toBe('completed');expect(executed).toHaveBeenCalledOnce();
  });
 });
 
@@ -215,6 +294,25 @@ describe('local Rhino API preflight corrects the reported ObjectTable failure be
  });
 });
 
+describe('Python 3 enum preflight preserves the one-correction workflow', () => {
+ it.each(['rg.PipeCapMode.None', 'getattr(rg.PipeCapMode, "None")'])('corrects %s locally, then dispatches only the supported script', async expression => {
+  const invalid = 'import Rhino.Geometry as rg\ncap = ' + expression;
+  const corrected = 'import Rhino.Geometry as rg\ncap = rg.PipeCapMode.NONE';
+  h.replies.push(
+   { content: '', toolCalls: [{ id: 'bad-enum', name: 'rhino_native_run_python', arguments: JSON.stringify({ script: invalid }) }] },
+   { content: '', toolCalls: [{ id: 'fixed-enum', name: 'rhino_native_run_python', arguments: JSON.stringify({ script: corrected }) }] },
+   { content: 'The corrected enum lookup ran.', toolCalls: [] },
+  );
+  await setup().sendMessage('Inspect the pipe cap mode.', [], undefined, undefined, undefined, 'rhino');
+  expect(executed).toHaveBeenCalledOnce();
+  expect(executed).toHaveBeenCalledWith('rhino_native_run_python', expect.objectContaining({ script: corrected }), expect.anything());
+  expect(JSON.stringify(h.requests[1].messages)).toContain('rhino_python_enum_none');
+  expect(JSON.stringify(h.requests[1].messages)).toContain('rg.PipeCapMode.NONE');
+  expect(last().toolCalls.map(tool => tool.status)).toEqual(['error', 'completed']);
+  expect(last().status).toBe('completed');
+ });
+});
+
 
 describe('app-enforced Rhino native failure diagnosis',()=>{
  const run=(args:Record<string,unknown>,id='script')=>call(id,args,'rhino_native_run_python');
@@ -318,6 +416,22 @@ describe('reference-modeling visual review in the actual Chat runtime',()=>{
   expect(last().toolCalls.filter(t=>t.toolName===quality).map(t=>JSON.parse(t.resultJson!).reviewedWriteId)).toEqual(['initial','refine']);
   expect(last().content).toBe('已完善过渡。');
   expect(last().status).toBe('completed');
+ });
+ it('keeps user-visible stage conclusions if a later Rhino review request fails', async () => {
+  h.replies.push(
+   { ...call('initial', { script: 'build()' }, python), content: 'Initial analysis: the main body follows the reference silhouette; checking the surface transition now.' },
+   call('first-view', {}, view),
+   text('Stage conclusion: the grip transition still needs a targeted correction.'),
+   new Error('HTTP 500 during Rhino quality review'),
+   new Error('HTTP 500 during Rhino quality review'),
+  );
+  executed.mockImplementation(async (name: string) => name === python ? writeReceipt : shot);
+  await send();
+  expect(last().status).toBe('error');
+  expect(last().content).toContain('Initial analysis: the main body follows the reference silhouette');
+  expect(last().content).toContain('Stage conclusion: the grip transition still needs a targeted correction.');
+  expect(last().content).toContain('HTTP 500 during Rhino quality review');
+  expect(last().content).toContain('\u5df2\u6267\u884c\u7684\u5de5\u5177\u6b65\u9aa4\u5df2\u4fdd\u7559');
  });
  it('rechecks a false tool-unavailable blocker because write tools are restored on the next turn',async()=>{
   h.replies.push(

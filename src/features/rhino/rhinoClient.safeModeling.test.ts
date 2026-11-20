@@ -5,6 +5,7 @@ vi.mock('@tauri-apps/api/core',()=>({invoke}));
 import { callRhinoTool, discoverNativeRhino, discoverRhinoConnections, hasRhinoNativeWriteTools, isRhinoCSharpImmutableV9LoadFailure, rhinoNativeFunctionName } from './rhinoClient';
 import { getRhinoNativeTools, type RhinoBinding } from './rhinoProtocol';
 import { SAFE_PROFILE_TOOL } from './rhinoSafeModeling';
+import { GH2_PARAMETERS_TOOL } from './rhinoGh2Parameters';
 import { buildDocumentGeometrySnapshotScript,SNAPSHOT_DOCUMENT_GEOMETRY_TOOL } from './rhinoDocumentGeometry';
 const binding:RhinoBinding={connection:{protocol:1,url:'http://127.0.0.1:19000/',token:'a'.repeat(64),instanceId:'b'.repeat(32)},documentId:12,canvasId:'canvas'};
 beforeEach(()=>{
@@ -27,6 +28,18 @@ describe('controlled internal document snapshot transport',()=>{
 });
 
 describe('safe geometry through actual native MCP transport adapter',()=>{
+ it('offers exact read-only GH2 parameter inspection only with an advertised GH2 graph and compatible Python host',async()=>{
+  const previous=invoke.getMockImplementation()!;
+  invoke.mockImplementation(async(command,args)=>args?.body?.params?.name==='rhino_list_native_tools'
+   ? {result:{content:[{type:'text',text:JSON.stringify({available:true,tools:[{name:'run_python',inputSchema:{type:'object',required:['script'],properties:{script:{type:'string'}}}},{name:'g2_get_canvas_graph',inputSchema:{type:'object'}}]})}]}}
+   : previous(command,args));
+  expect((await discoverNativeRhino(binding,'gh2-typed'))?.tools.find(t=>t.name===GH2_PARAMETERS_TOOL)).toMatchObject({readOnly:true,destructive:false});
+  await callRhinoTool(binding,GH2_PARAMETERS_TOOL,{objectIds:['a1111111-1111-4111-8111-111111111111']});
+  const request=invoke.mock.calls.map(([,args])=>args.body).find(request=>request.params?.name==='rhino_call_native_tool');
+  expect(request.params.arguments).toMatchObject({documentId:12,toolName:'run_python'});
+  expect(request.params.arguments.arguments.script).toContain('_id_gh2_inspect_parameters');
+  expect(request.params.arguments.arguments.script).not.toContain('_id_gh_execute');
+ });
  it('registers the controlled helper only alongside a compatible discovered native Python tool',async()=>{
   const native=await discoverNativeRhino(binding,'safe-discovery');
   expect(native?.tools.map(tool=>tool.name)).toEqual(['rhino_native_run_python',SAFE_PROFILE_TOOL,'rhino_native_verify_gh_geometry']);
@@ -89,6 +102,20 @@ describe('local extrusion type preflight at the transport boundary',()=>{
  it.each(['rhino_native_run_python','rhino_native_run_csharp'])('rejects %s before MCP initialization or a request',async name=>{
   await expect(callRhinoTool(binding,name,{script:'Rhino.Geometry.Surface.CreateExtrusion(brep.Faces[0], direction)'})).rejects.toMatchObject({name:'RhinoNativeScriptPreflightError'});
   expect(invoke).not.toHaveBeenCalled();
+ });
+});
+
+describe('Python enum compatibility at the native transport boundary', () => {
+ it.each(['rg.PipeCapMode.None', 'getattr(rg.PipeCapMode, "None")'])('rejects %s without initializing MCP or sending any script', async expression => {
+  await expect(callRhinoTool(binding, 'rhino_native_run_python', { script: 'import Rhino.Geometry as rg\ncap = ' + expression }))
+   .rejects.toMatchObject({ name: 'RhinoNativeScriptPreflightError', issues: expect.arrayContaining([expect.objectContaining({ code: 'rhino_python_enum_none' })]) });
+  expect(invoke).not.toHaveBeenCalled();
+ });
+ it('dispatches the corrected enum value unchanged through the bound native tool', async () => {
+  const script = 'import Rhino.Geometry as rg\ncap = rg.PipeCapMode.NONE';
+  await callRhinoTool(binding, 'rhino_native_run_python', { script });
+  const request = invoke.mock.calls.map(([,args]) => args.body).find(request => request.params?.name === 'rhino_call_native_tool');
+  expect(request.params.arguments).toMatchObject({ documentId: 12, toolName: 'run_python', arguments: { script } });
  });
 });
 

@@ -1,8 +1,9 @@
 import { saveRhinoLocalImages } from './rhinoLocalImages';
 import { geometryFailureSummary } from './rhinoGeometryRecovery';
-import { readRhinoModelingSkillResource, RHINO_MODELING_SKILL_RESOURCE_TOOL } from './rhinoProductModelingKnowledge';
+import { RHINO_MODELING_SKILL_RESOURCE_TOOL } from './rhinoProductModelingKnowledge';
+import { readRhinoModelingSkillResource, assertRhinoScriptPreflight } from './rhinoRuntime';
 import { conversationDisplayTitle } from '../chat/model/chatConversationTitle';
-import { assertRhinoScriptPreflight, isConfirmedRhinoScriptFailure } from './rhinoScriptPreflight';
+import { isConfirmedRhinoScriptFailure } from './rhinoScriptPreflight';
 import { compareDocumentGeometrySnapshots, isRhinoDocumentGeometryWrite, hasExplicitRhinoGeometryMutation, parseDocumentGeometrySnapshot, runWithDocumentGeometryVerification, SNAPSHOT_DOCUMENT_GEOMETRY_TOOL } from './rhinoDocumentGeometry';
 import { RhinoNativeRuntimeCompatibilityError } from './rhinoArgumentRecovery';
 import { rhinoToolObservation } from './rhinoGhSafety';
@@ -14,6 +15,7 @@ import { useEffect, useRef } from 'react';
 import { selectionToChatAttachments } from '../chat/attachments/chatSelectionAttachments';
 import { isExplicitGhComponentsRequest, isRhinoExplicitRenderedCaptureRequest, rhinoUserRequest } from './rhinoRequestIntent';
 import { resolveDirectVisualTool } from '../chat/tools/chatToolDefinitions';
+import { defersVisualGeneration, isImagePromptTextRequest } from '../chat/context/chatVisualIntent';
 import { getGeneratedMediaFromToolCall, type ChatExecutionSource, type ChatMessage, type ChatToolExecutor, type PendingChatAttachment } from '../chat/model/chatTypes';
 import type { useChatRuntime } from '../chat/runtime/useChatRuntime';
 import type { AgentCanvasSelectionItem } from '../agentModel';
@@ -21,6 +23,7 @@ import { callRhinoTool, discoverNativeRhino, discoverRhinoConnections, hasRhinoN
 import { assertRhinoCanvas, getRhinoNativeTools, isRhinoNativeTool, isRhinoReadTool, lockRhinoCanvas, registerRhinoNativeTools, RHINO_REFERENCE_REVIEW_TOOL, RhinoCommandLedger, rhinoToolDefinitions, type RhinoBinding, type RhinoCommand } from './rhinoProtocol';
 
 type Runtime = ReturnType<typeof useChatRuntime>;
+const liveConversationState = (runtime: Runtime) => typeof runtime.getConversationState === 'function' ? runtime.getConversationState() : runtime;
 const bindings = new Map<string, RhinoBinding>();
 const bindingStorageKey = (id: string) => `rhino-beta-binding-v1:${id}`;
 function persistedBinding(id: string): Pick<RhinoBinding, 'documentId' | 'canvasId'> & { instanceId: string } | undefined {
@@ -48,11 +51,12 @@ function rememberDocumentBinding(conversationId: string, binding: RhinoBinding) 
   try { localStorage.setItem(bindingStorageKey(conversationId), JSON.stringify({ documentId: binding.documentId, canvasId: binding.canvasId, instanceId: binding.connection.instanceId })); } catch { /* Keep the in-memory pin if storage is unavailable. */ }
 }
 async function selectOrCreateDocumentConversation(runtime: Runtime, documentId: number, canvasId: string, connection: RhinoBinding['connection']) {
+  const { conversations, activeConversationId } = liveConversationState(runtime);
   const matches = (id: string) => bindingBelongsTo(bindingForConversation(id), documentId, canvasId, connection.instanceId);
   let targetId = readDocumentConversationId(connection.instanceId, documentId, canvasId);
-  if (!runtime.conversations.some(item => item.id === targetId) || !matches(targetId)) targetId = '';
-  if (!targetId && runtime.activeConversationId && matches(runtime.activeConversationId)) targetId = runtime.activeConversationId;
-  if (!targetId) targetId = runtime.conversations.find(item => matches(item.id))?.id || '';
+  if (!conversations.some(item => item.id === targetId) || !matches(targetId)) targetId = '';
+  if (!targetId && activeConversationId && matches(activeConversationId)) targetId = activeConversationId;
+  if (!targetId) targetId = conversations.find(item => matches(item.id))?.id || '';
   if (!targetId) {
     const created = await runtime.newConversation(newDocumentConversationTitle());
     if (!created?.id) throw new Error('Cannot create an independent Rhino document conversation');
@@ -229,9 +233,9 @@ export async function summarizeRhinoMessages(messages: ChatMessage[]) {
 
 export const isRhinoCanvasImageRequest = (text: string, attachmentCount: number) => {
   const normalized = rhinoUserRequest(text);
-  if (!normalized || isRhinoGeometryOnlyRequest(normalized)) return false;
+  if (!normalized || isRhinoGeometryOnlyRequest(normalized) || defersVisualGeneration(normalized) || isImagePromptTextRequest(normalized)) return false;
   if (resolveDirectVisualTool(normalized, false, attachmentCount)) return true;
-  return /(?:\u6548\u679c\u56fe|\u6e32\u67d3|\u751f\u56fe|\u51fa\u56fe|\u751f\u6210.*\u56fe|\u6750\u8d28\u8868\u73b0|\u5916\u89c2\u8868\u73b0|render|rendering|image|visualize|visualization)/i.test(normalized);
+  return /(?:\u6548\u679c\u56fe|\u6e32\u67d3|\u751f\u56fe|\u51fa\u56fe|\u751f\u6210.{0,24}(?:\u56fe\u7247|\u56fe\u50cf)|\b(?:render(?:ing)?|visuali[sz]e|visuali[sz]ation)\b)/i.test(normalized);
 };
 
 export function useRhinoBridge(options: {
@@ -270,9 +274,10 @@ export function useRhinoBridge(options: {
       try {
         const current = latest.current;
         if (current.runtime.loading || disposed) return;
-        const activePinned = bindingForConversation(current.runtime.activeConversationId);
+        const conversationState = liveConversationState(current.runtime);
+        const activePinned = bindingForConversation(conversationState.activeConversationId);
         const activeBelongsHere = Boolean(activePinned && activePinned.instanceId === connection.instanceId && activePinned.canvasId === current.canvasId);
-        const activeConversationId = activeBelongsHere ? current.runtime.activeConversationId : '';
+        const activeConversationId = activeBelongsHere ? conversationState.activeConversationId : '';
         const activeDocumentId = activeBelongsHere ? activePinned!.documentId : 0;
         const sharedSettings = {
           instanceId: connection.instanceId,
@@ -291,7 +296,7 @@ export function useRhinoBridge(options: {
           selectedCount: current.selectedItems().length,
         };
         const boundDocuments = new Map<number, string>();
-        for (const conversation of current.runtime.conversations) {
+        for (const conversation of conversationState.conversations) {
           const pinned = bindingForConversation(conversation.id);
           if (!pinned || !bindingBelongsTo(pinned, pinned.documentId, current.canvasId, connection.instanceId)) continue;
           const currentForDocument = readDocumentConversationId(connection.instanceId, pinned.documentId, current.canvasId);
@@ -299,20 +304,20 @@ export function useRhinoBridge(options: {
         }
         if (activeDocumentId && activeConversationId) boundDocuments.set(activeDocumentId, activeConversationId);
         const documents = await Promise.all([...boundDocuments.entries()].slice(0, 32).map(async ([documentId, conversationId]) => {
-          const conversation = current.runtime.conversations.find(item => item.id === conversationId);
+          const conversation = conversationState.conversations.find(item => item.id === conversationId);
           const messages = current.runtime.messagesForConversation(conversationId);
           return {
             ...sharedSettings,
             documentId,
             conversationId,
-            conversations: current.runtime.conversations.filter(item => bindingBelongsTo(bindingForConversation(item.id), documentId, current.canvasId, connection.instanceId)).slice(0, 100).map(item => ({ id: item.id, title: conversationDisplayTitle(item, current.runtime.messagesForConversation(item.id)) })),
+            conversations: conversationState.conversations.filter(item => bindingBelongsTo(bindingForConversation(item.id), documentId, current.canvasId, connection.instanceId)).slice(0, 100).map(item => ({ id: item.id, title: conversationDisplayTitle(item, current.runtime.messagesForConversation(item.id)) })),
             busy: current.runtime.isConversationBusy(conversationId) || executingDocuments.has(documentSessionKey(connection.instanceId, documentId, current.canvasId)),
             stoppable: current.runtime.isConversationStoppable(conversationId),
             model: conversation?.model || '',
             messages: await summarizeRhinoMessages(messages),
           };
         }));
-        const activeConversation = current.runtime.conversations.find(item => item.id === activeConversationId);
+        const activeConversation = conversationState.conversations.find(item => item.id === activeConversationId);
         const state = {
           ...sharedSettings,
           documentId: activeDocumentId,
@@ -339,7 +344,7 @@ export function useRhinoBridge(options: {
           const runtime = live.runtime;
           if (command.kind === 'preview-image') {
             const conversationId = command.conversationId || '';
-            if (!conversationId || !runtime.conversations.some(item => item.id === conversationId)
+            if (!conversationId || !liveConversationState(runtime).conversations.some(item => item.id === conversationId)
               || !bindingBelongsTo(bindingForConversation(conversationId), command.documentId, live.canvasId, connection.instanceId)
               || readDocumentConversationId(connection.instanceId, command.documentId, live.canvasId) !== conversationId)
               throw new Error('图片所属的 Rhino 文档或对话已切换，请重新打开预览。');
@@ -363,12 +368,15 @@ export function useRhinoBridge(options: {
           const maskSupported = autoImageModel
             ? live.imageModelOptions.some(item => item.supportsMask === true)
             : live.imageModelOptions.some(item => item.value === live.imageModel && item.supportsMask === true);
-          const maskRequested = !geometryRequest && live.imageMaskMode === 'on';
+          const explicitCapture = isRhinoExplicitRenderedCaptureRequest(userRequest);
+          const nativeDocumentRequest = documentWriteRequest && !explicitCapture;
+          // A remembered image toggle cannot make new geometry require images.
+          const maskRequested = visualCanvasRequest && !nativeDocumentRequest && live.imageMaskMode === 'on';
           const useRhinoMask = maskRequested && maskSupported;
           if (maskRequested && !maskSupported) live.onImageMaskModeChange?.('off');
           if (command.kind === 'stop') {
             const targetConversationId = readDocumentConversationId(connection.instanceId, command.documentId, live.canvasId)
-              || runtime.conversations.find(item => bindingBelongsTo(bindingForConversation(item.id), command.documentId, live.canvasId, connection.instanceId))?.id
+              || liveConversationState(runtime).conversations.find(item => bindingBelongsTo(bindingForConversation(item.id), command.documentId, live.canvasId, connection.instanceId))?.id
               || (!bindingForConversation(runtime.activeConversationId) ? runtime.activeConversationId : '');
             if (targetConversationId) await runtime.stop(targetConversationId);
             return;
@@ -399,7 +407,7 @@ export function useRhinoBridge(options: {
             return;
           } else if (command.kind === 'select') {
             const selectedId = command.value || '';
-            if (!runtime.conversations.some(item => item.id === selectedId) || !bindingBelongsTo(bindingForConversation(selectedId), command.documentId, live.canvasId, connection.instanceId)) throw new Error('This conversation is not bound to the target Rhino document');
+            if (!liveConversationState(runtime).conversations.some(item => item.id === selectedId) || !bindingBelongsTo(bindingForConversation(selectedId), command.documentId, live.canvasId, connection.instanceId)) throw new Error('This conversation is not bound to the target Rhino document');
             await runtime.selectConversation(selectedId);
             writeDocumentConversationId(connection.instanceId, command.documentId, live.canvasId, selectedId);
             return;
@@ -413,7 +421,7 @@ export function useRhinoBridge(options: {
           if (command.kind === 'delete') {
             if (runtime.isConversationBusy(conversationId)) throw new Error('The selected Rhino document conversation still has a running task.');
             const id = command.conversationId;
-            if (!id || id !== conversationId || !runtime.conversations.some(item => item.id === id) || !bindingBelongsTo(bindingForConversation(id), command.documentId, live.canvasId, connection.instanceId)) throw new Error('Rhino conversation no longer belongs to this document.');
+            if (!id || id !== conversationId || !liveConversationState(runtime).conversations.some(item => item.id === id) || !bindingBelongsTo(bindingForConversation(id), command.documentId, live.canvasId, connection.instanceId)) throw new Error('Rhino conversation no longer belongs to this document.');
             const deleted = await runtime.deleteConversation(id);
             if (!deleted) throw new Error('The conversation could not be deleted; it may still have a running task.');
             bindings.delete(id);
@@ -476,7 +484,7 @@ export function useRhinoBridge(options: {
             live.onNotice?.(guidance);
             throw new Error(guidance);
           }
-          const selectedRhinoModel = !geometryRequest && context.some(block => {
+          const selectedRhinoModel = !geometryRequest && !nativeDocumentRequest && context.some(block => {
             if (block.type !== 'text') return false;
             try {
               const payload = JSON.parse(block.text || '') as { selection?: unknown[] };
@@ -490,7 +498,7 @@ export function useRhinoBridge(options: {
           // A picture-to-CAD task uses the actual canvas image, not the empty
           // Rhino document the user is asking us to populate. The checkbox is
           // normally on, but that must not make a viewport export a prerequisite.
-          const shouldCaptureViewport = !geometryRequest && Boolean(command.includeViewport || visualCanvasRequest || useRhinoMask || selectedRhinoModel);
+          const shouldCaptureViewport = !geometryRequest && !nativeDocumentRequest && Boolean(command.includeViewport || visualCanvasRequest || useRhinoMask || selectedRhinoModel || explicitCapture);
           // User references have their own quota; optional host context must not evict them.
           const referenceLimit = 6;
           if (localReferences.length + canvasReferences.length > referenceLimit) throw new Error('每次最多使用 6 张用户参考图；本地和画布参考图合计超限，未发送任何图片请求。');
@@ -509,7 +517,7 @@ export function useRhinoBridge(options: {
             catch (error) {
               // Keep the blank-reference guard for image generation. For native
               // modeling/read requests, a blank viewport is optional context only.
-              if (visualCanvasRequest || useRhinoMask) throw error;
+              if (explicitCapture || visualCanvasRequest || useRhinoMask) throw error;
               viewportOmitted = true;
             }
             if (blocks) {
@@ -540,14 +548,16 @@ export function useRhinoBridge(options: {
           } catch {
             context.push({ type:'text', text:'[Optional parts inventory is unavailable. Continue using the advertised native tools and bound document; do not assume an empty scene.]' });
           }
-          if (viewportOmitted) context.push({ type: 'text', text: '[The optional Rhino viewport was unavailable and omitted. Continue the native Rhino task using the attached canvas reference images and document context; no blank reference was uploaded.]' });
+          if (viewportOmitted) context.push({ type: 'text', text: '[The optional Rhino viewport was unavailable and omitted. Continue from the user\u0027s text, dimensions and document context. Images are optional; no blank reference was uploaded.]' });
           // Check again after asynchronous exports; never generate against a new canvas.
           assertRhinoCanvas(binding, latest.current.canvasId);
           context.push({ type:'text', text: binding.native
             ? '[Native MCP capabilities: ' + binding.native.tools.map(tool => tool.name).join(', ') + '. Choose the appropriate advertised schema for the user task: queries, selection, layers/materials, views/cameras, files, geometry or GH. Do not force modeling or image generation for unrelated operations. Verify the actual requested property; unchanged geometry is expected for material, view and file operations.]'
             : '[Native MCP is unavailable for this bound document. Only local advertised read tools and canvas image tools can run. If the user asks for any unsupported Rhino operation, explain that it was not executed and advise updating/connecting RhinoAI / Rhino-MCP-Platform; do not invent success or substitute manual code.]' });
           const fidelityNote = geometryRequest
-            ? '[Rhino geometry modeling request: use the registered native Rhino/Grasshopper MCP tools to create or edit real geometry. Attached local/canvas images are modeling references, not an image-generation request. An empty target Rhino document is expected; do not replace modeling with generated pictures.]'
+            ? '[Rhino geometry modeling request: use the registered native Rhino/Grasshopper MCP tools to create or edit real geometry. Text-only requests are valid without a reference image, selection or viewport capture. Attached local/canvas images are modeling references, not an image-generation request. An empty target Rhino document is expected; do not replace modeling with generated pictures.]'
+            : nativeDocumentRequest
+              ? '[Rhino native document request: execute the requested creation/edit using advertised native tools. Text and dimensions are sufficient inputs; no reference image, selection, Mask or initial viewport is required for new geometry. If the user also asks for a rendering, build the requested model first, then capture the resulting geometry for that separate stage.]'
             : visualCanvasRequest && useRhinoMask
             ? '[Rhino canvas visual context: the attached viewport uses the user\u0027s active display mode, and a same-camera object Mask is available as reference data. Decide from the users semantic request whether an image tool is appropriate; a capture or Mask is not itself a request to generate/edit.]'
             : visualCanvasRequest

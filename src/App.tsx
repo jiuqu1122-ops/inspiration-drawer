@@ -1,3 +1,4 @@
+import { useRhinoPluginAutoUpdate } from './features/rhino/useRhinoPluginAutoUpdate';
 import { resolveChatImageModelCapabilities } from './features/chat/runtime/chatImageModelCapabilities';
 import { resolveChatImageModelValue } from './features/chat/runtime/chatImageModelSelection';
 import { createCanvasPersistedItemsCache, createCanvasStatePersistence } from './features/canvas/canvasStatePersistence';
@@ -1555,6 +1556,7 @@ function MainApp() {
     isCheckingAppUpdate,
     showAppUpdatePromptArrow,
   } = useAppUpdate({ isMainDrawerWindow, showToast });
+  useRhinoPluginAutoUpdate({ isMainDrawerWindow, showToast });
   const [isMobileConnected, setIsMobileConnected] = useState(false);
   const disconnectTimerRef = useRef<any | null>(null);
   const recentMobilePayloadsRef = useRef<Record<string, number>>({});

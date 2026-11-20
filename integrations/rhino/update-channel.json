@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "channel": "rhino-v1",
+  "publicKey": "eXoAimCd2nDzSo1/5kfMY13qpC8cHEsSACEJdzb5vy0=",
+  "endpoints": [
+    "https://gitee.com/zibinyou/inspiration-drawer/releases/download/rhino-updates/latest.json",
+    "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/rhino-updates/latest.json"
+  ]
+}

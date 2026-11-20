@@ -1,0 +1,35 @@
+import { test } from 'vitest';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createHash, generateKeyPairSync, verify } from 'node:crypto';
+import { buildRuntime, packComponent, signCatalog } from '../rhino-updates.mjs';
+
+test('builds, imports and signs a self-contained Rhino runtime without a desktop build', async () => {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'rhino-runtime-release-'));
+  const file = await buildRuntime(folder);
+  const modulePath = path.join(folder, 'probe.mjs'); fs.copyFileSync(file, modulePath);
+  const runtime = await import(pathToFileURL(modulePath));
+  assert.equal(runtime.apiVersion, 1);
+  assert.equal(runtime.inspectRhinoScript('rhino_native_run_python', 'import Rhino.Geometry as rg\ncap=rg.PipeCapMode.None')[0].code, 'rhino_python_enum_none');
+  assert.deepEqual(runtime.inspectRhinoScript('rhino_native_run_python', 'import Rhino.Geometry as rg\ncap=rg.PipeCapMode.NONE'), []);
+  assert.ok(runtime.buildRhinoWorkflowInstruction().includes('rg.PipeCapMode.NONE'));
+  assert.ok(runtime.guardRhinoGeometryStageScript('stage=DrawerGeometryStage()').includes('<drawer-geometry-stage>'));
+  assert.ok(runtime.readRhinoModelingSkillResource('references/acceptance.md').content.length > 100);
+  const item = packComponent({ id: 'runtime', version: '2026.11.20.1', revision: 1, directory: folder, outputDirectory: folder, baseUrl: 'https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/rhino-updates/' });
+  const bundle = fs.readFileSync(path.join(folder, 'rhino-runtime-2026.11.20.1-1.bundle.json'));
+  assert.equal(item.sha256, createHash('sha256').update(bundle).digest('hex'));
+  assert.equal(Buffer.from(JSON.parse(bundle).files['runtime.js'], 'base64').toString(), fs.readFileSync(file, 'utf8'));
+  const pair = generateKeyPairSync('ed25519'); const keyPath = path.join(folder, 'test-private.pem');
+  fs.writeFileSync(keyPath, pair.privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
+  const channel = { channel: 'rhino-v1', publicKey: pair.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') };
+  const envelope = signCatalog([item], folder, { keyPath, channel });
+  assert.ok(verify(null, Buffer.from(envelope.signed, 'base64'), pair.publicKey, Buffer.from(envelope.signature, 'base64')));
+  const altered = Buffer.from(envelope.signed, 'base64'); altered[0] ^= 1;
+  assert.equal(verify(null, altered, pair.publicKey, Buffer.from(envelope.signature, 'base64')), false);
+  assert.throws(() => signCatalog([item, item], folder, { keyPath, channel }), /Duplicate/);
+  assert.throws(() => packComponent({ id: '../runtime', version: '1', revision: 1 }), /Invalid/);
+  assert.throws(() => packComponent({ id: 'runtime', version: '1', revision: 0 }), /Invalid/);
+});

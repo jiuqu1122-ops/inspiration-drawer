@@ -5,6 +5,7 @@ import json
 import struct
 import subprocess
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 parser = argparse.ArgumentParser()
@@ -14,7 +15,8 @@ args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
 out = Path(args.release).resolve()
 version = json.loads((root/'src-tauri/tauri.rhino-beta.conf.json').read_text(encoding='utf-8'))['version']
-plugin_version = '0.1.0-' + version.split('-',1)[1]
+plugin_version = ET.parse(root/'integrations/rhino/InspirationDrawer.Rhino/InspirationDrawer.Rhino.csproj').getroot().findtext('PropertyGroup/Version')
+assert plugin_version, 'Plugin version is missing'
 exe = out/'desktop/inspiration-drawer.exe'
 data = exe.read_bytes()
 for marker in [b'Current registration is outside the verified managed payload root; cleanup skipped.', b'Old plugin could not be moved:']:
@@ -63,8 +65,8 @@ checks['chatPromptOnlyProtection']={'compiledToolExposureAndDispatchGuard':True,
 installer_register=(root/'src-tauri/src/rhino_installer_register.ps1').read_text(encoding='utf-8')
 installer_detect=(root/'src-tauri/src/rhino_installer_detect.ps1').read_text(encoding='utf-8')
 assert "$parent.SetValue('Name'," in installer_register
-assert r'$plugin = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("$root\PlugIn")' in installer_register
-assert "$plugin.SetValue('FileName',$target" in installer_register
+assert '$plugin = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($plan.pluginKeyPath)' in installer_register
+assert "$plugin.SetValue('FileName',$plan.target" in installer_register
 assert r'OpenSubKey("$pluginRoot\PlugIn")' in installer_detect
 assert "$installed.GetValue('FileName',$null)" in installer_detect
 checks['rhinoInstallerRegistration']={'writesFileNameToRhinoPlugInSubkey':True,'detectsTheSameSubkey':True}

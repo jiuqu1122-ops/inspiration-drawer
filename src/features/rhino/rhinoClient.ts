@@ -1,8 +1,10 @@
-import { guardRhinoGeometryStageScript } from './rhinoGeometryStage';
-import { assertRhinoScriptPreflight, isConfirmedRhinoScriptFailure, RhinoNativeMcpToolError } from './rhinoScriptPreflight';
-import { buildDocumentGeometrySnapshotScript, SNAPSHOT_DOCUMENT_GEOMETRY_TOOL } from './rhinoDocumentGeometry';
-import { buildGhVerificationScript, guardRhinoGhScript, ghVerificationTool, VERIFY_GH_TOOL } from './rhinoGhSafety';
-import { buildSafeProfileScript, canUseSafeProfileTool, SAFE_PROFILE_TOOL, safeProfileTool } from './rhinoSafeModeling';
+import { ensureRhinoRuntimeLoaded, guardRhinoGeometryStageScript, assertRhinoScriptPreflight, buildDocumentGeometrySnapshotScript, buildGhVerificationScript, guardRhinoGhScript, buildSafeProfileScript, buildGh2ParameterInspectionScript, buildGh2ModelScript } from './rhinoRuntime';
+import { GH2_VERIFY_MODEL_TOOL, GH2_REPAIR_OUTPUTS_TOOL, gh2ModelTools } from './rhinoGh2Model';
+import { GH2_PARAMETERS_TOOL, gh2ParametersTool } from './rhinoGh2Parameters';
+import { isConfirmedRhinoScriptFailure, RhinoNativeMcpToolError } from './rhinoScriptPreflight';
+import { SNAPSHOT_DOCUMENT_GEOMETRY_TOOL } from './rhinoDocumentGeometry';
+import { ghVerificationTool, VERIFY_GH_TOOL } from './rhinoGhSafety';
+import { canUseSafeProfileTool, SAFE_PROFILE_TOOL, safeProfileTool } from './rhinoSafeModeling';
 import { invoke } from '@tauri-apps/api/core';
 import {
   registerRhinoNativeTools,
@@ -33,7 +35,7 @@ export async function rhinoRequest<T>(connection: RhinoConnection, path: string,
   return invoke<T>('rhino_beta_request', { instanceId: connection.instanceId, path, body: body ?? {} });
 }
 
-const reservedNativeNames = new Set(['safe_profile_solids', 'verify_gh_geometry', 'snapshot_document_geometry']);
+const reservedNativeNames = new Set(['safe_profile_solids', 'verify_gh_geometry', 'snapshot_document_geometry', 'g2_inspect_parameters', 'g2_verify_model', 'g2_repair_output_conversion']);
 /** MCP names and provider function names have different alphabets/length limits. */
 export function rhinoNativeFunctionName(rawName: string) {
   if (/^[A-Za-z0-9_-]{1,51}$/.test(rawName) && !reservedNativeNames.has(rawName)) return 'rhino_native_' + rawName;
@@ -86,6 +88,7 @@ export async function discoverNativeRhino(binding: RhinoBinding, conversationId:
     }
     const tools = nativeToolDefinitions(payload);
     if (canUseSafeProfileTool(tools)) tools.push(safeProfileTool(), ghVerificationTool());
+    if (canUseSafeProfileTool(tools) && tools.some(tool => tool.name === 'rhino_native_g2_get_canvas_graph')) tools.push(gh2ParametersTool(), ...gh2ModelTools());
     if (!tools.length) { onNotice?.("RhinoAI MCP returned no usable tools"); return undefined; }
     registerRhinoNativeTools(conversationId, tools);
     return { tools };
@@ -96,7 +99,14 @@ export async function discoverNativeRhino(binding: RhinoBinding, conversationId:
 }
 
 export async function callRhinoTool(binding: RhinoBinding, name: string, args: Record<string, unknown> = {}) {
+  await ensureRhinoRuntimeLoaded();
   assertRhinoScriptPreflight(name, args);
+  if (name === GH2_VERIFY_MODEL_TOOL || name === GH2_REPAIR_OUTPUTS_TOOL) {
+    return callRhinoTool(binding, 'rhino_call_native_tool', { toolName: 'run_python', arguments: { script: buildGh2ModelScript(args, name === GH2_REPAIR_OUTPUTS_TOOL) } });
+  }
+  if (name === GH2_PARAMETERS_TOOL) {
+    return callRhinoTool(binding, 'rhino_call_native_tool', { toolName: 'run_python', arguments: { script: buildGh2ParameterInspectionScript(args) } });
+  }
   if (name === SNAPSHOT_DOCUMENT_GEOMETRY_TOOL) {
     return callRhinoTool(binding, 'rhino_call_native_tool', { toolName: 'run_python', arguments: { script: buildDocumentGeometrySnapshotScript() } });
   }

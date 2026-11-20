@@ -5,6 +5,17 @@ import { isRhinoCanvasImageRequest } from './useRhinoBridge';
 
 describe('Rhino image references vs geometry requests', () => {
   it.each([
+    '我要建模，不要生成图片',
+    '先在空文档中建一个 3D 模型，不需要渲染',
+    'Create a real 3D model; do not generate an image',
+  ])('keeps negated visual output out of text-only modeling: %s', text => {
+    expect(isRhinoGeometryOnlyRequest(text)).toBe(true);
+    expect(isRhinoCanvasImageRequest(text, 0)).toBe(false);
+  });
+  it.each(['The image attachment is optional; I want geometry', 'Explain image-based modeling', '不要生图，只要建模'])('does not require a viewport just for image vocabulary: %s', text => {
+    expect(isRhinoCanvasImageRequest(text, 0)).toBe(false);
+  });
+  it.each([
     '\u6211\u5728\u753b\u5e03\u9009\u4e86\u4e00\u5f20\u56fe\u7247\uff0c\u5e2e\u6211\u5efa\u6a21',
     '\u7528\u8fd9\u4e2a\u53c2\u8003\u56fe\u91cd\u5efa\u4e00\u4e2a 3D \u4ea7\u54c1\u6a21\u578b',
     'Create a real 3D model from the selected image',

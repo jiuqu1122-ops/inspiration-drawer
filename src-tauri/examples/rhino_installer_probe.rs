@@ -1,6 +1,8 @@
 // Local diagnostic for the packaged installer. Read-only unless --install is explicitly passed.
 #[path = "../src/rhino_installer.rs"]
 mod rhino_installer;
+#[path = "../src/rhino_updates.rs"]
+mod rhino_updates;
 fn main() {
     let install = std::env::args().any(|arg| arg == "--install");
     let result = tauri::async_runtime::block_on(async {

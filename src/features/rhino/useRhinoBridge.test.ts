@@ -454,6 +454,19 @@ describe('Rhino desktop Chat bridge', () => {
     expect(runtime.sendMessage.mock.calls[0][1]).toEqual([]);
     expect(mocks.invoke).not.toHaveBeenCalledWith('save_dropped_file', expect.anything());
   });
+  it.each(['帮我建一个花瓶', '我要建模，不要生成图片', '在 GH2 建模，不需要渲染', '帮我建一个模型，然后生成效果图'])('starts %s from text even when the old image Mask toggle remains on', async content => {
+    const { runtime } = setup({ content, includeViewport: true, imageMaskMode: 'on', includeCanvasSelection: false });
+    mocks.call.mockImplementation(async (_binding, name) => {
+      if (name === 'rhino_capture_viewport') throw new Error('Rhino current viewport capture is blank');
+      return [{ type: 'text', text: '{"documentId":12,"selection":[]}' }];
+    });
+    await settle();
+    expect(runtime.sendMessage).toHaveBeenCalledOnce();
+    expect(runtime.sendMessage.mock.calls[0][1]).toEqual([]);
+    expect(mocks.call).not.toHaveBeenCalledWith(expect.anything(), 'rhino_capture_viewport', expect.anything());
+    expect(mocks.invoke).not.toHaveBeenCalledWith('save_dropped_file', expect.anything());
+    expect(mocks.request).toHaveBeenCalledWith(connection, '/drawer/ack', expect.objectContaining({ status: 'completed' }));
+  });
 
   it('omits an optional blank viewport for ordinary document queries instead of failing the native task', async () => {
     const { runtime } = setup({ includeViewport: true, content: 'List the document layers' });
@@ -484,6 +497,26 @@ describe('Rhino desktop Chat bridge', () => {
     const { runtime } = setup({ conversationId: 'different-chat' }); await settle();
     expect(runtime.sendMessage).not.toHaveBeenCalled();
     expect(mocks.request).toHaveBeenCalledWith(connection, '/drawer/ack', expect.objectContaining({ status: 'failed' }));
+  });
+  it('uses the new document conversation immediately while the React render still holds the old list', async () => {
+    const { runtime, command } = setup({ kind: 'new' });
+    const oldId = runtime.activeConversationId;
+    const fresh = { id: oldId + '-fresh', title: '新对话', model: 'vision-model' };
+    let current = { conversations: runtime.conversations, activeConversationId: oldId };
+    runtime.getConversationState = () => current;
+    runtime.newConversation.mockImplementation(async () => {
+      current = { conversations: [fresh, ...runtime.conversations], activeConversationId: fresh.id };
+      return fresh;
+    });
+    await settle();
+    expect(runtime.conversations).not.toContainEqual(fresh);
+    command.id += '-send'; command.kind = 'send'; command.conversationId = fresh.id; command.content = '帮我建一个花瓶';
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(runtime.newConversation).toHaveBeenCalledOnce();
+    expect(runtime.sendMessage).toHaveBeenCalledOnce();
+    expect(runtime.sendMessage.mock.calls[0][6]).toBe(fresh.id);
+    expect(mocks.request).toHaveBeenCalledWith(connection, '/drawer/heartbeat', expect.objectContaining({ state: expect.objectContaining({ conversationId: fresh.id }) }));
+    expect(mocks.request).not.toHaveBeenCalledWith(connection, '/drawer/ack', expect.objectContaining({ status: 'failed' }));
   });
   it('creates an independent conversation for a new Rhino document and pins calls to that document ID', async () => {
     const { runtime, command } = setup({ documentId: 22, conversationId: '' }); await settle();

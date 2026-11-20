@@ -1,4 +1,6 @@
-﻿/** Use only the user's request, never appended scene data, to pick a workflow. */
+import { defersVisualGeneration } from '../chat/context/chatVisualIntent';
+
+/** Use only the user's request, never appended scene data, to pick a workflow. */
 export function rhinoUserRequest(text: string) {
   return text.split(/\n\n\[Rhino \u53ea\u8bfb\u4e0a\u4e0b\u6587[^\]]*\]/)[0].trim();
 }
@@ -10,7 +12,7 @@ export function isRhinoGeometryOnlyRequest(text: string) {
   const positive = request.replace(/(?:\u4e0d\u8981|\u4e0d\u7528|\u65e0\u9700|\u4e0d\u9700\u8981|\u5148\u522b|\u5148\u4e0d|don'?t|do not)\s*(?:\u5e2e\u6211|\u8fdb\u884c)?\s*(?:\u5efa\u6a21|model(?:ing)?)/gi, ' ');
   const geometry = /(?:\u5efa\u6a21|\u5efa.{0,16}\u6a21\u578b|\u5efa\u6210.{0,12}(?:\u6a21\u578b|\u4e09\u7ef4|3d)|(?:\u521b\u5efa|\u751f\u6210|\u642d\u5efa|\u91cd\u5efa|\u505a|\u8f6c\u6210|\u8f6c\u4e3a).{0,24}(?:\u4e09\u7ef4|3d|\u6a21\u578b|\u51e0\u4f55)|\b(?:build|create|rebuild|reconstruct|make|convert|model|modify|edit)\b.{0,60}\b(?:3[ -]?d|geometry|cad|rhino|model)\b|\b(?:grasshopper|gh)\b|\u8349\u8722)/i.test(positive);
   // A combined modeling-and-rendering request still needs the visual path.
-  const explicitImage = /(?:\u6e32\u67d3|\u6548\u679c\u56fe|\u751f\u56fe|\u51fa\u56fe|\u751f\u6210.{0,12}(?:\u56fe\u7247|\u56fe\u50cf)|\b(?:render(?:ing)?|visuali[sz]ation)\b|\b(?:generate|edit)\b.{0,12}\b(?:image|picture)\b)/i.test(request);
+  const explicitImage = !defersVisualGeneration(request) && /(?:\u6e32\u67d3|\u6548\u679c\u56fe|\u751f\u56fe|\u51fa\u56fe|\u751f\u6210.{0,12}(?:\u56fe\u7247|\u56fe\u50cf)|\b(?:render(?:ing)?|visuali[sz]ation)\b|\b(?:generate|edit)\b.{0,12}\b(?:image|picture)\b)/i.test(request);
   return geometry && !explicitImage;
 }
 

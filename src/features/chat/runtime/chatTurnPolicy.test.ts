@@ -12,9 +12,27 @@ import {
   MAX_TOOL_ROUNDS,
   MAX_WEB_SEARCH_QUERIES_PER_TURN,
   normalizeWebSearchQuery,
+  preserveRhinoVisibleProgressForContinuation,
+  appendRhinoVisibleProgress,
 } from './chatTurnPolicy';
 
 const searchArguments = (query: string) => JSON.stringify({ query });
+
+describe('Rhino visible progress preservation', () => {
+  it('keeps only user-visible content when a Rhino request continues', () => {
+    expect(preserveRhinoVisibleProgressForContinuation('  Visible Rhino stage conclusion  '))
+      .toBe('Visible Rhino stage conclusion\n\n');
+    expect(preserveRhinoVisibleProgressForContinuation('\n  ')).toBe('');
+  });
+
+  it('appends a final failure without replacing prior visible conclusions or duplicating them', () => {
+    expect(appendRhinoVisibleProgress('Stage conclusion.', 'Failure details.'))
+      .toBe('Stage conclusion.\n\nFailure details.');
+    expect(appendRhinoVisibleProgress('Stage conclusion.', 'Stage conclusion.')).toBe('Stage conclusion.');
+    expect(appendRhinoVisibleProgress('Stage conclusion.', 'Updated stage conclusion.'))
+      .toBe('Stage conclusion.\n\nUpdated stage conclusion.');
+  });
+});
 
 describe('ordinary Chat turn policy', () => {
   it('completes nonempty content without tool calls', () => {
@@ -92,12 +110,13 @@ describe('ordinary Chat turn policy', () => {
     expect(canRunChatToolRound(8)).toBe(false);
   });
 
-  it('allows bounded longer Rhino workflows without changing the desktop limit', () => {
+  it('does not impose a fixed round quota on Rhino modeling workflows', () => {
     expect(chatToolRoundLimit()).toBe(8);
-    expect(chatToolRoundLimit('rhino')).toBe(24);
+    expect(chatToolRoundLimit('rhino')).toBeNull();
+    expect(MAX_RHINO_TOOL_ROUNDS).toBeNull();
     expect(canRunChatToolRound(8, 'rhino')).toBe(true);
-    expect(canRunChatToolRound(MAX_RHINO_TOOL_ROUNDS - 1, 'rhino')).toBe(true);
-    expect(canRunChatToolRound(MAX_RHINO_TOOL_ROUNDS, 'rhino')).toBe(false);
+    expect(canRunChatToolRound(24, 'rhino')).toBe(true);
+    expect(canRunChatToolRound(1000, 'rhino')).toBe(true);
     const instruction = buildRhinoTurnInstruction();
     expect(instruction).toContain('only open Grasshopper');
     expect(instruction).toContain('solve, and verify');

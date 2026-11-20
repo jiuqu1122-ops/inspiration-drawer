@@ -2,7 +2,7 @@ import { validateSvgToolArguments } from './chatSvgTool';
 import { isGithubSkillTool, validateGithubSkillTool } from '../skills/githubSkillTools';
 import { parsePrototype } from '../prototypes/prototypeSchema';
 import { assertGeometryCorrection } from '../../rhino/rhinoGeometryRecovery';
-import { assertRhinoScriptPreflight } from '../../rhino/rhinoScriptPreflight';
+import { assertRhinoScriptPreflight } from '../../rhino/rhinoRuntime';
 import { assertSafePlanarRoute, SAFE_PROFILE_TOOL } from '../../rhino/rhinoSafeModeling';
 import { RhinoNativeArgumentError } from '../../rhino/rhinoArgumentRecovery';
 import { evaluateLegacyActionPermission } from '../../appAgent/commands/permissionGate';

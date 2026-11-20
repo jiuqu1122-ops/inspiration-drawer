@@ -1,3 +1,5 @@
+import { readRhinoPluginSyncResult } from './rhinoPluginAutoUpdate';
+import { RhinoIndependentUpdateSettings } from './RhinoIndependentUpdateSettings';
 import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, Download, LoaderCircle, Puzzle, RefreshCw } from 'lucide-react';
@@ -6,6 +8,8 @@ export type RhinoInstallStatus = {
   majorVersion: number;
   exePath: string;
   running: boolean;
+  runningStateUncertain?: boolean;
+  runtimeModes?: string[];
   runningAsCurrentUser?: boolean | null;
   pluginPath?: string | null;
   loadMode?: number | null;
@@ -24,6 +28,7 @@ export function RhinoPluginSetup({ expanded, onToggle }: { expanded: boolean; on
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const operation = useRef(false);
+  const automaticSync = readRhinoPluginSyncResult();
   const refresh = useCallback(async () => {
     if (operation.current) return;
     operation.current = true;
@@ -62,6 +67,11 @@ export function RhinoPluginSetup({ expanded, onToggle }: { expanded: boolean; on
       </button>
       {expanded && <div className="space-y-3 border-t border-stone-100 p-3 dark:border-stone-700/60">
         <p className="text-[11px] leading-relaxed text-stone-500 dark:text-stone-400">{'\u4e00\u952e\u5b89\u88c5 Rhino 8 / 9 \u63d2\u4ef6\uff0c\u4f1a\u5c06\u6587\u4ef6\u548c\u6ce8\u518c\u9879\u5199\u5165\u5f53\u524d Windows \u8d26\u6237\u3002\u8fd9\u91cc\u53ea\u80fd\u786e\u8ba4\u6ce8\u518c\u548c\u6587\u4ef6\u6821\u9a8c\uff0c\u4e0d\u80fd\u8bc1\u660e Rhino \u5df2\u6210\u529f\u52a0\u8f7d\uff1b\u5b89\u88c5\u6216\u66f4\u65b0\u540e\u8bf7\u5b8c\u5168\u9000\u51fa\u5e76\u91cd\u542f Rhino\u3002'}</p>
+        <p className="text-[10px] leading-relaxed text-stone-500 dark:text-stone-400">软件升级后会在后台自动同步已安装的托管插件；不会自动安装新插件或强制关闭 Rhino。</p>
+        {automaticSync && <details className="text-[10px] leading-relaxed text-stone-500 dark:text-stone-400">
+          <summary className="cursor-pointer">最近一次自动同步：{automaticSync.status === 'error' ? '未完成，点击查看原因' : automaticSync.status === 'updated' ? '已更新' : automaticSync.status === 'skipped' ? '已保留禁用状态' : '无需更新'}</summary>
+          <p className="mt-1 break-words whitespace-pre-wrap">{automaticSync.message}</p>
+        </details>}
         {versions?.map(version => {
           const statusLabel = version.conflictingPackagePaths?.length
             ? `\u65e7\u5305 ID \u51b2\u7a81\uff08${version.conflictingPackagePaths.length}\uff09`
@@ -77,6 +87,8 @@ export function RhinoPluginSetup({ expanded, onToggle }: { expanded: boolean; on
               <span>Rhino {version.majorVersion}{version.running && <small className="ml-2 text-stone-400">{'\u8fd0\u884c\u4e2d'}</small>}</span>
               <span className="flex items-center gap-1 text-stone-500">{version.installed && <Check size={12} />}{statusLabel}</span>
             </div>
+            {version.runtimeModes?.some(mode => mode === 'netfx' || mode === 'mixed') && <p role="status" className="text-[10px] leading-relaxed text-amber-700 dark:text-amber-400">检测到运行中的 Rhino 加载了旧 .NET Framework；本插件需要现代 .NET 模式，重复安装不能修复此模式冲突。请先用 SystemInfo 核实，再通过 SetDotNetRuntime 选择现代 .NET 并重启；同时检查快捷方式是否带 /netfx。切换可能影响依赖旧模式的其他插件。</p>}
+            {version.runningStateUncertain && <p role="status" className="text-[10px] leading-relaxed text-amber-700 dark:text-amber-400">无法读取部分 Rhino 进程信息，已暂缓旧文件清理。请保存工程并退出 Rhino 后重试。</p>}
             {version.pluginPath && <details className="text-[10px] text-stone-500">
               <summary className="cursor-pointer">{'\u67e5\u770b\u6ce8\u518c\u6587\u4ef6\u8def\u5f84'}</summary>
               <code className="mt-1 block break-all">{version.pluginPath}</code>
@@ -94,6 +106,7 @@ export function RhinoPluginSetup({ expanded, onToggle }: { expanded: boolean; on
           </button>
           <button type="button" disabled={busy} onClick={() => void refresh()} className="inline-flex items-center gap-1 rounded-lg border border-stone-200 px-2 py-2 text-xs text-stone-500 disabled:opacity-40 dark:border-stone-600"><RefreshCw size={12} />刷新检测</button>
         </div>
+        <RhinoIndependentUpdateSettings />
         {message && <p role="status" className="text-[11px] leading-relaxed text-emerald-700 dark:text-emerald-400">{message}</p>}
         {error && <p role="alert" className="break-words text-[11px] text-red-600 dark:text-red-400">{error}</p>}
         <p className="text-[10px] leading-relaxed text-stone-400">适用于 Windows 版 Rhino 8 / 9 的 .NET 模式。Rhino 原生 MCP 建模功能还需要 RhinoAI 插件；安装本面板不会替换已有的 RhinoAI。</p>

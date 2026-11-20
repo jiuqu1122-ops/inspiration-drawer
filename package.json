@@ -1,7 +1,7 @@
 {
   "name": "inspiration-drawer",
   "private": true,
-  "version": "8.0.34",
+  "version": "8.0.35",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -18,7 +18,9 @@
     "test:smoke": "vitest run src/features/appAgent/appAgentSmoke.test.ts",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",
-    "build:rhino-panel": "node scripts/build-rhino-panel.mjs"
+    "build:rhino-panel": "node scripts/build-rhino-panel.mjs",
+    "build:rhino-runtime": "node scripts/rhino-updates.mjs build-runtime",
+    "rhino:update:pack": "node scripts/rhino-updates.mjs pack"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.8",

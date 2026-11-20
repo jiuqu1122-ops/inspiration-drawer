@@ -5,6 +5,7 @@ history.replaceState(null, '', location.pathname + location.search);
 const byId = id => document.getElementById(id);
 let state = {}, connected = false, submitting = false, lastMessages = '', uncertain, lastParts = '', lastPartsAt = 0, partsBusy = false;
 let deleteTarget = '', deletingConversation = '';
+let pendingConversation;
 const pendingSettings = new Map();
 const settingFields = { model:'model', 'image-model':'imageModel', 'image-resolution':'imageResolution', 'image-aspect-ratio':'imageAspectRatio', 'image-quality':'imageQuality' };
 const labels = { rhino_get_context:'\u8bfb\u53d6 Rhino \u4e0a\u4e0b\u6587',rhino_read_modeling_skill_resource:'\u8bfb\u53d6\u5185\u7f6e\u5efa\u6a21 Skill \u8d44\u6599',rhino_review_viewport:'\u5bf9\u7167 Rhino \u89c6\u53e3\u4e0e\u53c2\u8003\u56fe',rhino_list_objects:'\u67e5\u8be2 Rhino \u5bf9\u8c61',rhino_list_layers:'\u67e5\u8be2 Rhino \u56fe\u5c42',rhino_list_parts:'\u8bfb\u53d6\u5bf9\u8c61\u5206\u4ef6\u4e0e\u6750\u8d28',generate_image:'\u751f\u6210\u56fe\u7247',edit_image:'\u7f16\u8f91\u56fe\u7247',get_canvas_selection:'\u8bfb\u53d6\u753b\u5e03',generate_image_variants:'\u751f\u6210\u65b9\u6848' };
@@ -20,7 +21,7 @@ function choices(id, options, value) {
   const select = byId(id);
   // Focus protects an open native dropdown, not its enabled state. Previously a
   // focused selector could stay disabled or empty until New Chat blurred it.
-  select.disabled = !connected || state.busy || submitting || options.length === 0;
+  select.disabled = !connected || state.busy || submitting || Boolean(pendingConversation) || options.length === 0;
   select.title = state.busy ? '当前任务执行中，完成或停止后可切换模型' : '';
   const focused = document.activeElement === select;
   const signature = JSON.stringify(options);
@@ -41,16 +42,29 @@ function reconcileSettings(commands) {
     else if (Date.now() - pending.at > 20_000) { pendingSettings.delete(kind); notice('模型设置未同步，请检查连接后重试。'); }
   }
 }
+function reconcileConversation(commands) {
+  if (!pendingConversation) return;
+  const receipt = commands.find(item => item.id === pendingConversation.id);
+  if (receipt?.status === 'failed') { pendingConversation = undefined; return; }
+  const id = state.conversationId || '';
+  const published = id && (state.conversations || []).some(item => item.id === id);
+  const matches = pendingConversation.kind === 'select'
+    ? id === pendingConversation.targetId : id !== pendingConversation.previousId;
+  // Queue acceptance and even completion can precede the next desktop state
+  // snapshot. Keep the draft and wait for the actual new ID before enabling send.
+  if (receipt?.status === 'completed' && published && matches) pendingConversation = undefined;
+}
 function updateButtons() {
-  byId('send').disabled = !connected || state.busy || submitting || preparingImages || !byId('input').value.trim();
+  const synchronizing = Boolean(pendingConversation);
+  byId('send').disabled = !connected || state.busy || submitting || synchronizing || preparingImages || !byId('input').value.trim();
   byId('attach-local-image').disabled = !connected || state.busy || submitting || preparingImages;
-  byId('new').disabled = !connected || state.busy || submitting || Boolean(deletingConversation);
-  byId('delete-conversation').disabled = !connected || state.busy || submitting || Boolean(deletingConversation) || !state.conversationId
+  byId('new').disabled = !connected || state.busy || submitting || synchronizing || Boolean(deletingConversation);
+  byId('delete-conversation').disabled = !connected || state.busy || submitting || synchronizing || Boolean(deletingConversation) || !state.conversationId
     || !(state.conversations || []).some(item => item.id === state.conversationId);
   if (deleteTarget && (!connected || state.busy || deleteTarget !== state.conversationId)) cancelDelete();
   byId('stop').hidden = !state.stoppable;
   for (const [id, key] of [['model','modelOptions'], ['conversation','conversations'], ['image-model','imageModelOptions'], ['image-resolution','imageResolutionOptions'], ['image-aspect-ratio','imageAspectRatioOptions'], ['image-quality','imageQualityOptions']]) {
-    byId(id).disabled = !connected || state.busy || submitting || !(state[key] || []).length;
+    byId(id).disabled = !connected || state.busy || submitting || synchronizing || !(state[key] || []).length;
   }
   const mask = byId('mask');
   const imageOptions = state.imageModelOptions || [];
@@ -65,7 +79,7 @@ function updateButtons() {
   const maskLayerLabel = byId('mask-layer').selectedOptions[0]?.textContent || '当前选择';
   byId('beta-note').textContent = mask.checked
     ? `对象遮罩已开启 · 来源：${maskLayerLabel} · 遮罩语义由模型线路决定`
-    : '普通参考图生成 · 未启用对象遮罩，不保证严格保形';
+    : '支持文字建模与参考图建模 · 图片和对象遮罩均可选';
   byId('reference-settings-toggle').disabled = !connected || state.busy || submitting;
   byId('image-settings-toggle').disabled = !connected || state.busy || submitting;
   window.rhinoPickers?.syncAll();
@@ -173,13 +187,14 @@ async function poll() {
   try {
     const result = await request(`/panel/state?documentId=${documentId}`);
     state = result.state || {}; connected = result.connected;
+    reconcileConversation(result.commands || []);
     reconcileSettings(result.commands || []);
     window.rhinoImagePreview.sync(state.conversationId || '');
     if (deletingConversation && !(state.conversations || []).some(item => item.id === deletingConversation)) deletingConversation = '';
     if (deletingConversation && (result.commands || []).some(item => item.request?.kind === 'delete' && item.request?.conversationId === deletingConversation && ['completed','failed'].includes(item.status))) deletingConversation = '';
     byId('mask').checked = state.imageMaskEnabled === true;
     byId('dot').classList.toggle('online',connected);
-    byId('connection').textContent = connected ? state.busy ? '已连接 · Chat 正在执行' : '已连接灵感抽屉' : '等待配套 Beta 桌面端';
+    byId('connection').textContent = connected ? state.busy ? '已连接 · Chat 正在执行' : pendingConversation ? '已连接 · 正在同步对话' : '已连接灵感抽屉' : '等待配套 Beta 桌面端';
     byId('document').textContent = `${result.context?.name || '未保存文档'} · 选中 ${result.context?.selection?.length || 0} 个 Rhino 对象`;
     if (result.processId) byId('document').textContent += ` \u00b7 \u7a97\u53e3 ${result.processId}`;
     byId('document').title = `Rhino ${result.instanceId || ''} / document ${documentId}`;
@@ -210,16 +225,18 @@ async function poll() {
   finally { setTimeout(poll,1000); }
 }
 async function command(kind,extra={}) {
-  if(submitting || !connected)return false;
+  if(submitting || !connected || (pendingConversation && kind !== 'stop'))return false;
   const payload={id:crypto.randomUUID(),kind,documentId,conversationId:state.conversationId || '',...extra};
   const setting = settingFields[kind] && { id:payload.id, value:extra.value, at:Date.now(), conversationId:state.conversationId || '' };
   if (setting) pendingSettings.set(kind, setting);
+  if (kind === 'new' || kind === 'select') pendingConversation = { id:payload.id, kind, previousId:state.conversationId || '', targetId:extra.value || '' };
   submitting=true;updateButtons();
   try { await request('/panel/command',payload);if(kind==='send')clearComposerDraft();notice('');return true; }
   catch(error) {
     // Do not automatically submit a new request after an ambiguous transport failure.
     if(error.name==='TimeoutError' || error instanceof TypeError) { uncertain=payload;notice('连接中断，正在确认请求状态。请勿重复发送；可在桌面 Chat 查看是否已经执行。');return false; }
     if (setting && pendingSettings.get(kind)?.id === payload.id) pendingSettings.delete(kind);
+    if (pendingConversation?.id === payload.id) pendingConversation = undefined;
     notice(error.message);return false;
   }
   finally { if(!uncertain)submitting=false;updateButtons(); }

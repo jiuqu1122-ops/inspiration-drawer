@@ -2631,7 +2631,7 @@ dependencies = [
 
 [[package]]
 name = "inspiration-drawer"
-version = "8.0.34"
+version = "8.0.35"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2648,6 +2648,7 @@ dependencies = [
  "rusqlite",
  "rustls",
  "screenshots",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
