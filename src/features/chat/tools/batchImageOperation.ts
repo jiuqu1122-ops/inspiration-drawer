@@ -1,7 +1,7 @@
 import type { ChatAttachment, ChatGeneratedMedia } from '../model/chatTypes';
 
-export const BATCH_IMAGE_CONCURRENCY = 6;
-export const BATCH_IMAGE_MAX_CONCURRENCY = 6;
+export const BATCH_IMAGE_CONCURRENCY = 10;
+export const BATCH_IMAGE_MAX_CONCURRENCY = 10;
 
 export type BatchImageOperationArgs = {
   instruction: string;

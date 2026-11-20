@@ -4,12 +4,19 @@
 
 ## 下载
 
-当前已发布版本：**8.0.33**
+当前已发布版本：**8.0.34**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.33/Inspiration.Drawer_8.0.33_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.33)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.34/Inspiration.Drawer_8.0.34_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.34)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 8.0.34 更新
+
+- **Rhino 建模**：内置产品建模 Skill，加强 GH/几何校验、错误诊断和质量复核。
+- **参考图与 Chat**：支持更多参考图，图片缩略显示并可预览；生图批量上限提升到 10 张。
+- **界面**：已结束的内部工具记录默认折叠，保留展开查看和必要确认。
+- **插件更新**：区分“已注册”与 Rhino 实际加载，补充路径/账户诊断；更新校验成功后清理可验证的旧版，并保留恢复备份。请先关闭 Rhino 再点击设置中的插件安装/更新，完成后重启 Rhino。
 
 ## 8.0.33 更新
 

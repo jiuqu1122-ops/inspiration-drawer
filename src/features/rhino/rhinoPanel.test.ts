@@ -16,6 +16,8 @@ class ElementFixture {
   dataset: Record<string, string> = {};
   selectedOptions = [{ textContent: 'Current selection' }];
   classList = { toggle: vi.fn(), remove: vi.fn() };
+  open = false;
+  className = '';
   children: ElementFixture[] = [];
   listeners = new Map<string, (event?: any) => void>();
   focus = vi.fn();
@@ -46,16 +48,38 @@ async function setup(options: { busy?: boolean; connected?: boolean; nativeBridg
   let sequence = 0;
   const postMessage = vi.fn();
   const document = { title: '', getElementById: (id: string) => elements.get(id), createElement: () => new ElementFixture(), activeElement: null as ElementFixture | null };
-  const api = runInNewContext(source + '\n({ poll, notifyKeyboardOwner, stageLocalImages: images => { localImages = images; renderLocalImages(); } });', {
+  const api = runInNewContext(source + '\n({ poll, notifyKeyboardOwner, renderMessages, stageLocalImages: images => { localImages = images; renderLocalImages(); } });', {
     window: { eto: options.nativeBridge ? { postMessage } : undefined, rhinoMarkdown: { render: (_document: unknown, text: string) => { const p = new ElementFixture(); p.textContent = text; return p; } }, rhinoImagePreview: { sync: vi.fn(), configure: vi.fn() } },
     document,
     location: { hash: '#token=test', search: '?documentId=7', pathname: '/' },
     history: { replaceState: vi.fn() }, URLSearchParams, AbortSignal,
     crypto: { randomUUID: () => `request-test-${++sequence}` }, fetch, setTimeout: vi.fn(),
-  }) as { poll: () => Promise<void>; notifyKeyboardOwner: (active: boolean) => void; stageLocalImages: (images: Array<{ name: string; dataUrl: string }>) => void };
+  }) as { poll: () => Promise<void>; notifyKeyboardOwner: (active: boolean) => void; renderMessages: (messages: Array<Record<string, any>>) => void; stageLocalImages: (images: Array<{ name: string; dataUrl: string }>) => void };
   await settle();
   return { elements, requests, api, transport, document, postMessage };
 }
+
+describe('Rhino panel tool-history disclosure', () => {
+  const findByClass = (root: ElementFixture, className: string): ElementFixture | undefined => {
+    if (root.className === className) return root;
+    for (const child of root.children) {
+      const match = findByClass(child, className);
+      if (match) return match;
+    }
+    return undefined;
+  };
+
+  it('collapses completed and accepted tool records but keeps active approvals visible', async () => {
+    const { api, elements } = await setup();
+    const base = { id: 'tool-1', name: 'rhino_list_objects', argumentsJson: '{}', resultJson: '{}' };
+    api.renderMessages([{ id: 'm1', role: 'assistant', content: '', tools: [{ ...base, status: 'completed' }] }]);
+    expect(findByClass(elements.get('messages')!, 'tool-history')?.open).toBe(false);
+    api.renderMessages([{ id: 'm2', role: 'assistant', content: '', tools: [{ ...base, status: 'accepted' }] }]);
+    expect(findByClass(elements.get('messages')!, 'tool-history')?.open).toBe(false);
+    api.renderMessages([{ id: 'm3', role: 'assistant', content: '', tools: [{ ...base, status: 'awaiting-approval' }] }]);
+    expect(findByClass(elements.get('messages')!, 'tool-history')?.open).toBe(true);
+  });
+});
 
 describe('Rhino panel deletion UI (synthetic DOM and transport)', () => {
   it('opens an inline confirmation and sends nothing when cancelled', async () => {
@@ -148,8 +172,12 @@ it('renders readable geometry issues in the Rhino panel without exposing scripts
   const {elements,api,transport}=await setup();
   (transport.state as any).messages=[{id:'failed',role:'assistant',content:'建模预检失败',status:'error',tools:[{id:'safe',name:'rhino_native_safe_profile_solids',status:'error',diagnostic:'零件 A · 孔 3：孔间距不足；实际 1.500，要求至少 3'}]}];
   await api.poll();
-  const article=elements.get('messages')!.children[0];
-  const row=article.children.find(item=>(item as any).className==='tool')!;
+  const findTool = (root: ElementFixture): ElementFixture | undefined => {
+   if (root.className === 'tool') return root;
+   for (const child of root.children) { const found = findTool(child); if (found) return found; }
+   return undefined;
+  };
+  const row=findTool(elements.get('messages')!)!;
   expect(row.children.some(item=>item.textContent.includes('实际 1.500'))).toBe(true);
   expect(row.children.some(item=>(item as any).className==='native-approval-actions')).toBe(false);
 });
@@ -303,4 +331,22 @@ describe('native focus bridge compatibility',()=>{
  it('uses a title signal rather than navigating or requiring new Eto APIs in Rhino 8',async()=>{
   const {api,postMessage,document}=await setup();api.notifyKeyboardOwner(true);expect(document.title).toBe('idraw:keyboard-focus:1');api.notifyKeyboardOwner(false);expect(document.title).toBe('idraw:keyboard-release:2');expect(postMessage).not.toHaveBeenCalled();
  });
+});
+
+
+it('keeps the plugin badge bound to server-rendered assembly version placeholders',()=>{
+ expect(html).toContain('id="plugin-version"');
+ expect(html).toContain('__RHINO_PLUGIN_VERSION_LABEL__');
+ expect(html).toContain('__RHINO_PLUGIN_VERSION__');
+ expect(html).not.toMatch(/>BETA[.]\d+(?:[.]\d+)*<\/span>/);
+});
+
+
+it('renders all six thumbnail buttons and the actual attachment count',async()=>{
+ const {transport,api,elements}=await setup();
+ Object.assign(transport.state,{messages:[{id:'six-refs',role:'user',content:'建模',attachmentImageCount:6,images:Array(6).fill('data:image/jpeg;base64,QUJD'),imageIndices:[0,1,2,3,4,5]}]});
+ await api.poll();
+ const children=elements.get('messages')!.children[0].children;
+ expect(children.some(e=>e.textContent==='本条消息附带 6 张图片')).toBe(true);
+ expect(children.flatMap(e=>e.children).flatMap(e=>e.children).map(e=>e.dataset.imageIndex)).toEqual(['0','1','2','3','4','5']);
 });

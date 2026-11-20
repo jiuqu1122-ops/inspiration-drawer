@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -9,6 +10,23 @@ namespace InspirationDrawer.Rhino;
 /// <summary>Loopback-only Beta transport; never executes model requests itself.</summary>
 internal sealed class BetaServer : IDisposable
 {
+    // Use the running assembly, not a source label or a desktop-reported version.
+    internal static string PluginVersion { get; } = NormalizePluginVersion(
+        typeof(BetaServer).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+        ?? typeof(BetaServer).Assembly.GetName().Version?.ToString() ?? "unknown");
+
+    internal static string NormalizePluginVersion(string version) => version.Split('+', 2)[0];
+    internal static string PanelVersionLabel(string version)
+    {
+        var clean = NormalizePluginVersion(version);
+        var separator = clean.IndexOf('-');
+        return (separator >= 0 ? clean[(separator + 1)..] : clean).ToUpperInvariant();
+    }
+
+    internal static string RenderPanelHtml(string template) => template
+        .Replace("__RHINO_PLUGIN_VERSION_LABEL__", WebUtility.HtmlEncode(PanelVersionLabel(PluginVersion)))
+        .Replace("__RHINO_PLUGIN_VERSION__", WebUtility.HtmlEncode(PluginVersion));
+
     internal string Token { get; } = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
     internal string InstanceId { get; } = Guid.NewGuid().ToString("N");
     internal string Url { get; }
@@ -107,7 +125,9 @@ internal sealed class BetaServer : IDisposable
                     using var resource = assembly.GetManifestResourceStream($"InspirationDrawer.Rhino.Panel.{name}");
                     if (resource == null) throw new ApiError(404, "面板资源不存在");
                     using var reader = new StreamReader(resource);
-                    await Respond(stream, 200, await reader.ReadToEndAsync(), name.EndsWith(".js") ? "application/javascript" : name.EndsWith(".css") ? "text/css" : "text/html", origin);
+                    var content = await reader.ReadToEndAsync();
+                    if (name == "index.html") content = RenderPanelHtml(content);
+                    await Respond(stream, 200, content, name.EndsWith(".js") ? "application/javascript" : name.EndsWith(".css") ? "text/css" : "text/html", origin);
                     return;
                 }
                 var auth = headers.GetValueOrDefault("Authorization", "");
@@ -434,7 +454,7 @@ internal sealed class BetaServer : IDisposable
         if (method == "initialize") result = new JsonObject
         {
             ["protocolVersion"] = "2025-06-18", ["capabilities"] = new JsonObject { ["tools"] = new JsonObject() },
-            ["serverInfo"] = new JsonObject { ["name"] = "inspiration-drawer-rhino-beta", ["version"] = "0.1.0-beta.34" },
+            ["serverInfo"] = new JsonObject { ["name"] = "inspiration-drawer-rhino-beta", ["version"] = PluginVersion },
         };
         else if (method == "notifications/initialized") return new JsonObject();
         else if (method == "tools/list")

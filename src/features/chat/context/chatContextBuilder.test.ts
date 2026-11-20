@@ -5,6 +5,7 @@ import type { ChatMessage } from '../model/chatTypes';
 import { CHAT_PRESENTATION_SYSTEM_RULES } from '../presentations/chatPresentation';
 import { buildChatContext, GENERAL_CHAT_SYSTEM_PROMPT } from './chatContextBuilder';
 import { selectRecentMessagesForBudget } from './chatContextBudget';
+import { readRhinoModelingSkillResource } from '../../rhino/rhinoProductModelingKnowledge';
 
 const message = (
   id: string,
@@ -151,6 +152,22 @@ describe('Chat context builder', () => {
     expect(encoded).toContain('https://cdn.example.com/reference.png');
   });
 
+  it('preserves full on-demand Rhino Skill resources in later conversation context', async () => {
+    const result = readRhinoModelingSkillResource('references/modeling-methods.md');
+    const assistant = message('message-2', 'assistant', '', {
+      toolCalls: [{
+        id: 'skill-resource-1', messageId: 'message-2', toolName: 'rhino_read_modeling_skill_resource',
+        argumentsJson: JSON.stringify({ resourcePath: result.resourcePath }), resultJson: JSON.stringify(result),
+        status: 'completed', createdAt: 2, completedAt: 3,
+      }],
+    });
+    const latest = message('message-3', 'user', 'Which method did we inspect?');
+    const context = await buildChatContext({ messages: [assistant, latest], latestUserMessage: latest });
+    const resourceMessage = context.find(item => item.role === 'tool');
+    expect(String(resourceMessage?.content)).toContain('NetworkSrf');
+    expect(String(resourceMessage?.content)).toContain('MatchSrf');
+    expect(String(resourceMessage?.content)).toContain('旧证据若不再对应当前几何');
+  });
   it('keeps the newest complete messages when the budget is exceeded', () => {
     const selected = selectRecentMessagesForBudget([
       message('message-1', 'user', 'a'.repeat(500)),
@@ -502,4 +519,16 @@ describe('reference image to editable SVG, not free-form image generation', () =
     const context=await buildChatContext({messages:[latest],latestUserMessage:latest,resolveAttachmentUrl:async()=>{throw Error('offline');}});
     expect(JSON.stringify(context)).toContain('本轮未收到该图片像素');expect(JSON.stringify(context)).not.toContain('"type":"image_url"');
   });
+});
+
+
+it('transmits six references and both Rhino host context images to the model',async()=>{
+ const attachments=Array.from({length:8},(_,i)=>({id:'image-'+i,messageId:'message-8',type:'image' as const,path:'fixture-'+i+'.png',createdAt:1}));
+ const latest=message('message-8','user','看全部参考图',{attachments});
+ const resolveAttachmentUrl=vi.fn(async(attachment:any)=>'https://fixture.example/'+attachment.id+'.png');
+ const context=await buildChatContext({messages:[latest],latestUserMessage:latest,resolveAttachmentUrl});
+ const content=context[context.length-1].content as Array<Record<string,any>>;
+ expect(content.filter(part=>part.type==='image_url')).toHaveLength(8);
+ expect(resolveAttachmentUrl).toHaveBeenCalledTimes(8);
+ for(const attachment of attachments)expect(JSON.stringify(content)).toContain(attachment.id+'.png');
 });

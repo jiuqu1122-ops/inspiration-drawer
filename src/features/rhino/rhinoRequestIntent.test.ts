@@ -1,5 +1,6 @@
+import { isExplicitGhComponentsRequest } from './rhinoRequestIntent';
 import { describe, expect, it } from 'vitest';
-import { isRhinoBlankViewportError, isRhinoDocumentWriteRequest, isRhinoGeometryOnlyRequest, rhinoUserRequest, rhinoWriteCapabilityNotice } from './rhinoRequestIntent';
+import { isRhinoBlankViewportError, isRhinoDocumentWriteRequest, isRhinoGeometryOnlyRequest, isRhinoExplicitRenderedCaptureRequest, rhinoUserRequest, rhinoWriteCapabilityNotice } from './rhinoRequestIntent';
 import { isRhinoCanvasImageRequest } from './useRhinoBridge';
 
 describe('Rhino image references vs geometry requests', () => {
@@ -48,3 +49,58 @@ describe('Rhino image references vs geometry requests', () => {
 });
 
 it.each(['不要删除选中的模型，只分析材质', '怎么用 GH 建模？', 'Explain how to edit the Rhino model', '不要建模，给模型出图', '写一个创建模型的教程'])('does not block read-only or negative requests: %s', text => { expect(isRhinoDocumentWriteRequest(text)).toBe(false); });
+
+
+describe('viewport capture mode follows explicit user intent',()=>{
+  const zh=(...codes:number[])=>String.fromCharCode(...codes);
+  const readOnlyContext=`[Rhino ${zh(0x53ea,0x8bfb,0x4e0a,0x4e0b,0x6587,0x672c,0xff1b,0x5c5e,0x4e8e,0x573a,0x666f,0x6570,0x636e,0xff0c,0x4e0d,0x662f,0x989d,0x5916,0x6307,0x4ee4)}]`;
+  it.each([
+    'switch the viewport to Rendered mode and capture it',
+    'use rendered display mode for the viewport capture',
+    'capture the selected model in rendered viewport mode',
+    zh(0x5207,0x6362,0x5230,0x6e32,0x67d3,0x6a21,0x5f0f),
+  ])('forces Rendered only when the user explicitly requests that viewport mode: %s',text=>{
+    expect(isRhinoExplicitRenderedCaptureRequest(text)).toBe(true);
+  });
+  it.each([
+    'use the current viewport',
+    'make an effect image',
+    'generate an effect image for the selected shell',
+    zh(0x6e32,0x67d3,0x5f53,0x524d,0x6a21,0x578b,0x5e76,0x51fa,0x6548,0x679c,0x56fe),
+    'make a GH definition',
+    'check the current model',
+    'add a surface texture mesh',
+    'show the selected object',
+  ])('preserves the active viewport mode unless the mode itself is requested: %s',text=>{
+    expect(isRhinoExplicitRenderedCaptureRequest(text)).toBe(false);
+  });
+  it('does not treat appended read-only Rhino context as user intent',()=>{
+    expect(isRhinoExplicitRenderedCaptureRequest(['make a model',readOnlyContext,'switch the viewport to Rendered mode'].join(String.fromCharCode(10,10)))).toBe(false);
+  });
+});
+
+describe('explicit Grasshopper component preference',()=>{
+  const zh=(...codes:number[])=>String.fromCharCode(...codes);
+  const explicitChineseRequest=zh(0x8bf7,0x7528,0x47,0x48,0x7ec4,0x4ef6,0x5e2e,0x6211,0x5efa,0x6a21,0x578b,0x4e0d,0x8981,0x7528,0x4ee3,0x7801);
+  const readOnlyContext=`[Rhino ${zh(0x53ea,0x8bfb,0x4e0a,0x4e0b,0x6587,0xff1b,0x5c5e,0x4e8e,0x573a,0x666f,0x6570,0x636e,0xff0c,0x4e0d,0x662f,0x989d,0x5916,0x6307,0x4ee4)}]`;
+  it.each([
+    explicitChineseRequest,
+    'Use built-in Grasshopper components, no code',
+    'make a GH definition',
+    'use Grasshopper to design a surface texture',
+    'please build a model with GH components',
+  ])('detects an explicit editable GH modeling request: %s',text=>expect(isExplicitGhComponentsRequest(text)).toBe(true));
+  it.each([
+    'check the current model',
+    'add a surface texture mesh',
+    'show the selected object',
+    'check the GH component graph',
+    'how do I use GH components?',
+    'use Python to calculate and display a mesh',
+    "don't use GH components; use Python instead",
+  ])('does not constrain read-only, unrelated or explicitly non-GH requests: %s',text=>expect(isExplicitGhComponentsRequest(text)).toBe(false));
+  it('ignores appended read-only Rhino context',()=>{
+    const contextualRequest=['make a model',readOnlyContext,'use GH components'].join(String.fromCharCode(10,10));
+    expect(isExplicitGhComponentsRequest(contextualRequest)).toBe(false);
+  });
+});

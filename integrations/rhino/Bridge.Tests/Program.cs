@@ -268,6 +268,7 @@ try
     Check(DrawerPanelLayout.MinimumWidth == 340 && DrawerPanelLayout.MinimumHeight == 420, "Rhino panel can shrink to the responsive 340x420 compact minimum");
     Check(baseCss.Code == HttpStatusCode.OK && !baseCss.Text.Contains("min-width:280px") && baseCss.Text.Contains("overflow-x:hidden"), "edge-docked panel does not enforce a horizontal minimum width");
     Check(baseCss.Text.Contains(".rhino-composer { display:flex;") && baseCss.Text.Contains("@media (max-width: 340px)") && baseCss.Text.Contains("grid-template-columns:minmax(0,1fr) minmax(56px,22%) minmax(54px,18%)"), "edge-docked image controls remain in one compact Chat-style composer row at the panel minimum");
+    Check(baseCss.Text.Contains(".tool-history {" ) && baseCss.Text.Contains(".tool-history__summary"), "Rhino internal tool history is styled as a compact disclosure");
     var panelCss = await RequestText("/parts.css");
     Check(panelCss.Code == HttpStatusCode.OK && panelCss.Text.Contains(".parts-list"), "panel part styles are served from the embedded plugin resources");
     Check((await Request("panel/parts?documentId=0")).Code == HttpStatusCode.BadRequest, "parts inventory rejects an invalid document binding");
@@ -437,6 +438,13 @@ try
     await Request("drawer/heartbeat", switchedState);
     Check((await Request("panel/image", previewQuery)).Code == HttpStatusCode.Conflict, "switching conversation invalidates its old full preview");
     var panelHtml = await RequestText("/");
+    Check(BetaServer.NormalizePluginVersion("0.1.0-beta.36+commit-hash") == "0.1.0-beta.36", "plugin version omits commit metadata, not the prerelease number");
+    Check(BetaServer.PanelVersionLabel("0.1.0-beta.36.1+commit-hash") == "BETA.36.1", "panel version preserves multi-part prerelease identifiers");
+    Check(BetaServer.PanelVersionLabel("1.2.3") == "1.2.3", "stable plugin version has no invented beta label");
+    Check(panelHtml.Text.Contains("id=\"plugin-version\"") && panelHtml.Text.Contains(">" + BetaServer.PanelVersionLabel(BetaServer.PluginVersion) + "</span>"), "served badge uses the running plugin assembly version");
+    Check(panelHtml.Text.Contains("Rhino 插件版本 " + BetaServer.PluginVersion) && !panelHtml.Text.Contains("__RHINO_PLUGIN_VERSION"), "served version tooltip is real and all placeholders are resolved");
+    var versionReply = await Request("mcp", new JsonObject { ["jsonrpc"] = "2.0", ["id"] = 73, ["method"] = "initialize" });
+    Check(versionReply.Json["result"]?["serverInfo"]?["version"]?.GetValue<string>() == BetaServer.PluginVersion, "MCP reports the same running assembly version as the panel badge");
     Check(panelHtml.Code == HttpStatusCode.OK && panelHtml.Text.Contains("id=\"delete-conversation\"") && panelHtml.Text.Contains("id=\"delete-confirmation\""), "embedded panel exposes delete and inline confirmation controls");
     Check(panelHtml.Code == HttpStatusCode.OK && panelHtml.Text.Contains("id=\"image-preview\"") && panelHtml.Text.Contains("/markdown.js") && panelHtml.Text.Contains("/image-preview.js"), "embedded panel exposes Markdown messages and a full-size image preview");
     Check(panelHtml.Text.IndexOf("id=\"model\"") > panelHtml.Text.IndexOf("<form id=\"composer\""), "Rhino model and reference controls live inside the desktop-style input card");
@@ -450,6 +458,9 @@ try
     }
     var markdownJs = await RequestText("/markdown.js");
     Check(markdownJs.Code == HttpStatusCode.OK && markdownJs.Text.Contains("rhinoMarkdown") && markdownJs.Text.Contains("createTextNode"), "Markdown rendering builds safe semantic DOM without displaying markup fences");
+    var panelJs = await RequestText("/panel.js");
+    Check(panelJs.Code == HttpStatusCode.OK && panelJs.Text.Contains("tool-history") && panelJs.Text.Contains("history.open=active") && panelJs.Text.Contains("['pending','running','awaiting-approval']") && panelJs.Text.Contains("rows.append(row)"), "completed Rhino internal tool records are collapsed while active approvals remain visible");
+    Check(panelJs.Text.Contains("summary.textContent") && panelJs.Text.Contains("${tools.length}") && panelJs.Text.Contains("failures"), "collapsed tool-history summary reports count and failure state");
     var imagePreviewJs = await RequestText("/image-preview.js");
     Check(imagePreviewJs.Code == HttpStatusCode.OK && imagePreviewJs.Text.Contains("data-preview-src") && imagePreviewJs.Text.Contains("Escape"), "generated image preview opens on click and closes on Escape");
     Check(!ViewportCaptureValidation.HasVisibleContent(1000, 600, (_, _) => unchecked((int)0xff9da3aa)),

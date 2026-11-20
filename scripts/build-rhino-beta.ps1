@@ -56,7 +56,10 @@ try {
  $rhino8PluginRoot=Join-Path $outputRoot 'plugin-rhino8/net7.0'
  New-Item -ItemType Directory -Force -Path $rhino8PluginRoot | Out-Null
  Copy-Item 'src-tauri/resources/rhino/8/InspirationDrawer.Rhino.*' $rhino8PluginRoot
- $manifest=@('name: inspiration-drawer-rhino','version: 0.1.0-beta.34','authors:','  - Inspiration Drawer','description: Rhino 8/9 Chat panel and toolbar button connected to Inspiration Drawer desktop Beta.','url: https://github.com/jiuqu1122-ops/inspiration-drawer') -join [Environment]::NewLine
+ [xml]$pluginProject=Get-Content -Raw 'integrations/rhino/InspirationDrawer.Rhino/InspirationDrawer.Rhino.csproj'
+ $pluginVersion=[string]$pluginProject.Project.PropertyGroup.Version
+ if (-not $pluginVersion) {throw 'Plugin project version is missing.'}
+ $manifest=@('name: inspiration-drawer-rhino',"version: $pluginVersion",'authors:','  - Inspiration Drawer','description: Rhino 8/9 Chat panel and toolbar button connected to Inspiration Drawer desktop Beta.','url: https://github.com/jiuqu1122-ops/inspiration-drawer') -join [Environment]::NewLine
  Set-Content -Encoding utf8 -Path (Join-Path $pluginRoot 'manifest.yml') -Value $manifest
  Set-Content -Encoding utf8 -Path (Join-Path $outputRoot 'plugin-rhino8/manifest.yml') -Value $manifest
  Copy-Item 'integrations/rhino/README.md' (Join-Path $outputRoot 'README.md')

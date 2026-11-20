@@ -1,5 +1,6 @@
 import { saveRhinoLocalImages } from './rhinoLocalImages';
 import { geometryFailureSummary } from './rhinoGeometryRecovery';
+import { readRhinoModelingSkillResource, RHINO_MODELING_SKILL_RESOURCE_TOOL } from './rhinoProductModelingKnowledge';
 import { conversationDisplayTitle } from '../chat/model/chatConversationTitle';
 import { assertRhinoScriptPreflight, isConfirmedRhinoScriptFailure } from './rhinoScriptPreflight';
 import { compareDocumentGeometrySnapshots, isRhinoDocumentGeometryWrite, hasExplicitRhinoGeometryMutation, parseDocumentGeometrySnapshot, runWithDocumentGeometryVerification, SNAPSHOT_DOCUMENT_GEOMETRY_TOOL } from './rhinoDocumentGeometry';
@@ -11,13 +12,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { blobToDataUrl } from '../../utils/canvasImageData';
 import { useEffect, useRef } from 'react';
 import { selectionToChatAttachments } from '../chat/attachments/chatSelectionAttachments';
-import { rhinoUserRequest } from './rhinoRequestIntent';
+import { isExplicitGhComponentsRequest, isRhinoExplicitRenderedCaptureRequest, rhinoUserRequest } from './rhinoRequestIntent';
 import { resolveDirectVisualTool } from '../chat/tools/chatToolDefinitions';
 import { getGeneratedMediaFromToolCall, type ChatExecutionSource, type ChatMessage, type ChatToolExecutor, type PendingChatAttachment } from '../chat/model/chatTypes';
 import type { useChatRuntime } from '../chat/runtime/useChatRuntime';
 import type { AgentCanvasSelectionItem } from '../agentModel';
 import { callRhinoTool, discoverNativeRhino, discoverRhinoConnections, hasRhinoNativeWriteTools, isRhinoCSharpImmutableV9LoadFailure, rhinoRequest } from './rhinoClient';
-import { assertRhinoCanvas, getRhinoNativeTools, isRhinoNativeTool, isRhinoReadTool, lockRhinoCanvas, registerRhinoNativeTools, RhinoCommandLedger, rhinoToolDefinitions, type RhinoBinding, type RhinoCommand } from './rhinoProtocol';
+import { assertRhinoCanvas, getRhinoNativeTools, isRhinoNativeTool, isRhinoReadTool, lockRhinoCanvas, registerRhinoNativeTools, RHINO_REFERENCE_REVIEW_TOOL, RhinoCommandLedger, rhinoToolDefinitions, type RhinoBinding, type RhinoCommand } from './rhinoProtocol';
 
 type Runtime = ReturnType<typeof useChatRuntime>;
 const bindings = new Map<string, RhinoBinding>();
@@ -77,6 +78,9 @@ export function withRhinoTools(execute: ChatToolExecutor, canvasId: string): Cha
     if (binding) assertRhinoCanvas(binding, canvasId);
     if (isRhinoNativeTool(name, context.conversationId)) {
       if (!binding?.native) throw new Error('\u5f53\u524d Rhino \u6587\u6863\u6ca1\u6709\u552f\u4e00\u5339\u914d\u7684\u539f\u751f MCP \u8fde\u63a5\uff1b\u8bf7\u5148\u5728 Rhino \u6267\u884c MCPStart');
+      if (isExplicitGhComponentsRequest(context.userText) && /^rhino_native_run_(?:python|csharp|command)$/.test(name)) {
+        throw new Error('This turn explicitly requests native Grasshopper components; script/command substitutions are disabled. Inspect the GH graph and continue with native component tools.');
+      }
       assertRhinoScriptPreflight(name, args);
       const release = lockRhinoCanvas(`rhino-native:${context.conversationId}:${context.messageId}:${name}`);
       try {
@@ -116,6 +120,11 @@ export function withRhinoTools(execute: ChatToolExecutor, canvasId: string): Cha
       try { return await execute(name, args, context); } finally { release?.(); }
     }
     if (!binding) throw new Error('\u672c\u4f1a\u8bdd\u6ca1\u6709\u7ed1\u5b9a Rhino \u6587\u6863\uff0c\u8bf7\u4ece Rhino \u9762\u677f\u91cd\u65b0\u53d1\u9001');
+    if (name === RHINO_MODELING_SKILL_RESOURCE_TOOL) return readRhinoModelingSkillResource(args.resourcePath);
+    if (name === RHINO_REFERENCE_REVIEW_TOOL) {
+      const blocks = await callRhinoTool(binding, 'rhino_capture_viewport', {});
+      return rhinoToolObservation(name, blocks, binding.documentId);
+    }
     const blocks = await callRhinoTool(binding, name, args);
     return { source: 'rhino', documentId: binding.documentId, content: blocks.filter(block => block.type === 'text').map(block => block.text).join('\n') };
   };
@@ -183,28 +192,33 @@ export function rhinoMessageImageSources(message: ChatMessage): string[][] {
       .map(item => [item.path || '', item.url || '', item.thumbnail || '']),
   ];
 }
-async function summarizeMessages(messages: ChatMessage[]) {
+export async function summarizeRhinoMessages(messages: ChatMessage[]) {
   const recent = messages.slice(-30);
   return Promise.all(recent.map(async (message, index) => {
     const absoluteIndex = messages.length - recent.length + index;
     // Presentation only: preserve every attachment and all model/tool inputs.
     // Automatic Rhino/canvas references following an image result remain available
     // to the conversation, but should not be repeated visually on every reply.
-    const hasPreviousImageResult = messages.slice(0, absoluteIndex).some(previous => previous.role === 'assistant' && previous.toolCalls.some(call => call.status === 'completed' && getGeneratedMediaFromToolCall(call).some(media => media.type === 'image')));
+    const previousMessages = messages.slice(0, absoluteIndex);
+    const hasPreviousImageResult = previousMessages.some(previous => previous.role === 'assistant' && previous.toolCalls.some(call => call.status === 'completed' && getGeneratedMediaFromToolCall(call).some(media => media.type === 'image')));
     const sources = rhinoMessageImageSources(message);
     const images = message.attachments.filter(item => item.type === 'image');
     const hidden = new Set<number>();
+    const previousImagePaths = new Set(previousMessages.flatMap(previous => previous.role === 'user'
+      ? previous.attachments.filter(item => item.type === 'image').map(item => item.path) : []));
     if (message.role === 'user' && hasPreviousImageResult) images.forEach((attachment, imageIndex) => {
       try {
         const metadata = JSON.parse(attachment.metadataJson || '{}');
-        if (metadata.source === 'rhino' || (attachment.id.startsWith('selection-') && (metadata.nodeId || metadata.sourceItemId))) hidden.add(imageIndex);
+        if (metadata.source === 'rhino' || (attachment.id.startsWith('selection-') && (metadata.nodeId || metadata.sourceItemId)
+          && previousImagePaths.has(attachment.path))) hidden.add(imageIndex);
       } catch { /* Don't hide unrecognized user attachments. */ }
     });
-    const imageSources = sources.map((source, imageIndex) => ({ source, imageIndex })).filter(item => !hidden.has(item.imageIndex)).slice(0, index >= recent.length - 8 ? 4 : 0);
-    const thumbnails = (await Promise.all(imageSources.map(async item => ({ src: await previewFirst(item.source), imageIndex: item.imageIndex })))).filter(item => item.src);
+    const imageSources = sources.map((source, imageIndex) => ({ source, imageIndex })).filter(item => !hidden.has(item.imageIndex)).slice(0, index >= recent.length - 8 ? 10 : 0);
+    const thumbnails = (await Promise.all(imageSources.map(async item => ({ src: await previewFirst(item.source, message.role === 'user' ? 256 : 512), imageIndex: item.imageIndex })))).filter(item => item.src);
     return {
       id: message.id, role: message.role, content: message.content.slice(0, 24_000), status: message.status,
       tools: message.toolCalls.map(call => ({ id: call.id, name: call.toolName, status: call.status, ...(call.status === 'error' ? { diagnostic: (() => { try { return geometryFailureSummary(JSON.parse(call.resultJson || '{}')); } catch { return ''; } })() } : {}), ...(call.toolName.startsWith('rhino_native_') && call.status === 'awaiting-approval' ? { argumentsJson: call.argumentsJson.slice(0, 12_000) } : {}) })),
+      attachmentImageCount: images.length,
       images: thumbnails.map(item => item.src),
       imageIndices: thumbnails.map(item => item.imageIndex),
       hiddenReferenceCount: hidden.size,
@@ -295,7 +309,7 @@ export function useRhinoBridge(options: {
             busy: current.runtime.isConversationBusy(conversationId) || executingDocuments.has(documentSessionKey(connection.instanceId, documentId, current.canvasId)),
             stoppable: current.runtime.isConversationStoppable(conversationId),
             model: conversation?.model || '',
-            messages: await summarizeMessages(messages),
+            messages: await summarizeRhinoMessages(messages),
           };
         }));
         const activeConversation = current.runtime.conversations.find(item => item.id === activeConversationId);
@@ -308,7 +322,7 @@ export function useRhinoBridge(options: {
           busy: activeDocumentId ? current.runtime.isConversationBusy(activeConversationId) || executingDocuments.has(documentSessionKey(connection.instanceId, activeDocumentId, current.canvasId)) : false,
           stoppable: activeConversationId ? current.runtime.isConversationStoppable(activeConversationId) : false,
           model: activeConversation?.model || '',
-          messages: await summarizeMessages(activeConversationId ? current.runtime.messagesForConversation(activeConversationId) : []),
+          messages: await summarizeRhinoMessages(activeConversationId ? current.runtime.messagesForConversation(activeConversationId) : []),
         };
         if (disposed) return;
         const result = await rhinoRequest<{ command?: RhinoCommand }>(connection, '/drawer/heartbeat', { owner: owner.current, state });
@@ -477,15 +491,19 @@ export function useRhinoBridge(options: {
           // Rhino document the user is asking us to populate. The checkbox is
           // normally on, but that must not make a viewport export a prerequisite.
           const shouldCaptureViewport = !geometryRequest && Boolean(command.includeViewport || visualCanvasRequest || useRhinoMask || selectedRhinoModel);
-          const referenceLimit = shouldCaptureViewport ? (useRhinoMask ? 4 : 5) : 6;
-          if (localReferences.length > referenceLimit) throw new Error(`当前视口/遮罩需要预留附件位置，最多可附带 ${referenceLimit} 张本地参考图；请减少图片或关闭视口/遮罩。`);
-          const attachments: PendingChatAttachment[] = [...localReferences, ...canvasReferences.slice(0, referenceLimit - localReferences.length)];
-          if (localReferences.length + canvasReferences.length > referenceLimit) live.onNotice?.('附件数量已达上限；保留全部本地图片，部分画布图片未附带。');
+          // User references have their own quota; optional host context must not evict them.
+          const referenceLimit = 6;
+          if (localReferences.length + canvasReferences.length > referenceLimit) throw new Error('每次最多使用 6 张用户参考图；本地和画布参考图合计超限，未发送任何图片请求。');
+          const attachments: PendingChatAttachment[] = [...localReferences, ...canvasReferences];
           let viewportOmitted = false;
           if (shouldCaptureViewport) {
-            const captureArguments = useRhinoMask
-              ? { rendered: true, includeMask: true, maskLayer: rhinoMaskLayer }
-              : { rendered: true };
+            const forceRenderedCapture = isRhinoExplicitRenderedCaptureRequest(userRequest);
+            // Preserve the user's active viewport mode for ordinary modeling and document context.
+            // A mask uses the same active viewport mode as its source image.
+            const captureArguments = {
+              ...(forceRenderedCapture ? { rendered: true } : {}),
+              ...(useRhinoMask ? { includeMask: true, maskLayer: rhinoMaskLayer } : {}),
+            };
             let blocks: Awaited<ReturnType<typeof callRhinoTool>> | undefined;
             try { blocks = await callRhinoTool(binding, 'rhino_capture_viewport', captureArguments); }
             catch (error) {
@@ -497,10 +515,17 @@ export function useRhinoBridge(options: {
             if (blocks) {
               context = blocks.filter(item => item.type === 'text');
               const images = blocks.filter(item => item.type === 'image');
+              let captureMode = forceRenderedCapture ? 'rendered' : 'current';
+              for (const item of context) {
+                try {
+                  const mode = (JSON.parse(item.text || '{}') as { captureMode?: unknown }).captureMode;
+                  if (mode === 'current' || mode === 'shaded' || mode === 'rendered') captureMode = mode;
+                } catch { /* Keep the mode requested from the host. */ }
+              }
               const image = images[0];
               if (!image?.data || image.mimeType !== 'image/png') throw new Error('Rhino 没有返回有效视口图片');
               const path = await invoke<string>('save_dropped_file', { fileName: `rhino-${command.id}.png`, dataUrl: `data:image/png;base64,${image.data}` });
-              attachments.push({ id: `rhino-${command.id}`, type: 'image', path, thumbnailPath: path, mimeType: 'image/png', metadataJson: JSON.stringify({ source: 'rhino', documentId: binding.documentId, role: visualCanvasRequest ? 'reference' : undefined, captureMode: 'rendered' }) });
+              attachments.push({ id: `rhino-${command.id}`, type: 'image', path, thumbnailPath: path, mimeType: 'image/png', metadataJson: JSON.stringify({ source: 'rhino', documentId: binding.documentId, role: visualCanvasRequest ? 'reference' : undefined, captureMode }) });
               if (useRhinoMask) {
                 const mask = images[1];
                 if (!mask?.data || mask.mimeType !== 'image/png') throw new Error('Rhino 未返回选中几何 Mask PNG；未启动图片编辑');
@@ -524,9 +549,9 @@ export function useRhinoBridge(options: {
           const fidelityNote = geometryRequest
             ? '[Rhino geometry modeling request: use the registered native Rhino/Grasshopper MCP tools to create or edit real geometry. Attached local/canvas images are modeling references, not an image-generation request. An empty target Rhino document is expected; do not replace modeling with generated pictures.]'
             : visualCanvasRequest && useRhinoMask
-            ? '[Rhino canvas visual context: the attached Rendered viewport and same-camera object Mask are available as reference data. Decide from the users semantic request whether an image tool is appropriate; a capture or Mask is not itself a request to generate/edit.]'
+            ? '[Rhino canvas visual context: the attached viewport uses the user\u0027s active display mode, and a same-camera object Mask is available as reference data. Decide from the users semantic request whether an image tool is appropriate; a capture or Mask is not itself a request to generate/edit.]'
             : visualCanvasRequest
-              ? '[Rhino canvas visual context: the attached viewport was captured in Rendered mode; no Mask was requested or attached. Decide from the users semantic request whether an image tool is appropriate.]'
+              ? '[Rhino canvas visual context: the attached viewport uses the user\u0027s active display mode; no Mask was requested or attached. Decide from the users semantic request whether an image tool is appropriate.]'
             : useRhinoMask
               ? `[Rhino exported a same-camera geometry Mask PNG; source: ${rhinoMaskLayer === 'selection' ? 'current selection' : `layer ${rhinoMaskLayer}`}. The transparent capture region is for Mask-capable editing routes.]`
               : '[Ordinary reference-image mode: no object Mask attached; strict shape preservation is not guaranteed.]';

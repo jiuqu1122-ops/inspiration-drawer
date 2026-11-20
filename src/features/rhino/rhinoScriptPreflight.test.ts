@@ -236,3 +236,55 @@ it.each(['Exception: Open solid: Pendant leaf_0','AssertionError: External wall 
  expect(isConfirmedRhinoScriptFailure(new RhinoNativeMcpToolError('TimeoutException: '+error.message))).toBe(false);
  expect(isConfirmedRhinoScriptFailure(new Error(error.message))).toBe(false);
 });
+
+
+describe('unsupported Rhino ObjectTable name lookup preflight',()=>{
+  it.each([
+    [python,'import Rhino\nobj = __rhino_doc__.Objects.FindByObjectName("Body")'],
+    ['rhino_native_run_csharp','var obj = doc.Objects.FindByObjectName("Body");'],
+  ])('rejects FindByObjectName before Rhino dispatch with the supported alternative', (tool,script)=>{
+    const issue=inspectRhinoScript(tool,script).find(item=>item.code==='rhino_object_table_find_by_object_name');
+    expect(issue).toMatchObject({api:'ObjectTable.FindByObjectName',actualType:expect.stringContaining('Rhino 8 or Rhino 9')});
+    expect(issue?.instruction).toContain('FindByFilter');
+    expect(issue?.instruction).toContain('Attributes.Name');
+    expect(()=>assertRhinoScriptPreflight(tool,{script})).toThrow(RhinoNativeScriptPreflightError);
+  });
+  it('ignores comments and string literals and allows supported lookup APIs',()=>{
+    expect(inspectGeometryFragment(python,'# doc.Objects.FindByObjectName(name)\ntext="Objects.FindByObjectName()"')).toEqual([]);
+    expect(inspectGeometryFragment(python,'objects = doc.Objects.FindByFilter(settings)\nfound = [obj for obj in objects if obj.Attributes.Name == name]')).toEqual([]);
+  });
+});
+
+it('explains RayShootEvent coordinate failures without treating them as zero-write replays',()=>{
+ const explanation=rhinoScriptFailureExplanation("AttributeError: 'RayShootEvent' object has no attribute 'Z'");
+ expect(explanation).toContain('event.Point.X/Y/Z');
+ expect(explanation).toContain('不能直接重放');
+});
+
+
+describe('conservative RayShoot overload coordinate preflight',()=>{
+ const prefix='import Rhino.Geometry as rg\nray = rg.Ray3d(origin, direction)\n';
+ it('rejects direct coordinates only when the geometry-first overload can be proven',()=>{
+  const script=prefix+'events = rg.Intersect.Intersection.RayShoot(geometry, ray, 1)\nhit = events[0]\nz = hit.Z';
+  expect(inspectRhinoScript(python,script)).toContainEqual(expect.objectContaining({code:'rhino_rayshoot_event_coordinate',line:5,actualType:'RayShootEvent, not Point3d'}));
+  expect(inspectRhinoScript(python,script.replace('hit.Z','events[0].Z'))).toContainEqual(expect.objectContaining({code:'rhino_rayshoot_event_coordinate'}));
+ });
+ it('allows Point coordinates, the ray-first point overload and unknown dynamic calls',()=>{
+  for(const script of [prefix+'events = rg.Intersect.Intersection.RayShoot(geometry, ray, 1)\nhit = events[0]\nz = hit.Point.Z',prefix+'points = rg.Intersect.Intersection.RayShoot(ray, geometry, 1)\nhit = points[0]\nz = hit.Z','ray = dynamic_ray()\nevents = custom.RayShoot(geometry, ray, 1)\nhit = events[0]\nz = hit.Z','# events[0].Z\ntext = "hit.Z"']) {
+   expect(inspectGeometryFragment(python,script)).toEqual([]);
+  }
+ });
+});
+
+
+describe('nonuniform Scale overload preflight',()=>{
+ it('rejects a known point pivot with three factors before dispatch',()=>{
+  for(const pivot of ['rg.Point3d.Origin','rg.Point3d(1,2,3)','origin']){
+   const script='origin=rg.Point3d(1,2,3)\nrg.Transform.Scale('+pivot+',2,3,4)';
+   expect(inspectGeometryFragment(python,script)).toContainEqual(expect.objectContaining({code:'rhino_nonuniform_scale_requires_plane'}));
+  }
+ });
+ it('allows a plane pivot, a uniform point overload and unknown dynamic pivots',()=>{
+  for(const script of ['rg.Transform.Scale(rg.Plane.WorldXY,2,3,4)','rg.Transform.Scale(rg.Point3d.Origin,2)','rg.Transform.Scale(pivot,2,3,4)'])expect(inspectGeometryFragment(python,script)).toEqual([]);
+ });
+});

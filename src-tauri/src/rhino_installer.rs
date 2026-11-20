@@ -10,6 +10,8 @@ use std::{
 
 #[path = "rhino_package_conflicts.rs"]
 mod package_conflicts;
+#[path = "rhino_payload_cleanup.rs"]
+mod payload_cleanup;
 
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 const PLUGIN: &str = "InspirationDrawer.Rhino.rhp";
@@ -25,6 +27,12 @@ pub struct RhinoInstallation {
     #[serde(default)]
     pub installed: bool,
     #[serde(default)]
+    pub load_mode: Option<u32>,
+    #[serde(default)]
+    pub load_protection: Option<u32>,
+    #[serde(default)]
+    pub running_as_current_user: Option<bool>,
+    #[serde(default)]
     pub conflicting_package_paths: Vec<String>,
 }
 #[derive(Serialize)]
@@ -34,6 +42,10 @@ pub struct RhinoInstallResult {
     pub restart_required: bool,
     pub repaired_conflicts: usize,
     pub conflict_backups: Vec<String>,
+    pub cleaned_versions: usize,
+    pub cleanup_backups: Vec<String>,
+    pub cleanup_deferred: bool,
+    pub cleanup_warnings: Vec<String>,
 }
 
 fn payload(version: u8) -> Result<[(&'static str, &'static [u8]); 5], String> {
@@ -149,6 +161,18 @@ fn run_powershell(script: &str, env: &[(&str, &std::ffi::OsStr)]) -> Result<Stri
         .to_string())
 }
 
+fn registration_matches_payload(plugin_path: &str, files: &[(&'static str, &'static [u8])]) -> bool {
+    let path = Path::new(plugin_path);
+    let is_expected_plugin = path.file_name().and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(PLUGIN));
+    if !is_expected_plugin { return false; }
+    let Some(directory) = path.parent() else { return false; };
+    files.iter().all(|(name, bytes)| {
+        let file = if *name == PLUGIN { path.to_path_buf() } else { directory.join(name) };
+        fs::read(file).is_ok_and(|actual| actual == *bytes)
+    })
+}
+
 fn package_directory(version: u8) -> Result<PathBuf, String> {
     Ok(PathBuf::from(std::env::var_os("APPDATA").ok_or("APPDATA is missing")?)
         .join("McNeel").join("Rhinoceros").join("packages").join(format!("{version}.0")))
@@ -163,14 +187,8 @@ fn detect() -> Result<Vec<RhinoInstallation>, String> {
         item.conflicting_package_paths = package_conflicts::find_legacy_packages(&package_directory(item.major_version)?)?
             .into_iter().map(|path| path.to_string_lossy().into_owned()).collect();
         let files = payload(item.major_version)?;
-        item.installed = item.plugin_path.as_ref().is_some_and(|p| {
-            let dir = Path::new(p).parent();
-            dir.is_some_and(|dir| {
-                files
-                    .iter()
-                    .all(|(name, bytes)| fs::read(dir.join(name)).is_ok_and(|v| v == *bytes))
-            })
-        });
+        item.installed = item.plugin_path.as_ref()
+            .is_some_and(|path| registration_matches_payload(path, &files));
     }
     Ok(versions)
 }
@@ -218,10 +236,31 @@ fn install() -> Result<RhinoInstallResult, String> {
     if installed.iter().any(|item| !item.installed || !item.conflicting_package_paths.is_empty()) {
         return Err("Rhino registration verification failed. Existing models and conversations were not changed.".into());
     }
+    // Cleanup is a post-verification step only. Never move an assembly loaded by
+    // Rhino; a running version is left intact and the UI reports deferred cleanup.
+    let mut cleanup_backups = Vec::new();
+    let mut cleanup_warnings = Vec::new();
+    let cleanup_deferred = installed.iter().any(|item| item.running);
+    for item in &installed {
+        if item.running { continue; }
+        let Some(plugin) = item.plugin_path.as_deref() else { continue; };
+        match payload_cleanup::backup_obsolete_payloads(
+            &root.join(item.major_version.to_string()),
+            Path::new(plugin),
+            &backup_root.join(item.major_version.to_string()).join("managed-versions"),
+        ) {
+            Ok(moved) => cleanup_backups.extend(moved.into_iter().map(|item| item.backup_path.to_string_lossy().into_owned())),
+            Err(error) => cleanup_warnings.push(format!("Rhino {}: {error}", item.major_version)),
+        }
+    }
     Ok(RhinoInstallResult {
         restart_required: installed.iter().any(|v| v.running),
         repaired_conflicts: backups.len(),
         conflict_backups: backups,
+        cleaned_versions: cleanup_backups.len(),
+        cleanup_backups,
+        cleanup_deferred,
+        cleanup_warnings,
         installed,
     })
 }
@@ -273,6 +312,21 @@ mod tests {
         // Preserve the isolated temp directory as a diagnostic; never recursively delete user paths.
     }
     #[test]
+    fn installed_status_requires_the_registered_path_to_be_the_verified_plugin_file() {
+        let root = std::env::temp_dir().join(format!(
+            "rhino-registration-{}-{}", std::process::id(), rand::random::<u64>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let files = payload(8).unwrap();
+        for (name, bytes) in files { fs::write(root.join(name), bytes).unwrap(); }
+        assert!(registration_matches_payload(root.join(PLUGIN).to_str().unwrap(), &files));
+        assert!(!registration_matches_payload(root.join("stale-plugin.rhp").to_str().unwrap(), &files));
+        fs::write(root.join(PLUGIN), b"stale assembly").unwrap();
+        assert!(!registration_matches_payload(root.join(PLUGIN).to_str().unwrap(), &files));
+        // Keep the fixture for diagnostics rather than recursively deleting a temp path.
+    }
+
+    #[test]
     fn registration_is_current_user_only_and_contains_no_model_or_chat_actions() {
         let script = include_str!("rhino_installer_register.ps1");
         assert!(script.contains("Registry]::CurrentUser"));
@@ -280,5 +334,10 @@ mod tests {
         assert!(!script.contains("Remove-Item"));
         assert!(script.contains("previousRegistration"));
         assert!(script.contains("CommandList"));
+        let detect = include_str!("rhino_installer_detect.ps1");
+        assert!(detect.contains("LoadMode"));
+        assert!(detect.contains("LoadProtection"));
+        assert!(detect.contains("runningAsCurrentUser"));
+        assert!(detect.contains("GetOwnerSid"));
     }
 }

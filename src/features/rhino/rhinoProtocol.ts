@@ -1,3 +1,5 @@
+import { RHINO_MODELING_SKILL_RESOURCE_PATHS, RHINO_MODELING_SKILL_RESOURCE_TOOL } from './rhinoProductModelingKnowledge';
+
 /** Versioned contract shared by the desktop Chat and the Rhino Beta host. */
 export const RHINO_PROTOCOL = 1;
 const activeRuns = new Set<string>();
@@ -64,11 +66,15 @@ export function validateRhinoConnection(value: unknown): RhinoConnection {
   return data as RhinoConnection;
 }
 
+export const RHINO_REFERENCE_REVIEW_TOOL = 'rhino_review_viewport';
+
 export const RHINO_READ_TOOLS = [
+  [RHINO_REFERENCE_REVIEW_TOOL, 'Read a fresh raster observation from the bound Rhino document’s active viewport for reference comparison. Does not change the document, camera, or display mode.'],
   ['rhino_get_context', '读取本会话绑定的 Rhino 文档、相机和当前选择。'],
   ['rhino_list_objects', '查询绑定文档的对象 ID、图层、名称和类型，可按图层过滤。'],
   ['rhino_list_layers', '查询绑定文档的图层路径、可见性与对象数。'],
   ['rhino_list_parts', '读取当前选中对象的稳定分件 ID、有效简单材质、面级材质、图层和块实例变换。返回真实模型数据，不包含可见区遮罩；对父级材质继承仅报告 RhinoCommon 可验证的值。'],
+  [RHINO_MODELING_SKILL_RESOURCE_TOOL, '读取内置 Rhino 产品建模 Skill 的固定 Markdown 参考资料；仅本地只读，不访问任意路径、不修改模型、不执行脚本。'],
 ] as const;
 
 export const isRhinoReadTool = (name: string) => RHINO_READ_TOOLS.some(([id]) => id === name);
@@ -80,7 +86,9 @@ export const rhinoToolDefinitions = RHINO_READ_TOOLS.map(([name, description]) =
       type: 'object',
       properties: name === 'rhino_list_objects'
         ? { layer: { type: 'string', description: '可选的完整图层路径' }, limit: { type: 'integer', minimum: 1, maximum: 200 } }
-        : name === 'rhino_list_parts' ? { limit: { type: 'integer', minimum: 1, maximum: 200, description: '分件上限' } } : {},
+        : name === 'rhino_list_parts' ? { limit: { type: 'integer', minimum: 1, maximum: 200, description: '分件上限' } }
+          : name === RHINO_MODELING_SKILL_RESOURCE_TOOL ? { resourcePath: { type: 'string', enum: RHINO_MODELING_SKILL_RESOURCE_PATHS } } : {},
+      ...(name === RHINO_MODELING_SKILL_RESOURCE_TOOL ? { required: ['resourcePath'] } : {}),
       additionalProperties: false,
     },
   },

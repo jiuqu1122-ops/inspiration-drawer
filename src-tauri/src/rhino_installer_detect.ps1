@@ -16,10 +16,36 @@ foreach ($version in @(8,9)) {
     }
   }
   if (-not $path) { continue }
-  $installed = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("SOFTWARE\McNeel\Rhinoceros\$version.0\Plug-Ins\$guid\PlugIn")
+  $pluginRoot = "SOFTWARE\McNeel\Rhinoceros\$version.0\Plug-Ins\$guid"
+  $installed = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("$pluginRoot\PlugIn")
   $plugin = $null
   if ($installed) { try { $plugin = $installed.GetValue('FileName',$null) } finally { $installed.Dispose() } }
-  $running = @($processes | Where-Object { $_.Path -and [string]::Equals($_.Path,$path,[StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
-  $items += [ordered]@{majorVersion=$version;exePath=$path;running=$running;pluginPath=$plugin;installed=$false}
+  $pluginSettings = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($pluginRoot)
+  $loadMode = $null
+  if ($pluginSettings) { try { $loadMode = $pluginSettings.GetValue('LoadMode',$null) } finally { $pluginSettings.Dispose() } }
+  $protectionKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("SOFTWARE\McNeel\Rhinoceros\$version.0\Global Settings\Plug-ins\$guid")
+  $loadProtection = $null
+  if ($protectionKey) { try { $loadProtection = $protectionKey.GetValue('LoadProtection',$null) } finally { $protectionKey.Dispose() } }
+  $matchingProcesses = @($processes | Where-Object { $_.Path -and [string]::Equals($_.Path,$path,[StringComparison]::OrdinalIgnoreCase) })
+  $running = $matchingProcesses.Count -gt 0
+  $runningAsCurrentUser = $null
+  if ($running) {
+    $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $ownersChecked = 0
+    $sameUser = $false
+    foreach ($process in $matchingProcesses) {
+      try {
+        $instance = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $($process.Id)" -ErrorAction Stop
+        $owner = Invoke-CimMethod -InputObject $instance -MethodName GetOwnerSid -ErrorAction Stop
+        if ($owner.ReturnValue -eq 0 -and $owner.Sid) {
+          $ownersChecked++
+          if ([string]::Equals([string]$owner.Sid,$currentIdentity,[StringComparison]::OrdinalIgnoreCase)) { $sameUser = $true }
+        }
+      } catch { }
+    }
+    if ($sameUser) { $runningAsCurrentUser = $true }
+    elseif ($ownersChecked -eq $matchingProcesses.Count) { $runningAsCurrentUser = $false }
+  }
+  $items += [ordered]@{majorVersion=$version;exePath=$path;running=$running;runningAsCurrentUser=$runningAsCurrentUser;pluginPath=$plugin;loadMode=$loadMode;loadProtection=$loadProtection;installed=$false}
 }
 ConvertTo-Json -InputObject @($items) -Depth 4 -Compress

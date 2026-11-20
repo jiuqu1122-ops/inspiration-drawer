@@ -3,6 +3,12 @@ const CHINESE_NUMBER_VALUES: Record<string, number> = {
   两: 2,
   三: 3,
   四: 4,
+  五: 5,
+  六: 6,
+  七: 7,
+  八: 8,
+  九: 9,
+  十: 10,
 };
 
 export type IndependentImageVariantFallback = {
@@ -27,17 +33,17 @@ const isProviderToolDenial = (value: string) => (
 );
 
 export const requestedImageVariantCount = (text: string) => {
-  const match = text.match(/([二两三四2-4])\s*(?:个|种|款|套|组|幅|张)?\s*(?:方案|方向|版本|款式|设计|风格|配色|材质|造型|形态|外观|场景|情境|环境|空间|视角|机位|镜头|构图|布局|氛围|叙事|概念|效果)/i);
+  const match = text.match(/(10|[二两三四五六七八九十2-9])\s*(?:个|种|款|套|组|幅|张)?\s*(?:方案|方向|版本|款式|设计|风格|配色|材质|造型|形态|外观|场景|情境|环境|空间|视角|机位|镜头|构图|布局|氛围|叙事|概念|效果)/i);
   if (!match) return undefined;
   const parsed = Number(match[1]) || CHINESE_NUMBER_VALUES[match[1]];
-  return parsed >= 2 && parsed <= 4 ? parsed : undefined;
+  return parsed >= 2 && parsed <= 10 ? parsed : undefined;
 };
 
 const numberedVariantEntries = (text: string) => {
   const entries: string[] = [];
   let current = '';
   for (const line of text.replace(/\r/g, '').split('\n')) {
-    const match = line.match(/^\s*(?:#{1,6}\s*)?(?:[-*+]\s*)?(?:\*\*)?(?:\d{1,2}|[一二三四])\s*(?:[.、．:：)）]|[-—–]\s+)\s*(.*)$/);
+    const match = line.match(/^\s*(?:#{1,6}\s*)?(?:[-*+]\s*)?(?:\*\*)?(?:\d{1,2}|[一二三四五六七八九十])\s*(?:[.、．:：)）]|[-—–]\s+)\s*(.*)$/);
     if (match) {
       if (current.trim()) entries.push(current.trim());
       current = match[1].trim();
@@ -46,7 +52,7 @@ const numberedVariantEntries = (text: string) => {
     }
   }
   if (current.trim()) entries.push(current.trim());
-  return entries.slice(0, 4);
+  return entries.slice(0, 10);
 };
 
 const variantFromEntry = (entry: string, index: number) => {
@@ -66,7 +72,7 @@ const structuredVariants = (text: string, expectedCount?: number) => {
   const variants = numberedVariantEntries(text)
     .map(variantFromEntry)
     .filter((value): value is { name: string; prompt: string } => Boolean(value));
-  const count = expectedCount ?? Math.min(variants.length, 4);
+  const count = expectedCount ?? Math.min(variants.length, 10);
   return variants.length >= Math.max(2, count) ? variants.slice(0, count) : [];
 };
 

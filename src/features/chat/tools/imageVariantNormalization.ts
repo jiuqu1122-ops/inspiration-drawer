@@ -1,4 +1,4 @@
-export const IMAGE_VARIANT_MAX_COUNT = 4;
+export const IMAGE_VARIANT_MAX_COUNT = 10;
 
 export type ImageVariantSpec = {
   name: string;
@@ -38,7 +38,7 @@ const numberedTextEntries = (value: string) => {
   const entries: string[] = [];
   let current = '';
   for (const line of value.replace(/\r/g, '').split('\n')) {
-    const match = line.match(/^\s*(?:#{1,6}\s*)?(?:[-*+]\s*)?(?:\*\*)?(?:\d{1,2}|[一二三四])\s*(?:[.、．:：)）]|[-—–]\s+)\s*(.*)$/);
+    const match = line.match(/^\s*(?:#{1,6}\s*)?(?:[-*+]\s*)?(?:\*\*)?(?:\d{1,2}|[一二三四五六七八九十])\s*(?:[.、．:：)）]|[-—–]\s+)\s*(.*)$/);
     if (match) {
       if (current.trim()) entries.push(current.trim());
       current = match[1].trim();

@@ -31,3 +31,20 @@ describe('geometry assertion failures are not generic MCP or conversation failur
  });
  it.each(['Timeout: completion unknown','NameError: missing namespace'])('does not misdiagnose unrelated errors: %s',error=>expect(rhinoGeometryFailureExplanation(error)).toBeUndefined());
 });
+
+
+describe('readable GH bake failures and real source locations',()=>{
+ it('explains a Mesh/Brep intent mismatch without dropping the original part',()=>{
+  const text=rhinoGeometryFailureExplanation('ValueError: Expected Brep/surface geometry for texture_001\nScript location: line 2')!;
+  expect(text).toContain('texture_001');expect(text).toContain('网格不是 Brep');expect(text).toContain('不能自动重放');
+ });
+ it('reports the actual count without claiming GH output is invalid or allowing truncation/replay',()=>{
+  const text=rhinoGeometryFailureExplanation('Unexpected output count: 225')!;expect(text).toContain('225');
+  expect(text).toContain('不能凭猜测写死数量');expect(text).toContain('不能自动重放');
+ });
+ it('uses the original call site, not the generated exec wrapper or private helper line',()=>{
+  const traceback='Traceback (most recent call last):\n  File "wrapper.py", line 2, in <module>\n  File "<drawer-user-script>", line 37, in <module>\n  File "<drawer-geometry-stage>", line 140, in _validate\nValueError: Geometry type/intent mismatch for texture: expected surface, actual Mesh';
+  const text=readableRhinoMcpFailure(traceback);expect(text).toContain('第 37 行');expect(text).not.toContain('第 140 行');
+  expect(rhinoGeometryFailureExplanation(traceback)).toContain('脚本第 37 行');
+ });
+});

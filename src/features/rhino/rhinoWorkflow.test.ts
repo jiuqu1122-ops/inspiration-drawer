@@ -43,6 +43,8 @@ describe('Rhino native workflow policy', () => {
     expect(instruction).toContain('verify');
     expect(instruction).toContain('Invalid hole loop');
     expect(instruction).toContain('Do not hand-write BooleanDifference cutter loops');
+    expect(instruction).toContain('Do not call RhinoCommon ObjectTable.FindByObjectName');
+    expect(instruction).toContain('Objects.FindByFilter(ObjectEnumeratorSettings)');
   });
 });
 

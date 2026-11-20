@@ -1,6 +1,6 @@
 ﻿/** Use only the user's request, never appended scene data, to pick a workflow. */
 export function rhinoUserRequest(text: string) {
-  return text.split(/\n\n\[Rhino \u53ea\u8bfb\u4e0a\u4e0b\u6587\uff1b/)[0].trim();
+  return text.split(/\n\n\[Rhino \u53ea\u8bfb\u4e0a\u4e0b\u6587[^\]]*\]/)[0].trim();
 }
 
 /** Explicit geometry creation/editing must not become image editing merely
@@ -13,6 +13,9 @@ export function isRhinoGeometryOnlyRequest(text: string) {
   const explicitImage = /(?:\u6e32\u67d3|\u6548\u679c\u56fe|\u751f\u56fe|\u51fa\u56fe|\u751f\u6210.{0,12}(?:\u56fe\u7247|\u56fe\u50cf)|\b(?:render(?:ing)?|visuali[sz]ation)\b|\b(?:generate|edit)\b.{0,12}\b(?:image|picture)\b)/i.test(request);
   return geometry && !explicitImage;
 }
+
+/** Preserve the active viewport mode unless the user specifically requests a Rendered-mode capture. */
+export const isRhinoExplicitRenderedCaptureRequest=(text:string)=>/(?:\u5207\u6362|\u6539\u6210|\u6539\u4e3a|\u8bbe\u4e3a|\u8bbe\u7f6e\u4e3a|\u4f7f\u7528|\u7528|\u6309)\s*(?:\u5230\s*)?(?:\u6e32\u67d3|\brendered\b)\s*(?:\u6a21\u5f0f|\u89c6\u56fe|\u663e\u793a\u6a21\u5f0f)|\b(?:switch|set|use)\b.{0,32}\b(?:to\s+)?rendered\s+(?:mode|viewport|display\s+mode)\b|\bcapture\b.{0,48}\b(?:in\s+)?rendered\s+(?:viewport\s+)?mode\b/i.test(rhinoUserRequest(text));
 
 /** Requests that need Rhino document/GH write tools, not read-only context. */
 export function isRhinoDocumentWriteRequest(text: string) {
@@ -45,8 +48,24 @@ export function rhinoWriteCapabilityNotice(hostVersion: string, nativeConnected:
   return `\u5f53\u524d Rhino ${hostVersion || '\u7248\u672c\u672a\u77e5'} \u6ca1\u6709\u53ef\u7528\u7684\u5efa\u6a21/\u6587\u6863\u5199\u5165\u5de5\u5177\u3002${connection}\u672c\u6b21\u5df2\u963b\u6b62\u53d1\u9001\uff1b\u4e0d\u4f1a\u53ea\u8fd4\u56de\u624b\u52a8\u811a\u672c\uff0c\u4e5f\u4e0d\u4f1a\u8c0e\u79f0\u6a21\u578b\u5df2\u5efa\u597d\u3002`;
 }
 
-export const isRhinoBlankViewportError = (error: unknown) => /Rhino (?:Rendered )?viewport capture is blank/i.test(String(error));
+export const isRhinoBlankViewportError = (error: unknown) => /Rhino (?:(?:Rendered|Shaded|current) )?viewport capture is blank/i.test(String(error));
 
 /** A surface is valid geometry too; require a closed Brep only when explicit. */
 export const isRhinoClosedSolidRequest=(text:string)=>/(?:\u5b9e\u4f53|\u95ed\u5408.{0,4}(?:\u66f2\u9762|brep|\u6a21\u578b)|\u5c01\u95ed.{0,6}(?:\u5b9e\u4f53|brep|\u6a21\u578b)|\bclosed\s+(?:solid|brep)\b|\bsolid(?:\s+brep)?\b)/i.test(rhinoUserRequest(text));
 
+
+
+/** Keep an explicitly requested GH workflow editable instead of silently replacing it with hidden code. */
+export const isExplicitGhComponentsRequest=(text:string)=>{
+  const request=rhinoUserRequest(text);
+  const gh=/(?:\bgrasshopper\b|\bgh\b|\u8349\u56fe\u7f16\u8f91\u5668)/i.test(request);
+  if(!gh)return false;
+  const asksForInformation=/(?:\u600e\u4e48|\u5982\u4f55|\u4e3a\u4ec0\u4e48|\u80fd\u4e0d\u80fd|\u662f\u4ec0\u4e48|\u67e5\u770b|\u68c0\u67e5|\u641c\u7d22|\u8bf4\u660e|\u89e3\u91ca|\u5206\u6790|\u5217\u51fa|\bhow\b|\bwhy\b|\bwhat\b|\bexplain\b|\binspect\b|\bcheck\b|\bsearch\b|\blist\b)/i.test(request);
+  if(asksForInformation)return false;
+  const negatesGh=/(?:\u4e0d\u8981|\u522b|\u4e0d\u7528|\u65e0\u9700|\u4e0d\u9700\u8981|\bdon['?]?t\b|\bdo not\b)[^\n]{0,24}(?:\bgrasshopper\b|\bgh\b|\u8349\u56fe|\u7ec4\u4ef6|\bcomponents?\b)/i.test(request);
+  if(negatesGh)return false;
+  const componentWork=/(?:\u7ec4\u4ef6|\u8282\u70b9|\u753b\u5e03|\u5b9a\u4e49|\bcomponents?\b|\bnodes?\b|\bdefinition\b)/i.test(request);
+  const action=/(?:\u6539|\u505a|\u7528|\u5efa(?:\u6a21|[^\n]{0,8}\u6a21\u578b)|\u521b\u5efa|\u65b0\u5efa|\u751f\u6210|\u505a|\u642d\u5efa|\u6784\u5efa|\u8fde\u63a5|\u7f16\u8f91|\u5b9e\u73b0|\u4fee\u6539|\u4fee\u590d|\u7ee7\u7eed|\u4f7f\u7528|\buse\b|\bbuild\b|\bmake\b|\bcreate\b|\bdesign\b|\bmodel\b|\bedit\b|\bmodify\b|\bimplement\b|\bwire\b|\bconnect\b)/i.test(request);
+  const explicitNoCode=/(?:\u522b\u7528\u4ee3\u7801|\u4e0d\u8981\u7528\u4ee3\u7801|\u4e0d\u4f7f\u7528\u4ee3\u7801|\u522b\u7528\s*python|\bwithout\s+code\b|\bdon['?]?t\s+use\s+code\b)/i.test(request);
+  return action&&(componentWork||explicitNoCode||gh);
+};

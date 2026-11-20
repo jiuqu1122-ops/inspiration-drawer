@@ -18,6 +18,11 @@ assert "@media (max-width: 340px)" in css
 assert ".image-settings-primary { display:grid;" in css
 assert ".rhino-composer { display:flex;" in css
 assert ".panel-picker-menu { position:fixed;" in css
+assert ".tool-history {" in css and ".tool-history__summary" in css
+panel_js = (ROOT / "integrations/rhino/InspirationDrawer.Rhino/Panel/panel.js").read_text(encoding="utf-8")
+assert "history.open=active" in panel_js and "tool-history__items" in panel_js
+assert "['pending','running','awaiting-approval']" in panel_js
+assert "${tools.length}" in panel_js and "failures" in panel_js
 html = (ROOT / "integrations/rhino/InspirationDrawer.Rhino/Panel/index.html").read_text(encoding="utf-8")
 composer = html[html.index('<form id="composer"'):html.index("</form>")]
 for control in ["model", "image-model", "image-resolution", "image-aspect-ratio", "viewport", "canvas", "mask", "attach-local-image"]:

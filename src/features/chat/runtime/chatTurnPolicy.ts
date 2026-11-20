@@ -70,20 +70,29 @@ export const canAcceptWebSearchQuery = (
 export const buildWebSearchTurnInstruction = (
   webSearchCount: number,
   currentDate: string,
+  options: { semanticDecision?: boolean } = {},
 ) => {
   const normalizedCount = Math.max(0, Math.min(
     MAX_WEB_SEARCH_QUERIES_PER_TURN,
     Math.floor(webSearchCount),
   ));
   const remainingSearches = MAX_WEB_SEARCH_QUERIES_PER_TURN - normalizedCount;
-  const searchInstruction = normalizedCount === 0
-    ? `本轮最多允许 ${MAX_WEB_SEARCH_QUERIES_PER_TURN} 次不同关键词的联网搜索。先调用一次 web_search；结果足够时直接回答，仅在资料明显缺失、歧义或关键词错误时继续换用不同关键词。`
-    : remainingSearches > 0
-      ? `本轮已完成 ${normalizedCount} 次不同关键词的联网搜索，最多还可使用 ${remainingSearches} 次。结果足够时直接回答；仅在资料明显不足时换用不同关键词，禁止重复原关键词。`
-      : '本轮联网搜索额度已用完，请基于已取得资料直接完成回答，不要声称无法回答。';
+  const searchInstruction = options.semanticDecision
+    ? normalizedCount === 0
+      ? 'RHINO_WEB_SEARCH_DECISION_V1: Decide from the complete user goal, current references and available Rhino capabilities whether external examples, precedents or reliable information would materially improve the requested result. Use web_search when that judgment says it is useful; do not rely on fixed trigger words. If external research is unnecessary, skip search and continue the Rhino task. Search is a means to the requested result, not the final deliverable.'
+      : remainingSearches > 0
+        ? `RHINO_WEB_SEARCH_DECISION_V1: ${normalizedCount} distinct web search(es) completed; ${remainingSearches} remain. Judge whether the sources already suffice for the actual Rhino task. If they do, stop searching and continue modeling; if not, issue only a genuinely new query.`
+        : 'Search limit reached. Continue the Rhino task using available evidence; state uncertainty instead of inventing external facts.'
+    : normalizedCount === 0
+      ? `\u672c\u8f6e\u6700\u591a\u5141\u8bb8 ${MAX_WEB_SEARCH_QUERIES_PER_TURN} \u6b21\u4e0d\u540c\u5173\u952e\u8bcd\u7684\u8054\u7f51\u641c\u7d22\u3002\u5148\u8c03\u7528\u4e00\u6b21 web_search\uff1b\u7ed3\u679c\u8db3\u591f\u65f6\u76f4\u63a5\u56de\u7b54\uff0c\u4ec5\u5728\u8d44\u6599\u660e\u663e\u7f3a\u5931\u3001\u6b67\u4e49\u6216\u5173\u952e\u8bcd\u9519\u8bef\u65f6\u7ee7\u7eed\u6362\u7528\u4e0d\u540c\u5173\u952e\u8bcd\u3002`
+      : remainingSearches > 0
+        ? `\u672c\u8f6e\u5df2\u5b8c\u6210 ${normalizedCount} \u6b21\u4e0d\u540c\u5173\u952e\u8bcd\u7684\u8054\u7f51\u641c\u7d22\uff0c\u6700\u591a\u8fd8\u53ef\u4f7f\u7528 ${remainingSearches} \u6b21\u3002\u7ed3\u679c\u8db3\u591f\u65f6\u76f4\u63a5\u56de\u7b54\uff1b\u4ec5\u5728\u8d44\u6599\u660e\u663e\u4e0d\u8db3\u65f6\u6362\u7528\u4e0d\u540c\u5173\u952e\u8bcd\uff0c\u7981\u6b62\u91cd\u590d\u539f\u5173\u952e\u8bcd\u3002`
+        : '\u672c\u8f6e\u8054\u7f51\u641c\u7d22\u989d\u5ea6\u5df2\u7528\u5b8c\uff0c\u8bf7\u57fa\u4e8e\u5df2\u53d6\u5f97\u8d44\u6599\u76f4\u63a5\u5b8c\u6210\u56de\u7b54\uff0c\u4e0d\u8981\u58f0\u79f0\u65e0\u6cd5\u56de\u7b54\u3002';
   return [
-    `当前本地日期是 ${currentDate}。解析“今天、昨天、最近”等相对日期时必须以此为准，并把具体日期写入搜索词。`,
+    `\u5f53\u524d\u672c\u5730\u65e5\u671f\u662f ${currentDate}\u3002\u89e3\u6790\u201c\u4eca\u5929\u3001\u6628\u5929\u3001\u6700\u8fd1\u201d\u7b49\u76f8\u5bf9\u65e5\u671f\u65f6\u5fc5\u987b\u4ee5\u6b64\u4e3a\u51c6\uff0c\u5e76\u628a\u5177\u4f53\u65e5\u671f\u5199\u5165\u641c\u7d22\u8bcd\u3002`,
     searchInstruction,
-    '回答必须综合搜索结果中的摘要、正文摘录、发布时间，并用 Markdown 链接标注来源。不要只给用户一组链接。',
+    options.semanticDecision
+      ? 'If web search was used, synthesize relevant findings into the Rhino task and cite the sources. If not, do not imply that external research was performed.'
+      : '\u56de\u7b54\u5fc5\u987b\u7efc\u5408\u641c\u7d22\u7ed3\u679c\u4e2d\u7684\u6458\u8981\u3001\u6b63\u6587\u6458\u5f55\u3001\u53d1\u5e03\u65f6\u95f4\uff0c\u5e76\u7528 Markdown \u94fe\u63a5\u6807\u6ce8\u6765\u6e90\u3002\u4e0d\u8981\u53ea\u7ed9\u7528\u6237\u4e00\u7ec4\u94fe\u63a5\u3002',
   ].join('\n');
 };

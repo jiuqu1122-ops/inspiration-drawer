@@ -216,7 +216,7 @@ internal static class RhinoTools
             var sourceMode = DisplayModeDescription.GetDisplayMode(rendered ? DisplayModeDescription.RenderedId : DisplayModeDescription.ShadedId);
             if (forceRendered && sourceMode is null)
                 throw new InvalidOperationException("Rhino Rendered display mode is unavailable");
-            if ((includeMask || forceShaded || forceRendered) && sourceMode is { })
+            if ((forceShaded || forceRendered) && sourceMode is { })
             {
                 temporaryCaptureMode = CreateCleanCaptureMode(rendered);
                 var captureMode = temporaryCaptureMode ?? sourceMode;
@@ -236,7 +236,8 @@ internal static class RhinoTools
                     (x, y) => cleanViewport.GetPixel(x, y).ToArgb()))
             {
                 cleanViewport.Dispose();
-                throw new InvalidOperationException("Rhino Rendered viewport capture is blank. No reference image was uploaded and image generation was not started.");
+                var captureKind = forceRendered ? "Rendered" : forceShaded ? "Shaded" : "current";
+                throw new InvalidOperationException($"Rhino {captureKind} viewport capture is blank. No reference image was uploaded and image generation was not started.");
             }
             foreach (var obj in selectedObjects) if (!obj.IsDeleted) obj.Select(true, true, false, true, true, true);
             doc.Views.Redraw();
@@ -609,7 +610,7 @@ internal static class RhinoTools
                     ["imageData"] = Convert.ToBase64String(buffer.ToArray()), ["mimeType"] = "image/png",
                     ["width"] = bitmap.Width, ["height"] = bitmap.Height, ["context"] = ContextFor(doc),
                     ["maskIncluded"] = includeMask,
-                    ["captureMode"] = forceRendered ? "rendered" : (forceShaded || includeMask ? "shaded" : "current"),
+                    ["captureMode"] = forceRendered ? "rendered" : forceShaded ? "shaded" : "current",
                     ["capturePipeline"] = "raster", ["captureValidated"] = true,
                 };
                 if (captures.Mask is { } mask)

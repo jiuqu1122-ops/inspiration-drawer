@@ -117,6 +117,17 @@ describe('ordinary Chat turn policy', () => {
     expect(instruction).toContain('不要声称无法回答');
   });
 
+  it('offers Rhino semantic search without forcing a search on every turn', () => {
+    const instruction = buildWebSearchTurnInstruction(0, '2026-11-19', { semanticDecision: true });
+    expect(instruction).toContain('RHINO_WEB_SEARCH_DECISION_V1');
+    expect(instruction).toContain('complete user goal');
+    expect(instruction).toContain('do not rely on fixed trigger words');
+    expect(instruction).not.toContain('first call web_search');
+    const afterSearch = buildWebSearchTurnInstruction(1, '2026-11-19', { semanticDecision: true });
+    expect(afterSearch).toContain('sources already suffice');
+    expect(afterSearch).toContain('continue modeling');
+  });
+
   it('uses the centralized search limit in the provider tool description', () => {
     const webSearch = CHAT_TOOL_DEFINITIONS.find(tool => tool.function.name === 'web_search');
     expect(webSearch?.function.description).toContain(`最多使用 ${MAX_WEB_SEARCH_QUERIES_PER_TURN} 个不同关键词`);

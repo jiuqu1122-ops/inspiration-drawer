@@ -47,6 +47,12 @@ main { flex:1; min-height:40px; min-width:0; overflow-y:auto; overflow-x:hidden;
 .message.user .text { padding:9px 11px; background:var(--panel-soft); border-radius:8px; }
 .message img { max-width:100%; max-height:300px; display:block; object-fit:contain; border-radius:7px; margin-top:8px; }
 .tool { font-size:11px; color:var(--panel-muted); border-left:2px solid var(--panel-border-strong); padding-left:8px; margin-top:6px; }
+.tool-history { margin-top:7px; min-width:0; border-left:2px solid var(--panel-border-strong); padding-left:8px; }
+.tool-history__summary { display:flex; align-items:center; min-height:23px; color:var(--panel-muted); font-size:10px; cursor:pointer; user-select:none; }
+.tool-history__summary::before { content:'\25B8'; display:inline-block; margin-right:5px; transition:transform 120ms ease; }
+.tool-history[open] > .tool-history__summary::before { transform:rotate(90deg); }
+.tool-history__summary:hover { color:var(--panel-text-soft); }
+.tool-history__items { min-width:0; padding:1px 0 2px; }
 .status { font-size:10px; color:var(--panel-muted); margin-top:5px; }
 .tool-diagnostic { white-space:pre-line; overflow-wrap:anywhere; font-size:12px; line-height:1.55; margin-top:5px; opacity:.85; }
 .native-approval-details { margin-top:6px; }

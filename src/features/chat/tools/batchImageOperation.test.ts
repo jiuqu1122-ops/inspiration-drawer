@@ -126,7 +126,7 @@ describe('batch_image_operation', () => {
     let peak = 0;
     await executeBatchImageOperation({
       args: { instruction: '逐张增强细节', mode: 'one_per_image' },
-      attachments: attachments(7),
+      attachments: attachments(14),
       generate: async (_args, attachment) => {
         active += 1;
         peak = Math.max(peak, active);
@@ -223,7 +223,7 @@ describe('batch_image_operation', () => {
 
 
 describe('batch image cancellation boundaries', () => {
-  it('cancels six active jobs and leaves the next six queued jobs unsubmitted', async () => {
+  it('cancels ten active jobs and leaves the next two queued jobs unsubmitted', async () => {
     const controller = new AbortController();
     const generate = vi.fn((_args: Record<string, unknown>, _attachment: ChatAttachment) => new Promise((_, reject) => {
       controller.signal.addEventListener('abort', () => reject(new Error('cancelled active image')), { once: true });
@@ -232,10 +232,10 @@ describe('batch image cancellation boundaries', () => {
       args: { instruction: 'Generate each independently', model: 'gpt-image-2.5', outputCountPerImage: 1 },
       attachments: attachments(12), signal: controller.signal, generate,
     });
-    await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(6));
+    await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(10));
     controller.abort();
     const result = await pending;
-    expect(generate).toHaveBeenCalledTimes(6);
+    expect(generate).toHaveBeenCalledTimes(10);
     expect(result).toMatchObject({ total: 12, cancelled: true, active: 0, succeeded: 0, failed: 0 });
     expect(result.results).toHaveLength(12);
     expect(result.results.every(item => item.status === 'cancelled')).toBe(true);

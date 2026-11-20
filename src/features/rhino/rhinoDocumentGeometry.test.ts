@@ -90,3 +90,32 @@ it.each([false,true])('inspects generic geometry assertion failures once and pre
  expect(error).toBeInstanceOf(RhinoDocumentGeometryWriteError);expect(error.geometryVerification).toMatchObject({documentChanged:partial,deletedCount:0,writeFailed:true,unchangedCount:1});
  expect(write).toHaveBeenCalledOnce();expect(snapshots).toHaveBeenCalledTimes(2);
 });
+
+
+describe('GH mesh baking is a document write even when the script reads Grasshopper first',()=>{
+ it.each(['import Grasshopper as gh\nstage=DrawerGeometryStage()\nstage.commit()','from Grasshopper import Instances\ndoc.Objects.AddMesh(mesh)','component.BakeGeometry(doc, attrs, ids)'])('requires a baseline and readback for %s',script=>{
+  expect(hasExplicitRhinoGeometryMutation('rhino_native_run_python',{script})).toBe(true);
+  expect(isRhinoDocumentGeometryWrite({name:'rhino_native_run_python',readOnly:false,workflowPhase:'write'},{script})).toBe(true);
+ });
+ it.each(['import Grasshopper as gh\ngraph=gh.Instances.ActiveCanvas.Document','component.Code = "doc.Objects.AddMesh(mesh)"','# component.BakeGeometry(doc, attrs, ids)\nimport Grasshopper'])('keeps GH-only inspection or code assignment outside Rhino document delta checks: %s',script=>{
+  expect(hasExplicitRhinoGeometryMutation('rhino_native_run_python',{script})).toBe(false);
+  expect(isRhinoDocumentGeometryWrite({name:'rhino_native_run_python',readOnly:false,workflowPhase:'write'},{script})).toBe(false);
+ });
+ const mesh=(id:string,overrides:Record<string,unknown>={})=>object(id,{type:'Mesh',isBrep:false,isMesh:true,isClosed:false,isSolid:false,solidOrientation:'None',vertexCount:4,faceCount:1,volume:null,...overrides});
+ it('accepts valid open texture meshes, but not when a closed solid was explicitly required',()=>{
+  const report=compareDocumentGeometrySnapshots(snapshot([]),snapshot([mesh('texture')]));
+  expect(report).toMatchObject({status:'passed',openMeshCount:1,closedSolidCount:0});expect(report.explanation).toContain('Intentional open');
+  expect(compareDocumentGeometrySnapshots(snapshot([]),snapshot([mesh('texture')]),true).status).toBe('needs_attention');
+  expect(compareDocumentGeometrySnapshots(snapshot([]),snapshot([mesh('solid',{isSolid:true,isClosed:true,solidOrientation:'Outward'})]),true)).toMatchObject({status:'passed',closedSolidCount:1});
+ });
+ it('does not turn native orientation preservation into a false bake failure, while explicit solids remain strict',()=>{
+  const input=snapshot([mesh('inward',{isSolid:true,isClosed:true,solidOrientation:'Inward'})]);
+  expect(compareDocumentGeometrySnapshots(snapshot([]),input).status).toBe('passed');
+  expect(compareDocumentGeometrySnapshots(snapshot([]),input,true).status).toBe('needs_attention');
+  expect(compareDocumentGeometrySnapshots(snapshot([]),snapshot([mesh('invalid',{valid:false})])).status).toBe('needs_attention');
+ });
+ it('can detect same-bounds same-topology mesh changes through the native data fingerprint',()=>{
+  const before=snapshot([mesh('same',{fingerprint:'crc-before'})]);const after=snapshot([mesh('same',{fingerprint:'crc-after'})]);
+  expect(compareDocumentGeometrySnapshots(before,after)).toMatchObject({status:'passed',changedCount:1,addedCount:0});
+ });
+});

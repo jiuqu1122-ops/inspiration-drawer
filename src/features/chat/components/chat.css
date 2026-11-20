@@ -1635,6 +1635,17 @@
   background: rgb(28 25 23 / 0.74);
 }
 
+.chat-tool-call-group { margin-top: 9px; overflow: hidden; border: 1px solid var(--chat-border); border-radius: 7px; background: var(--chat-sidebar); }
+.chat-tool-call-group__toggle { width: 100%; min-height: 34px; display: flex; align-items: center; gap: 7px; padding: 7px 9px; border: 0; background: transparent; color: var(--chat-text-soft); text-align: left; cursor: pointer; font-size: 10px; }
+.chat-tool-call-group__toggle > span:first-of-type { flex: 1; font-weight: 650; }
+.chat-tool-call-group__toggle > svg:last-child { color: var(--chat-muted); transition: transform 140ms ease; }
+.chat-tool-call-group__toggle > svg:last-child.is-open { transform: rotate(180deg); }
+.chat-tool-call-group__failures { color: #dc6b63; }
+.chat-tool-call-group__active { color: var(--chat-accent); }
+.chat-tool-call-group__items { padding: 0 8px 8px; border-top: 1px solid var(--chat-border); }
+.chat-tool-call-group__items .chat-tool { margin-top: 7px; }
+.dark .chat-tool-call-group { border-color: var(--chat-border); background: var(--chat-sidebar); }
+
 .chat-tool {
   margin-top: 9px;
   overflow: hidden;

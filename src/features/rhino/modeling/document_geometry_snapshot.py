@@ -63,16 +63,37 @@ def _id_doc_snapshot(doc):
             item["degree"]=int(geo.Degree) if hasattr(geo,"Degree") else None
         elif isinstance(geo,_id_doc_Rhino.Geometry.Mesh):
             item["isMesh"]=True
+            item["isValid"]=bool(geo.IsValid)
             item["isClosed"]=bool(geo.IsClosed)
+            item["isSolid"]=bool(geo.IsSolid)
+            item["solidOrientation"]={1:"Outward",-1:"Inward"}.get(geo.SolidOrientation(),"None")
             item["vertexCount"]=geo.Vertices.Count
             item["faceCount"]=geo.Faces.Count
-            try:item["volume"]=_id_doc_num(abs(geo.Volume)) if geo.IsClosed else None
+            if item["vertexCount"]==0 or item["faceCount"]==0:item["valid"]=False
+            try:
+                mass=_id_doc_Rhino.Geometry.VolumeMassProperties.Compute(geo) if geo.IsSolid else None
+                try:item["volume"]=_id_doc_num(abs(mass.Volume)) if mass else None
+                finally:
+                    if mass:mass.Dispose()
             except:item["volume"]=None
+        elif isinstance(geo,_id_doc_Rhino.Geometry.SubD):
+            item["isSubD"]=True
+            item["isValid"]=bool(geo.IsValid)
+            item["isSolid"]=bool(geo.IsSolid)
+            probe=geo.ToBrep() if geo.IsSolid else None
+            try:
+                item["solidOrientation"]=str(probe.SolidOrientation) if probe else "None"
+                item["isValid"]=bool(geo.IsValid and (probe is None or probe.IsValid))
+            finally:
+                if probe:probe.Dispose()
         else:
             item["isBrep"]=False
+        # Include actual geometry data, not just bounds/counts: moving internal mesh
+        # vertices can preserve topology, bounds and volume while changing texture.
+        item["dataCrc"]=str(geo.DataCRC(0))
         # Geometry-only fingerprint: attribute-only changes do not masquerade as
         # new geometry. Topology + bounds + measures detect in-place edits.
-        item["fingerprint"]=_id_doc_json.dumps({key:item.get(key) for key in ("geometryType","valid","bboxValid","isValid","isSolid","solidOrientation","faceCount","loopCount","edgeCount","isCurve","isClosed","isPlanar","length","degree","isMesh","vertexCount","min","max","volume","area")},sort_keys=True,separators=(",",":"))
+        item["fingerprint"]=_id_doc_json.dumps({key:item.get(key) for key in ("dataCrc","geometryType","valid","bboxValid","isValid","isSolid","solidOrientation","faceCount","loopCount","edgeCount","isCurve","isClosed","isPlanar","length","degree","isMesh","isSubD","vertexCount","min","max","volume","area")},sort_keys=True,separators=(",",":"))
         objects.append(item)
         if converted:brep.Dispose()
     objects.sort(key=lambda value:value["id"])

@@ -88,11 +88,22 @@ function missingPythonNamespaceImports(code: string): RhinoScriptIssue[] {
   return issues;
 }
 
-type KnownType = 'BrepFace' | 'Brep' | 'Brep[]' | 'Curve' | 'Vector3d' | 'Boolean' | 'Number' | 'RhinoObject' | 'AnalyticBrep' | 'NonUniformTransform';
+type KnownType = 'Point3d' | 'Plane' | 'Ray3d' | 'RayShootEvent[]' | 'RayShootEvent' | 'BrepFace' | 'Brep' | 'Brep[]' | 'Curve' | 'Vector3d' | 'Boolean' | 'Number' | 'RhinoObject' | 'AnalyticBrep' | 'NonUniformTransform';
 function expressionType(expression: string, known: Map<string, KnownType>): KnownType | undefined {
   let value = expression.trim();
   while (/^\([^()]*\)$/.test(value)) value = value.slice(1, -1).trim();
   if (/^[A-Za-z_]\w*$/.test(value) && known.has(value)) return known.get(value);
+  if (/\b(?:Rhino\.Geometry|rg)\.Point3d(?:\s*\([\s\S]*\)|\.Origin)$/.test(value)) return 'Point3d';
+  if (/\b(?:Rhino\.Geometry|rg)\.Plane(?:\s*\([\s\S]*\)|\.World(?:XY|YZ|ZX))$/.test(value)) return 'Plane';
+  if (/\b(?:Rhino\.Geometry|rg)\.Ray3d\s*\([\s\S]*\)$/.test(value)) return 'Ray3d';
+  const eventIndex = value.match(/^([A-Za-z_]\w*)\s*\[[^\[\]]+\]$/);
+  if (eventIndex && known.get(eventIndex[1]) === 'RayShootEvent[]') return 'RayShootEvent';
+  const rayShoot = value.match(/\b(?:Rhino\.Geometry|rg)\.Intersect\.Intersection\.RayShoot\s*\(/);
+  if (rayShoot) {
+    const args = callArguments(value, rayShoot.index! + rayShoot[0].length);
+    // Only prove the geometry-first overload when the second argument is a known Ray3d.
+    if (args?.length === 3 && expressionType(args[1], known) === 'Ray3d' && expressionType(args[0], known) !== 'Ray3d') return 'RayShootEvent[]';
+  }
   if (/\b(?:Sphere|Cylinder|Cone|Torus)\s*\([\s\S]*\)\s*\.ToBrep\s*\([^()]*\)$/.test(value)) return 'AnalyticBrep';
   const duplicated = value.match(/^([A-Za-z_]\w*)\.DuplicateBrep\s*\(\s*\)$/);
   if (duplicated) return known.get(duplicated[1]) === 'AnalyticBrep' ? 'AnalyticBrep' : 'Brep';
@@ -160,9 +171,21 @@ function callArguments(code: string, start: number): string[] | undefined {
 const EXTRUSION_GUIDANCE = 'Surface.CreateExtrusion(profile: Curve, direction: Vector3d) only extrudes a curve. For a trimmed BrepFace (including holes), use face.CreateExtrusion(pathCurve: Curve, cap: bool), check the returned Brep for null/IsValid/IsSolid, and preserve all inner loops. Do not replace the face with only its outer boundary, delete holes, flatten freeform geometry, or commit objects until all in-memory parts validate.';
 
 const MESH_PARAMETER_GUIDANCE = 'Rhino DocObjects.BrepObject/RhinoObject has no SetMeshParameters method. For optional per-object render meshing use SetRenderMeshParameters(MeshingParameters) and check its boolean return value; omit cosmetic render-mesh tuning when it is not needed. Do not replace the model with a mesh or repeat completed geometry writes.';
+const OBJECT_NAME_LOOKUP_GUIDANCE = 'RhinoCommon ObjectTable has no FindByObjectName method. For name lookup, use Objects.FindByFilter(new Rhino.DocObjects.ObjectEnumeratorSettings()) and filter the returned RhinoObject values by Attributes.Name, then use the real Id of the found object for later operations. Alternatively, enumerate the bound document Objects and compare Attributes.Name. Do not invent or call ObjectTable.FindByObjectName. This local preflight ran before Rhino dispatch; correct the lookup and continue once without replaying any completed writes.';
 
 function inspectKnownRhinoApis(code: string, known: Map<string, KnownType>): RhinoScriptIssue[] {
   const issues: RhinoScriptIssue[] = [];
+  for (const match of code.matchAll(/\b([A-Za-z_]\w*(?:\s*\[[^\[\]\r\n]+\])?)\s*\.\s*([XYZ])\b/g)) {
+    if (expressionType(match[1], known) !== 'RayShootEvent') continue;
+    issues.push({ code: 'rhino_rayshoot_event_coordinate', line: code.slice(0, match.index).split('\n').length,
+      api: 'RayShootEvent.' + match[2], actualType: 'RayShootEvent, not Point3d',
+      instruction: 'The geometry-first RayShoot overload returns RayShootEvent[]. Read the hit point via event.Point.X/Y/Z, handle an empty hit array and preserve GeometryIndex/BrepFaceIndex when needed. Do not change design or replay prior completed writes. This local preflight has not dispatched the script.' });
+  }
+  for (const match of code.matchAll(/\bObjects\s*\.\s*FindByObjectName\s*\(/g)) {
+    issues.push({ code: 'rhino_object_table_find_by_object_name', line: code.slice(0, match.index).split('\n').length,
+      api: 'ObjectTable.FindByObjectName', actualType: 'RhinoCommon ObjectTable does not expose this member in Rhino 8 or Rhino 9',
+      instruction: OBJECT_NAME_LOOKUP_GUIDANCE });
+  }
   for (const match of code.matchAll(/\b([A-Za-z_]\w*)\s*\.\s*SetMeshParameters\s*\(/g)) {
     if (known.get(match[1]) !== 'RhinoObject') continue;
     issues.push({ code: 'rhino_object_mesh_api', line: code.slice(0, match.index).split('\n').length,
@@ -182,6 +205,11 @@ function inspectKnownRhinoApis(code: string, known: Map<string, KnownType>): Rhi
   for (const match of code.matchAll(/\b(?:Rhino\.Geometry|rg)\.Transform\.Scale\s*\(/g)) {
     const args = callArguments(code, match.index! + match[0].length);
     if (!args) continue;
+    if (args.length === 4 && expressionType(args[0], known) === 'Point3d') {
+      issues.push({ code: 'rhino_nonuniform_scale_requires_plane', line: code.slice(0, match.index).split('\n').length,
+        api: 'Transform.Scale(Plane, Double, Double, Double)', actualType: 'Point3d supplied where Plane is required',
+        instruction: 'Non-uniform Scale needs a Plane plus three factors. Use a verified plane at the intended pivot, not Point3d; the Point3d overload accepts only one uniform factor. Check the intended local axes and pivot, make analytic Breps deformable, validate all geometry before writes. This local rejection dispatched nothing.' });
+    }
     const factors = args.length === 4 ? args.slice(1) : args.length === 2 ? args.slice(1) : [];
     if (!factors.length || !factors.every(value => /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value))) continue;
     const values = factors.map(Number);
@@ -257,6 +285,8 @@ export function rhinoScriptFailureExplanation(error: unknown): string | undefine
   const text = rhinoDiagnosticText(error);
   if (/BrepObject|RhinoObject/.test(text) && /SetMeshParameters/.test(text)) return '脚本调用了 Rhino 对象不存在的 SetMeshParameters。可选的渲染网格设置应使用 SetRenderMeshParameters；不能因此重放已经完成的几何建模。';
   if (/Transformed solid invalid|transform(?:ed|ation)?[^\n]{0,60}(?:invalid|failed)/i.test(text)) return '实体在变换后未通过有效性检查。需核对缩放因子、变换矩阵、几何类型和实体朝向；不能只凭此错误认定参考图有问题，也不能忽略失败部件或自动重跑已执行脚本。';
+  if (/RayShootEvent/.test(text) && /(?:has no attribute|does not contain|not.*member)[^\n]{0,80}['"]?[XYZ]/i.test(text)) return '脚本把 RayShootEvent 命中事件当作 Point3d 读取坐标。RhinoCommon 的 RayShoot(geometry, ray, maxReflections) 返回事件数组，应读取 event.Point.X/Y/Z；RayShoot(ray, geometry, maxReflections) 才返回点数组。先确认所调用重载、真实类型及当前文档部分写入，再做一次定向纠正，不能直接重放原脚本。';
+  if (/Point3d[^\n]{0,100}(?:converted|convert)[^\n]{0,80}Plane/i.test(text) && /(?:Transform[. ]+)?Scale\(Rhino[.]Geometry[.]Plane/i.test(text)) return '三轴缩放把 Point3d 当成了 Plane。非均匀缩放应以实际中心和局部轴定义基准平面，并传入三个缩放因子；点重载只接受一个统一缩放因子。先检查文档状态，不能重放失败脚本。';
   const missing = text.match(/(?:NameError:\s*)?name\s+['"]([A-Za-z_]\w*)['"]\s+is not defined/i);
   if (missing) {
     const name = missing[1];

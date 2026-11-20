@@ -74,6 +74,23 @@ export const rhinoArgumentRepairCount = (calls: ChatToolCall[], toolName?: strin
   } catch { return false; }
 }).length;
 
+/** Independent read searches do not share an unresolved repair chain once a real
+ * successful call intervenes. Keep a total cap; writes retain the old strict budget.
+ */
+export function rhinoArgumentRepairExhausted(calls: ChatToolCall[], tool: RhinoNativeTool, writeLimit = 1): boolean {
+  if (!tool.readOnly) return rhinoArgumentRepairCount(calls, tool.name) >= writeLimit;
+  if (rhinoArgumentRepairCount(calls, tool.name) >= 4) return true;
+  let chain: ChatToolCall[] = [];
+  for (const call of calls) {
+    if (call.toolName !== tool.name) continue;
+    if (call.status === 'completed') {
+      try { if (JSON.parse(call.resultJson || '{}').reusedCompletedReceipt) continue; } catch { /* Keep actual completed read receipts. */ }
+      chain = [];
+    } else chain.push(call);
+  }
+  return rhinoArgumentRepairCount(chain, tool.name) >= 1;
+}
+
 export const rhinoArgumentRejection = (tool: RhinoNativeTool, error: Error) => ({
   correctionTool: error instanceof RhinoNativeArgumentError ? error.correctionTool : undefined,
   kind: error instanceof RhinoNativeScriptPreflightError ? RHINO_SCRIPT_PREFLIGHT_REJECTION : RHINO_ARGUMENT_REJECTION,
@@ -96,9 +113,9 @@ const canonical = (value: unknown): string => {
   return JSON.stringify(value) ?? 'null';
 };
 
-/** Within an argument-repair continuation, reuse identical completed writes instead of replaying them. */
-export const completedRhinoWriteReceipt = (calls: ChatToolCall[], tool: RhinoNativeTool, args: Record<string, unknown>): ChatToolCall | undefined => {
-  if (tool.readOnly || isRhinoNativeReadOnlyPhase(getRhinoNativeWorkflowPhase(tool.name)) || !rhinoArgumentRepairCount(calls)) return undefined;
+/** In repair/refinement, reuse identical completed writes instead of replaying them. */
+export const completedRhinoWriteReceipt = (calls: ChatToolCall[], tool: RhinoNativeTool, args: Record<string, unknown>, refining = false): ChatToolCall | undefined => {
+  if (tool.readOnly || isRhinoNativeReadOnlyPhase(getRhinoNativeWorkflowPhase(tool.name)) || (!refining && !rhinoArgumentRepairCount(calls))) return undefined;
   return calls.find(call => {
     if (call.toolName !== tool.name || call.status !== 'completed' || !call.resultJson) return false;
     try { return canonical(JSON.parse(call.argumentsJson)) === canonical(args); } catch { return false; }

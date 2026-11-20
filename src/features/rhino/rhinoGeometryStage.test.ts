@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { guardRhinoGeometryStageScript, RHINO_GEOMETRY_STAGE_INSTRUCTION } from './rhinoGeometryStage';
+import { guardRhinoGeometryStageScript, RHINO_GEOMETRY_STAGE_INSTRUCTION, RHINO_GH_BAKE_INSTRUCTION } from './rhinoGeometryStage';
 import { hasExplicitRhinoGeometryMutation } from './rhinoDocumentGeometry';
 import { buildRhinoWorkflowInstruction } from './rhinoWorkflow';
 
@@ -21,4 +21,17 @@ describe('general staged geometry for original and follow-up modeling', () => {
     expect(buildRhinoWorkflowInstruction()).toContain(RHINO_GEOMETRY_STAGE_INSTRUCTION);
     for(const rule of ['solid','surface','curve','planar_faces','preserve object IDs','never demote','NOT a sandbox','never blindly replay','current document IDs'])expect(RHINO_GEOMETRY_STAGE_INSTRUCTION).toContain(rule);
   });
+});
+
+
+describe('GH bake uses native types and actual output inventory',()=>{
+ it('loads the same staged helper for mesh/data-tree baking rather than replacing it with a model-specific template',()=>{
+  const script='import Grasshopper as gh\noutput=target.Params.Output[output_index]\nstage=DrawerGeometryStage()\nprint(stage.add_tree("selected",output.VolatileData))\nprint(stage.preview())\nprint(stage.commit())';
+  const wrapped=guardRhinoGeometryStageScript(script);expect(wrapped).toContain('def add_tree');expect(wrapped).toContain('ScriptVariable');expect(wrapped).toContain('"<drawer-user-script>"');
+  expect(hasExplicitRhinoGeometryMutation('rhino_native_run_python',{script})).toBe(true);
+ });
+ it('instructs a full tree/type-aware bake without fixed counts, implicit truncation or automatic replay',()=>{
+  for(const requirement of ['branch','actual output count','do not invent','do not silently skip','selected component/output','committedCount','2000','NOT a successful bake','cannot be retried blindly'])expect(RHINO_GH_BAKE_INSTRUCTION).toContain(requirement);
+  expect(buildRhinoWorkflowInstruction()).toContain(RHINO_GH_BAKE_INSTRUCTION);
+ });
 });

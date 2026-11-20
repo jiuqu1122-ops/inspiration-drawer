@@ -11,6 +11,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('./rhinoClient', () => ({ discoverRhinoConnections: mocks.discover, discoverNativeRhino: mocks.discoverNative, hasRhinoNativeWriteTools: mocks.hasNativeWrites, rhinoRequest: mocks.request, callRhinoTool: mocks.call }));
 import { getRhinoTools, isRhinoCanvasImageRequest, useRhinoBridge, withRhinoTools } from './useRhinoBridge';
 import { isRhinoCanvasLocked } from './rhinoProtocol';
+import { RHINO_MODELING_SKILL_RESOURCE_TOOL } from './rhinoProductModelingKnowledge';
 import type { useChatRuntime } from '../chat/runtime/useChatRuntime';
 
 const connection = { protocol: 1, url: 'http://127.0.0.1:12345/', token: 'a'.repeat(64), instanceId: 'b'.repeat(32) };
@@ -241,25 +242,36 @@ describe('Rhino desktop Chat bridge', () => {
     expect(mocks.request).toHaveBeenCalledWith(connection, '/drawer/ack', expect.objectContaining({ id: second.id, status: 'completed' }));
   });
 
-  it('provides a rendered viewport as context without enabling a Mask by default', async () => {
+  it("keeps the user's active viewport mode as context without enabling a Mask by default", async () => {
     const { runtime } = setup({ content: 'generate an effect image for the selected shell', includeViewport: false, includeCanvasSelection: false });
     mocks.call.mockImplementation(async (_binding, name) => {
       if (name === 'rhino_capture_viewport') return [
         { type: 'image', mimeType: 'image/png', data: 'c2hhZGVk' },
         { type: 'image', mimeType: 'image/png', data: 'bWFzaw==' },
-        { type: 'text', text: '{"captureMode":"shaded"}' },
+        { type: 'text', text: '{"captureMode":"current"}' },
       ];
       return [{ type: 'text', text: '{"documentId":12}' }];
     });
     mocks.invoke.mockImplementation(async (_name, args) => String(args.fileName || '').includes('mask') ? 'C:/fixture/rhino-mask.png' : 'C:/fixture/rhino-rendered.png');
     await settle();
 
-    expect(mocks.call).toHaveBeenCalledWith(expect.anything(), 'rhino_capture_viewport', { rendered: true });
+    expect(mocks.call).toHaveBeenCalledWith(expect.anything(), 'rhino_capture_viewport', {});
     const send = runtime.sendMessage.mock.calls[0];
     expect(send[0]).toContain('Rhino canvas visual context');
     expect(send[1]).toEqual([expect.objectContaining({ path: 'C:/fixture/rhino-rendered.png', type: 'image' })]);
+    expect(send[0]).toContain("viewport uses the user's active display mode");
     expect(send[0]).toContain('Decide from the users semantic request');
     expect(send[5]).toBe('rhino');
+  });
+
+  it('forces Rendered only when the user explicitly asks for Rendered viewport mode', async () => {
+    const { runtime } = setup({ content: 'Switch the viewport to Rendered mode and capture it', includeViewport: true, includeCanvasSelection: false });
+    mocks.call.mockImplementation(async (_binding, name) => name === 'rhino_capture_viewport'
+      ? [{ type: 'image', mimeType: 'image/png', data: 'cGl4ZWxz' }, { type: 'text', text: '{"captureMode":"rendered"}' }]
+      : [{ type: 'text', text: '{"documentId":12}' }]);
+    await settle();
+    expect(mocks.call).toHaveBeenCalledWith(expect.anything(), 'rhino_capture_viewport', { rendered: true });
+    expect(runtime.sendMessage.mock.calls[0][1][0].metadataJson).toContain('\"captureMode\":\"rendered\"');
   });
 
   it('attaches a same-camera Mask only after explicit opt-in on a supporting route', async () => {
@@ -268,26 +280,26 @@ describe('Rhino desktop Chat bridge', () => {
       ? [
           { type: 'image', mimeType: 'image/png', data: 'c2hhZGVk' },
           { type: 'image', mimeType: 'image/png', data: 'bWFzaw==' },
-          { type: 'text', text: '{"captureMode":"rendered"}' },
+          { type: 'text', text: '{"captureMode":"current"}' },
         ]
       : [{ type: 'text', text: '{"documentId":12}' }]);
     mocks.invoke.mockImplementation(async (_name, args) => String(args.fileName || '').includes('mask') ? 'C:/fixture/rhino-mask.png' : 'C:/fixture/rhino-rendered.png');
     await settle();
-    expect(mocks.call).toHaveBeenCalledWith(expect.anything(), 'rhino_capture_viewport', { rendered: true, includeMask: true, maskLayer: 'selection' });
+    expect(mocks.call).toHaveBeenCalledWith(expect.anything(), 'rhino_capture_viewport', { includeMask: true, maskLayer: 'selection' });
     expect(runtime.sendMessage.mock.calls[0][1]).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: 'C:/fixture/rhino-rendered.png', type: 'image' }),
       expect.objectContaining({ path: 'C:/fixture/rhino-mask.png', type: 'image', metadataJson: expect.stringContaining('\"role\":\"mask\"') }),
     ]));
   });
 
-  it('keeps rendered visual capture but omits the mask when the selected image route does not support it', async () => {
+  it("keeps the active visual capture mode but omits the mask when the selected image route does not support it", async () => {
     const { runtime } = setup({ content: 'generate an effect image for the selected shell', includeViewport: false, includeCanvasSelection: false, imageModelOptions: [{ value: 'auto' }] });
     mocks.call.mockImplementation(async (_binding, name) => name === 'rhino_capture_viewport'
       ? [{ type: 'image', mimeType: 'image/png', data: 'c2hhZGVk' }, { type: 'text', text: '{\"captureMode\":\"shaded\"}' }]
       : [{ type: 'text', text: '{\"documentId\":12}' }]);
     mocks.invoke.mockResolvedValue('C:/fixture/rhino-rendered.png');
     await settle();
-    expect(mocks.call).toHaveBeenCalledWith(expect.anything(), 'rhino_capture_viewport', { rendered: true });
+    expect(mocks.call).toHaveBeenCalledWith(expect.anything(), 'rhino_capture_viewport', {});
     const send = runtime.sendMessage.mock.calls[0];
     expect(send[1]).toHaveLength(1);
     expect(send[1][0].metadataJson).not.toContain('\"role\":\"mask\"');
@@ -398,19 +410,19 @@ describe('Rhino desktop Chat bridge', () => {
     expect(attachments).toEqual([expect.objectContaining({ path: 'C:/fixture/selected-reference.png', type: 'image' })]);
   });
 
-  it('captures selected Rhino models using Rendered mode rather than Shaded mode', async () => {
+  it('captures selected Rhino models in the current viewport mode by default', async () => {
     const { runtime } = setup({ includeViewport: false });
     mocks.call.mockImplementation(async (_binding, name) => name === 'rhino_get_context'
       ? [{ type: 'text', text: '{"documentId":12,"selection":[{"id":"selected-object"}]}' }]
       : name === 'rhino_capture_viewport'
-        ? [{ type: 'image', mimeType: 'image/png', data: 'cmVuZGVyZWQ=' }, { type: 'text', text: '{"captureMode":"rendered"}' }]
+        ? [{ type: 'image', mimeType: 'image/png', data: 'Y3VycmVudA==' }, { type: 'text', text: '{"captureMode":"current"}' }]
         : [{ type: 'text', text: '{"documentId":12}' }]);
-    mocks.invoke.mockResolvedValue('C:/fixture/rhino-rendered.png');
+    mocks.invoke.mockResolvedValue('C:/fixture/rhino-current.png');
 
     await settle();
 
-    expect(mocks.call).toHaveBeenCalledWith(expect.anything(), 'rhino_capture_viewport', { rendered: true });
-    expect(runtime.sendMessage.mock.calls[0][1][0].metadataJson).toContain('"captureMode":"rendered"');
+    expect(mocks.call).toHaveBeenCalledWith(expect.anything(), 'rhino_capture_viewport', {});
+    expect(runtime.sendMessage.mock.calls[0][1][0].metadataJson).toContain('"captureMode":"current"');
   });
 
   it('imports viewport pixels as a real Chat attachment and retains capture metadata', async () => {
@@ -420,10 +432,12 @@ describe('Rhino desktop Chat bridge', () => {
       : [{ type: 'text', text: '{"earlierCamera":"old"}' }]);
     await settle();
     expect(mocks.invoke).toHaveBeenCalledWith('save_dropped_file', expect.objectContaining({ dataUrl: 'data:image/png;base64,cGl4ZWxz' }));
-    expect(mocks.call).toHaveBeenCalledWith(expect.anything(), 'rhino_capture_viewport', { rendered: true });
+    expect(mocks.call).toHaveBeenCalledWith(expect.anything(), 'rhino_capture_viewport', {});
+    expect(runtime.sendMessage.mock.calls[0][1][0].metadataJson).toContain('\"captureMode\":\"current\"');
     expect(mocks.call).toHaveBeenCalledWith(expect.anything(), 'rhino_list_parts', { limit: 60 });
     expect(runtime.sendMessage.mock.calls[0][0]).toContain('[Rhino 真实分件清单]');
     expect(runtime.sendMessage.mock.calls[0][0]).toContain('captureCamera');
+    expect(runtime.sendMessage.mock.calls[0][1][0].metadataJson).toContain('"captureMode":"current"');
     expect(runtime.sendMessage.mock.calls[0][1]).toEqual(expect.arrayContaining([expect.objectContaining({ path: 'C:/fixture/viewport.png', type: 'image' })]));
     expect(runtime.sendMessage.mock.calls[0][5]).toBe('rhino');
     expect(runtime.sendMessage.mock.calls[0][6]).toBeTruthy();
@@ -431,7 +445,7 @@ describe('Rhino desktop Chat bridge', () => {
   it('allows geometry creation in an empty Rhino document even without a canvas image', async () => {
     const { runtime } = setup({ includeViewport: true, content: 'Create a real 3D model of a bracket' });
     mocks.call.mockImplementation(async (_binding, name) => {
-      if (name === 'rhino_capture_viewport') throw new Error('Rhino Rendered viewport capture is blank');
+      if (name === 'rhino_capture_viewport') throw new Error('Rhino current viewport capture is blank');
       return [{ type: 'text', text: '{"documentId":12,"selection":[]}' }];
     });
     await settle();
@@ -444,7 +458,7 @@ describe('Rhino desktop Chat bridge', () => {
   it('omits an optional blank viewport for ordinary document queries instead of failing the native task', async () => {
     const { runtime } = setup({ includeViewport: true, content: 'List the document layers' });
     mocks.call.mockImplementation(async (_binding, name) => {
-      if (name === 'rhino_capture_viewport') throw new Error('Rhino Rendered viewport capture is blank');
+      if (name === 'rhino_capture_viewport') throw new Error('Rhino current viewport capture is blank');
       return [{ type: 'text', text: '{"documentId":12,"selection":[]}' }];
     });
     await settle();
@@ -454,8 +468,8 @@ describe('Rhino desktop Chat bridge', () => {
     expect(mocks.invoke).not.toHaveBeenCalledWith('save_dropped_file', expect.anything());
   });
 
-  it('stops before uploading or generating when the Rendered capture is rejected as blank', async () => {
-    const { runtime } = setup({ includeViewport: true, content: 'render the selected model' });
+  it('stops before uploading or generating when the explicitly requested Rendered capture is blank', async () => {
+    const { runtime } = setup({ includeViewport: true, content: 'capture the selected model in rendered viewport mode' });
     mocks.call.mockImplementation(async (_binding, name) => {
       if (name === 'rhino_capture_viewport') throw new Error('Rhino Rendered viewport capture is blank');
       return [{ type: 'text', text: '{"documentId":12}' }];
@@ -485,7 +499,30 @@ describe('Rhino desktop Chat bridge', () => {
     expect(getRhinoTools(runtime.activeConversationId, 'desktop')).toEqual([]);
     expect(getRhinoTools(runtime.activeConversationId, 'rhino').length).toBeGreaterThan(0);
   });
-  it('blocks Rhino read tools from the desktop-origin Chat path', async () => {
+  it('reads the bundled Skill resource locally through an allowlisted Rhino-only tool', async () => {
+    const { runtime } = setup(); await settle();
+    const tool = getRhinoTools(runtime.activeConversationId, 'rhino').find(item => item.function.name === RHINO_MODELING_SKILL_RESOURCE_TOOL);
+    expect(tool?.function.parameters).toMatchObject({ required: ['resourcePath'], additionalProperties: false });
+    const execute = vi.fn();
+    mocks.call.mockClear();
+    const result = await withRhinoTools(execute, 'canvas-one')(RHINO_MODELING_SKILL_RESOURCE_TOOL, {
+      resourcePath: 'references/modeling-methods.md',
+    }, {
+      executionSource: 'rhino', conversationId: runtime.activeConversationId, messageId: 'skill-resource', userText: 'read the required skill reference', recentMessages: [],
+    }) as { content: string };
+    expect(result.content).toContain('NetworkSrf');
+    expect(result.content).toContain('BlendSrf');
+    expect(mocks.call).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+  it('does not allow the bundled Skill reader to resolve arbitrary paths', async () => {
+    const { runtime } = setup(); await settle();
+    await expect(withRhinoTools(vi.fn(), 'canvas-one')(RHINO_MODELING_SKILL_RESOURCE_TOOL, {
+      resourcePath: '../../.ssh/id_rsa',
+    }, {
+      executionSource: 'rhino', conversationId: runtime.activeConversationId, messageId: 'skill-resource-invalid', userText: 'read a file', recentMessages: [],
+    })).rejects.toThrow('Unknown bundled Rhino modeling Skill resource');
+  });  it('blocks Rhino read tools from the desktop-origin Chat path', async () => {
     const { runtime } = setup(); await settle();
     const execute = vi.fn();
     await expect(withRhinoTools(execute, 'canvas-one')('rhino_get_context', {}, {
@@ -598,21 +635,21 @@ describe('follow-up image references are hidden only in Rhino history presentati
  });
 });
 
-describe('visual requests keep both uploaded canvas references and rendered Rhino captures',()=>{
+describe('visual requests keep both uploaded canvas references and correctly-modeled Rhino captures',()=>{
  it('preserves the model inputs while rendering only assistant output images in chat history',async()=>{
   const selectedImage={id:'selected-speaker-reference',type:'image',references:[{id:'speaker-ref-1',nodeId:'speaker-canvas-node',name:'reference',mediaType:'image',path:'C:/fixture/speaker-reference.png',source:'C:/fixture/speaker-reference.png',thumbnail:'C:/fixture/speaker-reference.png'}]};
   const {runtime}=setup({content:'参考画布图片为选中的音箱模型生成效果图',includeCanvasSelection:true,includeViewport:true,selectedItems:[selectedImage]});
   mocks.call.mockImplementation(async(_binding,name)=> name==='rhino_get_context'
     ? [{type:'text',text:JSON.stringify({documentId:12,selection:[{id:'speaker-object'}]})}]
     : name==='rhino_capture_viewport'
-      ? [{type:'image',mimeType:'image/png',data:'cmVuZGVyZWQ='},{type:'text',text:'{"captureMode":"rendered"}'}]
+      ? [{type:'image',mimeType:'image/png',data:'Y3VycmVudA=='},{type:'text',text:'{"captureMode":"current"}'}]
       : [{type:'text',text:'{}'}]);
   await settle();
-  expect(mocks.call).toHaveBeenCalledWith(expect.anything(),'rhino_capture_viewport',{rendered:true});
+  expect(mocks.call).toHaveBeenCalledWith(expect.anything(),'rhino_capture_viewport',{});
   const attachments=runtime.sendMessage.mock.calls[0][1];
   expect(attachments).toEqual(expect.arrayContaining([
     expect.objectContaining({path:'C:/fixture/speaker-reference.png',type:'image'}),
-    expect.objectContaining({path:'C:/fixture/viewport.png',type:'image',metadataJson:expect.stringContaining('"captureMode":"rendered"')}),
+    expect.objectContaining({path:'C:/fixture/viewport.png',type:'image',metadataJson:expect.stringContaining('"captureMode":"current"')}),
   ]));
   const source=(await import('./useRhinoBridge')).rhinoMessageImageSources;
   const priorUser={attachments,toolCalls:[],role:'user'} as any;
@@ -637,4 +674,70 @@ describe('Rhino local reference bridge', () => {
     await settle(); expect(runtime.sendMessage).not.toHaveBeenCalled();
     expect(mocks.request).toHaveBeenCalledWith(connection, '/drawer/ack', expect.objectContaining({ status: 'failed' }));
   });
+});
+
+
+describe('GH bake write verification is not suppressed by Grasshopper imports',()=>{
+ it('takes the same bound-document baseline and readback for a staged mesh bake',async()=>{
+  const {runtime}=setup({content:'查询一下当前对象'});await settle();
+  registerRhinoNativeTools(runtime.activeConversationId,[{name:'rhino_native_run_python',description:'Python',inputSchema:{type:'object'},readOnly:false,destructive:true,workflowPhase:'write'}]);
+  const before={version:1,documentId:12,units:'Millimeters',tolerance:0.01,objectCount:0,objects:[],documentChanged:false,readOnly:true};
+  const after={...before,objectCount:1,objects:[{id:'mesh-baked',type:'Mesh',geometryType:'Rhino.Geometry.Mesh',valid:true,isValid:true,isMesh:true,isBrep:false,isClosed:false,isSolid:false,solidOrientation:'None',fingerprint:'crc-mesh'}]};let snapshots=0;
+  mocks.call.mockClear();mocks.call.mockImplementation(async(_binding,name)=>name==='rhino_native_snapshot_document_geometry'?[{type:'text',text:JSON.stringify({stdout:'INSPIRATION_DOCUMENT_GEOMETRY_V1:'+JSON.stringify(snapshots++?after:before),stderr:''})}]:[{type:'text',text:'{"stdout":"baked","stderr":""}'}]);
+  const result=await withRhinoTools(vi.fn(),'canvas-one')('rhino_native_run_python',{script:'import Grasshopper as gh\nstage=DrawerGeometryStage()\nstage.add_tree("selected",output.VolatileData)\nstage.commit()'},{executionSource:'rhino',conversationId:runtime.activeConversationId,messageId:'bake-mesh',userText:'把当前结果烘焙到 Rhino，保留开放网格。',recentMessages:[]});
+  expect(result).toMatchObject({geometryVerification:{status:'passed',addedCount:1,openMeshCount:1}});
+  expect(mocks.call.mock.calls.map(call=>call[1])).toEqual(['rhino_native_snapshot_document_geometry','rhino_native_run_python','rhino_native_snapshot_document_geometry']);
+  expect(mocks.call.mock.calls.every(call=>call[0].documentId===12)).toBe(true);
+ });
+});
+
+
+describe('explicit GH component preference prevents silent script substitution',()=>{
+ it('refuses a run_python call and leaves the graph untouched when the user explicitly requested components',async()=>{
+  const nativeBinding={tools:[{name:'rhino_native_run_python',rawName:'run_python',description:'Python write',inputSchema:{type:'object'},readOnly:false,destructive:true,workflowPhase:'write'}]};
+  mocks.discoverNative.mockResolvedValueOnce(nativeBinding as any);
+  const {runtime}=setup({content:'you use GH components, not code'});await settle();
+  registerRhinoNativeTools(runtime.activeConversationId,nativeBinding.tools as any);
+  const execute=vi.fn();
+  await expect(withRhinoTools(execute,'canvas-one')('rhino_native_run_python',{script:'doc.Objects.AddMesh(mesh)'},{executionSource:'rhino',conversationId:runtime.activeConversationId,messageId:'component-only',userText:'you use GH components, not code',recentMessages:[]})).rejects.toThrow('explicitly requests native Grasshopper components');
+  expect(mocks.call).not.toHaveBeenCalledWith(expect.anything(),'rhino_native_run_python',expect.anything());expect(execute).not.toHaveBeenCalled();
+ });
+});
+
+
+describe('six Rhino user references are not evicted by host context',()=>{
+ it('retains six canvas references plus current viewport and mask',async()=>{
+  mocks.call.mockImplementation(async(_binding:unknown,name:string)=>name==='rhino_capture_viewport' ? [{type:'image',mimeType:'image/png',data:'QUJD'},{type:'image',mimeType:'image/png',data:'REVG'},{type:'text',text:'{"captureMode":"current"}'}] : [{type:'text',text:'{"documentId":12,"rhinoVersion":"9.0.26300.9401"}'}]);
+  const references=Array.from({length:6},(_,i)=>({id:'ref-'+i,nodeId:'node-'+i,mediaType:'image',path:'C:/fixture/ref-'+i+'.png'}));
+  const {runtime}=setup({content:'用这些参考做新的效果图',includeCanvasSelection:true,includeViewport:true,imageMaskMode:'on',selectedItems:[{id:'selected',references}]});
+  await settle();expect(runtime.sendMessage).toHaveBeenCalledOnce();const attached=runtime.sendMessage.mock.calls[0][1];
+  expect(attached).toHaveLength(8);for(const ref of references)expect(attached.some((a:any)=>a.path===ref.path)).toBe(true);
+ });
+ it('retains all six local references during native modeling',async()=>{
+  const {runtime}=setup({content:'根据参考图片建模',includeViewport:true,localImages:Array.from({length:6},(_,i)=>({name:'ref-'+i+'.png',dataUrl:'data:image/png;base64,QUJD'}))});
+  await settle();expect(runtime.sendMessage.mock.calls[0][1]).toHaveLength(6);
+ });
+});
+
+
+it('publishes all six saved reference thumbnails with stable preview indices', async () => {
+  const { summarizeRhinoMessages } = await import('./useRhinoBridge');
+  vi.stubGlobal('Image', class {
+    naturalWidth=512; naturalHeight=512;
+    onload?: () => void;
+    set src(_source: string) { this.onload?.(); }
+  });
+  vi.stubGlobal('document', { createElement: () => ({ getContext: () => ({ drawImage: vi.fn() }), toDataURL: () => 'data:image/jpeg;base64,QUJD' }) });
+  mocks.invoke.mockImplementation(async (command) => command === 'read_local_image_data_url' ? 'data:image/png;base64,QUJD' : null);
+  const attachments = Array.from({length:6}, (_,i) => ({id:'fixture-six-'+i, type:'image' as const, path:'C:/fixture/six-ui-'+i+'.png', messageId:'message-six', createdAt:i}));
+  const [message] = await summarizeRhinoMessages([{id:'message-six',conversationId:'test',role:'user',status:'completed',content:'建模',createdAt:1,attachments,toolCalls:[]}]);
+  expect(message.attachmentImageCount).toBe(6);
+  expect(message.images).toHaveLength(6);
+  expect(message.imageIndices).toEqual([0,1,2,3,4,5]);
+  const [, followUp] = await summarizeRhinoMessages([
+    {id:'generated',conversationId:'test',role:'assistant',status:'completed',content:'Generated',createdAt:0,attachments:[],toolCalls:[{id:'gen',messageId:'generated',toolName:'generate_image',status:'completed',argumentsJson:'{}',resultJson:'{"media":[{"type":"image","path":"C:/fixture/six-ui-0.png"}]}',createdAt:0}]},
+    {id:'new-refs',conversationId:'test',role:'user',status:'completed',content:'建模',createdAt:1,attachments:attachments.map(item=>({...item,id:'selection-'+item.id,metadataJson:'{"nodeId":"new-node"}'})),toolCalls:[]},
+  ]);
+  expect(followUp.hiddenReferenceCount).toBe(0);
+  expect(followUp.images).toHaveLength(6);
 });

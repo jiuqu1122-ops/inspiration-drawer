@@ -11,6 +11,7 @@ export type ChatVisibleToolCompletion = {
   content: string;
   mediaCount: number;
   fileCount: number;
+  incomplete?: boolean;
 };
 
 const MEDIA_RESULT_TOOL_NAMES = new Set([
@@ -66,8 +67,16 @@ export const summarizeCompletedVisibleToolCalls = (
     videoCount > 0 ? `${videoCount} 个视频` : '',
     files.length > 0 ? `${files.length} 个文件` : '',
   ].filter(Boolean);
+  const partial = completedCalls.flatMap(call => {
+    try {
+      const record = JSON.parse(call.resultJson || '{}');
+      return record.partial === true && Number(record.requestedCount) > 0
+        ? [record.succeeded + '/' + record.requestedCount + ' 张（部分任务失败或取消）'] : [];
+    } catch { return []; }
+  });
   return {
-    content: `**生成完成**\n\n${parts.join('、')}已生成，结果已保留。`,
+    ...(partial.length ? { incomplete: true } : {}),
+    content: partial.length ? '**部分生成完成**\n\n' + partial.join('；') + '。已完成结果保留；没有自动重新发起付费任务。' : '**生成完成**\n\n' + parts.join('、') + '已生成，结果已保留。',
     mediaCount: media.length,
     fileCount: files.length,
   };

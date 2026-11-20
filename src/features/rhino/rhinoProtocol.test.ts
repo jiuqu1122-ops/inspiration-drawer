@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { assertRhinoCanvas, getRhinoNativeTool, getRhinoNativeTools, isRhinoCanvasLocked, isRhinoNativeTool, isRhinoReadTool, lockRhinoCanvas, registerRhinoNativeTools, RhinoCommandLedger, validateRhinoConnection } from './rhinoProtocol';
+import { assertRhinoCanvas, getRhinoNativeTool, getRhinoNativeTools, isRhinoCanvasLocked, isRhinoNativeTool, isRhinoReadTool, lockRhinoCanvas, registerRhinoNativeTools, rhinoToolDefinitions, RhinoCommandLedger, validateRhinoConnection } from './rhinoProtocol';
 const valid = { protocol: 1, url: 'http://127.0.0.1:15000/', token: 'a'.repeat(64), instanceId: 'b'.repeat(32) };
 describe('Rhino Beta protocol', () => {
+  it('exposes the bundled Skill reader as a fixed read-only Rhino tool', () => {
+    expect(isRhinoReadTool('rhino_read_modeling_skill_resource')).toBe(true);
+    const tool = rhinoToolDefinitions.find(item => item.function.name === 'rhino_read_modeling_skill_resource');
+    expect(JSON.stringify(tool)).toContain('references/modeling-methods.md');
+    expect(JSON.stringify(tool)).toContain('required');
+    expect(JSON.stringify(tool)).not.toContain('../../SKILL.md');
+  });
   it('accepts only an authenticated numeric loopback endpoint', () => {
     expect(validateRhinoConnection(valid)).toEqual(valid);
     for (const url of ['https://example.org/', 'http://127.0.0.1.evil:15000/', 'http://127.0.0.1:15000/mcp', 'http://user@127.0.0.1:15000/', 'http://localhost:15000/', 'file:///C:/token']) {

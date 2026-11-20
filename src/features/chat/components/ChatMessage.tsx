@@ -6,7 +6,7 @@ import { memo, useState } from 'react';
 import { ChatAttachmentList } from './ChatAttachmentList';
 import { ChatGeneratedImageCard } from './ChatGeneratedImageCard';
 import { ChatGeneratedFileCard } from './ChatGeneratedFileCard';
-import { ChatToolCallCard } from './ChatToolCallCard';
+import { ChatToolCallList } from './ChatToolCallList';
 import { ChatMarkdown } from './ChatMarkdown';
 import { ChatThinkingPanel } from './ChatThinkingPanel';
 import { getGeneratedFilesFromToolCall, getGeneratedMediaFromToolCall, type ChatGeneratedMedia, type ChatMessage as ChatMessageType } from '../model/chatTypes';
@@ -88,9 +88,7 @@ export const ChatMessage = memo(function ChatMessage({
         {message.role === 'assistant' && message.status === 'streaming' && !message.content && message.toolCalls.length === 0 && !(message.thinkingSteps?.length) && (
           <div className="chat-thinking" aria-label="正在生成"><i /><i /><i /></div>
         )}
-        {message.toolCalls
-          .filter(call => call.toolName !== 'batch_image_operation' || (call.status !== 'awaiting-approval' && call.status !== 'declined'))
-          .map(call => <ChatToolCallCard key={call.id} call={call} onResolve={onResolveTool} />)}
+        <ChatToolCallList messageId={message.id} calls={message.toolCalls} onResolve={onResolveTool} />
         {generated.map(media => (
           <ChatGeneratedImageCard
             key={media.id}

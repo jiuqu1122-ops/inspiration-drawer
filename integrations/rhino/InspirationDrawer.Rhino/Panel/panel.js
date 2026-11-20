@@ -7,8 +7,8 @@ let state = {}, connected = false, submitting = false, lastMessages = '', uncert
 let deleteTarget = '', deletingConversation = '';
 const pendingSettings = new Map();
 const settingFields = { model:'model', 'image-model':'imageModel', 'image-resolution':'imageResolution', 'image-aspect-ratio':'imageAspectRatio', 'image-quality':'imageQuality' };
-const labels = { rhino_get_context:'读取 Rhino 上下文',rhino_list_objects:'查询 Rhino 对象',rhino_list_layers:'查询 Rhino 图层',rhino_list_parts:'读取对象分件与材质',generate_image:'生成图片',edit_image:'编辑图片',get_canvas_selection:'读取画布',generate_image_variants:'生成方案' };
-const statuses = { completed:'已完成',running:'执行中',pending:'等待执行','awaiting-approval':'等待确认',error:'失败',failed:'失败',cancelled:'已停止',declined:'已取消',accepted:'执行中' };
+const labels = { rhino_get_context:'\u8bfb\u53d6 Rhino \u4e0a\u4e0b\u6587',rhino_read_modeling_skill_resource:'\u8bfb\u53d6\u5185\u7f6e\u5efa\u6a21 Skill \u8d44\u6599',rhino_review_viewport:'\u5bf9\u7167 Rhino \u89c6\u53e3\u4e0e\u53c2\u8003\u56fe',rhino_list_objects:'\u67e5\u8be2 Rhino \u5bf9\u8c61',rhino_list_layers:'\u67e5\u8be2 Rhino \u56fe\u5c42',rhino_list_parts:'\u8bfb\u53d6\u5bf9\u8c61\u5206\u4ef6\u4e0e\u6750\u8d28',generate_image:'\u751f\u6210\u56fe\u7247',edit_image:'\u7f16\u8f91\u56fe\u7247',get_canvas_selection:'\u8bfb\u53d6\u753b\u5e03',generate_image_variants:'\u751f\u6210\u65b9\u6848' };
+const statuses = { completed:'\u5df2\u5b8c\u6210',running:'\u6267\u884c\u4e2d',pending:'\u7b49\u5f85\u6267\u884c','awaiting-approval':'\u7b49\u5f85\u786e\u8ba4',error:'\u5931\u8d25',failed:'\u5931\u8d25',cancelled:'\u5df2\u505c\u6b62',declined:'\u5df2\u62d2\u7edd',accepted:'\u5df2\u63a5\u6536' };
 function notice(text) { byId('notice').textContent = text || ''; byId('notice').hidden = !text; }
 async function request(path, body) {
   const response = await fetch(path, { method:body ? 'POST':'GET',headers:{ Authorization:`Bearer ${token}`,...(body ? {'Content-Type':'application/json'}:{}) },body:body ? JSON.stringify(body):undefined,cache:'no-store',redirect:'error',signal:AbortSignal.timeout(25_000) });
@@ -121,29 +121,49 @@ function renderMessages(messages) {
     if (message.role === 'assistant' || message.markdown === true) text.append(window.rhinoMarkdown.render(document, visibleText));
     else text.textContent = visibleText;
     element.append(role,text);
-    for (const tool of message.tools || []) {
-      const row=document.createElement('div'); row.className='tool';
-      const label=document.createElement('div'); label.textContent=`${labels[tool.name] || tool.name || 'Tool'} \u00b7 ${statuses[tool.status] || tool.status}`; row.append(label);
-      if (typeof tool.diagnostic === 'string' && tool.diagnostic) { const diagnostic=document.createElement('div'); diagnostic.className='tool-diagnostic'; diagnostic.textContent=tool.diagnostic.slice(0,2000); row.append(diagnostic); }
-      if(tool.name?.startsWith('rhino_native_') && tool.status==='awaiting-approval') {
-        const details=document.createElement('details'); details.className='native-approval-details';
-        const summary=document.createElement('summary'); summary.textContent='Review execution arguments'; details.append(summary);
-        const pre=document.createElement('pre'); pre.className='native-approval-args';
-        try { pre.textContent=JSON.stringify(JSON.parse(tool.argumentsJson || '{}'),null,2).slice(0,12000); } catch { pre.textContent=String(tool.argumentsJson || '{}').slice(0,12000); }
-        details.append(pre); row.append(details);
-        const actions=document.createElement('div'); actions.className='native-approval-actions';
-        const allow=document.createElement('button'); allow.type='button'; allow.textContent='Allow'; allow.dataset.approveTool=tool.id; allow.dataset.approved='true';
-        const deny=document.createElement('button'); deny.type='button'; deny.textContent='Deny'; deny.dataset.approveTool=tool.id; deny.dataset.approved='false';
-        actions.append(allow,deny); row.append(actions);
+    if (message.role === 'user' && message.attachmentImageCount) {
+      const count = document.createElement('div'); count.className = 'auto-reference-hint';
+      count.textContent = '本条消息附带 ' + message.attachmentImageCount + ' 张图片';
+      element.append(count);
+    }
+    const tools = message.tools || [];
+    if (tools.length) {
+      const history=document.createElement('details');history.className='tool-history';
+      const active=tools.some(tool=>['pending','running','awaiting-approval'].includes(tool.status));
+      const failures=tools.filter(tool=>['error','failed','declined'].includes(tool.status)).length;
+      history.open=active;
+      const summary=document.createElement('summary');summary.className='tool-history__summary';
+      summary.textContent=`\u5de5\u5177\u8bb0\u5f55 \u00b7 ${tools.length} \u6b65 \u00b7 ${active?'\u5904\u7406\u4e2d':failures?`${failures} \u9879\u5f85\u67e5\u770b`:'\u5df2\u5b8c\u6210'}`;
+      history.append(summary);
+      const rows=document.createElement('div');rows.className='tool-history__items';
+      for (const tool of tools) {
+        const row=document.createElement('div'); row.className = 'tool';
+        const label=document.createElement('div'); label.textContent=`${labels[tool.name] || tool.name || 'Tool'} \u00b7 ${statuses[tool.status] || tool.status}`; row.append(label);
+        if (typeof tool.diagnostic === 'string' && tool.diagnostic) { const diagnostic=document.createElement('div'); diagnostic.className='tool-diagnostic'; diagnostic.textContent=tool.diagnostic.slice(0,2000); row.append(diagnostic); }
+        if(tool.name?.startsWith('rhino_native_') && tool.status==='awaiting-approval') {
+          const details=document.createElement('details'); details.className='native-approval-details';
+          const approvalSummary=document.createElement('summary'); approvalSummary.textContent='Review execution arguments'; details.append(approvalSummary);
+          const pre=document.createElement('pre'); pre.className='native-approval-args';
+          try { pre.textContent=JSON.stringify(JSON.parse(tool.argumentsJson || '{}'),null,2).slice(0,12000); } catch { pre.textContent=String(tool.argumentsJson || '{}').slice(0,12000); }
+          details.append(pre); row.append(details);
+          const actions=document.createElement('div'); actions.className='native-approval-actions';
+          const allow=document.createElement('button'); allow.type='button'; allow.textContent='Allow'; allow.dataset.approveTool=tool.id; allow.dataset.approved='true';
+          const deny=document.createElement('button'); deny.type='button'; deny.textContent='Deny'; deny.dataset.approveTool=tool.id; deny.dataset.approved='false';
+          actions.append(allow,deny); row.append(actions);
+        }
+        rows.append(row);
       }
-      element.append(row);
+      history.append(rows);element.append(history);
     }
     if (message.hiddenReferenceCount) { const hint=document.createElement('div');hint.className='auto-reference-hint';hint.textContent='已在后台附带 '+message.hiddenReferenceCount+' 张参考图';element.append(hint); }
+    const imageContainer = message.role === 'user' ? document.createElement('div') : element;
+    if (imageContainer !== element) imageContainer.className = 'reference-image-grid';
     for (const [imagePosition, source] of (message.images || []).entries()) {
       if(!/^data:image\/(?:jpeg|png|webp);base64,/i.test(source))continue;
       const button=document.createElement('button');button.type='button';button.className='message-image-button';button.title='点击放大预览';button.setAttribute('aria-label','点击放大图片');
-      const img=document.createElement('img');img.className='message-image message-image--preview';img.src=source;img.alt='图片 · 点击放大预览';img.loading='lazy';img.dataset.previewSrc=source;img.dataset.messageId=message.id;img.dataset.imageIndex=String(message.imageIndices?.[imagePosition] ?? imagePosition);button.append(img);element.append(button);
+      const img=document.createElement('img');img.className='message-image message-image--preview';img.src=source;img.alt='图片 · 点击放大预览';img.loading='lazy';img.dataset.previewSrc=source;img.dataset.messageId=message.id;img.dataset.imageIndex=String(message.imageIndices?.[imagePosition] ?? imagePosition);button.append(img);imageContainer.append(button);
     }
+    if (imageContainer !== element && imageContainer.children.length) element.append(imageContainer);
     if (message.status === 'streaming' || message.status === 'error' || message.status === 'cancelled') { const status=document.createElement('div');status.className='status';status.textContent=message.status==='streaming'?'正在处理…':statuses[message.status];element.append(status); }
     return element;
   }));

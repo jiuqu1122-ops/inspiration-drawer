@@ -181,3 +181,9 @@ describe('interrupted PPT generation', () => {
     expect(finalizeOrphanedStreamingChatMessage({ ...message, toolCalls: [...message.toolCalls, file] }, 100, '制作PPT').status).toBe('completed');
   });
 });
+
+
+it('reports partial image output counts instead of claiming the whole request completed',()=>{
+ const result=summarizeCompletedVisibleToolCalls([call('generate_image','completed',{requestedCount:6,succeeded:5,failed:1,partial:true,media:[{id:'fixture',type:'image',path:'C:/fixture/success.png'}]})]);
+ expect(result?.incomplete).toBe(true);expect(result?.content).toContain('5/6');expect(result?.content).toContain('部分生成完成');
+});

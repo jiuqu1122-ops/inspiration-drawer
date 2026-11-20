@@ -585,3 +585,11 @@ describe('agent background versus the requested deliverable', () => {
     expect(getChatToolDefinitions(text).map(tool => tool.function.name)).toContain('create_agent');
   });
 });
+
+
+it('advertises a ten-output limit for both independent image and variant actions',()=>{
+ const image=CHAT_TOOL_DEFINITIONS.find(tool=>tool.function.name==='generate_image')!;
+ const variants=CHAT_TOOL_DEFINITIONS.find(tool=>tool.function.name==='generate_image_variants')!;
+ expect(JSON.stringify(image.function.parameters)).toContain('"maximum":10');
+ expect(JSON.stringify(variants.function.parameters)).toContain('"maxItems":10');
+});

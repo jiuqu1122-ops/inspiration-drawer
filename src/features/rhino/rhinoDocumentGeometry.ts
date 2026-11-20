@@ -19,20 +19,22 @@ export const compareDocumentGeometrySnapshots=(before:DocumentGeometrySnapshot,a
  for(const [id,item] of next){const previous=old.get(id);if(!previous)added.push(item);else if(previous.fingerprint!==item.fingerprint)changed.push({...item,previous});else unchanged.push(item);}
  for(const [id,item] of old)if(!next.has(id))deleted.push(item);
  const touched=[...added,...changed];const invalid=touched.filter(item=>item.valid!==true||item.isValid===false);
- const inward=touched.filter(item=>item.isSolid===true&&item.solidOrientation==='Inward');
+ const inward=touched.filter(item=>item.isSolid===true&&item.solidOrientation==='Inward'&&(requireClosedSolids||item.isBrep===true));
  const openBreps=touched.filter(item=>item.isBrep===true&&item.isSolid!==true);
+ const openMeshes=touched.filter(item=>item.isMesh===true&&item.isSolid!==true);
+ const openSubDs=touched.filter(item=>item.isSubD===true&&item.isSolid!==true);
  const closedSolidCount=touched.filter(item=>item.isSolid===true&&item.isValid===true&&item.solidOrientation==='Outward').length;
  const changedGeometry=touched.length>0||deleted.length>0;
- const status=changedGeometry&&invalid.length===0&&inward.length===0&&(!requireClosedSolids||openBreps.length===0)?'passed':!changedGeometry?'no_geometry_change':'needs_attention';
- const summary=(item:Record<string,unknown>)=>({id:item.id,type:item.type,geometryType:item.geometryType,name:item.name,valid:item.valid,isValid:item.isValid,isSolid:item.isSolid,solidOrientation:item.solidOrientation,min:item.min,max:item.max,volume:item.volume,area:item.area});
+ const status=changedGeometry&&invalid.length===0&&inward.length===0&&(!requireClosedSolids||(openBreps.length===0&&openMeshes.length===0&&openSubDs.length===0&&closedSolidCount>0))?'passed':!changedGeometry?'no_geometry_change':'needs_attention';
+ const summary=(item:Record<string,unknown>)=>({id:item.id,type:item.type,geometryType:item.geometryType,name:item.name,isMesh:item.isMesh,isSubD:item.isSubD,isClosed:item.isClosed,vertexCount:item.vertexCount,faceCount:item.faceCount,valid:item.valid,isValid:item.isValid,isSolid:item.isSolid,solidOrientation:item.solidOrientation,min:item.min,max:item.max,volume:item.volume,area:item.area});
  const limit=(items:Record<string,unknown>[])=>items.slice(0,32).map(summary);
- return {version:1,status,documentChanged:changedGeometry,documentId:after.documentId,units:after.units,structuralOnly:true,photoFidelityVerified:false,requireClosedSolids,beforeObjectCount:before.objectCount,afterObjectCount:after.objectCount,addedCount:added.length,changedCount:changed.length,deletedCount:deleted.length,added:limit(added),changed:limit(changed),deleted:limit(deleted),truncated:added.length+changed.length+deleted.length>96,unchangedCount:unchanged.length,invalidCount:invalid.length,invalid:limit(invalid),inwardCount:inward.length,inward:limit(inward),openBrepCount:openBreps.length,openBreps:limit(openBreps),closedSolidCount,explanation:status==='passed'?(openBreps.length&&!requireClosedSolids?'A real valid geometry change was observed. Open surfaces are allowed in this request; '+openBreps.length+' Breps are not closed solids. Reference-image fidelity remains unverified.':'A real document geometry change was observed and all added/changed geometry is structurally valid; reference-image fidelity remains unverified.'):status==='no_geometry_change'?'No document geometry changed; a successful tool receipt is not evidence that modeling occurred.':'One or more added/changed objects failed validity, orientation or explicitly requested closed-solid checks.'};
+ return {version:1,status,documentChanged:changedGeometry,documentId:after.documentId,units:after.units,structuralOnly:true,photoFidelityVerified:false,requireClosedSolids,beforeObjectCount:before.objectCount,afterObjectCount:after.objectCount,addedCount:added.length,changedCount:changed.length,deletedCount:deleted.length,added:limit(added),changed:limit(changed),deleted:limit(deleted),truncated:added.length+changed.length+deleted.length>96,unchangedCount:unchanged.length,invalidCount:invalid.length,invalid:limit(invalid),inwardCount:inward.length,inward:limit(inward),openBrepCount:openBreps.length,openBreps:limit(openBreps),openMeshCount:openMeshes.length,openMeshes:limit(openMeshes),openSubDCount:openSubDs.length,openSubDs:limit(openSubDs),closedSolidCount,explanation:status==='passed'?((openBreps.length+openMeshes.length+openSubDs.length)>0&&!requireClosedSolids?'A real valid geometry change was observed. Intentional open surfaces/meshes/SubDs are allowed; '+openBreps.length+' open Breps, '+openMeshes.length+' open/non-solid meshes, '+openSubDs.length+' open SubDs. Reference-image fidelity remains unverified.':'A real document geometry change was observed and all added/changed geometry is structurally valid; reference-image fidelity remains unverified.'):status==='no_geometry_change'?'No document geometry changed; a successful tool receipt is not evidence that modeling occurred.':'One or more added/changed objects failed validity, orientation or explicitly requested closed-solid checks.'};
 };
 export const isRhinoDocumentGeometryWrite=(tool:Pick<RhinoNativeTool,'name'|'readOnly'|'workflowPhase'>,args:Record<string,unknown>)=>{
  if(tool.readOnly===true||!['run_python','run_csharp','run_command'].some(name=>tool.name==='rhino_native_'+name))return false;
  if(tool.name==='rhino_native_run_python'||tool.name==='rhino_native_run_csharp'){
   const code=String(args.script||'');
-  if(/Grasshopper|ActiveCanvas|\.Code\s*(?:=|\+=)|verify_gh_geometry/i.test(code))return false;
+  if(/Grasshopper|ActiveCanvas|\.Code\s*(?:=|\+=)|verify_gh_geometry/i.test(code)&&!hasExplicitRhinoGeometryMutation(tool.name,args))return false;
  }
  return true;
 };
@@ -65,6 +67,6 @@ export const hasExplicitRhinoGeometryMutation = (name: string, args: Record<stri
   const code = rhinoExecutableScriptCode(name,args.script);
   const staged = [...code.matchAll(/\b([A-Za-z_]\w*)\s*=\s*DrawerGeometryStage\s*\(/g)]
     .some(match => new RegExp('\\b' + match[1] + '\\s*\\.\\s*commit\\s*\\(').test(code));
-  return staged || /\.\s*Objects\s*\.\s*(?:Add[A-Za-z]*|Delete|Transform|Replace|ModifyGeometry)\s*\(/.test(code)
+  return staged || /\.\s*BakeGeometry\s*\(/.test(code) || /\.\s*Objects\s*\.\s*(?:Add[A-Za-z]*|Delete|Transform|Replace|ModifyGeometry)\s*\(/.test(code)
     || /\b(?:rs|rhinoscriptsyntax)\s*\.\s*(?:Add[A-Za-z]+|DeleteObjects?|MoveObjects?|RotateObjects?|ScaleObjects?|TransformObjects?)\s*\(/.test(code);
 };

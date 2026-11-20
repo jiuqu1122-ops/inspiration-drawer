@@ -1,5 +1,7 @@
 """Deterministic fake-Rhino transaction tests, not a substitute for native geometry QA."""
 import copy
+import contextlib
+import io
 import pathlib
 import sys
 import types
@@ -13,6 +15,7 @@ class Guid(str):
 class Attributes:
     def __init__(self, name="", material=4):
         self.Name, self.MaterialIndex = name, material
+        self.Visible = True
 
     def Duplicate(self):
         return copy.deepcopy(self)
@@ -34,12 +37,19 @@ class Face:
 
 class Geometry:
     IsValid = True
+    crc = 1
+
+    def Dispose(self):
+        pass
 
     def Duplicate(self):
         return copy.deepcopy(self)
 
     def GetBoundingBox(self, accurate):
         return types.SimpleNamespace(IsValid=True, Min=types.SimpleNamespace(X=0, Y=0, Z=0), Max=types.SimpleNamespace(X=1, Y=1, Z=1))
+
+    def GetType(self):
+        return types.SimpleNamespace(FullName="Rhino.Geometry." + type(self).__name__)
 
     def DataCRC(self, seed):
         return self.crc
@@ -76,7 +86,99 @@ class Curve(Geometry):
     pass
 
 
+class Mesh(Geometry):
+    def __init__(self, closed=False, valid=True, vertices=4, faces=2, orientation=1):
+        self.IsClosed, self.IsValid, self.IsSolid = closed, valid, closed
+        self.Vertices = types.SimpleNamespace(Count=vertices)
+        self.Faces = types.SimpleNamespace(Count=faces)
+        self.orientation = orientation if closed else 0
+        self.vertices_data = [0., 0., 1., 1.]
+
+    def SolidOrientation(self):
+        return self.orientation
+
+    def Flip(self, vertex_normals, face_normals, faces):
+        self.orientation = -self.orientation
+
+
+class SubD(Geometry):
+    def __init__(self, closed=False, inward=False):
+        self.IsSolid, self.inward = closed, inward
+
+    def ToBrep(self):
+        return Brep(closed=self.IsSolid, inward=self.inward)
+
+    def Flip(self):
+        self.inward = not self.inward
+        return True
+
+
+class Point3d:
+    IsValid = True
+
+
+class Point(Geometry):
+    def __init__(self, location=None):
+        self.Location = location or Point3d()
+
+
+class PointCloud(Geometry):
+    def __init__(self, count=3):
+        self.Count = count
+
+
+class Line:
+    def ToNurbsCurve(self):
+        return Curve()
+
+
+class Arc(Line):
+    pass
+
+
+class Circle(Line):
+    pass
+
+
+class Ellipse(Line):
+    pass
+
+
+class Rectangle3d(Line):
+    pass
+
+
+class Polyline:
+    def ToPolylineCurve(self):
+        return Curve()
+
+
+class Box:
+    def ToBrep(self):
+        return Brep()
+
+
+class Goo:
+    def __init__(self, value, valid=True, name="GH_Mesh"):
+        self.value, self.IsValid, self.name = value, valid, name
+
+    def GetType(self):
+        return types.SimpleNamespace(FullName="Grasshopper.Kernel.Types." + self.name)
+
+    def ScriptVariable(self):
+        return self.value
+
+
+class Tree:
+    def __init__(self, *branches):
+        self.Paths = ["{" + str(i) + "}" for i in range(len(branches))]
+        self.Branches = list(branches)
+
+
 class Objects:
+    def GetObjectList(self, kind):
+        return list(self.rows.values())
+
     def __init__(self):
         self.rows = {}
         self.writes = []
@@ -92,7 +194,7 @@ class Objects:
         if self.add_count == self.failure_on_add:
             raise RuntimeError("fixture add failure")
         oid = Guid("fixture-" + str(self.add_count))
-        self.rows[oid] = types.SimpleNamespace(Id=oid, Geometry=geometry.Duplicate(), Attributes=attributes.Duplicate(), IsDeleted=False)
+        self.rows[oid] = types.SimpleNamespace(Id=oid, Geometry=geometry.Duplicate(), Attributes=attributes.Duplicate(), Name=attributes.Name, ObjectType=type(geometry).__name__, IsDeleted=False, IsHidden=False, IsLocked=False)
         self.writes.append(("add", oid))
         return oid
 
@@ -116,6 +218,8 @@ class Objects:
 
 
 class Document:
+    RuntimeSerialNumber = 73
+    ModelUnitSystem = "Millimeters"
     ModelAbsoluteTolerance = 0.01
 
     def __init__(self):
@@ -130,9 +234,9 @@ class Document:
         self.ended.append(undo)
 
 
-def helper(doc, other_doc=None):
+def execute_program(doc, relative_path, other_doc=None):
     rg = types.ModuleType("Rhino.Geometry")
-    for cls in (Brep, Surface, Extrusion, Curve):
+    for cls in (Brep, Surface, Extrusion, Curve, Mesh, Point, Point3d, PointCloud, SubD, Line, Arc, Circle, Ellipse, Rectangle3d, Polyline, Box):
         setattr(rg, cls.__name__, cls)
     rg.BrepSolidOrientation = types.SimpleNamespace(Inward="Inward", Outward="Outward")
     rg.VolumeMassProperties = types.SimpleNamespace(Compute=lambda geometry: types.SimpleNamespace(Volume=1.0, Dispose=lambda: None))
@@ -140,6 +244,7 @@ def helper(doc, other_doc=None):
     rhino.Geometry = rg
     rhino.DocObjects = types.ModuleType("Rhino.DocObjects")
     rhino.DocObjects.ObjectAttributes = Attributes
+    rhino.DocObjects.ObjectType = types.SimpleNamespace(AnyObject=0)
     system = types.ModuleType("System")
     system.Guid = Guid
     context = types.ModuleType("scriptcontext")
@@ -149,7 +254,7 @@ def helper(doc, other_doc=None):
     namespace = {"__rhino_doc__": doc}
     try:
         sys.modules.update(modules)
-        source = pathlib.Path(__file__).parents[2] / "src/features/rhino/rhinoGeometryStage.py"
+        source = pathlib.Path(__file__).parents[2] / relative_path
         exec(compile(source.read_text(encoding="utf-8"), str(source), "exec"), namespace)
     finally:
         for name, value in previous.items():
@@ -157,7 +262,11 @@ def helper(doc, other_doc=None):
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = value
-    return namespace["DrawerGeometryStage"]()
+    return namespace
+
+
+def helper(doc, other_doc=None):
+    return execute_program(doc, "src/features/rhino/rhinoGeometryStage.py", other_doc)["DrawerGeometryStage"]()
 
 
 class StageTests(unittest.TestCase):
@@ -165,7 +274,7 @@ class StageTests(unittest.TestCase):
         doc = Document()
         stage = helper(doc)
         stage.add("main body", Brep())
-        stage.add("ornament", Brep(closed=False))
+        stage.add("ornament", Brep(closed=False), kind="solid")
         with self.assertRaisesRegex(ValueError, "Open solid: ornament; naked edges=3"):
             stage.commit()
         self.assertEqual(doc.Objects.writes, [])
@@ -182,7 +291,7 @@ class StageTests(unittest.TestCase):
             doc = Document()
             stage = helper(doc)
             original = Brep(closed=False, caps=can_cap)
-            stage.add("body", original, cap_planar=cap)
+            stage.add("body", original, kind="solid", cap_planar=cap)
             if success:
                 stage.commit()
                 self.assertFalse(original.IsSolid)
@@ -287,6 +396,172 @@ class StageTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 stage.commit()
             self.assertEqual(doc.Objects.writes, [])
+
+
+class BakeTests(unittest.TestCase):
+    def test_bakes_225_open_meshes_from_all_branches_without_brep_conversion_or_fixed_count(self):
+        doc = Document()
+        stage = helper(doc)
+        meshes = [Mesh() for _ in range(225)]
+        tree = Tree([], [Goo(mesh) for mesh in meshes[:100]], [Goo(mesh) for mesh in meshes[100:]])
+        result = stage.add_tree("texture", tree)
+        self.assertEqual(result["stagedCount"], 225)
+        self.assertEqual([b["count"] for b in result["branches"]], [0, 100, 125])
+        self.assertEqual(doc.Objects.writes, [])
+        self.assertEqual(stage.preview(), {"stagedCount": 225, "kinds": {"mesh": 225}, "documentWrites": False})
+        receipt = stage.commit()
+        self.assertEqual(receipt["committedCount"], 225)
+        self.assertEqual(receipt["parts"][100]["source"], {"path": "{2}", "index": 0})
+        self.assertEqual(receipt["parts"][224]["source"], {"path": "{2}", "index": 124})
+        self.assertTrue(all(isinstance(obj.Geometry, Mesh) for obj in doc.Objects.rows.values()))
+        self.assertTrue(all(not obj.Geometry.IsSolid for obj in doc.Objects.rows.values()))
+        self.assertEqual(meshes[0].vertices_data, [0., 0., 1., 1.])
+        with self.assertRaisesRegex(RuntimeError, "only once"):
+            stage.commit()
+
+    def test_arbitrary_counts_and_duplicate_geometry_are_never_truncated_or_deduplicated(self):
+        for count in [1, 2, 17, 225, 376]:
+            doc = Document()
+            stage = helper(doc)
+            mesh = Mesh()
+            stage.add_tree("texture", Tree([Goo(mesh)] * count))
+            self.assertEqual(stage.commit()["committedCount"], count)
+            self.assertEqual(len(doc.Objects.rows), count)
+
+    def test_auto_supports_mixed_native_and_gh_geometry_without_lowering_explicit_solid_rules(self):
+        doc = Document()
+        stage = helper(doc)
+        items = [Goo(Mesh()), Goo(Brep()), Goo(Brep(closed=False)), Goo(Curve()), Goo(Point3d(), name="GH_Point"),
+                 Goo(Line(), name="GH_Line"), PointCloud(), SubD(), Extrusion(), Polyline(), Rectangle3d(), Box()]
+        stage.add_tree("mixed", Tree(items))
+        self.assertEqual(stage.preview()["kinds"], {"mesh": 1, "solid": 3, "surface": 1, "curve": 4, "point": 1, "pointcloud": 1, "subd": 1})
+        self.assertEqual(stage.commit()["committedCount"], len(items))
+
+    def test_explicit_solid_mesh_rejects_open_mesh_but_normalizes_private_closed_copy(self):
+        doc = Document()
+        stage = helper(doc)
+        stage.add("must be closed", Mesh(), kind="solid")
+        with self.assertRaisesRegex(ValueError, "Open solid"):
+            stage.commit()
+        self.assertEqual(doc.Objects.writes, [])
+        stage = helper(doc)
+        mesh = Mesh(closed=True, orientation=-1)
+        stage.add("closed mesh", mesh, kind="solid")
+        stage.commit()
+        self.assertEqual(mesh.orientation, -1)
+        self.assertEqual(list(doc.Objects.rows.values())[0].Geometry.orientation, 1)
+
+    def test_bake_preserves_mesh_orientation_when_a_solid_was_not_requested(self):
+        doc = Document()
+        stage = helper(doc)
+        stage.add("source mesh", Mesh(closed=True, orientation=-1))
+        stage.commit()
+        self.assertEqual(list(doc.Objects.rows.values())[0].Geometry.orientation, -1)
+
+    def test_null_unresolved_or_non_geometry_tree_does_not_silently_skip_items(self):
+        for invalid in [None, Goo(Mesh(), valid=False), Goo("225", name="GH_String"), object()]:
+            doc = Document()
+            stage = helper(doc)
+            stage.add("preexisting staged", Curve())
+            with self.assertRaisesRegex(ValueError, r"GH bake item \{1\}\[0\]"):
+                stage.add_tree("bad", Tree([Goo(Mesh())], [invalid]))
+            self.assertEqual(len(stage.parts), 1)
+            self.assertEqual(doc.Objects.writes, [])
+
+    def test_invalid_mesh_and_empty_output_do_not_write(self):
+        for mesh in [Mesh(valid=False), Mesh(vertices=0), Mesh(faces=0)]:
+            doc = Document()
+            stage = helper(doc)
+            stage.add_tree("invalid", Tree([Goo(mesh)]))
+            with self.assertRaises(ValueError):
+                stage.commit()
+            self.assertEqual(doc.Objects.writes, [])
+        stage = helper(Document())
+        with self.assertRaisesRegex(ValueError, "contains no geometry"):
+            stage.add_tree("empty", Tree([], []))
+
+    def test_limits_and_inconsistent_tree_reject_without_partial_append_or_writes(self):
+        for tree in [Tree([Mesh()] * 2001), Tree(*([[]] * 2001))]:
+            doc = Document()
+            stage = helper(doc)
+            with self.assertRaisesRegex(ValueError, "2000"):
+                stage.add_tree("too large", tree)
+            self.assertEqual(stage.parts, [])
+            self.assertEqual(doc.Objects.writes, [])
+        stage = helper(Document())
+        malformed = Tree([Mesh()])
+        malformed.Paths = []
+        with self.assertRaisesRegex(ValueError, "inconsistent"):
+            stage.add_tree("bad tree", malformed)
+
+    def test_mesh_replacement_preserves_material_id_and_other_geometry(self):
+        doc = Document()
+        target = doc.Objects.Add(Mesh(), Attributes("texture", 12))
+        unrelated = doc.Objects.Add(Brep(), Attributes("original body", 7))
+        stage = helper(doc)
+        mesh = stage.copy(target)
+        mesh.vertices_data[2] = 0.3
+        stage.add("edited mesh", mesh, kind="mesh", replace_id=target)
+        stage.commit()
+        self.assertEqual(doc.Objects.FindId(target).Attributes.MaterialIndex, 12)
+        self.assertEqual(doc.Objects.FindId(target).Attributes.Name, "texture")
+        self.assertEqual(doc.Objects.FindId(target).Geometry.vertices_data[2], 0.3)
+        self.assertEqual(doc.Objects.FindId(unrelated).Attributes.MaterialIndex, 7)
+
+    def test_mesh_bake_failure_rolls_back_own_additions_and_keeps_original_model(self):
+        doc = Document()
+        body = doc.Objects.Add(Brep(), Attributes())
+        doc.Objects.failure_on_add = 4
+        stage = helper(doc)
+        stage.add_tree("texture", Tree([Goo(Mesh())] * 10))
+        with self.assertRaisesRegex(RuntimeError, "tracked helper writes restored"):
+            stage.commit()
+        self.assertEqual(set(doc.Objects.rows), {body})
+        with self.assertRaisesRegex(RuntimeError, "only once"):
+            stage.commit()
+
+    def test_planar_caps_or_face_constraints_are_not_applied_to_mesh(self):
+        for options in [{"kind": "solid", "cap_planar": True}, {"planar_faces": [0]}]:
+            doc = Document()
+            stage = helper(doc)
+            stage.add("mesh", Mesh(closed=True), **options)
+            with self.assertRaises(ValueError):
+                stage.commit()
+            self.assertEqual(doc.Objects.writes, [])
+
+
+class SnapshotTests(unittest.TestCase):
+    @staticmethod
+    def snapshot(doc):
+        with contextlib.redirect_stdout(io.StringIO()):
+            namespace = execute_program(doc, "src/features/rhino/modeling/document_geometry_snapshot.py")
+        return namespace["_id_doc_snapshot"](doc)
+
+    def test_mesh_snapshot_uses_mesh_topology_orientation_and_native_mass_api(self):
+        doc = Document()
+        doc.Objects.Add(Mesh(), Attributes("open"))
+        doc.Objects.Add(Mesh(closed=True), Attributes("solid"))
+        before = list(doc.Objects.writes)
+        report = self.snapshot(doc)
+        self.assertEqual(report["objectCount"], 2)
+        open_mesh, solid_mesh = report["objects"]
+        self.assertTrue(open_mesh["isMesh"])
+        self.assertFalse(open_mesh["isSolid"])
+        self.assertEqual(open_mesh["solidOrientation"], "None")
+        self.assertIsNone(open_mesh["volume"])
+        self.assertEqual(solid_mesh["volume"], 1.)
+        self.assertEqual(solid_mesh["solidOrientation"], "Outward")
+        self.assertEqual(doc.Objects.writes, before)
+
+    def test_same_bounds_same_counts_mesh_data_change_is_detected_but_attributes_are_not_geometry(self):
+        doc = Document()
+        target = doc.Objects.Add(Mesh(), Attributes())
+        first = self.snapshot(doc)["objects"][0]["fingerprint"]
+        doc.Objects.FindId(target).Geometry.crc = 99
+        changed = self.snapshot(doc)["objects"][0]["fingerprint"]
+        self.assertNotEqual(first, changed)
+        doc.Objects.FindId(target).Attributes.MaterialIndex = 8
+        self.assertEqual(changed, self.snapshot(doc)["objects"][0]["fingerprint"])
 
 
 if __name__ == "__main__":

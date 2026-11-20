@@ -90,9 +90,10 @@ const appendMessageForContext = (
   completedCalls.forEach(call => providerMessages.push({
     role: 'tool',
     tool_call_id: call.id,
-    content: trimTextToTokenBudget(serializeChatToolResult(
-      compactChatToolResultForProvider(call.toolName, parseChatToolResult(call.resultJson)),
-    ), 1_200),
+    content: trimTextToTokenBudget(
+      serializeChatToolResult(compactChatToolResultForProvider(call.toolName, parseChatToolResult(call.resultJson))),
+      call.toolName === 'rhino_read_modeling_skill_resource' ? 5_000 : 1_200,
+    ),
   }));
   if (message.content.trim()) {
     providerMessages.push({ role: 'assistant', content: message.content });
@@ -104,6 +105,7 @@ const buildAttachmentContent = async (
   attachments: ChatAttachment[],
   resolveAttachmentUrl?: (attachment: ChatAttachment) => Promise<string | ChatVisionAttachmentResolution>,
   reusedFromHistory = false,
+  visionDetail?: 'low' | 'high' | 'auto',
 ) => {
   if (attachments.length === 0) return text;
   const parts: Array<Record<string, unknown>> = [{ type: 'text', text }];
@@ -116,7 +118,7 @@ const buildAttachmentContent = async (
       text: `工作流附件 ${attachment.id}\n结构快照（仅供分析；未经用户确认不得应用或运行）：\n${JSON.stringify(snapshot)}`,
     });
   }
-  const images = attachments.filter(item => item.type === 'image').slice(0, 6);
+  const images = attachments.filter(item => item.type === 'image').slice(0, 9);
   const resolved = await Promise.all(images.map(attachment => (
     resolveAttachmentUrl ? resolveAttachmentUrl(attachment).catch(() => '') : Promise.resolve('')
   )));
@@ -132,7 +134,7 @@ const buildAttachmentContent = async (
     }
     parts.push({ type: 'text', text: label });
     // Vector redraw needs lettering/outline detail; this adjusts vision quality only, never tool routing.
-    const detail = /\bsvg\b|矢量|描摹|转曲/i.test(text) ? 'high' : 'low';
+    const detail = visionDetail || (/\bsvg\b|矢量|描摹|转曲/i.test(text) ? 'high' : 'low');
     parts.push({ type: 'image_url', image_url: { url, detail } });
   }
   return parts.length > 1 ? parts : text;
@@ -158,6 +160,7 @@ export const buildChatContext = async (input: {
   resolveAttachmentUrl?: (attachment: ChatAttachment) => Promise<string | ChatVisionAttachmentResolution>;
   visionAttachments?: ChatAttachment[];
   reusedVisionAttachments?: boolean;
+  visionDetail?: 'low' | 'high' | 'auto';
   skill?: ChatSkill;
   githubSkillsEnabled?: boolean;
   designMemory?: DesignMemorySnapshot | null;
@@ -170,6 +173,7 @@ export const buildChatContext = async (input: {
     attachmentsForLatestUserContext(input.latestUserMessage.attachments, input.visionAttachments),
     input.resolveAttachmentUrl,
     input.reusedVisionAttachments,
+    input.visionDetail,
   );
   const snapshot = input.designMemoryRecall ? input.designMemoryRecall.snapshot : input.designMemory;
   const memoryMessage = buildDesignMemoryContextMessage(snapshot);

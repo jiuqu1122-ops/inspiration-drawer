@@ -1,3 +1,4 @@
+import { withChatImageSlot, executeChatImageOutputs } from './chatImageOutputOperation';
 import { validateSvgToolArguments, svgCreationFailure } from './chatSvgTool';
 import { collectChatHtmlArtifacts } from '../html/chatHtmlArtifacts';
 import { applyPrototypeMotions } from '../prototypes/prototypeMotion';
@@ -97,7 +98,15 @@ export const createInspirationChatToolExecutor = (input: {
   createFile: (request: Record<string, unknown>) => Promise<unknown>;
   getCanvasItems?: () => CanvasImageItem[];
   getSelectedCanvasIds?: () => string[];
-}): ChatToolExecutor => async (rawName, args, context) => {
+}): ChatToolExecutor => {
+ const withImageSlot = withChatImageSlot;
+ return async (rawName, args, context) => {
+  const generateMedia = (name: 'generate_image' | 'edit_image' | 'generate_video', generationArgs: Record<string, unknown>) => name === 'generate_video'
+    ? input.generateMedia(name, generationArgs)
+    : executeChatImageOutputs({ args: generationArgs, signal: context.signal, generate: slotArgs => withImageSlot(async () => {
+      if (context.signal?.aborted) throw new Error('图片生成已取消。');
+      return input.generateMedia(name, slotArgs);
+    }) });
   const name = normalizeChatToolName(rawName);
   if (isGithubSkillTool(name)) return executeGithubSkillTool(name, args, context, input.searchWeb);
   const execution = { userRequest: context.userText };
@@ -180,7 +189,7 @@ export const createInspirationChatToolExecutor = (input: {
     }, execution);
   }
   if (name === 'generate_image' || name === 'edit_image' || name === 'generate_video') {
-    return input.generateMedia(name, args);
+    return generateMedia(name, args);
   }
   const mediaToolType = name === 'interpolate_video'
     ? 'frame-interpolation'
@@ -217,7 +226,7 @@ export const createInspirationChatToolExecutor = (input: {
       args,
       signal: context.signal,
       onProgress: context.onProgress,
-      generate: generationArgs => input.generateMedia('generate_image', generationArgs),
+      generate: generationArgs => generateMedia('generate_image', generationArgs),
     });
   }
   if (name === 'batch_image_operation') {
@@ -226,7 +235,7 @@ export const createInspirationChatToolExecutor = (input: {
       attachments: context.currentUserAttachments || [],
       signal: context.signal,
       onProgress: context.onProgress,
-      generate: generationArgs => input.generateMedia('generate_image', generationArgs),
+      generate: generationArgs => generateMedia('generate_image', generationArgs),
     });
   }
   if (name === 'add_to_canvas') {
@@ -274,4 +283,5 @@ export const createInspirationChatToolExecutor = (input: {
     return { ...applied, result };
   }
   throw new Error(`不支持的 Chat 工具：${name}`);
+};
 };

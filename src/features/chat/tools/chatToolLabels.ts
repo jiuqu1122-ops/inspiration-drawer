@@ -2,8 +2,11 @@ import type { ChatThinkingStepStatus } from '../model/chatTypes';
 
 const CHAT_TOOL_LABELS: Record<string, string> = {
   rhino_get_context: '读取 Rhino 上下文',
+  rhino_reference_fidelity_assessment: '验收模型并规划完善',
+  rhino_review_viewport: '对照 Rhino 视口与参考图',
   rhino_list_objects: '查询 Rhino 对象',
   rhino_list_layers: '查询 Rhino 图层',
+  rhino_read_modeling_skill_resource: '读取内置建模 Skill 资料',
   web_search: '联网搜索',
   search_github_skills: '发现开源技能',
   inspect_github_skill: '检查 GitHub 技能',

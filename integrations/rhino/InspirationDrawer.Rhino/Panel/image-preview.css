@@ -10,3 +10,7 @@ body.image-preview-open { overflow: hidden; }
 .message .message-image-button .message-image { margin-top: 0; }
 .message-image-button:focus-visible { outline: 2px solid #a7976f; outline-offset: 3px; }
 .auto-reference-hint { margin: 5px 1px 0; color: #8a887f; font-size: 10px; }
+
+.reference-image-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 78px), 104px)); gap: 7px; margin-top: 8px; }
+.reference-image-grid .message-image-button { margin: 0; min-width: 0; overflow: hidden; }
+.reference-image-grid .message-image { width: 100%; aspect-ratio: 1; object-fit: contain; display: block; }

@@ -93,7 +93,7 @@ describe('inspiration Chat tool executor', () => {
       createFile: vi.fn(),
     });
     await executor('generate_image', { prompt: '未来主义建筑' }, context);
-    expect(generateMedia).toHaveBeenCalledWith('generate_image', { prompt: '未来主义建筑' });
+    expect(generateMedia).toHaveBeenCalledWith('generate_image', { prompt: '未来主义建筑', count: 1 });
   });
 
   it('keeps video generation on the existing media-generation bridge', async () => {
@@ -269,4 +269,26 @@ describe('inspiration Chat tool executor', () => {
       conversationId: 'conversation-1',
     });
   });
+});
+
+
+it('executes a six-output Chat tool request as six independent n=1 jobs',async()=>{
+ let sequence=0;
+ const generateMedia=vi.fn(async()=>({media:[{id:'generated-'+(++sequence),path:'C:/fixture/image-'+sequence+'.png',type:'image'}]}));
+ const executor=createInspirationChatToolExecutor({executeExistingTool:vi.fn(),generateMedia,listWorkflowDescriptors:()=>[],searchWeb:vi.fn(),createFile:vi.fn()});
+ const result=await executor('generate_image',{prompt:'six separate results',count:6},context) as any;
+ expect(generateMedia).toHaveBeenCalledTimes(6);expect(result.media).toHaveLength(6);expect(result.partial).toBe(false);
+ expect(generateMedia.mock.calls.every(call=>(call as any)[1].count===1)).toBe(true);
+});
+
+
+it('keeps at most ten active jobs even when React recreates executors between conversations',async()=>{
+ const releases:Array<()=>void>=[];let active=0,peak=0,id=0;
+ const generateMedia=vi.fn(async()=>{active++;peak=Math.max(peak,active);const slot=++id;await new Promise<void>(resolve=>releases.push(resolve));active--;return {media:[{id:String(slot),path:'C:/fixture/'+slot+'.png',type:'image'}]};});
+ const input={executeExistingTool:vi.fn(),generateMedia,listWorkflowDescriptors:()=>[],searchWeb:vi.fn(),createFile:vi.fn()};
+ const first=createInspirationChatToolExecutor(input)('generate_image',{prompt:'fixture',count:10},context);
+ const second=createInspirationChatToolExecutor(input)('generate_image',{prompt:'fixture',count:10},{...context,conversationId:'second'});
+ await vi.waitFor(()=>expect(releases).toHaveLength(10));expect(generateMedia).toHaveBeenCalledTimes(10);
+ releases.splice(0).forEach(release=>release());await vi.waitFor(()=>expect(releases).toHaveLength(10));
+ releases.splice(0).forEach(release=>release());await Promise.all([first,second]);expect(peak).toBe(10);expect(generateMedia).toHaveBeenCalledTimes(20);
 });

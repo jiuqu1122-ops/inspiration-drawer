@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rhino 产品建模与验收"
+  short_description: "根据参考图和尺寸规划 Rhino 产品建模、曲面返修与分阶段验收"
+  default_prompt: "请使用 $rhino-product-modeling，根据我的参考图、尺寸或现有模型完成建模、修改或验收，并如实报告工具能力、证据与未验证项。"
