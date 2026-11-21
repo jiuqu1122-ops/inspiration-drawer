@@ -6,6 +6,7 @@ import {
   Image as ImageIcon,
   Lightbulb,
   Layers,
+  Layers2,
   Link,
   Palette,
   RefreshCw,
@@ -41,6 +42,7 @@ type CanvasToolbarProps = {
   showThreeScene?: boolean;
   onCreateThreeScene: () => void;
   onAddFusion: () => void;
+  onAddLayerOperation: () => void;
   onAddVideo: () => void;
   onAddMusic?: () => void;
   onAddFrameInterpolation: () => void;
@@ -66,6 +68,7 @@ export function CanvasToolbar({
   showThreeScene = false,
   onCreateThreeScene,
   onAddFusion,
+  onAddLayerOperation,
   onAddVideo,
   onAddMusic,
   onAddFrameInterpolation,
@@ -117,6 +120,16 @@ export function CanvasToolbar({
       >
         <Layers className="h-3.5 w-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate text-left">溶图</span>
+      </button>
+      <button
+        type="button"
+        onClick={onAddLayerOperation}
+        className={CANVAS_SIDE_TOOL_CLASS}
+        title="图层拆分 / 交互编辑"
+        aria-label="图层拆分 / 交互编辑"
+      >
+        <Layers2 className="h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0 flex-1 truncate text-left">图层</span>
       </button>
       <button
         type="button"

@@ -644,6 +644,10 @@ export function CanvasOverlayPanels({ scope }: { scope: CanvasOverlayPanelsScope
                                 <Layers className="h-3.5 w-3.5 text-fuchsia-300" />
                                 AI 溶图节点
                               </button>
+                              <button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-bold text-stone-100 hover:bg-cyan-500/18"
+                                onClick={() => { scope.canvasLayersUi.addCanvasLayerOperation({ x: canvasContextMenu.worldX, y: canvasContextMenu.worldY }); setCanvasContextMenu(null); }}>
+                                <Layers className="h-3.5 w-3.5 text-cyan-300" />图层拆分 / 交互编辑
+                              </button>
                               <button
                                 type="button"
                                 className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-emerald-500/18 hover:text-emerald-200"
@@ -811,6 +815,12 @@ export function CanvasOverlayPanels({ scope }: { scope: CanvasOverlayPanelsScope
                                   >
                                     <Download className="h-3.5 w-3.5 text-sky-300" />
                                     下载
+                                  </button>
+                                )}
+                                {target?.item.type === 'image' && (!target.layerResult || target.layerResult.status === 'success') && (
+                                  <button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-bold text-stone-100 hover:bg-cyan-500/18"
+                                    onClick={() => { scope.canvasLayersUi.addCanvasLayerOperation({ x: target.x + target.width + 75, y: target.y }, [target.id]); setCanvasContextMenu(null); }}>
+                                    <Layers className="h-3.5 w-3.5 text-cyan-300" />图层拆分 / 交互编辑
                                   </button>
                                 )}
                                 {ENABLE_THREE_SCENE_CREATION && target?.item.type === 'image' && actionIds.length === 1 && (
@@ -1018,6 +1028,10 @@ export function CanvasOverlayPanels({ scope }: { scope: CanvasOverlayPanelsScope
                             >
                               <Layers className="h-3.5 w-3.5 text-fuchsia-300" />
                               新建 AI 溶图节点
+                            </button>
+                            <button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-bold text-stone-100 hover:bg-cyan-500/18"
+                              onClick={() => { scope.canvasLayersUi.addCanvasLayerOperation({ x: canvasContextMenu.worldX, y: canvasContextMenu.worldY }, sourceIds); setCanvasContextMenu(null); }}>
+                              <Layers className="h-3.5 w-3.5 text-cyan-300" />图层拆分 / 交互编辑
                             </button>
                             <button
                               type="button"
@@ -1263,6 +1277,7 @@ export function CanvasOverlayPanels({ scope }: { scope: CanvasOverlayPanelsScope
                       showThreeScene={ENABLE_THREE_SCENE_CREATION}
                       onCreateThreeScene={() => addCanvasThreeSceneGeneratorNode()}
                       onAddFusion={() => addCanvasImageFusionNode()}
+                      onAddLayerOperation={scope.canvasLayersUi.addCanvasLayerOperationFromToolbar}
                       onAddMusic={() => scope.addCanvasMusicGeneratorNode()}
                       onAddVideo={() => addCanvasAiVideoGeneratorNode()}
                       onAddFrameInterpolation={() => addCanvasFrameInterpolationNode()}

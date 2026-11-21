@@ -9,10 +9,12 @@ import type { CanvasWorkflowImageNodeModeDraft } from '../../features/canvasTemp
 import { getCanvasChatOffsetRight } from '../../features/chat/runtime/canvasChatVisibility';
 import { formatCreditAmount,formatCreditUsageAmount,formatCreditUsageDate,formatCreditUsageDescription } from '../../features/cloudCreditUsage';
 import { clamp } from '../../features/common';
+import { CanvasLayerSelection, type LayerPreviewSelection } from '../../features/canvas/layers/CanvasLayerSelection';
 
 export type AppDialogHostScope = Record<string, any>;
 
 export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
+  const layerPreview = scope.layerPreview as LayerPreviewSelection | undefined;
   const { acceptUpdateLogAndClose, activateCanvasBrushTool, activateDoodleShortcutScope, activeDraftForDisplay, activeWorkflowDraftRef, addFolderMediaPickerItemToCanvas, applyCanvasBrushCrop, appVersion, CANVAS_BRUSH_COLORS, CANVAS_FOLDER_PICKER_SCROLL_EDGE, CANVAS_FOLDER_PICKER_VISIBLE_STEP, canvasAgent, canvasBrushBaseCanvasRef, canvasBrushCanvasRef, canvasBrushColor, canvasBrushCropRect, canvasBrushCursor, canvasBrushEditor, canvasBrushHistory, canvasBrushMode, canvasBrushOpacity, canvasBrushSize, canvasFolderImportPrompt, canvasFolderPickerError, canvasFolderPickerHasMore, canvasFolderPickerItems, canvasFolderPickerTotal, canvasFolderPickerVisibleCount, canvasShortcut, canvasToolbarTop, canvasWorkflowSaveDraft, checkAndInstallAppUpdate, chooseWebImageCacheDir, clearCanvasBrushCrop, clearCanvasBrushMarks, closeCanvasFolderMediaPicker, closeCanvasWorkflowSaveDialog, closeConfirmDialog, closeSelectedImagePreview, closeSelectedVideoPreview, closeTextInputDialog, closeUpdateLog, cloudAccount, confirmAddFolderMediaToCanvas, confirmDialog, confirmSaveCanvasWorkflow, copySelectedImagePreviewToClipboard, creditUsageError, creditUsageItems, doodleRootRef, finishCanvasBrushStroke, finishLaunchIntro, flashSelectedImageZoom, handleCanvasBrushPointerDown, handleCanvasBrushPointerMove, handleDoodleKeyDown, handleFloatingLayerPointerLeave, hideCanvasBrushCursor, isCanvasBrushShapeMode, isCanvasFolderPickerLoading, isCheckingAppUpdate, isCloudflaredDisclaimerAccepted, isCreditUsageLoading, keepDrawerOpenByPointer, loadCanvasFolderMediaPage, loadCloudCreditUsage, localIP, mobilePairUrl, resetWebImageCacheDir, saveCanvasBrushEditedImage, selectedImage, selectedImageGallery, selectedImagePan, selectedImagePanRef, selectedImageZoom, selectedVideo, setActiveDraftForDisplay, setActiveShortcutScope, setCanvasBrushColor, setCanvasBrushEditor, setCanvasBrushOpacity, setCanvasBrushSize, setCanvasFolderPickerVisibleCount, setCanvasWorkflowSaveDraft, setSelectedImagePan, setSelectedImageZoom, setShowAboutSoftware, setShowContact, setShowCreditUsage, setShowHelp, setShowQR, setShowStoragePath, setShowUpdateLog, setShowWorkflowDraftPanel, setTextInputDialog, showAboutSoftware, showContact, showCreditUsage, showHelp, showLaunchIntro, showQR, showSelectedImageZoom, showStoragePath, showToast, showUpdateLog, showWorkflowDraftPanel, startPreviewWindowDrag, startResizingCorner, startResizingHeight, startResizingRightCorner, startResizingWidth, startSelectedImagePanDrag, STARTUP_CONSENT_DELAY_MS, stepSelectedImageGallery, textInputDialog, textInputDialogCanConfirm, TextInputDialogIcon, textInputDialogInputRef, triggerShortcut, undoCanvasBrushStroke, updateCanvasBrushCursorFromEvent, visibleCanvasFolderPickerItems, webImageCacheDir } = scope;
   return (
 <>
@@ -550,7 +552,9 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
                   </motion.button>
                 )}
               </AnimatePresence>
-              <img
+              {layerPreview ? <CanvasLayerSelection src={selectedImage} selection={layerPreview}
+                style={{ transform: `translate(${selectedImagePan.x}px, ${selectedImagePan.y}px) scale(${selectedImageZoom})` }}
+                onPan={startSelectedImagePanDrag} /> : <img
                 src={selectedImage}
                 alt="图片预览"
                 decoding="async"
@@ -593,7 +597,7 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
                   e.stopPropagation();
                   void copySelectedImagePreviewToClipboard();
                 }}
-              />
+              />}
             </motion.div>
           </motion.div>
         )}

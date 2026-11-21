@@ -1338,7 +1338,7 @@ export const connectCanvasItemsImpl = (ctx: Pick<canvasWorkflowEditorActionConte
       showToast('溶图节点的基图和意向图都必须是图片素材或图片生成结果');
       return false;
     }
-    const isSingleMediaInputTarget = target.ai?.type === 'frame-interpolation' || isCanvasAiEnhancementType(target.ai?.type);
+    const isSingleMediaInputTarget = Boolean(target.layerOperation) || target.ai?.type === 'frame-interpolation' || isCanvasAiEnhancementType(target.ai?.type);
     const isThreeSceneTarget = target.item.type === 'three-scene';
     const fusionPreferredRole = getCanvasImageFusionPreferredRole(targetId);
     if (!isCanvasImageFusionAi(target.ai) && (target.inputs || []).includes(sourceId)) {
@@ -1384,7 +1384,7 @@ export const connectCanvasItemsToGeneratorImpl = (ctx: Pick<canvasWorkflowEditor
     }
 
     const previousInputs = target.inputs || [];
-    const isSingleMediaInputTarget = target.ai?.type === 'frame-interpolation' || isCanvasAiEnhancementType(target.ai?.type);
+    const isSingleMediaInputTarget = Boolean(target.layerOperation) || target.ai?.type === 'frame-interpolation' || isCanvasAiEnhancementType(target.ai?.type);
     const fusionPreferredRole = getCanvasImageFusionPreferredRole(targetId);
     const fusionPatch = isCanvasImageFusionAi(target.ai)
       ? applyCanvasImageFusionConnectionPatch(target, validSourceIds.slice(0, 2), fusionPreferredRole)

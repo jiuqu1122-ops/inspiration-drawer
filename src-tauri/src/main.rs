@@ -8027,9 +8027,10 @@ async fn prepare_chat_vision_image(
 mod ai_reference_image_preparation_tests {
     use super::{
         normalize_ai_reference_image_bytes, prepare_chat_vision_image_bytes,
-        should_normalize_ai_reference_image, AI_REFERENCE_IMAGE_TARGET_BYTES,
+        prepare_wallet_reference_image_without_conversion, should_normalize_ai_reference_image, AI_REFERENCE_IMAGE_TARGET_BYTES,
         CHAT_VISION_HARD_MAX_BYTES, CHAT_VISION_MAX_EDGE,
     };
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
 
     #[test]
     fn normalizes_bmp_reference_images_to_jpeg() {
@@ -8071,7 +8072,7 @@ mod ai_reference_image_preparation_tests {
     #[test]
     fn compresses_an_oversized_png_below_the_upload_target() {
         let width = 1920;
-        let height = 1440;
+        let height = 1280;
         let mut seed = 0x1234_5678_u32;
         let image = screenshots::image::RgbaImage::from_fn(width, height, |_x, _y| {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -8080,7 +8081,7 @@ mod ai_reference_image_preparation_tests {
             let green = (seed >> 24) as u8;
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             let blue = (seed >> 24) as u8;
-            screenshots::image::Rgba([red, green, blue, 255])
+            screenshots::image::Rgba([red, green, blue, 128])
         });
         let mut png = Vec::new();
         let encoder = screenshots::image::codecs::png::PngEncoder::new_with_quality(
@@ -8097,6 +8098,12 @@ mod ai_reference_image_preparation_tests {
         )
         .expect("encode oversized png fixture");
         assert!(png.len() > AI_REFERENCE_IMAGE_TARGET_BYTES);
+
+        let data_url = format!("data:image/png;base64,{}", STANDARD.encode(&png));
+        let preserved = prepare_wallet_reference_image_without_conversion(&data_url)
+            .expect("preserve oversized PNG for layer upload");
+        assert_eq!(preserved.content_type, "image/png");
+        assert_eq!(preserved.bytes, png);
 
         let (prepared, mime) = normalize_ai_reference_image_bytes(png, "image/png".to_string())
             .expect("compress oversized png");
@@ -12995,10 +13002,17 @@ async fn prepare_and_upload_wallet_reference(
     original_token: String,
     index: usize,
     source: String,
+    preserve_image: bool,
 ) -> Result<(usize, String), ReferenceUploadFailure> {
     // Bound decoding, compression, memory and network work across ALL nodes.
     let permit = reference_upload::uploads().acquire().await;
-    let object = tauri::async_runtime::spawn_blocking(move || source_to_r2_object(&source))
+    let object = tauri::async_runtime::spawn_blocking(move || {
+        if preserve_image {
+            prepare_wallet_reference_image_without_conversion(&source)
+        } else {
+            source_to_r2_object(&source)
+        }
+    })
         .await.map_err(|_| ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::PrepareReference, ReferenceUploadFailureReason::TaskTerminated))?
         .map_err(|_| ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::PrepareReference, ReferenceUploadFailureReason::LocalPreparation))?;
     if !object.content_type.starts_with("image/") {
@@ -13021,10 +13035,25 @@ async fn prepare_and_upload_wallet_reference(
     })
 }
 
+fn prepare_wallet_reference_image_without_conversion(source: &str) -> Result<R2PreparedObject, String> {
+    let (content_type, bytes) = decode_data_url(source)?;
+    let ext = match content_type.as_str() {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/webp" => "webp",
+        _ => return Err("不支持的图层参考图格式".to_string()),
+    };
+    if bytes.is_empty() || bytes.len() > 10 * 1024 * 1024 {
+        return Err("图层参考图超出上传限制".to_string());
+    }
+    Ok(R2PreparedObject { bytes, content_type, ext: ext.to_string() })
+}
+
 #[tauri::command]
 async fn upload_wallet_reference_images(
     app_handle: tauri::AppHandle,
     sources: Vec<String>,
+    preserve_image: Option<bool>,
 ) -> Result<Vec<String>, String> {
     let command_started_at = Instant::now();
     if sources.is_empty() || sources.len() > 32 {
@@ -13038,13 +13067,14 @@ async fn upload_wallet_reference_images(
     let mut indexed_object_keys = Vec::with_capacity(source_count);
     let mut failures = Vec::new();
     let mut pending = sources.into_iter().enumerate();
+    let preserve_image = preserve_image.unwrap_or(false);
     loop {
         let batch = pending.by_ref().take(reference_upload::CONCURRENCY).collect::<Vec<_>>();
         if batch.is_empty() { break; }
         let handles = batch.into_iter().map(|(index, source)| {
             let app = app_handle.clone();
             let token = access_token.clone();
-            (index, tauri::async_runtime::spawn(prepare_and_upload_wallet_reference(app, token, index, source)))
+            (index, tauri::async_runtime::spawn(prepare_and_upload_wallet_reference(app, token, index, source, preserve_image)))
         }).collect::<Vec<_>>();
         for (index, handle) in handles {
             match handle.await {
@@ -19427,6 +19457,9 @@ fn main() {
             commands::license::get_cloud_music_generation_by_request,
             commands::license::generate_cloud_images,
             commands::license::get_cloud_image_generation_by_request,
+            commands::license::cloud_canvas_layer_catalog,
+            commands::license::submit_cloud_canvas_layer,
+            commands::license::get_cloud_canvas_layer,
             commands::license::recover_cloud_image_generation,
             commands::license::get_cloud_image_models,
             commands::license::generate_cloud_videos,

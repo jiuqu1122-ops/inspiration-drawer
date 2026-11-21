@@ -82,7 +82,8 @@ export const getCanvasAiSuccessfulOutputs = (canvasItem?: CanvasImageItem | null
 );
 
 export const canUseCanvasItemAsAiInput = (canvasItem?: CanvasImageItem | null) => (
-  !!canvasItem && canvasItem.item.type !== 'three-scene'
+  !!canvasItem && canvasItem.item.type !== 'three-scene' && !canvasItem.layerOperation
+  && (!canvasItem.layerResult || canvasItem.layerResult.status === 'success')
 );
 
 export const canUseCanvasItemAsFrameInterpolationVideoInput = (canvasItem?: CanvasImageItem | null) => {
@@ -135,6 +136,11 @@ export const canUseCanvasItemAsInputForTarget = (
   source?: CanvasImageItem | null,
   target?: CanvasImageItem | null,
 ) => {
+  if (target?.layerOperation) {
+    return !source?.layerOperation && (!source?.layerResult || source.layerResult.status === 'success')
+      && canUseCanvasItemAsImageEnhancementInput(source);
+  }
+  if (source?.layerOperation || source?.layerResult && source.layerResult.status !== 'success') return false;
   if (target?.item.type === 'three-scene') {
     return canUseCanvasItemAsImageEnhancementInput(source);
   }
@@ -157,7 +163,7 @@ export const isCanvasAgentTextTarget = (canvasItem?: CanvasImageItem | null) => 
 );
 
 export const canUseCanvasItemAsAiTarget = (canvasItem?: CanvasImageItem | null) => (
-  isCanvasAiGeneratorType(canvasItem?.ai?.type)
+  Boolean(canvasItem?.layerOperation) || isCanvasAiGeneratorType(canvasItem?.ai?.type)
   || canvasItem?.ai?.type === 'workflow'
   || canvasItem?.item.type === 'three-scene'
   || isCanvasAgentTextTarget(canvasItem)
@@ -165,7 +171,7 @@ export const canUseCanvasItemAsAiTarget = (canvasItem?: CanvasImageItem | null) 
 );
 
 export const getCanvasInputTargetLabel = (canvasItem?: CanvasImageItem | null) => (
-  canvasItem?.item.type === 'three-scene'
+  canvasItem?.layerOperation ? '图层拆分 / 交互编辑' : canvasItem?.item.type === 'three-scene'
     ? '3D 场景节点'
     : isCanvasWorkflowReferenceBridge(canvasItem)
     ? canvasItem?.workflowBridge?.label || canvasItem?.item.name || '参考图桥接'

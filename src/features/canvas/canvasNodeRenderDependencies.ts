@@ -8,6 +8,7 @@ type Scope = Record<string, any>;
 // A standalone image's pixels/geometry do not depend on canvas zoom or AI menus.
 export const isStandaloneCanvasImage = (item: CanvasImageItem) => (
   item.item.type === 'image'
+  && !item.layerResult
   && !item.workflowGroup && !item.workflowBridge && !item.workflowTemplateNodeId
   && !item.workflowSlotAssets
   && (!item.ai || (item.ai.type === 'generated-image' && item.ai.status === 'success'))
@@ -40,6 +41,7 @@ export const getCanvasNodeRenderDependencies = (scope: Scope, item: CanvasImageI
     image ? null : scope.canvasWorkflowTemplates,
     image ? null : scope.canvasWorkflowSingleEditGroupIds,
     item.ai?.status === 'working' ? scope.canvasWorkingTimerTick : null,
+    item.layerResult?.sourceLayer ? scope.canvasItemsById.get(item.layerResult.sourceLayer.groupId) : null,
     ...(item.inputs || []).map(id => scope.canvasItemsById.get(id)),
   ];
 };

@@ -2,6 +2,7 @@ import { BufferItem } from '../types';
 import type { ImagePolicy } from './appAgent/imageQuality/imageRuleCapsules';
 import type { CanvasThreeSceneData } from './three/model/threeSceneTypes';
 import type { AiModelCapabilities } from '../types/license';
+import type { CanvasLayerOperation, CanvasLayerResult, LayerLink } from './canvas/layers/canvasLayerTypes';
 
 export type CanvasWorkflowSlotAsset = {
   sourceItemId?: string;
@@ -52,6 +53,9 @@ export type CanvasImageItem = {
   /** Clockwise visual rotation for ordinary image nodes. */
   rotation?: 0 | 90 | 180 | 270;
   inputs?: string[];
+  layerOperation?: CanvasLayerOperation;
+  layerResult?: CanvasLayerResult;
+  layerLink?: LayerLink;
   textMode?: 'agent' | 'plain';
   /** Opt-in structured context fan-out for text Agent nodes. */
   contextRouting?: 'auto';

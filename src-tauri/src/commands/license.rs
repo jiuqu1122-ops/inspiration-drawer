@@ -2801,6 +2801,28 @@ pub async fn generate_cloud_images(
 }
 
 #[tauri::command]
+pub async fn cloud_canvas_layer_catalog(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let token = cloud_access_token(&app_handle).await?;
+    let catalog = get_cloud_with_bearer::<serde_json::Value>(&app_handle, "/v1/ai/catalog", &token).await?;
+    Ok(catalog.get("canvasLayers").cloned().unwrap_or_default())
+}
+
+#[tauri::command]
+pub async fn submit_cloud_canvas_layer(app_handle: tauri::AppHandle, request: serde_json::Value) -> Result<serde_json::Value, String> {
+    let token = cloud_access_token(&app_handle).await?;
+    post_cloud_with_bearer_timeout(&app_handle, "/v1/ai/canvas-layers", &token, &request, Duration::from_secs(260)).await
+}
+
+#[tauri::command]
+pub async fn get_cloud_canvas_layer(app_handle: tauri::AppHandle, request_id: String) -> Result<serde_json::Value, String> {
+    if !(8..=128).contains(&request_id.len()) || !request_id.bytes().all(|v| v.is_ascii_alphanumeric() || b"-_.:".contains(&v)) {
+        return Err("invalid_request: 请求 ID 无效".into());
+    }
+    let token = cloud_access_token(&app_handle).await?;
+    get_cloud_with_bearer(&app_handle, &format!("/v1/ai/canvas-layers/by-request/{request_id}"), &token).await
+}
+
+#[tauri::command]
 pub async fn get_cloud_image_generation_by_request(
     app_handle: tauri::AppHandle,
     client_request_id: String,
