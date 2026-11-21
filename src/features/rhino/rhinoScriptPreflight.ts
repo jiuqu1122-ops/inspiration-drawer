@@ -1,4 +1,5 @@
 import { rhinoDiagnosticText } from './rhinoErrorDiagnostic';
+import { inspectRhinoGh2Sdk } from './rhinoGh2Preflight';
 import { RhinoNativeScriptPreflightError, type RhinoScriptIssue } from './rhinoArgumentRecovery';
 
 // A deliberately conservative lexical check, not a Python/C# evaluator. Unknown
@@ -267,7 +268,7 @@ export function inspectRhinoScript(name: string, script: string): RhinoScriptIss
   const code = maskNonCode(script, name.endsWith('run_csharp'));
   const imports = name === 'rhino_native_run_python' ? missingPythonNamespaceImports(code) : [];
   const issues: RhinoScriptIssue[] = [];
-  if (name === 'rhino_native_run_python') issues.push(...pythonEnumNoneIssues(script, code));
+  if (name === 'rhino_native_run_python') issues.push(...pythonEnumNoneIssues(script, code), ...inspectRhinoGh2Sdk(script, code));
   if (name === 'rhino_native_run_python' && /\b(?:from|import)\s+Grasshopper2\b/.test(code)) {
     const lines = code.split('\n');
     for (const match of code.matchAll(/\b([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\.Pins)\.GetType\s*\(/g)) {

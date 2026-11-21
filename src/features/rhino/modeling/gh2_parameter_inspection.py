@@ -37,14 +37,21 @@ def _id_gh2_inspect_parameters(plan):
         obj = doc.Objects.Find(object_id)
         if obj is None:
             raise ValueError("GH2 object not found on the active canvas: %s" % value)
-        if hasattr(obj, "Parameters"):
-            inputs = [describe(p) for p in obj.Parameters.Inputs]
-            outputs = [describe(p) for p in obj.Parameters.Outputs]
+        parameters = getattr(obj, "Parameters", None)
+        if parameters is not None:
+            inputs = [describe(p) for p in parameters.Inputs]
+            outputs = [describe(p) for p in parameters.Outputs]
         elif hasattr(obj, "PersistentData"):
             inputs, outputs = [], [describe(obj)]
         else:
             inputs, outputs = [], []
-        objects.append({"id": str(obj.InstanceId), "name": obj.Nomen.Name,
-                        "inputs": inputs, "outputs": outputs})
+        object_type = obj.GetType()
+        info = {"id": str(obj.InstanceId), "name": obj.Nomen.Name, "runtimeObjectType": object_type.FullName,
+                "inputs": inputs, "outputs": outputs}
+        if object_type.GetProperty("UseScriptCodeIn") is not None:
+            code = object_type.GetProperty("Code")
+            info["scriptComponent"] = {"writableCodeProperty": code is not None and code.CanWrite,
+                                       "usesScriptCodeInput": bool(obj.UseScriptCodeIn)}
+        objects.append(info)
     return {"version": 1, "graphChanged": False, "objects": objects,
             "instruction": "Use exact runtime parameter types and solved item counts, not port names, to choose compatible native components. An empty connected input with a populated source needs investigation even when solve reports success. An IntervalParameter requires an interval: connect a native Interval From Limits component, not a scalar slider or Floor. Inspect actual output geometry before reporting completion."}

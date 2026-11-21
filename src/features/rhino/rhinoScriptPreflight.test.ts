@@ -6,6 +6,30 @@ const python = 'rhino_native_run_python';
 const bad = 'face = regions[0].Faces[0]\nsolid = Rhino.Geometry.Surface.CreateExtrusion(face, direction)';
 const native = { name: python, description: 'test', readOnly: false, destructive: false, inputSchema: { required: ['script'] } };
 
+describe('GH2 SDK compatibility for native canvas inspection', () => {
+  it('rejects both incompatible calls from the hammer-texture turn before dispatch', () => {
+    const pluginProbe = 'import Rhino\nfor plugin in Rhino.PlugIns.PlugIn.GetLoadedPlugIns():\n    print(plugin.Name)';
+    const canvasProbe = "import Eto.Forms as forms\ned=next(w for w in forms.Application.Instance.Windows if w.GetType().FullName=='Grasshopper2.UI.Editor')\nfor ob in ed.Canvas.Document.Objects:\n    print(ob.GetType().FullName)";
+    expect(inspectRhinoScript(python, pluginProbe)).toMatchObject([{code: 'rhino_plugin_loaded_api_missing', line: 2}]);
+    expect(inspectRhinoScript(python, canvasProbe)).toMatchObject([{code: 'rhino_gh2_object_list_not_iterable', line: 3}]);
+    expect(() => assertRhinoScriptPreflight(python, {script: canvasProbe})).toThrow(RhinoNativeScriptPreflightError);
+  });
+
+  it('tracks direct GH2 document aliases and keeps GH1, Rhino and corrected scripts working', () => {
+    const imports = 'from Grasshopper2.UI import Editor as E\ncanvas=E.Instance.Canvas\ndoc=canvas.Document\n';
+    expect(inspectRhinoScript(python, imports + 'items = doc.Objects\nprint(list(items))'))
+      .toMatchObject([{code: 'rhino_gh2_object_list_not_iterable', line: 5}]);
+    for (const script of [
+      imports + 'print(list(doc.Objects.Forwards))',
+      imports + 'doc=other\nprint(list(doc.Objects))',
+      'from Grasshopper import Instances\nfor obj in Instances.ActiveCanvas.Document.Objects:\n    print(obj)',
+      'for o in __rhino_doc__.Objects:\n    print(o)',
+      'from Rhino.PlugIns import PlugIn\nprint(PlugIn.GetInstalledPlugIns())',
+      'source = "Rhino.PlugIns.PlugIn.GetLoadedPlugIns()"\n# for obj in Grasshopper2.UI.Editor.Instance.Canvas.Document.Objects:',
+    ]) expect(inspectRhinoScript(python, script)).toEqual([]);
+  });
+});
+
 describe('GH2 nullable label introspection', () => {
   const header = 'from Grasshopper2.UI import Editor\n';
   it('rejects the reported null Pins dereference before dispatch with an actionable helper', () => {

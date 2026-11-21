@@ -19,6 +19,9 @@ test('builds, imports and signs a self-contained Rhino runtime without a desktop
   assert.ok(runtime.buildRhinoWorkflowInstruction().includes('GH2_LABEL_EDIT_V1'));
   assert.ok(runtime.guardRhinoGhScript('drawer_gh2_labels({"mode":"inspect"})').includes('def drawer_gh2_labels(plan):'));
   assert.equal(runtime.inspectRhinoScript('rhino_native_run_python', 'from Grasshopper2.UI import Editor\nprint(o.Pins.GetType())')[0].code, 'rhino_gh2_nullable_pins');
+  const gh2CanvasProbe = 'from Grasshopper2.UI import Editor\nfor obj in Editor.Instance.Canvas.Document.Objects:\n    print(obj)';
+  assert.equal(runtime.inspectRhinoScript('rhino_native_run_python', gh2CanvasProbe)[0].code, 'rhino_gh2_object_list_not_iterable');
+  assert.ok(runtime.buildRhinoWorkflowInstruction().includes('GH2_SDK_INSPECTION_V1'));
   assert.ok(runtime.guardRhinoGeometryStageScript('stage=DrawerGeometryStage()').includes('<drawer-geometry-stage>'));
   assert.ok(runtime.readRhinoModelingSkillResource('references/acceptance.md').content.length > 100);
   const item = packComponent({ id: 'runtime', version: '2026.11.20.1', revision: 1, directory: folder, outputDirectory: folder, baseUrl: 'https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/rhino-updates/' });
