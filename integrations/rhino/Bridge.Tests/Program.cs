@@ -50,6 +50,8 @@ async Task TestNativeMcpRebind()
     var rebindCount = 0;
     var writeEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     var writeRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var timeoutEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var timeoutRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     var forwarded = new List<string>();
     var serverLoop = Task.Run(async () =>
     {
@@ -85,6 +87,11 @@ async Task TestNativeMcpRebind()
                 {
                     var name = request["params"]?["name"]?.GetValue<string>();
                     if (name == "set_layer_material") { writeEntered.TrySetResult(); await writeRelease.Task; }
+                    if (name == "save_doc" && request["params"]?["arguments"]?["delayReply"]?.GetValue<bool>() == true)
+                    {
+                        timeoutEntered.TrySetResult();
+                        await timeoutRelease.Task;
+                    }
                     if (name is not ("get_context" or "list_objects") && name != null) forwarded.Add(name);
                     var documentCount = rebound ? 1 : 0;
                     JsonObject payload = name == "get_context"
@@ -146,6 +153,12 @@ async Task TestNativeMcpRebind()
         var materialCall = native.Call(123, "set_layer_material", new JsonObject { ["layer"] = "Default", ["color"] = "#c08040" });
         await writeEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var warmup = native.Warmup(456);
+        var busyList = await native.ListTools(123);
+        string busyError;
+        try { await native.Call(123, "set_camera", new JsonObject()); busyError = ""; }
+        catch (InvalidOperationException error) { busyError = error.Message; }
+        Check(busyList["available"]?.GetValue<bool>() == false && busyError.Contains("未派发，也未排队"),
+            "a busy MCP reports immediately and does not queue another native write");
         await Task.Delay(30);
         Check(rebindCount == 1 && !warmup.IsCompleted, "automatic MCP startup cannot rebind the listener during an active material write");
         writeRelease.TrySetResult();
@@ -160,6 +173,34 @@ async Task TestNativeMcpRebind()
         var zoom = await native.Call(123, "zoom_to_layer", new JsonObject { ["layer"] = "Desktop Camera" });
         Check(zoom != null && forwarded.Count(name => name == "zoom_to_layer") == 1,
             "zoom after camera changes reaches the same uniquely identified document exactly once");
+        var shortDeadline = new NativeRhinoMcpClient(_ => Task.FromResult((JsonObject)local.DeepClone()), listenerPorts: () => [port],
+            callTimeout: TimeSpan.FromMilliseconds(800));
+        var slowSave = shortDeadline.Call(123, "save_doc", new JsonObject { ["delayReply"] = true });
+        await timeoutEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        string timedOut;
+        try { await slowSave; timedOut = ""; }
+        catch (InvalidOperationException error) { timedOut = error.Message; }
+        Check(timedOut.StartsWith("RHINO_NATIVE_OUTCOME_UNCONFIRMED:"), "a timed-out native write is reported as unconfirmed");
+        timeoutRelease.TrySetResult();
+        var probesAfterTimeout = await shortDeadline.Call(123, "get_context", new JsonObject());
+        string blocked;
+        try { await shortDeadline.Call(123, "set_selection", new JsonObject()); blocked = ""; }
+        catch (InvalidOperationException error) { blocked = error.Message; }
+        Check(probesAfterTimeout != null && blocked.StartsWith("RHINO_NATIVE_OUTCOME_UNCONFIRMED:")
+            && forwarded.Count(name => name == "set_selection") == 1,
+            "an unconfirmed write blocks later writes while keeping safe reads available");
+
+        var fingerprintEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lateFingerprint = new TaskCompletionSource<JsonObject>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var noLateDispatch = new NativeRhinoMcpClient(_ => { fingerprintEntered.TrySetResult(); return lateFingerprint.Task; },
+            listenerPorts: () => [port], discoveryTimeout: TimeSpan.FromMilliseconds(55));
+        var stale = noLateDispatch.Call(123, "set_camera", new JsonObject());
+        await fingerprintEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.Delay(100);
+        lateFingerprint.TrySetResult((JsonObject)local.DeepClone());
+        Check(await stale == null && noLateDispatch.LastDiscoveryDiagnostic.Contains("尚未派发")
+            && forwarded.Count(name => name == "set_camera") == 1,
+            "a delayed UI fingerprint cannot dispatch a write after discovery expires");
         Check(rebindCount == beforeZoomRebinds, "view-only drift does not require a disruptive MCP restart or replay modeling");
         local["objectIdentityMultiplicity"] = 2;
         var blockedZoom = await native.Call(123, "zoom_to_layer", new JsonObject { ["layer"] = "Desktop Camera" });
@@ -168,6 +209,7 @@ async Task TestNativeMcpRebind()
     }
     finally
     {
+        timeoutRelease.TrySetResult();
         nativeServer.Stop();
         await serverLoop;
     }

@@ -1,6 +1,6 @@
 import type { RhinoScriptIssue } from './rhinoArgumentRecovery';
 
-type SdkValue = 'editorType' | 'editor' | 'canvas' | 'document' | 'objectList';
+type SdkValue = 'editorType' | 'editor' | 'canvas' | 'document' | 'objectList' | 'solution' | 'solutionTask';
 const activeCanvasGuidance = 'For GH2 use rhino_native_g2_get_canvas_graph and rhino_native_g2_inspect_parameters with exact IDs. For custom inspection, import Grasshopper2.UI.Editor, check Editor.Instance/Canvas/Document, then iterate doc.Objects.Forwards or find an exact ID with doc.Objects.Find(System.Guid(id)). Preserve already placed nodes and wires.';
 const path = '[A-Za-z_]\\w*(?:[ \\t]*\\.[ \\t]*[A-Za-z_]\\w*)*';
 
@@ -9,11 +9,12 @@ export function inspectRhinoGh2Sdk(source: string, code: string): RhinoScriptIss
   const lines = code.split('\n');
   const original = source.split('\n');
   const bindings = new Map<string, SdkValue>([['Grasshopper2.UI.Editor', 'editorType']]);
+  const documentTypes = new Set(['Grasshopper2.Doc.Document']);
   const rhinoRoots = new Set<string>(['Rhino']);
   const pluginTypes = new Set<string>();
   const transition: Partial<Record<SdkValue, Record<string, SdkValue>>> = {
     editorType: { Instance: 'editor' }, editor: { Canvas: 'canvas' },
-    canvas: { Document: 'document' }, document: { Objects: 'objectList' },
+    canvas: { Document: 'document' }, document: { Objects: 'objectList', Solution: 'solution' },
   };
   const valueOf = (name: string) => {
     const parts = name.replace(/\s/g, '').split('.');
@@ -27,12 +28,21 @@ export function inspectRhinoGh2Sdk(source: string, code: string): RhinoScriptIss
   };
   const iteration = new RegExp(`\\bfor\\s+[^:\\n]+?\\s+in\\s+(${path})(?=\\s*(?::|[)\\],]|\\bif\\b|$))|\\b(?:list|tuple|iter|set|sorted)\\(\\s*(${path})\\s*(?=[,)])`, 'g');
   const loadedPlugins = new RegExp(`\\b(${path})\\s*\\.\\s*GetLoadedPlugIns\\s*\\(`, 'g');
+  const synchronousSolve = new RegExp(`\\b(${path})[ \\t]*\\.[ \\t]*(StartWait)\\s*\\(|\\b(${path})[ \\t]*\\.[ \\t]*Start\\s*\\([^()]*\\)\\s*\\.\\s*(Wait\\s*\\(|Result\\b|GetAwaiter\\s*\\(\\s*\\)\\s*\\.\\s*GetResult\\s*\\()`, 'g');
+  const taskWait = new RegExp(`\\b(${path})\\s*\\.\\s*(?:Wait\\s*\\(|Result\\b|GetAwaiter\\s*\\(\\s*\\)\\s*\\.\\s*GetResult\\s*\\()`, 'g');
   const issues: RhinoScriptIssue[] = [];
   for (const [index, line] of lines.entries()) {
     const editorImport = line.match(/^\s*from\s+Grasshopper2\.UI\s+import\s+Editor(?:\s+as\s+(\w+))?\s*$/);
     if (editorImport) bindings.set(editorImport[1] || 'Editor', 'editorType');
     const uiImport = line.match(/^\s*import\s+Grasshopper2\.UI\s+as\s+(\w+)\s*$/);
     if (uiImport) bindings.set(uiImport[1] + '.Editor', 'editorType');
+    const gh2Import = line.match(/^\s*import\s+Grasshopper2\s+as\s+(\w+)\s*$/);
+    if (gh2Import) {
+      bindings.set(gh2Import[1] + '.UI.Editor', 'editorType');
+      documentTypes.add(gh2Import[1] + '.Doc.Document');
+    }
+    const documentImport = line.match(/^\s*from\s+Grasshopper2\.Doc\s+import\s+Document(?:\s+as\s+(\w+))?(?:\s*,|\s*$)/);
+    if (documentImport) documentTypes.add(documentImport[1] || 'Document');
     const rhinoImport = line.match(/^\s*import\s+Rhino\s+as\s+(\w+)\s*$/);
     if (rhinoImport) rhinoRoots.add(rhinoImport[1]);
     const pluginImport = line.match(/^\s*from\s+Rhino\.PlugIns\s+import\s+PlugIn(?:\s+as\s+(\w+))?\s*$/);
@@ -51,16 +61,32 @@ export function inspectRhinoGh2Sdk(source: string, code: string): RhinoScriptIss
         api: 'Rhino.PlugIns.PlugIn.GetLoadedPlugIns', actualType: 'this member does not exist in RhinoCommon',
         instruction: activeCanvasGuidance + ' For a separate inventory task, use Rhino.PlugIns.PlugIn.GetInstalledPlugInNames(Rhino.PlugIns.PlugInType.Any, True, False) for loaded names.' });
     }
+    const rejectSyncSolve = (method: 'StartWait' | 'Start') => {
+      issues.push({ code: 'rhino_gh2_sync_solve_from_script', line: index + 1,
+        api: 'Grasshopper2.Doc.SolutionServer.' + method,
+        actualType: 'waiting inside RhinoCode can block Python components that need the Python runtime',
+        instruction: 'Finish the Rhino Python call, then use rhino_native_g2_solve_canvas as a separate call. Read the current GH2 graph first if previous steps may have changed it. Do not wait for the solution inside the Rhino Python script.' });
+    };
+    for (const match of line.matchAll(synchronousSolve)) {
+      if (valueOf(match[1] || match[3]) === 'solution') rejectSyncSolve(match[2] ? 'StartWait' : 'Start');
+    }
+    for (const match of line.matchAll(taskWait)) {
+      if (valueOf(match[1]) === 'solutionTask') rejectSyncSolve('Start');
+    }
     const assignment = line.match(new RegExp(`^\\s*([A-Za-z_]\\w*)\\s*=(?!=)\\s*(${path})\\s*(?:if .* else None\\s*)?$`));
     const target = line.match(/^\s*([A-Za-z_]\w*)\s*=(?!=)/)?.[1];
     if (target) {
       const viaEto = /^\s*\w+\s*=\s*next\s*\(/.test(line) && /\.Windows\b.*\.GetType\s*\(\s*\)\s*\.\s*FullName\s*==/.test(line)
         && /\.FullName\s*==\s*(['"])Grasshopper2\.UI\.Editor\1/.test(original[index]);
-      const value = viaEto ? 'editor' : assignment && valueOf(assignment[2]);
+      const constructor = line.match(new RegExp(`^\\s*[A-Za-z_]\\w*\\s*=\\s*(${path})\\s*\\(`))?.[1].replace(/\s/g, '');
+      const starter = line.match(new RegExp(`^\\s*[A-Za-z_]\\w*\\s*=\\s*(${path})\\s*\\.\\s*Start\\s*\\([^()]*\\)\\s*$`))?.[1];
+      const value = viaEto ? 'editor' : constructor && documentTypes.has(constructor) ? 'document'
+        : starter && valueOf(starter) === 'solution' ? 'solutionTask' : assignment && valueOf(assignment[2]);
       if (value) bindings.set(target, value);
       else bindings.delete(target);
       rhinoRoots.delete(target);
       pluginTypes.delete(target);
+      documentTypes.delete(target);
     }
   }
   return issues;

@@ -35,6 +35,8 @@ function diagnosticScriptLine(text: string): string | undefined {
 
 export function readableRhinoMcpFailure(error: unknown): string {
   const text = rhinoDiagnosticText(error);
+  const unconfirmed = text.split('\n').find(line => line.startsWith('RHINO_NATIVE_OUTCOME_UNCONFIRMED:'));
+  if (unconfirmed) return unconfirmed.slice('RHINO_NATIVE_OUTCOME_UNCONFIRMED:'.length).trim();
   const exception = text.match(/(?:NameError|TypeError|SyntaxError|ValueError|AttributeError|ImportError|ModuleNotFoundError|IndexError|RuntimeError|AssertionError|Exception):[^\n]*/g)?.slice(-1)[0];
   const message = exception || text.split('\n').find(line => line.trim() && line.trim() !== 'Failed') || 'Rhino MCP 工具执行失败，详细信息见工具回执。';
   const location = diagnosticScriptLine(text);

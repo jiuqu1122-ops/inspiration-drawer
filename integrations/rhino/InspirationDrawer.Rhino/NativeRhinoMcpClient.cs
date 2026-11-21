@@ -8,7 +8,7 @@ namespace InspirationDrawer.Rhino;
 /// <summary>Discovers the official RhinoAI MCP listeners and forwards calls only after matching the bound document.</summary>
 internal sealed class NativeRhinoMcpClient
 {
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(115) };
+    private static readonly HttpClient Http = new(new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false });
     // The official listener is process-scoped and may be rebound to a target
     // document. Serialize resolve+call so concurrent Rhino documents cannot race
     // that mutable listener context and write into the wrong file.
@@ -16,16 +16,26 @@ internal sealed class NativeRhinoMcpClient
     private readonly Func<uint, Task<JsonObject>> fingerprint;
     private readonly Func<uint, Task>? rebind;
     private readonly Func<IEnumerable<ushort>> listenerPorts;
+    private readonly TimeSpan callTimeout;
+    private readonly TimeSpan discoveryTimeout;
+    private bool hasUnconfirmedWrite;
+    private const string BusyMessage = "Rhino 原生 MCP 正在处理另一项操作。本次调用未派发，也未排队。";
+    private const string UnconfirmedMessage = "RHINO_NATIVE_OUTCOME_UNCONFIRMED: Rhino 原生 MCP 未确认上一项写操作的结果。已暂停后续原生写入；请检查并保存 Rhino/GH 文档，然后重新启动该 Rhino 实例。";
     internal string LastDiscoveryDiagnostic { get; private set; } = "RhinoAI MCP not checked";
 
     internal NativeRhinoMcpClient(
         Func<uint, Task<JsonObject>> fingerprint,
         Func<uint, Task>? rebind = null,
-        Func<IEnumerable<ushort>>? listenerPorts = null)
+        Func<IEnumerable<ushort>>? listenerPorts = null,
+        TimeSpan? callTimeout = null,
+        TimeSpan? discoveryTimeout = null)
     {
         this.fingerprint = fingerprint;
         this.rebind = rebind;
         this.listenerPorts = listenerPorts ?? (() => ReadListeners().Select(listener => listener.Port).ToArray());
+        // Keep the full forwarded request within the desktop's 125 second timeout.
+        this.callTimeout = callTimeout ?? TimeSpan.FromSeconds(110);
+        this.discoveryTimeout = discoveryTimeout ?? TimeSpan.FromSeconds(18);
     }
 
     internal static bool IsCurrentProcessListening() => ReadListeners().Any();
@@ -36,25 +46,26 @@ internal sealed class NativeRhinoMcpClient
     {
         if (rebind == null) return;
         await documentCallGate.WaitAsync();
-        try { if (mayRun?.Invoke() != false) await rebind(documentId); }
+        try { if (!hasUnconfirmedWrite && mayRun?.Invoke() != false) await rebind(documentId); }
         finally { documentCallGate.Release(); }
     }
 
     internal async Task<JsonObject?> Call(uint documentId, string toolName, JsonObject arguments)
     {
-        await documentCallGate.WaitAsync();
+        if (!documentCallGate.Wait(0)) throw new InvalidOperationException(BusyMessage);
         try
         {
-            var binding = await Resolve(documentId);
+            var readOnly = IsStableRead(toolName);
+            if (hasUnconfirmedWrite && !readOnly) throw new InvalidOperationException(UnconfirmedMessage);
+            using var deadline = new CancellationTokenSource(callTimeout);
+            using var discovery = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+            discovery.CancelAfter(discoveryTimeout);
+            var binding = await Resolve(documentId, discovery.Token, allowRebind: !hasUnconfirmedWrite);
             if (binding == null) return null;
-            var listing = await Post(binding.Port, new JsonObject
-            {
-                ["jsonrpc"] = "2.0", ["id"] = Guid.NewGuid().ToString("N"), ["method"] = "tools/list", ["params"] = new JsonObject(),
-            });
-            var tools = listing["result"]?["tools"]?.AsArray();
+            var tools = binding.Tools;
             if (toolName.StartsWith("_router_", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("Router-internal tools are not exposed to Chat.");
-            if (tools == null || !tools.Any(tool => string.Equals(tool?["name"]?.GetValue<string>(), toolName, StringComparison.Ordinal)))
+            if (!tools.Any(tool => string.Equals(tool?["name"]?.GetValue<string>(), toolName, StringComparison.Ordinal)))
                 throw new InvalidOperationException("Rhino \u539f\u751f MCP \u5de5\u5177\u5217\u8868\u5df2\u53d8\u5316\uff0c\u5df2\u963b\u6b62\u8c03\u7528");
             var body = new JsonObject
             {
@@ -63,11 +74,31 @@ internal sealed class NativeRhinoMcpClient
                 ["method"] = "tools/call",
                 ["params"] = new JsonObject { ["name"] = toolName, ["arguments"] = arguments.DeepClone() },
             };
-            var response = await Post(binding.Port, body);
+            // Discovery may wait on Rhino's UI thread. Never dispatch a stale call when it returns late.
+            if (discovery.IsCancellationRequested)
+            {
+                LastDiscoveryDiagnostic = "核对 Rhino 文档和监听器时超时，原生命令尚未派发。";
+                return null;
+            }
+            JsonObject response;
+            try
+            {
+                response = await Post(binding.Port, body, deadline.Token);
+            }
+            catch (Exception failure) when (failure is OperationCanceledException or HttpRequestException or System.Text.Json.JsonException or InvalidOperationException)
+            {
+                if (!readOnly) hasUnconfirmedWrite = true;
+                throw new InvalidOperationException(readOnly
+                    ? "Rhino 原生只读查询未返回有效结果，请检查连接或求解状态。"
+                    : UnconfirmedMessage, failure);
+            }
             if (response["error"] is JsonObject error)
                 throw new InvalidOperationException(error["message"]?.GetValue<string>() ?? "Rhino 原生 MCP 工具调用失败");
-            var result = response["result"]?.DeepClone() as JsonObject
-                ?? throw new InvalidOperationException("Rhino 原生 MCP 没有返回工具结果");
+            if (response["result"]?.DeepClone() is not JsonObject result || result["content"] is not JsonArray)
+            {
+                if (!readOnly) hasUnconfirmedWrite = true;
+                throw new InvalidOperationException(readOnly ? "Rhino 原生 MCP 没有返回工具结果" : UnconfirmedMessage);
+            }
             if (result["isError"]?.GetValue<bool>() == true)
             {
                 var text = result["content"]?.AsArray().Select(item => item?["text"]?.GetValue<string>() ?? string.Empty).Where(text => text.Length > 0);
@@ -81,17 +112,17 @@ internal sealed class NativeRhinoMcpClient
 
     internal async Task<JsonObject> ListTools(uint documentId)
     {
-        await documentCallGate.WaitAsync();
+        if (!documentCallGate.Wait(0))
+            return new JsonObject { ["available"] = false, ["reason"] = BusyMessage, ["tools"] = new JsonArray() };
         try
         {
-            var binding = await Resolve(documentId);
+            if (hasUnconfirmedWrite)
+                return new JsonObject { ["available"] = false, ["reason"] = UnconfirmedMessage, ["tools"] = new JsonArray() };
+            using var discovery = new CancellationTokenSource(discoveryTimeout);
+            var binding = await Resolve(documentId, discovery.Token, allowRebind: true);
             if (binding == null)
                 return new JsonObject { ["available"] = false, ["reason"] = LastDiscoveryDiagnostic, ["tools"] = new JsonArray() };
-            var response = await Post(binding.Port, new JsonObject
-            {
-                ["jsonrpc"] = "2.0", ["id"] = Guid.NewGuid().ToString("N"), ["method"] = "tools/list", ["params"] = new JsonObject(),
-            });
-            var tools = response["result"]?["tools"]?.DeepClone().AsArray() ?? [];
+            var tools = binding.Tools;
             LastDiscoveryDiagnostic = $"Connected to native MCP port {binding.Port}; discovered {tools.Count} tools.";
             return new JsonObject { ["available"] = true, ["reason"] = LastDiscoveryDiagnostic, ["tools"] = tools };
     
@@ -99,13 +130,25 @@ internal sealed class NativeRhinoMcpClient
         finally { documentCallGate.Release(); }
     }
 
-    private async Task<Listener?> Resolve(uint documentId) => await ResolveCore(documentId, allowRebind: true);
+    private static bool IsStableRead(string toolName) => toolName is "get_context" or "get_selection"
+        or "get_commands" or "list_objects" or "g1_get_canvas_graph" or "g2_get_canvas_graph";
 
-    private async Task<Listener?> ResolveCore(uint documentId, bool allowRebind)
+    private async Task<Listener?> Resolve(uint documentId, CancellationToken cancellation, bool allowRebind)
+    {
+        try { return await ResolveCore(documentId, cancellation, allowRebind); }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            LastDiscoveryDiagnostic = "核对 Rhino 文档和监听器时超时，原生命令尚未派发。";
+            return null;
+        }
+    }
+
+    private async Task<Listener?> ResolveCore(uint documentId, CancellationToken cancellation, bool allowRebind)
     {
         JsonObject local;
         try { local = await fingerprint(documentId); }
         catch (Exception error) { LastDiscoveryDiagnostic = "Could not read the bound document fingerprint: " + error.Message; return null; }
+        cancellation.ThrowIfCancellationRequested();
         var listeners = listenerPorts().Where(port => port is > 0 and <= 65535).Distinct().Select(port => new Listener(port, [])).ToArray();
         if (listeners.Length == 0)
             LastDiscoveryDiagnostic = $"No native MCP listener announcement for current Rhino process {Environment.ProcessId}.";
@@ -121,24 +164,26 @@ internal sealed class NativeRhinoMcpClient
                 var response = await Post(listener.Port, new JsonObject
                 {
                     ["jsonrpc"] = "2.0", ["id"] = Guid.NewGuid().ToString("N"), ["method"] = "tools/list", ["params"] = new JsonObject(),
-                });
+                }, cancellation);
                 var tools = response["result"]?["tools"]?.AsArray();
                 if (tools == null || !tools.Any(tool => tool?["name"]?.GetValue<string>() == "get_context"))
                 { failures.Add($"port {listener.Port}: get_context is missing"); continue; }
-                var context = await CallRaw(listener.Port, "get_context", new JsonObject());
+                var context = await CallRaw(listener.Port, "get_context", new JsonObject(), cancellation);
                 var native = ExtractContext(context);
                 if (native == null) { failures.Add($"port {listener.Port}: get_context returned no JSON context"); continue; }
-                var objects = await CallRaw(listener.Port, "list_objects", new JsonObject { ["limit"] = 10_001, ["includeHidden"] = true, ["includeLocked"] = true });
+                var objects = await CallRaw(listener.Port, "list_objects", new JsonObject { ["limit"] = 10_001, ["includeHidden"] = true, ["includeLocked"] = true }, cancellation);
                 var objectList = ExtractContext(objects);
                 if (objectList == null) { failures.Add($"port {listener.Port}: list_objects returned no JSON list"); continue; }
                 // UI/camera/selection can change while the read-only MCP probes are awaited.
                 // Refresh the original bound document, never substitute ActiveDoc.
                 local = await fingerprint(documentId);
+                cancellation.ThrowIfCancellationRequested();
                 if (!IsMatch(local, native, objectList, out var mismatch)) { failures.Add($"port {listener.Port}: document mismatch ({mismatch})"); continue; }
                 matches.Add(new Listener(listener.Port, tools.DeepClone().AsArray()));
             }
-            catch (Exception error) { failures.Add($"port {listener.Port}: {error.Message}"); }
+            catch (Exception error) when (!cancellation.IsCancellationRequested) { failures.Add($"port {listener.Port}: {error.Message}"); }
         }
+        cancellation.ThrowIfCancellationRequested();
         if (matches.Count > 1)
         {
             // Same port can be announced by stale duplicate files. Collapse exact
@@ -163,10 +208,10 @@ internal sealed class NativeRhinoMcpClient
             try
             {
                 await rebind(documentId);
-                await Task.Delay(350);
-                return await ResolveCore(documentId, allowRebind: false);
+                await Task.Delay(350, cancellation);
+                return await ResolveCore(documentId, cancellation, allowRebind: false);
             }
-            catch (Exception error)
+            catch (Exception error) when (!cancellation.IsCancellationRequested)
             {
                 LastDiscoveryDiagnostic += $"; automatic MCP rebind failed: {error.Message}";
             }
@@ -271,18 +316,18 @@ internal sealed class NativeRhinoMcpClient
         return null;
     }
 
-    private static async Task<JsonObject> CallRaw(ushort port, string name, JsonObject arguments)
+    private static async Task<JsonObject> CallRaw(ushort port, string name, JsonObject arguments, CancellationToken cancellation)
         => await Post(port, new JsonObject
         {
             ["jsonrpc"] = "2.0", ["id"] = Guid.NewGuid().ToString("N"), ["method"] = "tools/call",
             ["params"] = new JsonObject { ["name"] = name, ["arguments"] = arguments },
-        });
+        }, cancellation);
 
-    private static async Task<JsonObject> Post(ushort port, JsonObject body)
+    private static async Task<JsonObject> Post(ushort port, JsonObject body, CancellationToken cancellation)
     {
         using var content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
-        using var response = await Http.PostAsync($"http://127.0.0.1:{port}/", content);
-        var text = await response.Content.ReadAsStringAsync();
+        using var response = await Http.PostAsync($"http://127.0.0.1:{port}/", content, cancellation);
+        var text = await response.Content.ReadAsStringAsync(cancellation);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"Rhino 原生 MCP 返回 HTTP {(int)response.StatusCode}");
         return JsonNode.Parse(text)?.AsObject() ?? throw new InvalidOperationException("Rhino 原生 MCP 返回了无效 JSON");
     }

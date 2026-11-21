@@ -28,6 +28,20 @@ describe('GH2 SDK compatibility for native canvas inspection', () => {
       'source = "Rhino.PlugIns.PlugIn.GetLoadedPlugIns()"\n# for obj in Grasshopper2.UI.Editor.Instance.Canvas.Document.Objects:',
     ]) expect(inspectRhinoScript(python, script)).toEqual([]);
   });
+
+  it('rejects a synchronous GH2 solve inside Python but permits unrelated waits and asynchronous starts', () => {
+    const active = 'import Grasshopper2 as gh\ndoc = gh.UI.Editor.Instance.Canvas.Document\nsolver = doc.Solution\n';
+    const scratch = 'from Grasshopper2.Doc import Document, DocumentState\ndoc = Document(DocumentState(0))\n';
+    for (const script of [active + 'solver.StartWait()', active + 'solver.Start(mode).Wait()',
+      active + 'value = solver.Start(mode).Result', active + 'solver.Start(mode).GetAwaiter().GetResult()',
+      active + 'pending = solver.Start(mode)\nalias = pending\nalias.Wait()',
+      scratch + 'doc.Solution.StartWait()']) {
+      expect(inspectRhinoScript(python, script)).toMatchObject([{code:'rhino_gh2_sync_solve_from_script'}]);
+    }
+    for (const script of [active + 'solver.Start(mode)', 'value = other.Solution.StartWait()', active + 'print("solver.StartWait()")']) {
+      expect(inspectRhinoScript(python, script)).toEqual([]);
+    }
+  });
 });
 
 describe('GH2 nullable label introspection', () => {

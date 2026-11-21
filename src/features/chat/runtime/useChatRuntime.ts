@@ -21,7 +21,7 @@ import {
 import { collectGhPythonComponentIds, isRhinoViewportObservationTool, keepRhinoViewportObservations, splitRhinoVisionObservation, VERIFY_GH_TOOL } from '../../rhino/rhinoGhSafety';
 import { GH2_VERIFY_MODEL_TOOL, gh2CompletionState, gh2IssueSummary } from '../../rhino/rhinoGh2Model';
 import { buildGhSolveRecoveryInstruction, hasGhSolveRecoveryContinuation, isStructuredGhSolveFailure, summarizeGhSolveFailure } from '../../rhino/rhinoGhSolveRecovery';
-import { buildRhinoNativeFailureDiagnosisInstruction, hasRhinoFailureDiagnosis, hasRhinoFailureInspection, hasRhinoFailureCorrection, hasRhinoFailureVerification, isRhinoFailureInspectionTool, isRhinoFailureReadOnlyTool, isUnchangedRhinoFailureReplay, selectRhinoFailureInspectionTool, RHINO_FAILURE_DIAGNOSIS_MARKER, RHINO_FAILURE_INSPECTED_MARKER, RHINO_FAILURE_CORRECTED_MARKER, RHINO_FAILURE_VERIFIED_MARKER } from '../../rhino/rhinoFailureRecovery';
+import { buildRhinoNativeFailureDiagnosisInstruction, hasRhinoFailureDiagnosis, hasRhinoFailureInspection, hasRhinoFailureCorrection, hasRhinoFailureVerification, isFreshRhinoFailureInspection, isRhinoFailureInspectionTool, isRhinoFailureReadOnlyTool, isRhinoUnconfirmedWriteFailure, isUnchangedRhinoFailureReplay, selectRhinoFailureInspectionTool, RHINO_FAILURE_DIAGNOSIS_MARKER, RHINO_FAILURE_INSPECTED_MARKER, RHINO_FAILURE_CORRECTED_MARKER, RHINO_FAILURE_VERIFIED_MARKER } from '../../rhino/rhinoFailureRecovery';
 import { GEOMETRY_PREFLIGHT_REJECTION, RhinoGeometryPreflightError, SAFE_PROFILE_TOOL } from '../../rhino/rhinoSafeModeling';
 import { isExplicitGhComponentsRequest, isRhinoGeometryOnlyRequest } from '../../rhino/rhinoRequestIntent';
 import { connectDesignMemoryEvents, designMemory } from '../../designMemory/storage';
@@ -1003,6 +1003,10 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       const refiningRhino = run.executionSource === 'rhino' && run.providerMessages.some(message =>
         message.role === 'system' && String(message.content || '').startsWith(RHINO_VISUAL_REFINEMENT_MARKER));
       const rhinoRecoveryActive = run.executionSource === 'rhino' && hasRhinoFailureDiagnosis(run.providerMessages);
+      const failedRhinoCall = rhinoRecoveryActive
+        ? getConversationMessages(run.conversationId).find(message => message.id === run.assistantMessageId)?.toolCalls
+          .slice().reverse().find(call => call.status === 'error' && call.toolName.startsWith('rhino_native_'))
+        : undefined;
       const correctingRhinoFailure = rhinoRecoveryActive && hasRhinoFailureInspection(run.providerMessages) && !hasRhinoFailureCorrection(run.providerMessages);
       const verifyingRhinoCorrection = rhinoRecoveryActive && hasRhinoFailureCorrection(run.providerMessages) && !hasRhinoFailureVerification(run.providerMessages);
       let recoveryWriteDispatched = false;
@@ -1210,10 +1214,10 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
             if (native) throw new RhinoNativeArgumentError(String(error));
             throw error;
           }
-          if (diagnosingRhinoFailure && !isRhinoFailureInspectionTool(call.toolName)) {
+          if (diagnosingRhinoFailure && !isRhinoFailureInspectionTool(call.toolName, failedRhinoCall)) {
             throw new Error('Rhino failure diagnosis only permits live read-only inspection; this tool was not dispatched.');
           }
-          if (verifyingRhinoCorrection && !isRhinoFailureInspectionTool(call.toolName)) throw new Error('Verify the correction with live read-only evidence before continuing.');
+          if (verifyingRhinoCorrection && !isRhinoFailureInspectionTool(call.toolName, failedRhinoCall)) throw new Error('Verify the correction with live read-only evidence before continuing.');
           if ((rhinoRecoveryActive || refiningRhino) && native?.readOnly === false) {
             const failed = [...(getConversationMessages(run.conversationId).find(message => message.id === run.assistantMessageId)?.toolCalls || [])]
               .reverse().find(previous => previous.status === 'error' && previous.toolName.startsWith('rhino_native_'));
@@ -1469,7 +1473,10 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           toolMessages.push({ role: 'tool', tool_call_id: call.id, content: call.resultJson });
           await notifyBatchCompleted(call.status === 'cancelled');
         }
-        if ((diagnosingRhinoFailure || correctingRhinoFailure || verifyingRhinoCorrection) && call.status === 'error') {
+        const unconfirmedNativeWrite = run.executionSource === 'rhino' && call.status === 'error'
+          && call.toolName.startsWith('rhino_native_') && isRhinoUnconfirmedWriteFailure(call);
+        if ((diagnosingRhinoFailure || correctingRhinoFailure || verifyingRhinoCorrection) && call.status === 'error'
+          && !unconfirmedNativeWrite) {
           for (const skipped of run.calls.slice(index + 1)) {
             skipped.status = 'cancelled'; skipped.completedAt = Date.now();
             skipped.resultJson = serializeChatToolResult({ cancelled: true, dispatched: false, error: 'Stopped because bounded Rhino diagnosis/correction failed.' });
@@ -1514,7 +1521,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           );
           return;
         }
-        if (run.executionSource === 'rhino' && isStructuredGhSolveFailure(call)
+        if (run.executionSource === 'rhino' && !unconfirmedNativeWrite && isStructuredGhSolveFailure(call)
           && !hasGhSolveRecoveryContinuation(run.providerMessages)) {
           for (const skipped of run.calls.slice(index + 1)) {
             skipped.status = 'cancelled';
@@ -1538,6 +1545,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           && !rhinoPostprocessFailure(mergePresentationToolCalls(getConversationMessages(run.conversationId).find(message => message.id === run.assistantMessageId)?.toolCalls || [], run.calls), call)
           && !hasRhinoFailureDiagnosis(run.providerMessages)
           && !hasGhSolveRecoveryContinuation(run.providerMessages)
+          && !unconfirmedNativeWrite
           && !(call.resultJson || '').includes(RHINO_FAILURE_DIAGNOSIS_MARKER)) {
           for (const skipped of run.calls.slice(index + 1)) {
             skipped.status = 'cancelled';
@@ -1554,7 +1562,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           return;
         }
         if (run.executionSource === 'rhino' && call.toolName.startsWith('rhino_native_') && call.status === 'error'
-          && !isRecoverableRhinoNativeReadFailure(call.toolName, run.conversationId)) {
+          && (unconfirmedNativeWrite || !isRecoverableRhinoNativeReadFailure(call.toolName, run.conversationId))) {
           for (const skipped of run.calls.slice(index + 1)) {
             skipped.status = 'cancelled';
             skipped.completedAt = Date.now();
@@ -1576,7 +1584,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           } catch { /* Keep the original error. */ }
           const visibleCalls = getConversationMessages(run.conversationId).find(item => item.id === run.assistantMessageId)?.toolCalls || [];
           const finalCalls = mergePresentationToolCalls(visibleCalls, run.calls);
-          const postprocess = rhinoPostprocessFailure(finalCalls, call);
+          const postprocess = unconfirmedNativeWrite ? undefined : rhinoPostprocessFailure(finalCalls, call);
           const uncheckedModel = Boolean(getRhinoVisualFidelityState(finalCalls).latestWriteId
             && selectChatImageAttachments(getConversationMessages(run.conversationId), run.userText).attachments.length);
           patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
@@ -1664,7 +1672,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         void maybeSummarize(run.conversationId);
         return;
       }
-      const recoveryInspectionSucceeded = run.calls.some(call => call.status === 'completed' && isRhinoFailureInspectionTool(call.toolName));
+      const recoveryInspectionSucceeded = (diagnosingRhinoFailure || verifyingRhinoCorrection)
+        && run.calls.some(call => isFreshRhinoFailureInspection(call, failedRhinoCall));
       const recoveryTransitions: Array<Record<string, unknown>> = [];
       if (diagnosingRhinoFailure && recoveryInspectionSucceeded) recoveryTransitions.push({ role: 'system', content: RHINO_FAILURE_INSPECTED_MARKER + ' Live read-only inspection succeeded. Explain the root cause using the failure and inspection evidence before one minimal changed correction. Do not replay the failed write.' });
       if (recoveryWriteDispatched) recoveryTransitions.push({ role: 'system', content: RHINO_FAILURE_CORRECTED_MARKER + ' The changed correction ran. Inspect the actual object or graph read-only before making any further writes.' });
@@ -1796,10 +1805,11 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       ));
     const requestInstructions: Array<Record<string, unknown>> = [];
     const additionalTools = optionsRef.current.additionalTools?.(conversationId, executionSource) || [];
+    const failedRhinoCall = [...currentTurnToolCalls].reverse().find(call => call.status === 'error' && call.toolName.startsWith('rhino_native_'));
     const nativeComponentOnly = executionSource === 'rhino' && isExplicitGhComponentsRequest(userText);
     tools.push(...(nativeComponentOnly ? additionalTools.filter(tool => !/^rhino_native_run_/.test(tool.function.name)) : additionalTools));
     if (rhinoFailureDiagnosisActive || rhinoFailureVerificationActive) {
-      tools.splice(0, tools.length, ...tools.filter(tool => isRhinoFailureInspectionTool(tool.function.name)));
+      tools.splice(0, tools.length, ...tools.filter(tool => isRhinoFailureInspectionTool(tool.function.name, failedRhinoCall)));
     } else if (rhinoFailureCorrectionActive) {
       tools.splice(0, tools.length, ...tools.filter(tool => {
         const native = getRhinoNativeTool(tool.function.name, conversationId);
@@ -1977,9 +1987,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         ? undefined
         : repairRejection?.toolName;
     const requiresGhVerificationRound = executionSource === 'rhino' && lastProviderMessage?.role === 'system' && String(lastProviderMessage.content || '').startsWith('Grasshopper completion requires structural verification.');
-    const failedRhinoCall = [...currentTurnToolCalls].reverse().find(call => call.status === 'error' && call.toolName.startsWith('rhino_native_'));
     const diagnosisToolChoice = rhinoFailureDiagnosisActive || rhinoFailureVerificationActive
-      ? selectRhinoFailureInspectionTool(tools.map(tool => tool.function.name), failedRhinoCall?.toolName)
+      ? selectRhinoFailureInspectionTool(tools.map(tool => tool.function.name), failedRhinoCall)
       : undefined;
     if ((rhinoFailureDiagnosisActive || rhinoFailureVerificationActive) && tools.length === 0) throw new Error('当前没有可用于核查 Rhino 失败状态的只读工具；未重试写操作。');
     const toolChoice = qualityReviewPending

@@ -1,4 +1,6 @@
 import type { ChatToolCall } from '../chat/model/chatTypes';
+import { rhinoDiagnosticText } from './rhinoErrorDiagnostic';
+import { rhinoExecutableScriptCode } from './rhinoScriptPreflight';
 
 export const RHINO_FAILURE_DIAGNOSIS_MARKER = 'RHINO_NATIVE_FAILURE_DIAGNOSIS_V1:';
 export const RHINO_FAILURE_VERIFIED_MARKER = 'RHINO_NATIVE_FAILURE_VERIFIED_V1:';
@@ -21,6 +23,20 @@ const receiptOf = (call: Pick<ChatToolCall, 'resultJson'>) => {
     return { error: call.resultJson || 'No structured Rhino error receipt was returned.' };
   }
 };
+
+type FailedRhinoCall = Pick<ChatToolCall, 'toolName'> & Partial<Pick<ChatToolCall, 'argumentsJson' | 'resultJson'>>;
+export const isRhinoUnconfirmedWriteFailure = (call: Pick<ChatToolCall, 'resultJson'>) =>
+  rhinoDiagnosticText(receiptOf(call)).split('\n').some(line => line.startsWith('RHINO_NATIVE_OUTCOME_UNCONFIRMED:'));
+
+function requiresGh2CanvasRead(call?: FailedRhinoCall) {
+  if (call?.toolName.startsWith('rhino_native_g2_')) return true;
+  if (call?.toolName !== 'rhino_native_run_python') return false;
+  if (/\bObjectList\b.*not iterable/i.test(rhinoDiagnosticText(call.resultJson))) return true;
+  try {
+    const args = JSON.parse(call.argumentsJson || '{}');
+    return typeof args.script === 'string' && /\b(?:Grasshopper2|drawer_gh2_labels)\b/.test(rhinoExecutableScriptCode(call.toolName, args.script));
+  } catch { return false; }
+}
 
 /** Starts one evidence-first continuation; it never authorizes replay by itself. */
 export const buildRhinoNativeFailureDiagnosisInstruction = (call: Pick<ChatToolCall, 'toolName' | 'resultJson'>) => {
@@ -57,15 +73,27 @@ const INSPECTION_TOOLS = new Set([
   'rhino_native_snapshot_document_geometry', 'rhino_native_verify_document_geometry',
   'rhino_native_verify_gh_geometry',
 ]);
-export const isRhinoFailureInspectionTool = (name: string) => INSPECTION_TOOLS.has(name);
+export const isRhinoFailureInspectionTool = (name: string, failed?: FailedRhinoCall) =>
+  requiresGh2CanvasRead(failed) ? name === 'rhino_native_g2_get_canvas_graph' : INSPECTION_TOOLS.has(name);
+export const isFreshRhinoFailureInspection = (call: Pick<ChatToolCall, 'toolName' | 'status' | 'resultJson'>, failed?: FailedRhinoCall) => {
+  if (call.status !== 'completed' || !isRhinoFailureInspectionTool(call.toolName, failed)) return false;
+  const receipt = receiptOf(call);
+  if (receipt.reusedCompletedReceipt === true || receipt.error) return false;
+  if (!requiresGh2CanvasRead(failed)) return true;
+  if (receipt.source !== 'rhino' || !Number.isSafeInteger(receipt.documentId) || Number(receipt.documentId) <= 0 || typeof receipt.content !== 'string') return false;
+  try {
+    const graph = JSON.parse(receipt.content);
+    return Array.isArray(graph?.objects) && Array.isArray(graph?.wires);
+  } catch { return false; }
+};
 export const hasRhinoFailureCorrection = (messages: Array<{ role?: string; content?: unknown }>) => (
   messages.some(message => message.role === 'system' && String(message.content || '').startsWith(RHINO_FAILURE_CORRECTED_MARKER))
 );
-export const selectRhinoFailureInspectionTool = (names: string[], failedTool = '') => {
-  const preferred = failedTool.includes('_g2_') ? 'rhino_native_g2_get_canvas_graph'
-    : failedTool.includes('_g1_') ? 'rhino_native_g1_get_canvas_graph'
+export const selectRhinoFailureInspectionTool = (names: string[], failed?: FailedRhinoCall) => {
+  const preferred = requiresGh2CanvasRead(failed) ? 'rhino_native_g2_get_canvas_graph'
+    : failed?.toolName.includes('_g1_') ? 'rhino_native_g1_get_canvas_graph'
       : 'rhino_native_snapshot_document_geometry';
-  return names.includes(preferred) ? preferred : names.find(isRhinoFailureInspectionTool);
+  return names.includes(preferred) ? preferred : names.find(name => isRhinoFailureInspectionTool(name, failed));
 };
 const canonical = (value: unknown): string => {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
