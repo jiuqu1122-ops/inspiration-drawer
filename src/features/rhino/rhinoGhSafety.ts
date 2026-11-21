@@ -2,6 +2,8 @@ import { SAFE_PROFILE_PROGRAM_MARKER } from './rhinoSafeModeling';
 import type { ChatToolCall } from '../chat/model/chatTypes';
 import guardSource from './modeling/gh_boolean_guard.py?raw';
 import hostSource from './modeling/gh_script_tools.py?raw';
+import gh2LabelSource from './modeling/gh2_labels.py?raw';
+import { rhinoExecutableScriptCode } from './rhinoScriptPreflight';
 import { RHINO_REFERENCE_REVIEW_TOOL, type RhinoNativeTool } from './rhinoProtocol';
 import { GH2_VERIFY_MODEL_TOOL, parseGh2ModelReport } from './rhinoGh2Model';
 export const isRhinoViewportObservationTool = (name: string) => name === RHINO_REFERENCE_REVIEW_TOOL || name === 'rhino_native_get_viewport_image';
@@ -17,10 +19,15 @@ const encode = (text:string) => {
 const decodeStatement=(name:string, text:string)=>`${name} = _id_base64.b64decode('${encode(text)}').decode('utf-8')\n`;
 export const containsGhCodeAssignment=(script:string)=>/\.Code\s*(?:=|\+=)|\bsetattr\s*\([^,]+,\s*['"]Code['"]/.test(script);
 
-export const guardRhinoGhScript=(script:string)=>script.includes(SAFE_PROFILE_PROGRAM_MARKER) ? script
-  : containsGhCodeAssignment(script)
-  ? `${hostSource}\n${decodeStatement('_id_guard_source',guardSource)}${decodeStatement('_id_original_source',script)}_id_gh_execute(_id_original_source, _id_guard_source)\n`
-  : script;
+export const guardRhinoGhScript=(script:string)=>{
+  if(script.includes(SAFE_PROFILE_PROGRAM_MARKER)) return script;
+  const labelMarker = '# <drawer-gh2-labels-v1>';
+  const withLabels = !script.includes(labelMarker) && /\bdrawer_gh2_labels\s*\(/.test(rhinoExecutableScriptCode('rhino_native_run_python', script))
+    ? `${labelMarker}\n${gh2LabelSource}\n${script}` : script;
+  return containsGhCodeAssignment(withLabels)
+    ? `${hostSource}\n${decodeStatement('_id_guard_source',guardSource)}${decodeStatement('_id_original_source',withLabels)}_id_gh_execute(_id_original_source, _id_guard_source)\n`
+    : withLabels;
+};
 
 export const ghVerificationTool=():RhinoNativeTool=>({
   name:VERIFY_GH_TOOL,description:'Read-only verification of guarded GH Python closed-Brep Boolean component geometry after solving. This is not a requirement for unrelated point/curve/mesh scripts. Does not change code, sliders, graph, selection, camera or bake objects. Returns actual solid orientation, volume, bounding boxes, component errors and fixed Boolean guard receipts. Pass the component IDs you created/updated. A valid closed Brep alone is NOT proof of complete geometry; passed verification is structural only, never photo fidelity.',

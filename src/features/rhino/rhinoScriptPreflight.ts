@@ -268,6 +268,26 @@ export function inspectRhinoScript(name: string, script: string): RhinoScriptIss
   const imports = name === 'rhino_native_run_python' ? missingPythonNamespaceImports(code) : [];
   const issues: RhinoScriptIssue[] = [];
   if (name === 'rhino_native_run_python') issues.push(...pythonEnumNoneIssues(script, code));
+  if (name === 'rhino_native_run_python' && /\b(?:from|import)\s+Grasshopper2\b/.test(code)) {
+    const lines = code.split('\n');
+    for (const match of code.matchAll(/\b([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\.Pins)\.GetType\s*\(/g)) {
+      const lineIndex = code.slice(0, match.index).split('\n').length - 1;
+      const escaped = match[1].replace(/\./g, '\\.');
+      const guard = new RegExp(`^\\s*if\\s+${escaped}\\s*(?:is\\s+not\\s+None\\s*:|:)`);
+      let parentIndent = lines[lineIndex].search(/\S/);
+      let guarded = new RegExp(`\\bif\\s+${escaped}\\s+is\\s+not\\s+None\\s+else\\b`).test(lines[lineIndex]);
+      for (let index = lineIndex - 1; index >= 0 && !guarded; index--) {
+        const indent = lines[index].search(/\S/);
+        if (indent < 0 || indent >= parentIndent) continue;
+        guarded = guard.test(lines[index]);
+        parentIndent = indent;
+      }
+      if (guarded) continue;
+      issues.push({ code: 'rhino_gh2_nullable_pins', line: lineIndex + 1, api: match[1] + '.GetType',
+        actualType: 'GH2 Pins may be null or absent',
+        instruction: 'For label editing use drawer_gh2_labels({"mode":"inspect"}) via run_python, then commit exact IDs/expectedLabel against expectedDocumentId. Do not discover ports through Pins: use Objects.Forwards and nullable Parameters.Inputs/Outputs. If custom reflection is necessary, check the actual property for None before GetType().' });
+    }
+  }
   if (isRhinoGhAssemblyReflectionScan(name, script)) {
     const position = code.search(/\bGetTypes\s*\(\s*\)/);
     issues.push({

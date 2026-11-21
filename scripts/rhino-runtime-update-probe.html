@@ -1,7 +1,7 @@
 <!doctype html><html><head><meta charset="utf-8"><title>Isolated Rhino runtime update probe</title></head>
 <body><p id="status">Verifying independent Rhino module…</p><script type="module">
 import { invoke } from '@tauri-apps/api/core';
-import { ensureRhinoRuntimeLoaded, rhinoRuntimeStatus, assertRhinoScriptPreflight, buildRhinoWorkflowInstruction, guardRhinoGeometryStageScript, buildGh2ParameterInspectionScript, buildGh2ModelScript } from '/src/features/rhino/rhinoRuntime.ts';
+import { ensureRhinoRuntimeLoaded, rhinoRuntimeStatus, assertRhinoScriptPreflight, buildRhinoWorkflowInstruction, guardRhinoGhScript, guardRhinoGeometryStageScript, buildGh2ParameterInspectionScript, buildGh2ModelScript } from '/src/features/rhino/rhinoRuntime.ts';
 import { canRunChatToolRound } from '/src/features/chat/runtime/chatTurnPolicy.ts';
 const report = { pass: false, checks: {} };
 try {
@@ -19,6 +19,7 @@ try {
   const gh2 = buildGh2ParameterInspectionScript({objectIds: ['a1111111-1111-4111-8111-111111111111']});
   report.checks.gh2Types = gh2.includes('runtimeParameterType') && gh2.includes('solvedDataType') && !/Objects\.(Add|Remove|Clear)|Solution\.Start/.test(gh2);
   report.checks.gh2Workflow = buildRhinoWorkflowInstruction().includes('IntervalParameter');
+  report.checks.gh2Labels = guardRhinoGhScript('drawer_gh2_labels({"mode":"inspect"})').includes('def drawer_gh2_labels(plan):') && buildRhinoWorkflowInstruction().includes('GH2_LABEL_EDIT_V1');
   const gh2Model = buildGh2ModelScript({componentIds: ['a1111111-1111-4111-8111-111111111111'], geometryOutputIds: ['b1111111-1111-4111-8111-111111111111']});
   report.checks.gh2ModelAcceptance = gh2Model.includes('_g2v_audit(_g2v_plan)') && gh2Model.includes('python_output_not_marshaled') && buildRhinoWorkflowInstruction().includes('GH2_MODEL_ACCEPTANCE_V1');
   report.checks.rhinoRoundQuotaRemoved = canRunChatToolRound(1000, 'rhino') && !canRunChatToolRound(8, 'desktop');

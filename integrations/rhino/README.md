@@ -365,6 +365,12 @@ npm run rhino:update:pack -- --component runtime --version 2026.11.20.2 --revisi
 
 把 `*.bundle.json` 上传到固定 GitHub `rhino-updates` Release，再替换 `latest.json`；先上传组件再更新索引。Gitee 可同步相同索引；索引中的组件 URL 必须指向已上传的文件，可通过 `--base-url` 指定发布地址。脚本只准备和签名，不上传或修改线上 Release。
 
+## 2026-11-21 GH2 label workflow repair (beta.36.7)
+
+The independent runtime `2026.11.21.2` supplies `drawer_gh2_labels` through the existing `run_python` transport on Host API 1. No desktop rebuild is required on desktop 8.0.35. The Rhino 8/9 packages are version `0.1.0-beta.36.7`; GH2 functionality is exercised on Rhino 9.
+
+Label editing uses `Objects.Forwards` and nullable component `Parameters.Inputs/Outputs`, never `Pins`. Inspect returns original SDK names, writable custom labels and exact object/port IDs. Commit requires the inspected GH2 document ID and each expected old label; the entire batch is checked before the first setter. It writes only `UserName`, reads labels back and checks IDs, wires, persistent data references and code. Failures restore attempted labels; incomplete rollback or unexpected graph changes are reported as `partial_failure`. Translation does not change global menus or rebuild, solve, bake or save the definition. An unchanged label produces a no-op receipt. The preflight rejects the reported unguarded GH2 `Pins.GetType()` probe with instructions for the fixed helper.
+
 ## 2026-11-20 text modeling and GH2 repairs
 
 Rhino/GH tasks have no fixed tool-round quota. Manual Stop and concrete tool failure/timeout handling remain active. A runtime integration test completes 32 consecutive tool rounds; another stops manually on round 27. Desktop Chat retains its own existing policy.

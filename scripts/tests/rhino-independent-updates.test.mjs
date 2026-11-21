@@ -16,6 +16,9 @@ test('builds, imports and signs a self-contained Rhino runtime without a desktop
   assert.equal(runtime.inspectRhinoScript('rhino_native_run_python', 'import Rhino.Geometry as rg\ncap=rg.PipeCapMode.None')[0].code, 'rhino_python_enum_none');
   assert.deepEqual(runtime.inspectRhinoScript('rhino_native_run_python', 'import Rhino.Geometry as rg\ncap=rg.PipeCapMode.NONE'), []);
   assert.ok(runtime.buildRhinoWorkflowInstruction().includes('rg.PipeCapMode.NONE'));
+  assert.ok(runtime.buildRhinoWorkflowInstruction().includes('GH2_LABEL_EDIT_V1'));
+  assert.ok(runtime.guardRhinoGhScript('drawer_gh2_labels({"mode":"inspect"})').includes('def drawer_gh2_labels(plan):'));
+  assert.equal(runtime.inspectRhinoScript('rhino_native_run_python', 'from Grasshopper2.UI import Editor\nprint(o.Pins.GetType())')[0].code, 'rhino_gh2_nullable_pins');
   assert.ok(runtime.guardRhinoGeometryStageScript('stage=DrawerGeometryStage()').includes('<drawer-geometry-stage>'));
   assert.ok(runtime.readRhinoModelingSkillResource('references/acceptance.md').content.length > 100);
   const item = packComponent({ id: 'runtime', version: '2026.11.20.1', revision: 1, directory: folder, outputDirectory: folder, baseUrl: 'https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/rhino-updates/' });

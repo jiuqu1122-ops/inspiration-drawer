@@ -5,6 +5,17 @@ import { SAFE_PROFILE_PROGRAM_MARKER, buildSafeProfileScript } from './rhinoSafe
 import { buildGhVerificationScript, containsGhCodeAssignment, guardRhinoGhScript, parseGhObservation, rhinoToolObservation, splitRhinoVisionObservation } from './rhinoGhSafety';
 
 describe('Grasshopper Boolean guard and evidence safety',()=>{
+ it('injects GH2 label transactions only for executable calls and remains idempotent',()=>{
+  const script = 'drawer_gh2_labels({"mode":"inspect"})';
+  const guarded = guardRhinoGhScript(script);
+  expect(guarded).toContain('def drawer_gh2_labels(plan):');
+  expect(guarded).toContain('expectedDocumentId');
+  expect(guarded).not.toMatch(/\.Pins\b|Objects\.(Add|Remove|Clear)|Solution\.Start/);
+  expect(guardRhinoGhScript(guarded)).toBe(guarded);
+  for(const text of ['# drawer_gh2_labels({})','print("drawer_gh2_labels({})")', 'source = """drawer_gh2_labels({})"""']) {
+    expect(guardRhinoGhScript(text)).toBe(text);
+  }
+ });
  it('protects direct, aliased and setter assignments without matching comments or ordinary strings',()=>{
   expect(containsGhCodeAssignment('c.Code = source')).toBe(true);
   expect(containsGhCodeAssignment('setattr(c, "Code", source)')).toBe(true);

@@ -6,6 +6,25 @@ const python = 'rhino_native_run_python';
 const bad = 'face = regions[0].Faces[0]\nsolid = Rhino.Geometry.Surface.CreateExtrusion(face, direction)';
 const native = { name: python, description: 'test', readOnly: false, destructive: false, inputSchema: { required: ['script'] } };
 
+describe('GH2 nullable label introspection', () => {
+  const header = 'from Grasshopper2.UI import Editor\n';
+  it('rejects the reported null Pins dereference before dispatch with an actionable helper', () => {
+    const issues = inspectRhinoScript(python, header + 'print(o.Pins.GetType())');
+    expect(issues).toMatchObject([{code: 'rhino_gh2_nullable_pins', line: 2}]);
+    expect(issues[0].instruction).toContain('drawer_gh2_labels');
+  });
+  it('allows a direct None guard and ignores comments, embedded source and unrelated APIs', () => {
+    for(const script of [header + 'if o.Pins is not None:\n    print(o.Pins.GetType())',
+      header + 'if o.Pins is not None:\n    x = 1\n    if x:\n        print(o.Pins.GetType())',
+      header + 'print(o.Pins.GetType() if o.Pins is not None else None)',
+      header + '# o.Pins.GetType()\nsource = "o.Pins.GetType()"', 'print(o.Pins.GetType())',
+      header + 'drawer_gh2_labels({"mode":"inspect"})']) {
+      expect(inspectRhinoScript(python, script)).toEqual([]);
+    }
+    expect(inspectRhinoScript(python, header + 'if o.Pins is not None:\n    x=1\nelse:\n    print(o.Pins.GetType())')[0].code).toBe('rhino_gh2_nullable_pins');
+  });
+});
+
 const ghReflectionProbe = `import System
 for asm in System.AppDomain.CurrentDomain.GetAssemblies():
  if 'Grasshopper' in asm.GetName().Name:
