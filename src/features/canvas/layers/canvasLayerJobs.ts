@@ -32,16 +32,19 @@ export async function followLayerJob(requestId: string, create: (() => Promise<L
     for (let attempt = 0; attempt < 155; attempt++) {
       if (terminal) { await complete(terminal); return; }
       if (submissionFinished || attempt % 3 === 0) {
+        let receipt: LayerReceipt | undefined;
         try {
-          const receipt = await lookupLayer(requestId);
-          missing = 0;
-          if (receipt.status !== 'processing') { await complete(receipt); return; }
+          receipt = await lookupLayer(requestId);
         } catch (error) {
           if (message(error).includes('layer_request_not_found')) missing++;
           if (submissionFinished && missing >= 3) {
             await complete({ status: 'failed', message: submissionError || '服务端未登记此请求，请重新运行' });
             return;
           }
+        }
+        if (receipt) {
+          missing = 0;
+          if (receipt.status !== 'processing') { await complete(receipt); return; }
         }
       }
       await delay(2000);

@@ -1,7 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { afterEach, expect, it, vi } from 'vitest';
 import { getLayerCatalog, prepareLayerRequestImage, submitLayer } from './canvasLayerApi';
-import { normalizeLayerInput } from './canvasLayerAssets';
+import { cacheLayerResult, normalizeLayerInput } from './canvasLayerAssets';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(), isTauri: vi.fn(() => true) }));
 
@@ -46,6 +46,28 @@ it('keeps a failed signed upload separate from the layer task submission', async
   vi.mocked(invoke).mockRejectedValueOnce('上传图片文件失败：连接超时');
   await expect(prepareLayerRequestImage('data:image/jpeg;base64,AAAA', true)).rejects.toThrow('上传图片文件失败：连接超时');
   expect(invoke).toHaveBeenCalledTimes(1);
+});
+
+it('persists the original layer PNG through native file commands without a WebView fetch', async () => {
+  vi.mocked(isTauri).mockReturnValue(true);
+  const fetch = vi.fn();
+  vi.stubGlobal('fetch', fetch);
+  const resultUrl = 'https://api.unmind.art/v1/ai/image-results/fixture';
+  const cachedPath = 'C:/cache/alpha.png';
+  const savedPath = 'C:/uploads/edit-result.png';
+  const image = 'data:image/png;base64,AAAA';
+  const cacheImage = vi.fn().mockResolvedValue(cachedPath);
+  vi.mocked(invoke).mockResolvedValueOnce(image).mockResolvedValueOnce(savedPath);
+  const dimensions = { width: 640, height: 480, alpha: true, transparent: true };
+  const result = await cacheLayerResult({ operation: 'edit', assets: [resultUrl], image: { asset: 0, ...dimensions } }, 'edit-result', cacheImage);
+
+  expect(result).toEqual({ asset: { path: savedPath, ...dimensions } });
+  expect(cacheImage).toHaveBeenCalledExactlyOnceWith(resultUrl, 'edit-result-0.png');
+  expect(vi.mocked(invoke).mock.calls).toEqual([
+    ['read_local_image_data_url', { path: cachedPath }],
+    ['save_dropped_file', { fileName: 'edit-result-0.png', dataUrl: image }],
+  ]);
+  expect(fetch).not.toHaveBeenCalled();
 });
 
 it('preserves the visible JPEG dimensions and passes transparent PNG through unchanged', async () => {

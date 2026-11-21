@@ -28,6 +28,7 @@ export type CanvasLayerContext = {
   append: (items: CanvasImageItem[], label: string, select?: boolean) => number;
   update: (canvasId: string, nodeId: string, change: (item: CanvasImageItem) => CanvasImageItem) => unknown;
   read: (source: string, optimize?: boolean) => Promise<string>;
+  cacheImage: (source: string, name: string) => Promise<string>;
   undo: (label: string) => void;
   toast: (message: string) => void;
 };
@@ -91,7 +92,7 @@ export function observeCanvasLayerRun(ctx: CanvasLayerContext, canvasId: string,
       return;
     }
     if (receipt.result.operation !== mode) throw new Error('结果操作类型不一致');
-    const replacement = await cacheLayerResult(receipt.result, requestId, ctx.read);
+    const replacement = await cacheLayerResult(receipt.result, requestId, ctx.cacheImage);
     const group = replacement.group;
     const asset = replacement.asset;
     if (!group && !asset) throw new Error('图层结果缺少素材');

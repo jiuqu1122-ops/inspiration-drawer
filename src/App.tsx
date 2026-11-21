@@ -5317,6 +5317,7 @@ function MainApp() {
     append: appendCanvasItemsSynchronously,
     update: updateCanvasNodeForCanvas,
     read: imageSourceToDataUrl,
+    cacheImage: async (source, name) => (await cacheCanvasGeneratedImageSource(source, name, { throwOnFailure: true })).path,
     undo: pushCanvasUndoSnapshot,
     toast: showToast,
   };

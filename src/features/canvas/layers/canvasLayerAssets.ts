@@ -53,12 +53,17 @@ export async function cacheLayerComposite(group: CanvasLayerGroup, name: string)
   ]);
   return { path, url: layerAssetUrl(path), thumbnail: layerAssetUrl(thumbnail) };
 }
-export async function cacheLayerResult(output: LayerOutput, name: string, readImage: (source: string, optimize?: boolean) => Promise<string>) {
+export async function cacheLayerResult(output: LayerOutput, name: string, cacheImage: (source: string, name: string) => Promise<string>) {
   const paths: string[] = [];
   for (const [index, asset] of output.assets.entries()) {
     if (!/^https?:\/\//.test(asset)) throw new Error('图层素材链接无效');
-    // Desktop cache is independent of server cache retention.
-    paths.push(isTauri() ? await saveLayerPng(await readImage(asset, false), name + '-' + index) : asset);
+    if (!isTauri()) { paths.push(asset); continue; }
+    const fileName = name + '-' + index;
+    const cachedPath = await cacheImage(asset, fileName + '.png');
+    if (!cachedPath) throw new Error('图层素材未保存到本地');
+    // Read through the native command and keep the original PNG in canvas storage.
+    const dataUrl = await invoke<string>('read_local_image_data_url', { path: cachedPath });
+    paths.push(await saveLayerPng(dataUrl, fileName));
   }
   const resolve = <T extends Omit<LayerAsset, 'path'> & { asset: number }>(input: T) => {
     const { asset, ...metadata } = input;
