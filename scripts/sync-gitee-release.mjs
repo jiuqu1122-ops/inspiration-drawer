@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execSync } from 'node:child_process';
+import { prepareRemainingGiteeUploads, uploadRemainingGiteePlans } from './gitee-remaining-assets.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const distDir = path.resolve(repoRoot, (process.env.GITEE_DIST_DIR || '').trim() || 'dist-updater');
@@ -433,6 +434,28 @@ const explainReleaseCreateFailure = async ({ owner, repo, token, error }) => {
 const main = async () => {
   const token = dryRun ? optionalEnv('GITEE_TOKEN') : requiredEnv('GITEE_TOKEN');
   const { owner, repo } = parseRepository();
+  if (process.argv.includes('--remaining')) {
+    const channel = JSON.parse(fs.readFileSync(path.join(repoRoot, 'integrations/rhino/update-channel.json'), 'utf8'));
+    const plans = prepareRemainingGiteeUploads({ directory: distDir, owner, repo, channel });
+    console.log('Verified remaining Gitee uploads; version-tag settings are not used in this mode.');
+    for (const plan of plans) for (const file of plan.assets) console.log(`${path.relative(repoRoot, file.filePath)} -> ${plan.tag}/${file.uploadName}`);
+    if (dryRun) { console.log('Dry run only. No files changed and no network requests performed.'); return; }
+    await uploadRemainingGiteePlans(plans, {
+      release: tag => findReleaseByTag({ owner, repo, tag, token }),
+      attachments: releaseId => listReleaseAttachments({ owner, repo, releaseId, token }),
+      name: getAttachmentName,
+      remove: (releaseId, attachmentId) => deleteAttachment({ owner, repo, releaseId, attachmentId, token }),
+      upload: (releaseId, file) => uploadAsset({ owner, repo, releaseId, token, ...file }),
+      matches: async file => {
+        const response = await fetch(file.mirrorUrl, { signal: AbortSignal.timeout(60000) });
+        if (!response.ok) throw new Error('Cannot verify existing Rhino component: HTTP ' + response.status);
+        return createHash('sha256').update(Buffer.from(await response.arrayBuffer())).digest('hex') === file.sha256;
+      },
+      overwrite: optionalEnv('GITEE_OVERWRITE').toLowerCase() !== 'false', log: console.log,
+    });
+    console.log('Remaining Gitee update channels uploaded successfully.');
+    return;
+  }
   const latestJson = readLatestJson();
   const tag = optionalEnv('GITEE_RELEASE_TAG')
     || parseReleaseTagFromBaseUrl()
