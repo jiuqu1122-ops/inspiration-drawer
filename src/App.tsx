@@ -4025,7 +4025,7 @@ function MainApp() {
   const cacheCanvasGeneratedImageSource = async (
     source: string,
     name: string,
-    options?: { throwOnFailure?: boolean },
+    options?: { throwOnFailure?: boolean; timeoutSecs?: number },
   ) => { return cacheCanvasGeneratedImageSourceImpl({ GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS, webImageCacheDirRef }, source, name, options); };
 
   const createCanvasImagePreviewThumbnail = async (
@@ -5317,7 +5317,7 @@ function MainApp() {
     append: appendCanvasItemsSynchronously,
     update: updateCanvasNodeForCanvas,
     read: imageSourceToDataUrl,
-    cacheImage: async (source, name) => (await cacheCanvasGeneratedImageSource(source, name, { throwOnFailure: true })).path,
+    cacheImage: async (source, name) => (await cacheCanvasGeneratedImageSource(source, name, { throwOnFailure: true, timeoutSecs: 5 * 60 })).path,
     undo: pushCanvasUndoSnapshot,
     toast: showToast,
   };

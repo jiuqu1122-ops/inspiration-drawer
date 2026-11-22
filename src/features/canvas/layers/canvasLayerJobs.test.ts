@@ -17,6 +17,48 @@ const receipt: LayerReceipt = {
   },
 };
 
+it('keeps following a slow split on the same request and stops at the two-hour deadline', async () => {
+  vi.useFakeTimers();
+  const lookup = vi.mocked(lookupLayer).mockResolvedValue({ status: 'processing' });
+  const complete = vi.fn().mockResolvedValue(undefined);
+  const pending = vi.fn();
+  const requestId = 'canvas-layer-long-split';
+  const run = followLayerJob(requestId, undefined, complete, pending);
+  await vi.advanceTimersByTimeAsync(110 * 60_000);
+  expect(pending).not.toHaveBeenCalled();
+  expect(complete).not.toHaveBeenCalled();
+  const reads = lookup.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(lookup.mock.calls.length - reads).toBe(6);
+  await vi.advanceTimersByTimeAsync(9 * 60_000);
+  await run;
+  expect(pending).toHaveBeenCalledOnce();
+  expect(submitLayer).not.toHaveBeenCalled();
+  lookup.mockResolvedValue(receipt);
+  await followLayerJob(requestId, undefined, complete, pending);
+  expect(complete).toHaveBeenCalledExactlyOnceWith(receipt);
+  expect(lookup).toHaveBeenLastCalledWith(requestId);
+});
+
+it('automatically applies an edit that becomes available twenty minutes after a single submission', async () => {
+  vi.useFakeTimers();
+  const readyAt = Date.now() + 20 * 60_000;
+  vi.mocked(submitLayer).mockResolvedValue({ status: 'processing' });
+  vi.mocked(lookupLayer).mockImplementation(async () => Date.now() >= readyAt ? receipt : { status: 'processing' });
+  const complete = vi.fn().mockResolvedValue(undefined);
+  const pending = vi.fn();
+  const requestId = 'canvas-layer-slow-edit';
+  const run = followLayerJob(requestId, async () => ({
+    operation: 'edit', clientRequestId: requestId, image: 'image', prompt: 'edit', expectedCredits: '8',
+  }), complete, pending);
+  await vi.advanceTimersByTimeAsync(20 * 60_000);
+  await run;
+  expect(complete).toHaveBeenCalledExactlyOnceWith(receipt);
+  expect(pending).not.toHaveBeenCalled();
+  expect(submitLayer).toHaveBeenCalledOnce();
+  expect(lookupLayer).toHaveBeenLastCalledWith(requestId);
+});
+
 it('reports a cache failure immediately and lets the original request be recovered without submitting again', async () => {
   vi.useFakeTimers();
   vi.mocked(lookupLayer).mockResolvedValue(receipt);

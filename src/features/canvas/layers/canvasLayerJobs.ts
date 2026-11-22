@@ -2,6 +2,8 @@ import { lookupLayer, submitLayer, type LayerRequest } from './canvasLayerApi';
 import type { LayerReceipt } from './canvasLayerTypes';
 
 const running = new Set<string>();
+// The split worker may receive its 90-minute download window after submission.
+const pollingWindowMs = 2 * 60 * 60_000;
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -29,9 +31,11 @@ export async function followLayerJob(requestId: string, create: (() => Promise<L
         .finally(() => { submissionFinished = true; });
     }
     let missing = 0;
-    for (let attempt = 0; attempt < 155; attempt++) {
+    const started = Date.now();
+    const deadline = started + pollingWindowMs;
+    for (let attempt = 0; ; attempt++) {
       if (terminal) { await complete(terminal); return; }
-      if (submissionFinished || attempt % 3 === 0) {
+      if (submissionFinished || attempt % 3 === 0 || Date.now() >= deadline) {
         let receipt: LayerReceipt | undefined;
         try {
           receipt = await lookupLayer(requestId);
@@ -47,7 +51,11 @@ export async function followLayerJob(requestId: string, create: (() => Promise<L
           if (receipt.status !== 'processing') { await complete(receipt); return; }
         }
       }
-      await delay(2000);
+      if (terminal) { await complete(terminal); return; }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      const interval = Date.now() - started < 5 * 60_000 ? 2_000 : 10_000;
+      await delay(Math.min(interval, remaining));
     }
     pending('任务结果尚未确认，可以查询原请求');
   } catch (error) {

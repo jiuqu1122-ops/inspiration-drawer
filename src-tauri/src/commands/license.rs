@@ -2133,7 +2133,13 @@ async fn get_cloud_with_bearer<T: for<'de> Deserialize<'de>>(
     path: &str,
     access_token: &str,
 ) -> Result<T, String> {
-    let timeout = if path.starts_with("/v1/ai/music/generations/by-request/") { Duration::from_secs(900) } else { Duration::from_secs(30) };
+    let timeout = if path.starts_with("/v1/ai/music/generations/by-request/") {
+        Duration::from_secs(900)
+    } else if path.starts_with("/v1/ai/canvas-layers/by-request/") {
+        Duration::from_secs(60)
+    } else {
+        Duration::from_secs(30)
+    };
     let response = send_cloud_request(app_handle, timeout, "GET", None, |client| {
         client
             .get(format!("{CLOUD_API_BASE_URL}{path}"))
@@ -2810,7 +2816,7 @@ pub async fn cloud_canvas_layer_catalog(app_handle: tauri::AppHandle) -> Result<
 #[tauri::command]
 pub async fn submit_cloud_canvas_layer(app_handle: tauri::AppHandle, request: serde_json::Value) -> Result<serde_json::Value, String> {
     let token = cloud_access_token(&app_handle).await?;
-    post_cloud_with_bearer_timeout(&app_handle, "/v1/ai/canvas-layers", &token, &request, Duration::from_secs(260)).await
+    post_cloud_with_bearer_timeout(&app_handle, "/v1/ai/canvas-layers", &token, &request, Duration::from_secs(17 * 60)).await
 }
 
 #[tauri::command]

@@ -13377,9 +13377,11 @@ async fn cache_web_image(
     name: Option<String>,
     dir: Option<String>,
     proxy: Option<String>,
+    timeout_secs: Option<u64>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        cache_web_image_impl(app_handle, url, name, dir, proxy)
+        let timeout = timeout_secs.unwrap_or(GENERATED_MEDIA_CACHE_DOWNLOAD_TIMEOUT_SECS).clamp(1, 5 * 60);
+        cache_web_image_impl(app_handle, url, name, dir, proxy, timeout)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -13396,7 +13398,7 @@ async fn cache_web_image_to_dir(
     // 专门给“设置里的网页图片缓存路径”使用，参数名保持简单的 dir。
     // 避开 cache_dir / cacheDir 在 Tauri 参数映射里的歧义。
     tauri::async_runtime::spawn_blocking(move || {
-        cache_web_image_impl(app_handle, url, name, Some(dir), proxy)
+        cache_web_image_impl(app_handle, url, name, Some(dir), proxy, GENERATED_MEDIA_CACHE_DOWNLOAD_TIMEOUT_SECS)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -13569,6 +13571,7 @@ async fn collect_web_images(
                 Some(name),
                 dir.clone(),
                 proxy.clone(),
+                GENERATED_MEDIA_CACHE_DOWNLOAD_TIMEOUT_SECS,
             ) {
                 Ok(path) => collected.push(CollectedWebImage {
                     title: if title.trim().is_empty() {
@@ -13684,6 +13687,7 @@ fn cache_web_image_impl(
     name: Option<String>,
     cache_dir: Option<String>,
     proxy: Option<String>,
+    timeout_secs: u64,
 ) -> Result<String, String> {
     let input = url.trim();
     if input.is_empty() {
@@ -13762,7 +13766,7 @@ fn cache_web_image_impl(
             input,
             &out_path,
             proxy.as_deref(),
-            GENERATED_MEDIA_CACHE_DOWNLOAD_TIMEOUT_SECS,
+            timeout_secs,
             DownloadOptions {
                 expected_content: DownloadContentExpectation::ImageOrVideo,
                 atomic_write: true,

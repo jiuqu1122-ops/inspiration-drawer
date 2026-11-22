@@ -1617,7 +1617,7 @@ export const prepareCanvasAiInputSourceImpl = async (ctx: Pick<canvasMediaAction
 
 };
 
-export const cacheCanvasGeneratedImageSourceImpl = async (ctx: Pick<canvasMediaActionContext, 'GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS' | 'webImageCacheDirRef'>, source: string, name: string, options?: { throwOnFailure?: boolean }) => {
+export const cacheCanvasGeneratedImageSourceImpl = async (ctx: Pick<canvasMediaActionContext, 'GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS' | 'webImageCacheDirRef'>, source: string, name: string, options?: { throwOnFailure?: boolean; timeoutSecs?: number }) => {
   const { GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS, webImageCacheDirRef } = ctx;
     const rawSource = source.trim();
     const trimmed = getStableAiImageResultSource(rawSource)
@@ -1643,6 +1643,7 @@ export const cacheCanvasGeneratedImageSourceImpl = async (ctx: Pick<canvasMediaA
           url: trimmed,
           name: name || AI_GENERATED_FOLDER_NAME,
           dir: latestCacheDir || undefined,
+          ...(options?.timeoutSecs ? { timeoutSecs: options.timeoutSecs } : {}),
         });
         if (cachedPath) {
           return { url: convertFileSrc(cachedPath), path: cachedPath, sourceUrl: trimmed };
