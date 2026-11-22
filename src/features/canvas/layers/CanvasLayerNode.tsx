@@ -49,7 +49,7 @@ function OperationCard({ scope, item }: { scope: Record<string, any>; item: Canv
   const price = offer?.creditsPerRequest;
   const unit = offer?.creditsPerOutputImage;
   const creditLabel = price === undefined ? undefined
-    : `${Number(unit ?? price).toLocaleString('zh-CN', { maximumFractionDigits: 6 })}积分${unit === undefined ? '' : '/张'}`;
+    : `${Number(unit ?? price).toLocaleString('zh-CN', { maximumFractionDigits: 6 })}${unit === undefined ? '积分' : ' 积分/层'}`;
   const source = scope.canvasItemsById.get(item.inputs?.[0]) as CanvasImageItem | undefined;
   const src = canvasLayerInputSource(source);
   const sourceName = source?.item.name || '已连接图片';
@@ -108,7 +108,7 @@ function OperationCard({ scope, item }: { scope: Record<string, any>; item: Canv
     </div>
     <footer className="canvas-layer-operation__footer" data-no-drag="true" onPointerDown={event => event.stopPropagation()}>
       {unit !== undefined && <span className="canvas-layer-operation__catalog-status">
-        含底图，最多 {offer?.maxOutputImages} 张<br />预留 {Number(price)} 积分，按实际张数结算
+        最多 {offer?.maxOutputImages} 层（含底图）<br />预留 {Number(price)} 积分，按实际层数结算
       </span>}
       {price === undefined && <div className="canvas-layer-operation__availability">
         <span role="status" className="canvas-layer-operation__catalog-status" data-warning={Boolean(error || catalog)}>
@@ -127,6 +127,9 @@ function OperationCard({ scope, item }: { scope: Record<string, any>; item: Canv
 function ResultCard({ scope, item }: { scope: Record<string, any>; item: CanvasImageItem }) {
   const result = item.layerResult!;
   const group = result.group;
+  // The selection border sits 12 canvas pixels outside the image. Its corner
+  // handles extend another 16 screen pixels, even when the canvas is zoomed out.
+  const selectionClearance = 12 + 16 / Math.max(0.25, scope.canvasRenderScale ?? 1);
   const originalSource = getCanvasOriginalImageSource(item.item);
   const [open, setOpen] = useState(false);
   const [chosen, setChosen] = useState('');
@@ -163,7 +166,10 @@ function ResultCard({ scope, item }: { scope: Record<string, any>; item: CanvasI
   };
   return <Frame scope={scope} item={item} onDoubleClick={group ? () => setOpen(value => !value) : result.asset && originalSource
     ? () => scope.openSelectedImagePreview(originalSource, { fromCanvas: true }) : undefined}>
-    <div className="absolute -top-6 left-0 truncate text-[11px] font-bold">{item.item.name}{group ? ` · ${group.layers.length} 层` : ''}</div>
+    <div className={`absolute left-0 max-w-full truncate text-[11px] font-bold ${result.mode === 'split' ? 'bottom-full' : '-top-6'}`}
+      style={result.mode === 'split' ? { marginBottom: selectionClearance } : undefined}>
+      {item.item.name}{group ? ` · ${group.layers.length + 1} 层（含底图）` : ''}
+    </div>
     {result.status !== 'success' ? <div className="flex h-full flex-col items-center justify-center gap-2 p-3 text-center text-xs">
       <span>{result.message || (result.status === 'processing' ? '正在处理…' : '任务失败')}</span>
       {result.status === 'processing' && result.message && <button type="button" className={button} onPointerDown={event => event.stopPropagation()}
@@ -198,11 +204,12 @@ function ResultCard({ scope, item }: { scope: Record<string, any>; item: CanvasI
       className="h-full w-full select-none rounded-xl object-contain"
       src={scope.getStableCanvasImageSource?.(item) || item.item.thumbnail || originalSource}
       alt={item.item.name} loading="lazy" decoding="async" draggable={false} />}
-    {group && <div className="absolute top-full z-10 flex min-w-full flex-wrap items-center gap-1 rounded-md bg-white/95 p-1 shadow dark:bg-stone-900/95"
+    {group && <div className="absolute left-0 top-full z-10 flex w-full flex-wrap items-center gap-1 rounded-md bg-white/95 p-1 shadow dark:bg-stone-900/95"
+      style={{ marginTop: selectionClearance }}
       onPointerDown={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()}>
       <button type="button" className={button} onClick={() => setOpen(value => !value)}>{open ? '收起图层' : '编辑图层'}</button>
       {result.imageBilling && result.chargedCredits !== undefined && <span className="px-1 text-xs">
-        {result.imageBilling.imageCount} 张 × {Number(result.imageBilling.creditsPerOutputImage)} 积分，实扣 {Number(result.chargedCredits)} 积分
+        {result.imageBilling.imageCount} 层 × {Number(result.imageBilling.creditsPerOutputImage)} 积分，实扣 {Number(result.chargedCredits)} 积分
       </span>}
       {open && <button type="button" className={button} disabled={saving} onClick={() => scope.undoLastCanvasChange()}>撤销</button>}
       <button type="button" className={button} disabled={saving} onClick={() => void perform(() => scope.exportCanvasLayerStack(group, 'zip'))}>PNG 组</button>

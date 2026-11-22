@@ -12,7 +12,8 @@ it('shows the settled split price using the original receipt even after the stac
       imageBilling: { imageCount: 15, creditsPerOutputImage: '1.250000' }, group: { width: 320, height: 400, base, layers: [] } },
   };
   const html = renderToStaticMarkup(<CanvasLayerNode item={item} scope={{}} />);
-  expect(html).toContain('15 张 × 1.25 积分，实扣 18.75 积分');
+  expect(html).toContain('图层组 · 1 层（含底图）');
+  expect(html).toContain('15 层 × 1.25 积分，实扣 18.75 积分');
 });
 
 it('registers the edit result image with the shared canvas source updater', () => {
