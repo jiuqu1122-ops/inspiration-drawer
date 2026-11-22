@@ -3,6 +3,7 @@ import { AnimatePresence,motion } from 'framer-motion';
 import { BookOpen,Brush,Check,ChevronLeft,ChevronRight,Circle,Crop,Eraser,Film,FolderOpen,History,Image as ImageIcon,Info,LayoutGrid,MessageCircle,Play,Plus,RefreshCw,RotateCcw,Smartphone,Sparkles,Square,X } from 'lucide-react';
 import QRCode from 'react-qr-code';
 import { DoodleBrushCursor } from '../../components/DoodleBrushCursor';
+import { DesktopReleaseNotes } from './DesktopReleaseNotes';
 import { WorkflowDraftPanel } from '../../features/appAgent/components/WorkflowDraftPanel';
 import { getCanvasDrawerMediaPreviewSource } from '../../features/canvasDrawerMedia';
 import type { CanvasWorkflowImageNodeModeDraft } from '../../features/canvasTemplates';
@@ -1196,7 +1197,7 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
               exit={{ opacity: 0, scale: 0.96, y: 12 }}
               transition={{ duration: 0.32, delay: 0.25, ease: [0.16, 1, 0.3, 1] }}
               data-drawer-launch-intro="true"
-              className="relative w-full max-w-[380px] overflow-hidden rounded-[32px] bg-white/92 dark:bg-stone-900/94 border border-white/70 dark:border-stone-700/70 shadow-2xl p-5"
+              className="relative w-full max-w-[380px] max-h-full overflow-y-auto rounded-[32px] bg-white/92 dark:bg-stone-900/94 border border-white/70 dark:border-stone-700/70 shadow-2xl p-5"
               onMouseDown={e => e.stopPropagation()}
             >
               <div className="absolute inset-x-0 top-0 h-1 bg-stone-200/80 dark:bg-stone-700/80 overflow-hidden">
@@ -1216,7 +1217,7 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '6.0.20'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -1229,9 +1230,7 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
               <div className="mt-5 space-y-2.5 text-xs leading-5 text-stone-600 dark:text-stone-300">
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">本次更新</p>
-                  <p>Chat 支持工作流创建和修改，可从画布选择节点或节点组生成工作流快照。</p>
-                  <p className="mt-1">本地附件支持 TXT、Word、Excel、PDF，并按文件类型保留正确的 MIME 信息。</p>
-                  <p className="mt-1">修复工作流节点移动后价格显示丢失，以及图片/视频任务恢复和重复查询问题。</p>
+                  <DesktopReleaseNotes />
                 </div>
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">免责说明</p>
@@ -1367,7 +1366,7 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '5.0.15'}</span>
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion}</span>
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
@@ -1498,23 +1497,13 @@ export function AppDialogHost({ scope }: { scope: AppDialogHostScope }) {
       <AnimatePresence>
         {showUpdateLog && (
           <motion.div data-drawer-dialog-backdrop="true" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9996] rounded-[30px] overflow-hidden bg-black/20 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={closeUpdateLog}>
-            <motion.div data-drawer-dialog="true" initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[360px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5" onMouseDown={e => e.stopPropagation()}>
-              <div data-drawer-dialog-header="true" className="flex items-center justify-between mb-3">
+            <motion.div data-drawer-dialog="true" initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[360px] max-h-full flex flex-col rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5" onMouseDown={e => e.stopPropagation()}>
+              <div data-drawer-dialog-header="true" className="flex shrink-0 items-center justify-between mb-3">
                 <span data-drawer-dialog-title="true" className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><Sparkles className="w-4 h-4 text-amber-500" /> 更新日志</span>
                 <button data-drawer-dialog-close="true" onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
-              <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v8.0.27</p>
-                <p>优化大画布的可视区域渲染、快照和状态保存，改善缩放、拖动、节点更新与恢复时的流畅度。</p>
-                <p>改进 Chat 搜索后的续接、文件工具调用和错误恢复；新增可编辑 PPTX 生成、来源整理与多种视觉方向。</p>
-                <p>新增可按相关性检索的本地设计记忆，帮助跨会话延续设计上下文，并明确区分本轮用户要求与历史参考。</p>
-                <p>改进图片模型参数适配及截图选区调整，模型比例、清晰度和交互状态更稳定。</p>
-                <p className="font-bold text-stone-800 dark:text-stone-100">v8.0.26</p>
-                <p>改善音乐与钱包文字节点的连接稳定性；文字请求可在暂时连接错误后自动接管一次。</p>
-                <p>音乐结果待确认时保留原请求与已有曲目，恢复结果直接更新原节点。</p>
-                <p>统一音乐节点圆角，将积分提示放入生成按钮，移除多余的连接箭头。</p>
-                <p>钱包图片节点遵守管理端参考图开关：关闭后禁止新增参考图和图片连接，已有输入仍可移除，重新启用后可正常添加。</p>
-                <p>图片已有部分结果时，恢复操作继续查询原任务，避免误创建新生成任务。</p>
+              <div className="min-h-0 overflow-y-auto space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
+                <DesktopReleaseNotes showHistory />
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

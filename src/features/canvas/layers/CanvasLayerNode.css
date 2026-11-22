@@ -1,4 +1,5 @@
-.canvas-layer-operation {
+.canvas-layer-operation,
+.canvas-layer-group {
   --layer-surface: var(--canvas-surface, #fff);
   --layer-soft: var(--canvas-surface-soft, #f4f4f5);
   --layer-hover: var(--canvas-surface-hover, #eeeeef);
@@ -6,6 +7,9 @@
   --layer-muted: var(--canvas-muted, #71717a);
   --layer-line: var(--canvas-line, #e4e4e7);
   --layer-focus: var(--canvas-line-strong, #71717a);
+}
+
+.canvas-layer-operation {
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -17,7 +21,8 @@
   font-size: 12px;
 }
 
-.dark .canvas-layer-operation {
+.dark .canvas-layer-operation,
+.dark .canvas-layer-group {
   --layer-surface: var(--canvas-surface, #242424);
   --layer-soft: var(--canvas-surface-soft, #2a2a2a);
   --layer-hover: var(--canvas-surface-hover, #313131);
@@ -242,3 +247,158 @@
 .dark .canvas-layer-operation__catalog-status[data-warning="true"] {
   color: #fcd34d;
 }
+
+.canvas-layer-group {
+  /* The canvas stores the preview rectangle. Keep ports and layer coordinates anchored to it. */
+  container-type: size;
+}
+
+.canvas-layer-group__card {
+  --layer-title-height: max(32px, calc(16px / var(--layer-scale)));
+  position: absolute;
+  /* Reserve the header above the preview up to the available space at the canvas origin. */
+  inset: calc(-1 * min(var(--layer-title-height), var(--layer-node-y))) 0 auto;
+  border-radius: 10px;
+  background: var(--layer-surface);
+  color: var(--layer-ink);
+  box-shadow: var(--canvas-shadow, 0 4px 16px rgb(24 24 27 / 8%));
+}
+
+.canvas-layer-group__card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border: 1px solid var(--layer-line);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+[data-canvas-selected-state="true"] > .canvas-layer-group__card::after { border-color: var(--layer-focus); }
+
+.canvas-layer-group__title {
+  display: flex;
+  height: var(--layer-title-height);
+  align-items: center;
+  gap: 6px;
+  padding-inline: 10px;
+  border-radius: 10px 10px 0 0;
+  border-bottom: 1px solid var(--layer-line);
+  background: var(--layer-surface);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.canvas-layer-group__title svg { flex: none; color: var(--layer-muted); }
+.canvas-layer-group__grip { margin-inline-start: auto; }
+.canvas-layer-group__title:active,
+.canvas-layer-group[data-canvas-dragging="true"] .canvas-layer-group__title { cursor: grabbing; }
+
+.canvas-layer-group__preview { height: 100cqh; }
+.canvas-layer-group__handles {
+  position: absolute;
+  /* Put the screen-sized hit targets outside the controls, with the grips at the card corners. */
+  inset: calc(-14px / var(--layer-scale)) 0;
+  pointer-events: none;
+}
+.canvas-layer-group__handles [data-resize-corner^="n"] { align-items: flex-end; }
+.canvas-layer-group__handles [data-resize-corner^="s"] { align-items: flex-start; }
+
+.canvas-layer-panel {
+  overflow: hidden;
+  border-top: 1px solid var(--layer-line);
+  border-radius: 0 0 10px 10px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.canvas-layer-panel button {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+.canvas-layer-panel button:not(:disabled):hover { background: var(--layer-hover); }
+.canvas-layer-panel button:focus-visible { outline: 2px solid var(--layer-focus); outline-offset: -2px; }
+.canvas-layer-panel button:disabled { opacity: .35; }
+.canvas-layer-panel .canvas-layer-panel__icon { width: 24px; padding: 0; color: var(--layer-muted); }
+
+.canvas-layer-panel__bar,
+.canvas-layer-panel__receipt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 8px;
+  flex-wrap: wrap;
+  padding: 4px 6px;
+}
+
+.canvas-layer-panel__bar > [role="group"] { display: flex; align-items: center; gap: 2px; }
+.canvas-layer-panel .canvas-layer-panel__toggle { max-width: 100%; min-width: 0; font-weight: 650; }
+.canvas-layer-panel__toggle svg { flex: none; }
+.canvas-layer-panel__toggle[aria-expanded="true"] svg:last-child { transform: rotate(180deg); }
+.canvas-layer-panel__exports { margin-inline-start: auto; color: var(--layer-muted); }
+.canvas-layer-panel__exports button { font-size: 10px; }
+.canvas-layer-panel__exports button + button { border-inline-start: 1px solid var(--layer-line); border-radius: 0 5px 5px 0; }
+
+.canvas-layer-panel__list {
+  max-height: 142px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding: 3px 5px;
+  border-block: 1px solid var(--layer-line);
+}
+
+.canvas-layer-panel__list li {
+  display: flex;
+  min-height: 27px;
+  align-items: center;
+  gap: 4px;
+  padding-inline-end: 2px;
+  border-radius: 5px;
+}
+
+.canvas-layer-panel__list li[data-selected="true"] {
+  background: color-mix(in srgb, var(--layer-surface) 91%, #06a6b7);
+  box-shadow: inset 2px 0 #06a6b7;
+}
+
+.canvas-layer-panel__list .canvas-layer-panel__pick {
+  min-width: 0;
+  flex: 1;
+  justify-content: flex-start;
+  gap: 7px;
+  padding-inline: 7px 0;
+  text-align: start;
+  font-weight: 400;
+}
+
+.canvas-layer-panel__list .canvas-layer-panel__pick[aria-pressed="true"] { font-weight: 600; }
+.canvas-layer-panel__pick span { overflow: hidden; text-overflow: ellipsis; }
+.canvas-layer-panel__list li[data-hidden="true"] .canvas-layer-panel__pick { color: var(--layer-muted); }
+.canvas-layer-panel__list li[data-hidden="true"] img { opacity: .5; }
+.canvas-layer-panel__list img { width: 22px; height: 20px; flex: none; object-fit: contain; border-radius: 3px; background: var(--layer-soft); }
+.canvas-layer-panel__list .canvas-layer-panel__base { gap: 7px; padding-inline-start: 7px; color: var(--layer-muted); }
+.canvas-layer-panel__base span { width: 24px; display: grid; margin-inline-start: auto; place-items: center; }
+.canvas-layer-panel__actions > div:last-child { margin-inline-start: auto; }
+.canvas-layer-panel .canvas-layer-panel__edit { background: var(--layer-soft); color: var(--layer-ink); }
+
+.canvas-layer-panel__receipt {
+  padding: 5px 10px;
+  border-top: 1px solid var(--layer-line);
+  background: var(--layer-soft);
+  color: var(--layer-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.canvas-layer-panel__receipt strong { color: var(--layer-ink); font-weight: 600; }

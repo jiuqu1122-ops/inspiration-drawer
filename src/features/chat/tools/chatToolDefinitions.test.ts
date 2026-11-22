@@ -18,6 +18,7 @@ describe('Chat tool exposure', () => {
   it('registers only the supported Chat tools', () => {
     expect(CHAT_TOOL_DEFINITIONS.map(tool => tool.function.name)).toEqual([
       'create_ui_prototype',
+      'create_layered_psd',
       'web_search',
       'create_file',
       'create_agent',

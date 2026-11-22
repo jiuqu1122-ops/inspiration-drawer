@@ -11,6 +11,16 @@ const attachments: ChatAttachment[] = [1, 2, 3].map(index => ({
 }));
 
 describe('Chat reference argument resolution', () => {
+  it('resolves the selected historical source even with a newer upload and generation present', () => {
+    const input = {
+      toolName: 'edit_image', currentImageAttachments: attachments.slice(-1), availableImageAttachments: attachments,
+      latestGenerated: { id: 'generated', type: 'image' as const, path: 'generated.png' },
+    };
+    expect(resolveChatReferenceArguments({ ...input, args: { sourceImageId: 'attachment-1' } }).referenceImages).toEqual([attachments[0].path]);
+    expect(resolveChatReferenceArguments({ ...input, args: { attachmentIds: ['attachment-3', 'attachment-1'] } }).referenceImages)
+      .toEqual([attachments[2].path, attachments[0].path]);
+    expect(() => resolveChatReferenceArguments({ ...input, args: { sourceImageId: 'missing' } })).toThrow('指定的图片');
+  });
   it('fills all current images only when a normal generation omitted references', () => {
     expect(resolveChatReferenceArguments({
       toolName: 'generate_image',

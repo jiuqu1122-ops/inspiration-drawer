@@ -4,12 +4,18 @@
 
 ## 下载
 
-当前已发布版本：**8.0.35**
+当前已发布版本：**9.0.0**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v8.0.35/Inspiration.Drawer_8.0.35_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v8.0.35)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v9.0.0/Inspiration.Drawer_9.0.0_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v9.0.0)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 9.0.0 更新
+
+- 画布支持图层拆分和选区编辑，可拖动图层组标题栏、调整图层顺序，导出 PNG 组或分层 PSD。拆分按实际返回层数结算，含底图。
+- 在 Chat 中请求分层 PSD，确认拆分方案和积分报价后即可生成文件。同一对话中的追问可以继续引用上传的图片和生成结果。
+- 设置中的“一键安装／更新插件”统一处理 Rhino 8/9 插件和建模模块更新。
 
 ## 8.0.35 更新
 

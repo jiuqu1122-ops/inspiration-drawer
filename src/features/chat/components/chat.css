@@ -1806,6 +1806,27 @@
   font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+.chat-tool__psd {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--chat-border);
+  color: var(--chat-text);
+  font-size: 12px;
+}
+
+.chat-tool__psd dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 10px;
+  margin: 0;
+}
+
+.chat-tool__psd dt, .chat-tool__psd p, .chat-tool__psd-status { color: var(--chat-text-soft); }
+.chat-tool__psd dd, .chat-tool__psd p { margin: 0; overflow-wrap: anywhere; }
+.chat-tool__psd > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.chat-tool__psd-status { margin: 0; padding: 4px 10px 8px; font-size: 11px; }
+
 .chat-tool__approval > div {
   display: flex;
   gap: 4px;

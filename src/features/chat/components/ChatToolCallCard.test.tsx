@@ -33,6 +33,15 @@ const renderCard = (call = searchCall(), expanded = false) => {
 };
 beforeEach(() => { disclosure.expanded = false; });
 
+it('在确认拆分前展示源图、分层要求和实时计费规则', () => {
+  const html = renderCard(searchCall({ proposal: {
+    sourceName: '录音室.png', prompt: '音箱单独一层', offer: { creditsPerRequest: '51', creditsPerOutputImage: '3' },
+  } }, { toolName: 'create_layered_psd', status: 'awaiting-approval' }));
+  for (const copy of ['录音室.png', '音箱单独一层', '3 积分/层（含底图）', '预留 51 积分', '使用图层拆分', '不用']) {
+    expect(html).toContain(copy);
+  }
+});
+
 // Verify the rendered card, not message/runtime status or real provider behavior.
 describe('ChatToolCallCard web search receipts', () => {
   it('reports nonempty MOZA results as search success even beside a later model-stage error', () => {

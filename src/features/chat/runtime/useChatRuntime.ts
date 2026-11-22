@@ -6,7 +6,6 @@ import { collectChatHtmlArtifacts } from '../html/chatHtmlArtifacts';
 import { rhinoPostprocessFailure } from '../../rhino/rhinoPostprocessFailure';
 import { readableRhinoMcpFailure, rhinoGeometryFailureExplanation } from '../../rhino/rhinoErrorDiagnostic';
 import { geometryFailureReceipt, geometryFailureSummary, MAX_GEOMETRY_PREFLIGHT_CORRECTIONS } from '../../rhino/rhinoGeometryRecovery';
-import { isShortVisualFollowup, isVisualEditFollowup, isVisualRevisionFollowup } from '../context/chatVisualIntent';
 import { firstRequestTitle } from '../model/chatConversationTitle';
 import { RhinoDocumentGeometryWriteError } from '../../rhino/rhinoDocumentGeometry';
 import { ensureRhinoRuntimeLoaded, rhinoScriptFailureExplanation, buildRhinoWorkflowInstruction } from '../../rhino/rhinoRuntime';
@@ -108,7 +107,7 @@ import { mergePresentationToolCalls, needsPresentationDeliveryRecovery, presenta
 import {
   fallbackBatchPlanDecision,
 } from './chatBatchPlanReply';
-import { isHistoricalImageContinuation, selectChatImageAttachments } from './chatHistoricalAttachments';
+import { imageAttachments, isHistoricalImageContinuation, readEarlierImageMessages, selectChatImageAttachments } from './chatHistoricalAttachments';
 import { resolveChatReferenceArguments } from './chatReferenceArguments';
 import { normalizeVisibleChatText } from './chatVisibleText';
 import { repeatedGhLoopFailureAfterCorrection } from './rhinoGhFailureGuard';
@@ -430,6 +429,10 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
   const conversationsRef = useRef(conversations);
   const messagesRef = useRef(messages);
   const messageCacheRef = useRef(new Map<string, ChatMessage>());
+  const olderImageHistoryRef = useRef(new Map<string, {
+    cursor: { beforeCreatedAt: number; beforeId?: string };
+    messages?: ChatMessage[];
+  }>());
   const summaryRef = useRef(summary);
   const activeConversationIdRef = useRef(activeConversationId);
   const busyConversationIdsRef = useRef(new Set<string>());
@@ -499,6 +502,13 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
 
   const cacheMessages = useCallback((values: ChatMessage[]) => {
     values.forEach(message => messageCacheRef.current.set(message.id, message));
+  }, []);
+
+  const withEarlierImageSources = useCallback((conversationId: string, recent: ChatMessage[]) => {
+    const older = olderImageHistoryRef.current.get(conversationId)?.messages;
+    if (!older?.length) return recent;
+    const visible = new Set(recent.map(message => message.id));
+    return [...older.filter(message => !visible.has(message.id)), ...recent];
   }, []);
 
   const enqueueConversationPersist = useCallback((conversation: ChatConversation) => (
@@ -713,6 +723,11 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         return recovered;
       });
       cacheMessages(resolvedMessages);
+      if (page.hasMore && page.nextBeforeCreatedAt != null && !olderImageHistoryRef.current.has(conversationId)) {
+        olderImageHistoryRef.current.set(conversationId, {
+          cursor: { beforeCreatedAt: page.nextBeforeCreatedAt, beforeId: page.nextBeforeId ?? undefined },
+        });
+      }
       activeConversationIdRef.current = conversationId;
       setActiveConversationId(conversationId);
       writeActiveChatConversationId(conversationId, optionsRef.current.conversationScope || 'desktop');
@@ -1240,15 +1255,15 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
               if (!validation.valid) throw new RhinoNativeArgumentError(validation.message);
             }
           }
-          const conversationMessages = getConversationMessages(run.conversationId);
+          const conversationMessages = withEarlierImageSources(run.conversationId, getConversationMessages(run.conversationId));
           const presentationText = resolvePresentationTurnText(run.userText, conversationMessages);
           const previousCalls = conversationMessages.find(message => message.id === run.assistantMessageId)?.toolCalls || [];
           validatePresentationImageCall(presentationText, call.toolName, args, previousCalls.filter(previous => previous.id !== call.id));
           const generated = latestGeneratedMedia(conversationMessages);
-          const currentImageAttachments = selectChatImageAttachments(
-            conversationMessages,
-            run.userText,
-          ).attachments;
+          const imageSelection = selectChatImageAttachments(conversationMessages, run.userText);
+          const currentImageAttachments = imageSelection.attachments;
+          const currentAssistant = conversationMessages.find(message => message.id === run.assistantMessageId);
+          const availableImages = [...imageSelection.visionAttachments, ...(currentAssistant ? imageAttachments(currentAssistant) : [])];
           const rhinoMaskAttachment = run.executionSource === 'rhino' ? findAttachmentRole(currentImageAttachments, 'mask') : undefined;
           const forceRhinoCanvasMask = Boolean(rhinoMaskAttachment && rhinoVisualToolNames.has(call.toolName));
           if ((optionsRef.current.imageMaskMode === 'on' || forceRhinoCanvasMask)
@@ -1260,7 +1275,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
             toolName: call.toolName,
             args,
             currentImageAttachments,
-            latestGenerated: generated,
+            availableImageAttachments: availableImages,
+            latestGenerated: generated && availableImages.some(image => image.id === generated.id) ? generated : undefined,
           });
           if (call.toolName === 'add_to_canvas' && generated) {
             if (!args.mediaId) args.mediaId = generated.id;
@@ -1349,6 +1365,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
               messageId: run.assistantMessageId,
               recentMessages: conversationMessages,
               currentUserAttachments: currentImageAttachments,
+              approvedLayeredPsd: approved && call.toolName === 'create_layered_psd' && call.resultJson
+                ? JSON.parse(call.resultJson).proposal : undefined,
               signal: batchController?.signal,
               onProgress: value => {
                 progressQueue = progressQueue.then(async () => {
@@ -1393,6 +1411,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
             },
           });
           if (routed.requiresApproval) {
+            if (routed.proposal) call.resultJson = JSON.stringify({ proposal: routed.proposal });
             call.status = 'awaiting-approval';
             patchThinkingStep(run.assistantMessageId, `tool-${index}`, {
               type: call.toolName === 'web_search' ? 'search' : 'tool',
@@ -1586,7 +1605,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           const finalCalls = mergePresentationToolCalls(visibleCalls, run.calls);
           const postprocess = unconfirmedNativeWrite ? undefined : rhinoPostprocessFailure(finalCalls, call);
           const uncheckedModel = Boolean(getRhinoVisualFidelityState(finalCalls).latestWriteId
-            && selectChatImageAttachments(getConversationMessages(run.conversationId), run.userText).attachments.length);
+            && selectChatImageAttachments(withEarlierImageSources(run.conversationId, getConversationMessages(run.conversationId)), run.userText).attachments.length);
           patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
             ...message,
             toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls),
@@ -1644,6 +1663,16 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         updateConversationBusy(run.conversationId, false);
         return;
       }
+      const failedSplit = approvedCallId && run.calls.find(call =>
+        call.id === approvedCallId && call.toolName === 'create_layered_psd' && call.status === 'error');
+      if (failedSplit) {
+        const { error } = JSON.parse(failedSplit.resultJson || '{}');
+        patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
+          ...message, content: String(error || 'PSD 生成失败').replace(/^Error: /, ''),
+        }, 'error'), true);
+        updateConversationBusy(run.conversationId, false);
+        return;
+      }
       // Native success is a step receipt, not a turn-completion signal. Feed it
       // back to the model so startup/search/place/connect/solve chains continue.
       const presentationText = resolvePresentationTurnText(run.userText, getConversationMessages(run.conversationId));
@@ -1697,6 +1726,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     }
   }, [
     getConversationMessages,
+    withEarlierImageSources,
     maybeSummarize,
     patchMessage,
     syncActiveConversationActivity,
@@ -1732,7 +1762,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       usageContext: 'chat',
     }).requestedModel;
     const requestId = resumeRequestId || createChatId('chat-request');
-    const conversationMessages = getConversationMessages(conversationId);
+    const conversationMessages = withEarlierImageSources(conversationId, getConversationMessages(conversationId));
     const imageSelection = selectChatImageAttachments(conversationMessages, userText);
     const hasRecentMedia = Boolean(latestGeneratedMedia(conversationMessages));
     const currentImageAttachmentCount = imageSelection.attachments.length;
@@ -1790,13 +1820,15 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         Boolean(getSelectedChatSkill(conversationId)),
         agentCreationFollowup,
         userText,
-        currentImageAttachmentCount > 0 || (hasRecentMedia && (isShortVisualFollowup(userText) || isVisualRevisionFollowup(userText) || isVisualEditFollowup(userText))),
+        conversationMessages.some(message => message.attachments.some(attachment => attachment.type === 'image')),
         collectChatHtmlArtifacts(conversationMessages, conversationId).length > 0,
         collectChatHtmlArtifacts(conversationMessages, conversationId).some(artifact => Boolean(artifact.prototype)),
         executionSource === 'desktop',
         executionSource === 'desktop',
       ).filter(tool => (
         (!agentCreatedThisTurn || tool.function.name !== 'create_agent')
+        && (tool.function.name !== 'create_layered_psd' || executionSource === 'desktop'
+          && !conversationMessages.find(message => message.id === assistantMessageId)?.toolCalls.some(call => call.toolName === 'create_layered_psd'))
         && (executionSource !== 'rhino' || !isGithubSkillTool(tool.function.name))
         && (!rhinoGeometryRequest || !['generate_image', 'edit_image', 'generate_image_variants', 'generate_video', 'batch_image_operation'].includes(tool.function.name))
         && (!(recoverSearchSynthesis || recoverPresentationDelivery) || tool.function.name === 'create_file' || (!recoverPresentationDelivery && tool.function.name === 'create_ui_prototype'))
@@ -2202,7 +2234,11 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     let acceptedFileCreateInResponse = false;
     let acceptedBatchImageOperationInResponse = previousBatchImageOperationCount > 0;
     let acceptedImageVariantInResponse = !presentationText && previousImageVariantCount > 0;
+    const psdProposalInResponse = tools.some(tool => tool.function.name === 'create_layered_psd')
+      && result.toolCalls?.some(call => call.name === 'create_layered_psd');
     const toolCalls = (result.toolCalls || []).filter(call => {
+      // Present the proposal before dispatching any sibling actions from this model response.
+      if (psdProposalInResponse && call.name !== 'create_layered_psd') return false;
       if (qualityAccepted || call.name === RHINO_REFERENCE_FIDELITY_ASSESSMENT_TOOL) return false;
       if (nativeComponentOnly && /^rhino_native_run_/.test(call.name)) return false;
       if (!recoveryActive && qualityState.improvementCount > 0) {
@@ -2214,7 +2250,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       }
       if (forcedVisualReview && (call.name !== RHINO_REFERENCE_REVIEW_TOOL || !tools.length)) return false;
       if (forcedVisualReview && (result.toolCalls || []).find(item => item.name === RHINO_REFERENCE_REVIEW_TOOL) !== call) return false;
-      if (['create_file', 'create_ui_prototype'].includes(call.name)) {
+      if (call.name === 'create_layered_psd' && !tools.some(tool => tool.function.name === call.name)) return false;
+      if (['create_file', 'create_layered_psd', 'create_ui_prototype'].includes(call.name)) {
         if (!fileCreationTurn.canAttempt || acceptedFileCreateInResponse) return false;
         acceptedFileCreateInResponse = true;
         return true;
@@ -2641,6 +2678,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     continueToolCalls,
     flushStreamDelta,
     getConversationMessages,
+    withEarlierImageSources,
     maybeSummarize,
     patchMessage,
     syncActiveConversationActivity,
@@ -2886,7 +2924,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       toolCalls: [],
     }, now + 1);
     let existingMessages = getConversationMessages(conversationId);
-    if (attachments.length === 0 && isHistoricalImageContinuation(userMessage.content)) {
+    if (attachments.length === 0 && (existingMessages.length === 0 || isHistoricalImageContinuation(userMessage.content))) {
       try {
         const persistedPage = await listChatMessages(conversationId, { limit: PAGE_SIZE });
         const hydratedMessages = persistedPage.messages.map(persistedMessage => {
@@ -2909,13 +2947,23 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       }
     }
     const nextMessages = [...existingMessages, userMessage, assistantMessage];
-    const imageSelection = selectChatImageAttachments(nextMessages, userMessage.content);
+    const earlier = olderImageHistoryRef.current.get(conversationId);
+    if (earlier && !earlier.messages) {
+      try {
+        earlier.messages = await readEarlierImageMessages(nextMessages, earlier.cursor, cursor =>
+          listChatMessages(conversationId, { ...cursor, limit: PAGE_SIZE }));
+      } catch (error) {
+        console.warn('读取更早的对话图片失败', error);
+      }
+    }
+    const imageSelection = selectChatImageAttachments(withEarlierImageSources(conversationId, nextMessages), userMessage.content);
+    const visionImages = imageSelection.visionAttachments;
     cacheMessages([userMessage, assistantMessage]);
     if (activeConversationIdRef.current === conversationId) {
       messagesRef.current = nextMessages;
       setMessages(nextMessages);
     }
-    const visionResolver = imageSelection.attachments.length > 0
+    const visionResolver = visionImages.length > 0
       ? optionsRef.current.createVisionAttachmentResolver?.()
       : undefined;
     try {
@@ -2941,11 +2989,11 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         setConversations(conversationsRef.current);
         await enqueueConversationPersist(conversation);
       }
-      if (imageSelection.attachments.length > 0) {
+      if (visionImages.length > 0) {
         patchThinkingStep(assistantMessage.id, 'attachments', {
           type: 'attachment',
           title: '正在处理参考图片',
-          detail: `${imageSelection.attachments.length} 张图片`,
+          detail: `${visionImages.length} 张图片`,
           status: 'running',
         });
       }
@@ -2979,7 +3027,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         resolveAttachmentUrl: visionResolver?.resolve || optionsRef.current.resolveAttachmentUrl,
         // Rhino product reconstruction needs silhouettes and small transitions, not low-detail thumbnails.
         visionDetail: executionSource === 'rhino' ? 'high' : undefined,
-        visionAttachments: imageSelection.attachments,
+        visionAttachments: visionImages,
         reusedVisionAttachments: imageSelection.reusedFromHistory,
         skill: turnSkill,
         githubSkillsEnabled: executionSource === 'desktop',
@@ -2990,13 +3038,14 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           type: 'context', ...describeDesignMemoryTurn(memoryReport), status: 'completed',
         });
       }
-      if (imageSelection.attachments.length > 0) {
+      if (visionImages.length > 0) {
+        const content = providerMessages[providerMessages.length - 1]?.content;
+        const provided = Array.isArray(content) ? content.filter(part => part.type === 'image_url').length : 0;
+        const failed = visionImages.length - provided;
         patchThinkingStep(assistantMessage.id, 'attachments', {
           type: 'attachment',
-          title: memoryReport?.unavailableImageCount ? '部分参考图片未成功提供' : '参考图片已就绪',
-          detail: memoryReport
-            ? `${memoryReport.attachedImageCount} 张图片已提供，${memoryReport.unavailableImageCount} 张未成功提供`
-            : `${imageSelection.attachments.length} 张图片`,
+          title: failed ? '参考图片加载有失败' : '参考图片已就绪',
+          detail: failed ? `${provided} 张图片已提供，${failed} 张未成功提供` : `${provided} 张图片`,
           status: 'completed',
         });
       }
@@ -3092,6 +3141,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     createConversation,
     enqueueConversationPersist,
     getConversationMessages,
+    withEarlierImageSources,
     flushStreamDelta,
     patchMessage,
     patchThinkingStep,
@@ -3148,6 +3198,13 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         });
         call.completedAt = Date.now();
         await upsertChatToolCall(call);
+        if (call.toolName === 'create_layered_psd') {
+          patchMessage(pending.assistantMessageId, message => finalizeChatMessageState({
+            ...message, content: '已取消图层拆分。', toolCalls: [...pending.calls],
+          }, 'completed'), true);
+          updateConversationBusy(conversationId, false);
+          return;
+        }
         if (isBatchRevision) {
           patchMessage(pending.assistantMessageId, message => ({
             ...message,
@@ -3171,7 +3228,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         return;
       }
       call.status = 'pending';
-      call.resultJson = null;
+      if (call.toolName !== 'create_layered_psd') call.resultJson = null;
       call.completedAt = null;
       await continueToolCalls({ ...pending, calls: [...pending.calls] }, callId);
       if (optionsRef.current.cloudWalletMode) {
@@ -3220,6 +3277,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       return false;
     }
     if (!await deleteChatConversation(id)) return false;
+    olderImageHistoryRef.current.delete(id);
     for (const [messageId, message] of messageCacheRef.current) {
       if (message.conversationId !== id) continue;
       const persistTimer = persistTimersRef.current.get(messageId);
@@ -3246,6 +3304,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     const deletable = conversationsRef.current.filter(item => requested.has(item.id) && !busyConversationIdsRef.current.has(item.id) && !pendingApprovalsRef.current.has(item.id));
     if (deletable.length !== requested.size) optionsRef.current.onNotice?.('正在运行的对话已保留。');
     const deleted = new Set(await deleteChatConversations(deletable.map(item => item.id), (_id, error) => optionsRef.current.onNotice?.(`删除会话失败：${String(error)}`)));
+    for (const id of deleted) olderImageHistoryRef.current.delete(id);
     for (const [id, message] of messageCacheRef.current) if (deleted.has(message.conversationId)) messageCacheRef.current.delete(id);
     const next = conversationsRef.current.filter(item => !deleted.has(item.id));
     conversationsRef.current = next;

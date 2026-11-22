@@ -1,6 +1,7 @@
 import { Check, ChevronDown, LoaderCircle, ShieldAlert, X } from 'lucide-react';
 import { useState } from 'react';
 import type { ChatToolCall } from '../model/chatTypes';
+import type { LayeredPsdProposal } from '../tools/chatLayeredPsd';
 import { getChatToolLabel } from '../tools/chatToolLabels';
 
 const STATUS_LABELS: Record<string, string> = {
@@ -147,6 +148,8 @@ export function ChatToolCallCard({ call, onResolve }: {
   const searchReceipt = readWebSearchReceipt(call);
   const searchWarning = searchReceipt?.outcome != null && searchReceipt.outcome !== 'success';
   const batchProgress = readBatchProgress(call);
+  const psdReceipt = call.toolName === 'create_layered_psd' ? readJsonRecord(call.resultJson) : null;
+  const proposal = psdReceipt?.proposal as LayeredPsdProposal | undefined;
   const batchRevisionRequested = batchProgress?.phase === 'revision';
   const error = call.status === 'error' || (call.status === 'declined' && !batchRevisionRequested) || searchReceipt?.outcome === 'error';
   const currentBatchStage = batchProgress ? batchStageIndex(batchProgress.phase) : -1;
@@ -209,7 +212,25 @@ export function ChatToolCallCard({ call, onResolve }: {
           )}
         </div>
       )}
-      {call.toolName !== 'batch_image_operation' && call.status === 'awaiting-approval' && (
+      {psdReceipt && call.status === 'awaiting-approval' && proposal && (
+        <section className="chat-tool__psd" aria-label="图层拆分确认">
+          <strong>使用图层拆分制作 PSD？</strong>
+          <dl><dt>源图</dt><dd>{proposal.sourceName}</dd>
+            <dt>分层要求</dt><dd>{proposal.prompt}</dd></dl>
+          <p>{proposal.offer.creditsPerOutputImage != null
+            ? `${Number(proposal.offer.creditsPerOutputImage)} 积分/层（含底图），预留 ${Number(proposal.offer.creditsPerRequest)} 积分，按实际返回层数结算。`
+            : `本次拆分 ${Number(proposal.offer.creditsPerRequest)} 积分。`}</p>
+          <div>
+            <button type="button" className="chat-button chat-button--primary" onClick={() => onResolve(call.id, true)}>使用图层拆分</button>
+            <button type="button" className="chat-button" onClick={() => onResolve(call.id, false)}>不用</button>
+          </div>
+        </section>
+      )}
+      {psdReceipt && call.status === 'running' && typeof psdReceipt.message === 'string' && <p className="chat-tool__psd-status">{psdReceipt.message}</p>}
+      {psdReceipt && call.status === 'completed' && typeof psdReceipt.layerCount === 'number' && (
+        <p className="chat-tool__psd-status">{psdReceipt.layerCount} 层（含底图） · 实扣 {Number(psdReceipt.chargedCredits)} 积分</p>
+      )}
+      {call.toolName !== 'batch_image_operation' && !psdReceipt && call.status === 'awaiting-approval' && (
         <div className="chat-tool__approval">
           {call.toolName.startsWith('rhino_native_') ? (
             <>

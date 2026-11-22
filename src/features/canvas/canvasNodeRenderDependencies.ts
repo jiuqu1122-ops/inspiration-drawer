@@ -26,6 +26,7 @@ export const getCanvasNodeRenderDependencies = (scope: Scope, item: CanvasImageI
     scope.threeSceneAnalyzingIds.includes(item.id),
     scope.canvasAiPromptEditingId === item.id,
     scope.canvasAiPromptEditorSessions?.[item.id],
+    ...(item.layerResult?.group ? [scope.canvasSelectedIdsSet.size === 1 && scope.canvasSelectedIdsSet.has(item.id)] : []),
     scope.canvasPromptOptimizingId === item.id,
     scope.canvasInputMenuForId === item.id,
     scope.canvasInputPickTargetId === item.id,

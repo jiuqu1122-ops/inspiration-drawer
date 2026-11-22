@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { version as bundledVersion } from '../../package.json';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
@@ -86,7 +87,7 @@ export const useAppUpdate = ({ isMainDrawerWindow, showToast }: UseAppUpdateOpti
     return true;
   };
 
-  const [appVersion, setAppVersion] = useState('');
+  const [appVersion, setAppVersion] = useState(bundledVersion);
   const [isCheckingAppUpdate, setIsCheckingAppUpdate] = useState(false);
   const isCheckingAppUpdateRef = useRef(false);
   const [showAppUpdatePromptArrow, setShowAppUpdatePromptArrow] = useState(shouldShowDailyAppUpdatePrompt);
@@ -97,7 +98,6 @@ export const useAppUpdate = ({ isMainDrawerWindow, showToast }: UseAppUpdateOpti
       .then(setAppVersion)
       .catch(err => {
         console.warn('获取应用版本失败:', err);
-        setAppVersion('5.0.15');
       });
   }, []);
 

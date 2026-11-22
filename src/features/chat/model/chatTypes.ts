@@ -39,6 +39,8 @@ export type ChatAttachment = {
   createdAt: number;
 };
 
+export type ChatVisionAttachment = ChatAttachment & { generated?: boolean };
+
 export type ChatToolCall = {
   id: string;
   messageId: string;
@@ -148,6 +150,7 @@ export type ChatToolExecutionContext = {
   messageId: string;
   recentMessages: ChatMessage[];
   currentUserAttachments?: ChatAttachment[];
+  approvedLayeredPsd?: import('../tools/chatLayeredPsd').LayeredPsdProposal;
   signal?: AbortSignal;
   onProgress?: (value: unknown) => void | Promise<void>;
 };
@@ -183,7 +186,7 @@ export const getGeneratedMediaFromToolCall = (call: ChatToolCall): ChatGenerated
     : Array.isArray(record.outputs)
       ? record.outputs
       : nestedMedia;
-  return media.flatMap(value => {
+  return media.flatMap((value, index) => {
     if (!value || typeof value !== 'object') return [];
     const item = value as Record<string, unknown>;
     const type = String(item.type || item.mediaType || 'image') === 'video' ? 'video' : 'image';
@@ -191,7 +194,7 @@ export const getGeneratedMediaFromToolCall = (call: ChatToolCall): ChatGenerated
     const url = String(item.url || item.sourceUrl || '').trim() || undefined;
     if (!path && !url) return [];
     return [{
-      id: String(item.id || createChatId('generated')),
+      id: String(item.id || `${call.id}:media:${index}`),
       type,
       path,
       url,
@@ -204,7 +207,7 @@ export const getGeneratedMediaFromToolCall = (call: ChatToolCall): ChatGenerated
 };
 
 export const getGeneratedFilesFromToolCall = (call: ChatToolCall): ChatGeneratedFile[] => {
-  if (!['create_file', 'create_svg', 'create_ui_prototype', 'animate_ui_prototype'].includes(call.toolName) || call.status !== 'completed') return [];
+  if (!['create_file', 'create_layered_psd', 'create_svg', 'create_ui_prototype', 'animate_ui_prototype'].includes(call.toolName) || call.status !== 'completed') return [];
   const parsed = parseChatToolResult(call.resultJson);
   if (!parsed || typeof parsed !== 'object') return [];
   const files = Array.isArray((parsed as Record<string, unknown>).files)

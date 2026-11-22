@@ -1269,7 +1269,7 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                                       <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
                                     </span>
                                     <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
-                                      v{appVersion || '5.0.15'}
+                                      v{appVersion}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>

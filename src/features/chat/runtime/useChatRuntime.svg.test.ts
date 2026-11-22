@@ -31,6 +31,42 @@ beforeEach(()=>{
 afterEach(()=>{vi.unstubAllGlobals();vi.restoreAllMocks();});
 const last=()=>[...h.messages.values()].filter(message=>message.role==='assistant').slice(-1)[0]!;
 const attachment={id:'reference-image',type:'image' as const,path:'C:/private/logo.png',mimeType:'image/png'};
+describe('multi-turn Chat vision requests', () => {
+  it('carries original and generated pixels through text follow-ups and identifies a newly uploaded comparison', async () => {
+    const executeTool = vi.fn(async () => ({ media: [{ id: 'revision', type: 'image', path: 'C:/results/revision.png' }] }));
+    const runtime = useChatRuntime({
+      model: 'fixture', approvalMode: 'auto', executeTool,
+      resolveAttachmentUrl: async image => `https://vision.example.test/${image.id}.png`,
+    });
+    const answer = { content: '已看图。', toolCalls: [] };
+    const send = async (text: string, images: typeof attachment[] = []) => {
+      h.replies.length = 0;
+      h.replies.push(answer);
+      expect(await runtime.sendMessage(text, images)).toBe(true);
+      const users = h.requests[h.requests.length - 1].messages.filter((m: { role: string }) => m.role === 'user');
+      return users[users.length - 1].content;
+    };
+    const imageUrls = (parts: Array<{ type: string; image_url?: { url: string } }>) =>
+      parts.filter(part => part.type === 'image_url').map(part => part.image_url?.url);
+    const first = await send('看看这个标志', [attachment]);
+    expect(imageUrls(first)).toEqual(['https://vision.example.test/reference-image.png']);
+    h.replies.push({ content: '', toolCalls: [{ id: 'edit', name: 'edit_image', arguments: JSON.stringify({
+      prompt: '改成蓝色', sourceImageId: attachment.id,
+    }) }] }, answer);
+    expect(await runtime.sendMessage('改成蓝色')).toBe(true);
+    expect(executeTool).toHaveBeenCalledWith('edit_image', expect.objectContaining({ referenceImages: [attachment.path] }), expect.anything());
+    await send('嗯，谢谢。');
+    const question = await send('左边那个是什么？');
+    expect(imageUrls(question)).toEqual(['https://vision.example.test/reference-image.png', 'https://vision.example.test/revision.png']);
+    expect(question).toContainEqual({ type: 'text', text: '历史生成图 1\nattachmentId: revision' });
+    const compare = await send('和这张比呢？', [{ ...attachment, id: 'comparison', path: 'C:/private/compare.png' }]);
+    expect(imageUrls(compare)).toEqual([...imageUrls(question), 'https://vision.example.test/comparison.png']);
+    expect(compare).toContainEqual({ type: 'text', text: '图片附件 1\nattachmentId: comparison' });
+    expect(await send('换个话题')).toBe('换个话题');
+    expect(await send('继续说')).toBe('继续说');
+    expect(executeTool).toHaveBeenCalledTimes(1);
+  });
+});
 describe('reference image to SVG in real Chat runtime with local mocked IPC, never paid media',()=>{
  it.each([false,true])('passes actual reference pixels, creates a real file receipt, and continues in custom/wallet mode %s',async wallet=>{
   h.replies.push(call(),finalReply);const runtime=setup(wallet);

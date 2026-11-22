@@ -1,9 +1,10 @@
-import { Eye, EyeOff, ImagePlus, Layers2, MoveDown, MoveUp, Scan, Upload } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react';
+import { ArrowDown, ArrowUp, ChevronDown, Download, Eye, EyeOff, GripHorizontal, ImagePlus, Layers2, LockKeyhole, Scan, Undo2, Upload } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from 'react';
 import { CanvasRunAction } from '../../../components/CanvasAiRunButton';
 import type { CanvasImageItem } from '../../canvasModel';
 import { getCanvasItemThumbnailSource, getCanvasOriginalImageSource } from '../../../utils/canvasItemSelectors';
 import { CanvasStableImage } from '../components/CanvasStableImage';
+import { CanvasItemResizeHandles } from '../components/CanvasItemResizeHandles';
 import { getLayerCatalog } from './canvasLayerApi';
 import { canvasLayerInputSource, layerSourceKey } from './canvasLayerActions';
 import { layerAssetUrl, orderedLayers } from './canvasLayerAssets';
@@ -11,13 +12,14 @@ import type { CanvasLayer, CanvasLayerGroup, LayerCatalog } from './canvasLayerT
 import './CanvasLayerNode.css';
 
 const button = 'rounded-md bg-stone-200/65 px-2 py-1 text-xs font-semibold hover:bg-cyan-100 disabled:opacity-40 dark:bg-stone-700/80 dark:hover:bg-stone-600';
-const field = 'w-full rounded-md border border-stone-300 bg-transparent px-2 py-1.5 text-xs dark:border-stone-600';
 
 function Frame({ scope, item, children, onDoubleClick }: { scope: Record<string, any>; item: CanvasImageItem; children: ReactNode; onDoubleClick?: () => void }) {
-  return <div data-canvas-item-id={item.id} data-canvas-selected-state={scope.canvasSelectedIdsSet?.has(item.id) ? 'true' : undefined}
-    className={`group/canvas-item absolute isolate ${item.layerOperation ? 'canvas-layer-operation' : 'rounded-xl bg-white/95 shadow-lg dark:bg-stone-900/95'}`}
+  const group = item.layerResult?.group;
+  const selected = scope.canvasSelectedIdsSet?.has(item.id);
+  return <div data-canvas-item-id={item.id} data-canvas-selected-state={selected ? 'true' : undefined}
+    className={`group/canvas-item absolute isolate ${item.layerOperation ? 'canvas-layer-operation' : group ? 'canvas-layer-group' : 'rounded-xl bg-white/95 shadow-lg dark:bg-stone-900/95'}`}
     style={{ left: item.x, top: item.y, width: item.width, height: item.height, contain: item.layerResult ? 'layout style' : undefined,
-      zIndex: scope.canvasSelectedIdsSet?.has(item.id) ? 2 : 0 }}
+      zIndex: selected ? 2 : 0 }}
     onPointerDown={event => scope.startCanvasItemDrag(event, item.id)}
     onPointerEnter={() => { scope.canvasHoveredItemIdRef.current = item.id; }}
     onPointerLeave={() => { if (scope.canvasHoveredItemIdRef.current === item.id) scope.canvasHoveredItemIdRef.current = ''; }}
@@ -26,7 +28,20 @@ function Frame({ scope, item, children, onDoubleClick }: { scope: Record<string,
       scope.openCanvasContextMenu(event, 'item', { itemId: item.id });
     }}
     onDoubleClick={event => { if (onDoubleClick) { event.stopPropagation(); onDoubleClick(); } }}>
-    {children}
+    {group ? <div className="canvas-layer-group__card" style={{
+      '--layer-scale': scope.canvasRenderScale ?? 1,
+      '--layer-node-y': `${item.y}px`,
+    } as CSSProperties}>
+      <header className="canvas-layer-group__title" title="拖动整个图层组">
+        <Layers2 size={15} aria-hidden="true" />
+        <span className="truncate">{item.item.name} · {group.layers.length + 1} 层（含底图）</span>
+        <GripHorizontal size={16} aria-hidden="true" className="canvas-layer-group__grip" />
+      </header>
+      {children}
+      {selected && scope.canvasSelectedIdsSet.size === 1 && !scope.canvasAiPromptEditorSessions?.[item.id] &&
+        <div className="canvas-layer-group__handles"><CanvasItemResizeHandles itemId={item.id}
+          scale={scope.canvasRenderScale} onResize={scope.startCanvasItemResize} /></div>}
+    </div> : children}
   </div>;
 }
 
@@ -108,7 +123,7 @@ function OperationCard({ scope, item }: { scope: Record<string, any>; item: Canv
     </div>
     <footer className="canvas-layer-operation__footer" data-no-drag="true" onPointerDown={event => event.stopPropagation()}>
       {unit !== undefined && <span className="canvas-layer-operation__catalog-status">
-        最多 {offer?.maxOutputImages} 层（含底图）<br />预留 {Number(price)} 积分，按实际层数结算
+        最多 {offer?.maxOutputImages} 层（含底图）<br />预留 {Number(price)} 积分，按层结算
       </span>}
       {price === undefined && <div className="canvas-layer-operation__availability">
         <span role="status" className="canvas-layer-operation__catalog-status" data-warning={Boolean(error || catalog)}>
@@ -127,9 +142,6 @@ function OperationCard({ scope, item }: { scope: Record<string, any>; item: Canv
 function ResultCard({ scope, item }: { scope: Record<string, any>; item: CanvasImageItem }) {
   const result = item.layerResult!;
   const group = result.group;
-  // The selection border sits 12 canvas pixels outside the image. Its corner
-  // handles extend another 16 screen pixels, even when the canvas is zoomed out.
-  const selectionClearance = 12 + 16 / Math.max(0.25, scope.canvasRenderScale ?? 1);
   const originalSource = getCanvasOriginalImageSource(item.item);
   const [open, setOpen] = useState(false);
   const [chosen, setChosen] = useState('');
@@ -138,7 +150,8 @@ function ResultCard({ scope, item }: { scope: Record<string, any>; item: CanvasI
   const viewport = useRef<HTMLDivElement>(null);
   const drag = useRef<{ id: string; layer: CanvasLayer; start: { x: number; y: number } } | null>(null);
   const ordered = group ? orderedLayers(group) : [];
-  const active = ordered.find(layer => layer.id === chosen);
+  const frontToBack = [...ordered].reverse();
+  const active = frontToBack.find(layer => layer.id === chosen) ?? frontToBack.find(layer => !layer.hidden) ?? frontToBack[0];
   const perform = async (work: () => Promise<unknown>) => {
     setSaving(true);
     try { await work(); } catch (error) { scope.showToast(String(error)); }
@@ -149,11 +162,12 @@ function ResultCard({ scope, item }: { scope: Record<string, any>; item: CanvasI
   const amend = (id: string, patch: Partial<CanvasLayer>, label: string) => change(value =>
     ({ ...value, layers: value.layers.map(layer => layer.id === id ? { ...layer, ...patch } : layer) }), label);
   const reorder = (delta: number) => {
-    const index = ordered.findIndex(layer => layer.id === chosen);
-    if (index < 0 || !ordered[index + delta]) return;
-    const destination = ordered[index + delta];
-    change(value => ({ ...value, layers: value.layers.map(layer => layer.id === chosen
-      ? { ...layer, order: destination.order } : layer.id === destination.id ? { ...layer, order: ordered[index].order } : layer) }), '调整图层顺序');
+    if (!active) return;
+    const destination = ordered[ordered.indexOf(active) + delta];
+    if (!destination) return;
+    setChosen(active.id);
+    change(value => ({ ...value, layers: value.layers.map(layer => layer.id === active.id
+      ? { ...layer, order: destination.order } : layer.id === destination.id ? { ...layer, order: active.order } : layer) }), '调整图层顺序');
   };
   const dragPosition = (event: PointerEvent) => {
     if (!group || !drag.current || !viewport.current) return;
@@ -166,15 +180,14 @@ function ResultCard({ scope, item }: { scope: Record<string, any>; item: CanvasI
   };
   return <Frame scope={scope} item={item} onDoubleClick={group ? () => setOpen(value => !value) : result.asset && originalSource
     ? () => scope.openSelectedImagePreview(originalSource, { fromCanvas: true }) : undefined}>
-    <div className={`absolute left-0 max-w-full truncate text-[11px] font-bold ${result.mode === 'split' ? 'bottom-full' : '-top-6'}`}
-      style={result.mode === 'split' ? { marginBottom: selectionClearance } : undefined}>
-      {item.item.name}{group ? ` · ${group.layers.length + 1} 层（含底图）` : ''}
-    </div>
-    {result.status !== 'success' ? <div className="flex h-full flex-col items-center justify-center gap-2 p-3 text-center text-xs">
+    {!group && <div className={`absolute truncate text-[11px] font-bold ${result.mode === 'split' ? 'inset-x-3 top-2' : 'left-0 -top-6 max-w-full'}`}>
+      {item.item.name}
+    </div>}
+    {result.status !== 'success' ? <div className={`flex h-full flex-col items-center justify-center gap-2 p-3 text-center text-xs ${group ? 'canvas-layer-group__preview' : ''}`}>
       <span>{result.message || (result.status === 'processing' ? '正在处理…' : '任务失败')}</span>
       {result.status === 'processing' && result.message && <button type="button" className={button} onPointerDown={event => event.stopPropagation()}
         onClick={() => scope.resumeCanvasLayerOperation(item)}>查询原请求</button>}
-    </div> : group && open ? <div ref={viewport} className="relative h-full w-full overflow-hidden rounded-xl" style={{ touchAction: 'none' }}
+    </div> : group && open ? <div ref={viewport} className="canvas-layer-group__preview relative w-full overflow-hidden" style={{ touchAction: 'none' }}
       onPointerDown={event => event.stopPropagation()}
       onPointerMove={event => {
         if (drag.current) setDraft(dragPosition(event));
@@ -190,7 +203,7 @@ function ResultCard({ scope, item }: { scope: Record<string, any>; item: CanvasI
       {ordered.filter(layer => !layer.hidden).map(layer => {
         const position = draft?.id === layer.id ? draft : layer;
         return <img key={layer.id} src={layerAssetUrl(layer.path)} alt={layer.name} draggable={false} data-layer-id={layer.id}
-          className={`absolute cursor-move select-none ${chosen === layer.id ? 'outline outline-1 outline-cyan-400' : ''}`}
+          className={`absolute cursor-move select-none ${active?.id === layer.id ? 'outline outline-1 outline-cyan-400' : ''}`}
           style={{ left: `${position.x / group.width * 100}%`, top: `${position.y / group.height * 100}%`,
             width: `${layer.width / group.width * 100}%`, height: `${layer.height / group.height * 100}%`, opacity: layer.opacity }}
           onPointerDown={event => {
@@ -201,30 +214,57 @@ function ResultCard({ scope, item }: { scope: Record<string, any>; item: CanvasI
           }} />;
       })}
     </div> : <CanvasStableImage data-canvas-main-media="true"
-      className="h-full w-full select-none rounded-xl object-contain"
+      className={`w-full select-none object-contain ${group ? 'canvas-layer-group__preview' : 'h-full rounded-xl'}`}
       src={scope.getStableCanvasImageSource?.(item) || item.item.thumbnail || originalSource}
       alt={item.item.name} loading="lazy" decoding="async" draggable={false} />}
-    {group && <div className="absolute left-0 top-full z-10 flex w-full flex-wrap items-center gap-1 rounded-md bg-white/95 p-1 shadow dark:bg-stone-900/95"
-      style={{ marginTop: selectionClearance }}
+    {group && <section className="canvas-layer-panel" aria-label="图层组工具" data-no-drag="true"
       onPointerDown={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()}>
-      <button type="button" className={button} onClick={() => setOpen(value => !value)}>{open ? '收起图层' : '编辑图层'}</button>
-      {result.imageBilling && result.chargedCredits !== undefined && <span className="px-1 text-xs">
-        {result.imageBilling.imageCount} 层 × {Number(result.imageBilling.creditsPerOutputImage)} 积分，实扣 {Number(result.chargedCredits)} 积分
-      </span>}
-      {open && <button type="button" className={button} disabled={saving} onClick={() => scope.undoLastCanvasChange()}>撤销</button>}
-      <button type="button" className={button} disabled={saving} onClick={() => void perform(() => scope.exportCanvasLayerStack(group, 'zip'))}>PNG 组</button>
-      <button type="button" className={button} disabled={saving} onClick={() => void perform(() => scope.exportCanvasLayerStack(group, 'psd'))}>PSD</button>
-      {open && <div className="flex w-full flex-wrap items-center gap-1">
-        <select className={field} aria-label="选择图层" value={chosen} onChange={event => setChosen(event.target.value)}>
-          <option value="">选择图层</option>{[...ordered].reverse().map(layer => <option key={layer.id} value={layer.id}>{layer.name}{layer.hidden ? '（隐藏）' : ''}</option>)}
-        </select>
-        <button type="button" className={button} disabled={!active || saving} aria-label="切换图层可见性" onClick={() => active && amend(active.id, { hidden: !active.hidden }, '切换图层可见性')}>{active?.hidden ? <EyeOff size={13} /> : <Eye size={13} />}</button>
-        <button type="button" className={button} disabled={!active || saving} aria-label="上移图层" onClick={() => reorder(1)}><MoveUp size={13} /></button>
-        <button type="button" className={button} disabled={!active || saving} aria-label="下移图层" onClick={() => reorder(-1)}><MoveDown size={13} /></button>
-        <button type="button" className={button} disabled={!active || saving} onClick={() => scope.referenceCanvasLayer(item.id, chosen, false)}>引用此层</button>
-        <button type="button" className={button} disabled={!active || saving} onClick={() => scope.referenceCanvasLayer(item.id, chosen, true)}>编辑此层</button>
+      <div className="canvas-layer-panel__bar">
+        <button type="button" className="canvas-layer-panel__toggle" aria-expanded={open} title={open ? '收起图层' : '编辑图层'} onClick={() => setOpen(value => !value)}>
+          {open ? '收起图层' : '编辑图层'}<ChevronDown size={12} />
+        </button>
+        <div className="canvas-layer-panel__exports" role="group" aria-label="导出图层组">
+          <Download size={12} aria-hidden="true" />
+          <button type="button" title="导出 PNG 图层压缩包" disabled={saving} onClick={() => void perform(() => scope.exportCanvasLayerStack(group, 'zip'))}>PNG 组</button>
+          <button type="button" title="导出分层 PSD" disabled={saving} onClick={() => void perform(() => scope.exportCanvasLayerStack(group, 'psd'))}>PSD</button>
+        </div>
+      </div>
+      {open && <>
+        <ul className="canvas-layer-panel__list" aria-label="图层列表" data-canvas-wheel-scroll="true">
+          {frontToBack.map(layer => <li key={layer.id} data-selected={active?.id === layer.id} data-hidden={Boolean(layer.hidden)}>
+            <button type="button" className="canvas-layer-panel__pick" aria-pressed={active?.id === layer.id} onClick={() => setChosen(layer.id)} title={layer.name}>
+              <img src={layerAssetUrl(layer.path)} alt="" draggable={false} loading="lazy" /><span>{layer.name}</span>
+            </button>
+            <button type="button" className="canvas-layer-panel__icon" title={layer.hidden ? '显示图层' : '隐藏图层'}
+              aria-label={`${layer.hidden ? '显示' : '隐藏'}${layer.name}`} disabled={saving}
+              onClick={() => {
+                if (active?.id === layer.id) setChosen(layer.id);
+                amend(layer.id, { hidden: !layer.hidden }, '切换图层可见性');
+              }}>
+              {layer.hidden ? <EyeOff size={13} /> : <Eye size={13} />}
+            </button>
+          </li>)}
+          <li className="canvas-layer-panel__base"><img src={layerAssetUrl(group.base.path)} alt="" draggable={false} loading="lazy" />底图
+            <span title="底图固定" aria-label="底图固定"><LockKeyhole size={12} /></span>
+          </li>
+        </ul>
+        <div className="canvas-layer-panel__bar canvas-layer-panel__actions">
+          <div role="group" aria-label="图层顺序和撤销">
+            <button type="button" className="canvas-layer-panel__icon" title="上移图层" aria-label="上移图层" disabled={saving || active === frontToBack[0]} onClick={() => reorder(1)}><ArrowUp size={14} /></button>
+            <button type="button" className="canvas-layer-panel__icon" title="下移图层" aria-label="下移图层" disabled={saving || active === ordered[0]} onClick={() => reorder(-1)}><ArrowDown size={14} /></button>
+            <button type="button" className="canvas-layer-panel__icon" title="撤销" aria-label="撤销" disabled={saving} onClick={() => scope.undoLastCanvasChange()}><Undo2 size={14} /></button>
+          </div>
+          <div role="group" aria-label="使用所选图层">
+            <button type="button" disabled={!active || saving} onClick={() => active && scope.referenceCanvasLayer(item.id, active.id, false)}>引用此层</button>
+            <button type="button" className="canvas-layer-panel__edit" disabled={!active || saving} onClick={() => active && scope.referenceCanvasLayer(item.id, active.id, true)}>编辑此层</button>
+          </div>
+        </div>
+      </>}
+      {result.imageBilling && result.chargedCredits !== undefined && <div className="canvas-layer-panel__receipt">
+        <span>{result.imageBilling.imageCount} 层 × {Number(result.imageBilling.creditsPerOutputImage)} 积分</span>
+        <strong>实扣 {Number(result.chargedCredits)} 积分</strong>
       </div>}
-    </div>}
+    </section>}
     {result.asset && result.sourceLayer && <button type="button" className={button + ' absolute top-full'} disabled={saving || !scope.canReplaceCanvasLayerResult(item)}
       title="仅允许相同像素尺寸、保留透明通道的结果替换仍匹配的原图层"
       onPointerDown={event => event.stopPropagation()} onClick={() => void perform(() => scope.applyCanvasLayerReplacement(item))}>替换原图层</button>}

@@ -1,4 +1,5 @@
 export const MAX_INLINE_VISION_BYTES = 2.5 * 1024 * 1024;
+export const MAX_CHAT_VISION_IMAGES = 9;
 export const CHAT_REQUEST_WARN_BYTES = 1024 * 1024;
 
 export type ChatRequestSizeStats = {

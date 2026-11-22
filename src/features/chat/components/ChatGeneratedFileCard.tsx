@@ -7,6 +7,7 @@ import { useState } from 'react';
 import type { ChatGeneratedFile } from '../model/chatTypes';
 
 const FORMAT_LABELS: Record<string, string> = {
+  psd: 'Photoshop 分层文件',
   pptx: 'PowerPoint 演示文稿',
   sketch: 'Figma 可导入设计',
   zip: '旧版 ZIP 原型包',

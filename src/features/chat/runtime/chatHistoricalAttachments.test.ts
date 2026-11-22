@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '../model/chatTypes';
-import { isHistoricalImageContinuation, selectChatImageAttachments } from './chatHistoricalAttachments';
+import { isHistoricalImageContinuation, readEarlierImageMessages, selectChatImageAttachments } from './chatHistoricalAttachments';
 
 const message = (
   id: string,
@@ -25,6 +25,56 @@ const message = (
 });
 
 describe('historical Chat image attachments', () => {
+  it('keeps uploads and successful generated originals available for an ordinary question across text turns', () => {
+    const original = message('source', '录音室', ['ref.png'], 1);
+    const generated: ChatMessage = { ...message('result', '', [], 2), role: 'assistant', toolCalls: [{
+      id: 'render', messageId: 'result', createdAt: 2, status: 'completed', toolName: 'edit_image',
+      argumentsJson: '{}', resultJson: JSON.stringify({ media: [
+        { id: 'edited', path: 'edited.png', thumbnail: 'small.png' }, { type: 'video', url: 'movie.mp4' },
+      ] }),
+    }] };
+    const latest = message('question', '左边那个呢？', [], 5);
+    const other = { ...message('other', '', ['private.png'], 3), conversationId: 'other' };
+    const selection = selectChatImageAttachments([original, generated, other, message('thanks', '谢谢', [], 4), latest], latest.content);
+    expect(selection.visionAttachments.map(a => [a.id, a.path])).toEqual([['source-attachment-1', 'ref.png'], ['edited', 'edited.png']]);
+    expect(selection.attachments).toEqual([]);
+    const edit = message('edit', '改成红色', [], 6);
+    expect(selectChatImageAttachments([original, generated, latest, edit], edit.content).attachments.map(a => a.id)).toEqual(['edited']);
+    generated.toolCalls[0].status = 'error';
+    expect(selectChatImageAttachments([original, generated, latest], latest.content).visionAttachments).toEqual(original.attachments);
+  });
+
+  it('gives new uploads priority within the nine-image budget and preserves their input order', () => {
+    const older = message('old', '', Array.from({ length: 9 }, (_, i) => String(i)), 1);
+    const latest = message('latest', '看看差别', ['new-a', 'new-b'], 2);
+    const selection = selectChatImageAttachments([older, latest], latest.content);
+    expect(selection.visionAttachments.map(a => a.path)).toEqual(['0','1','2','3','4','5','6','new-a','new-b']);
+    expect(selection.attachments).toEqual(latest.attachments);
+  });
+
+  it.each(['忽略之前的图片', '换个话题\n聊聊别的', 'ignore previous images', '帮我生成一张全新的宇宙风景图'])('does not resurrect images across a reset: %s', reset => {
+    const old = message('old', '', ['old.png'], 1);
+    const boundary = message('boundary', reset, [], 2);
+    const latest = message('latest', '继续', [], 3);
+    expect(selectChatImageAttachments([old, boundary, latest], latest.content).visionAttachments).toEqual([]);
+    const replacement = message('replacement', reset, ['new.png'], 2);
+    expect(selectChatImageAttachments([old, replacement, latest], latest.content).visionAttachments).toEqual(replacement.attachments);
+  });
+
+  it('finds an image beyond the reopened chat page and stops at the last reset', async () => {
+    const recent = [message('question', '侧面呢？', [], 101)];
+    const source = message('source', '图', ['ref.png'], 45);
+    const cursors: number[] = [];
+    const recovered = await readEarlierImageMessages(recent, { beforeCreatedAt: 101 }, async cursor => {
+      cursors.push(cursor.beforeCreatedAt);
+      return cursor.beforeCreatedAt === 101
+        ? { messages: [message('text', '嗯', [], 51)], hasMore: true, nextBeforeCreatedAt: 51, nextBeforeId: 'text' }
+        : { messages: [message('stale', '', ['stale.png'], 1), message('reset', '换个话题', [], 32), source],
+            hasMore: true, nextBeforeCreatedAt: 1, nextBeforeId: 'stale' };
+    });
+    expect(cursors).toEqual([101, 51]);
+    expect(recovered).toEqual([source]);
+  });
   it.each([
     '开始做吧',
     '就按刚才的方案来',

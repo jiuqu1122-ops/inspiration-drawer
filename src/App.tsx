@@ -6109,6 +6109,7 @@ useEffect(() => {
   });
 
   const executeChatTool = createInspirationChatToolExecutor({
+    psdImages: { read: imageSourceToDataUrl, cacheImage: layerContext.cacheImage },
     executeExistingTool: (name, args, execution) => canvasAgent.executeExternalTool(name, args, execution),
     generateMedia: generateChatMedia,
     listWorkflowDescriptors: () => canvasWorkflowTemplates,

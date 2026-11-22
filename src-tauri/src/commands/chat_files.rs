@@ -846,6 +846,49 @@ pub async fn chat_create_file(
 }
 
 #[tauri::command]
+pub async fn chat_save_layered_psd(
+    app_handle: tauri::AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<ChatGeneratedFileResult, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("未收到 PSD 文件数据".into());
+    };
+    let header = request.headers().get("x-chat-output")
+        .and_then(|value| value.to_str().ok()).ok_or("缺少对话文件信息")?;
+    let fields: HashMap<_, _> = url::form_urlencoded::parse(header.as_bytes()).collect();
+    let conversation = sanitize_component(fields.get("conversation").ok_or("缺少对话 ID")?, "conversation", 80);
+    let name = sanitize_component(fields.get("name").ok_or("缺少 PSD 文件名")?, "图层组", 96);
+    let directory = generated_root(&app_handle)?.join(conversation);
+    let bytes = bytes.clone();
+    tauri::async_runtime::spawn_blocking(move || write_chat_psd(&directory, &name, &bytes))
+        .await.map_err(|e| format!("保存 PSD 失败：{e}"))?
+}
+
+fn write_chat_psd(directory: &Path, name: &str, bytes: &[u8]) -> Result<ChatGeneratedFileResult, String> {
+    if bytes.len() < 26 || !bytes.starts_with(b"8BPS\x00\x01") {
+        return Err("无效的 PSD 文件".into());
+    }
+    let stem = Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("图层组");
+    let name = format!("{stem}.psd");
+    fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    let id = format!("file-{}-{:08x}", chrono::Utc::now().timestamp_millis(), rand::random::<u32>());
+    let path = directory.join(format!("{id}-{name}"));
+    let mut file = File::create_new(&path).map_err(|e| e.to_string())?;
+    if let Err(error) = file.write_all(bytes) {
+        drop(file);
+        let _ = fs::remove_file(&path);
+        return Err(format!("写入 PSD 失败：{error}"));
+    }
+    Ok(ChatGeneratedFileResult {
+        files: vec![ChatGeneratedFile {
+            id, name, path: path.to_string_lossy().into_owned(), format: "psd".into(),
+            mime_type: "image/vnd.adobe.photoshop".into(), size: bytes.len() as u64, slide_count: None,
+        }],
+        warnings: vec![],
+    })
+}
+
+#[tauri::command]
 pub fn chat_copy_generated_file(
     app_handle: tauri::AppHandle,
     source_path: String,
@@ -873,6 +916,23 @@ pub fn chat_copy_generated_file(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn psd_file_card_points_to_saved_binary() {
+        let dir = std::env::temp_dir().join(format!("chat-psd-test-{:016x}", rand::random::<u64>()));
+        assert!(super::write_chat_psd(&dir, "图层", b"png").is_err());
+        assert!(!dir.exists());
+        let mut bytes = vec![0; 43];
+        bytes[..6].copy_from_slice(b"8BPS\x00\x01");
+        let result = super::write_chat_psd(&dir, "音箱.psd", &bytes).unwrap();
+        let file = &result.files[0];
+        assert_eq!(file.name, "音箱.psd");
+        assert_eq!(file.format, "psd");
+        assert_eq!(file.size, bytes.len() as u64);
+        assert_eq!(std::fs::read(&file.path).unwrap(), bytes);
+        std::fs::remove_file(&file.path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
     use super::{
         normalized_file_name, write_docx, write_pdf, write_xlsx, write_generated_file, ChatCreateFileRequest, ChatSpreadsheetSheet,
         GeneratedFormat,

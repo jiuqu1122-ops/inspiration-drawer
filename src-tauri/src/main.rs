@@ -19328,6 +19328,7 @@ fn main() {
             commands::chat::chat_web_search,
             commands::chat_prototypes::chat_create_prototype,
             commands::chat_files::chat_create_file,
+            commands::chat_files::chat_save_layered_psd,
             commands::chat_files::chat_copy_generated_file,
             browser_extension::browser_extension_get_status,
             browser_extension::browser_extension_begin_install,

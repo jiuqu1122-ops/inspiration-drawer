@@ -20,6 +20,7 @@ const CHAT_TOOL_LABELS: Record<string, string> = {
   create_ui_prototype: '创建原型 / Figma 设计文件',
   create_svg: '制作 SVG 矢量图',
   create_file: '生成文件',
+  create_layered_psd: '拆分图层并生成 PSD',
   create_agent: '创建智能体',
   get_canvas_selection: '读取画布选中项',
   search_assets: '搜索素材库',

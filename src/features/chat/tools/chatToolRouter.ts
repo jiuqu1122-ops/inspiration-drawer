@@ -1,4 +1,5 @@
 import { validateSvgToolArguments } from './chatSvgTool';
+import { proposeLayeredPsd } from './chatLayeredPsd';
 import { isGithubSkillTool, validateGithubSkillTool } from '../skills/githubSkillTools';
 import { parsePrototype } from '../prototypes/prototypeSchema';
 import { assertGeometryCorrection } from '../../rhino/rhinoGeometryRecovery';
@@ -69,6 +70,17 @@ export const routeChatToolCall = async (input: {
   onExecuting?: () => void | Promise<void>;
 }) => {
   const name = normalizeChatToolName(input.name);
+  if (name === 'create_layered_psd') {
+    if (input.context.executionSource !== 'desktop') throw new Error('请在桌面 Chat 使用图层拆分。');
+    const permission = { riskLevel: 'safe_write' as const, requiresConfirmation: true, reasons: ['paid-layer-split'] };
+    if (input.approved !== true) {
+      const proposal = await proposeLayeredPsd(input.args, input.context);
+      return { requiresApproval: true, permission, proposal };
+    }
+    if (!input.context.approvedLayeredPsd) throw new Error('未找到已确认的图层拆分方案。');
+    await input.onExecuting?.();
+    return { requiresApproval: false, permission, result: await input.executor(name, input.args, input.context) };
+  }
   if(name==='create_svg')validateSvgToolArguments(input.args);
   if (isImagePromptTextRequest(input.context.userText)
     && ['generate_image', 'generate_image_variants', 'edit_image', 'batch_image_operation'].includes(name)) {

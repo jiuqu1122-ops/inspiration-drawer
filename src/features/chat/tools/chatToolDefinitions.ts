@@ -18,6 +18,15 @@ const objectSchema = (properties: Record<string, unknown>, required: string[] = 
 
 export const CHAT_TOOL_DEFINITIONS: ChatToolDefinition[] = [
   CREATE_UI_PROTOTYPE_TOOL,
+  { type: 'function', function: {
+    name: 'create_layered_psd',
+    description: '为当前对话的一张图片提出付费图层拆分方案，用户点击确认后生成可下载的分层 Photoshop PSD。有明确制作意图时调用。源图不明确时先询问用户。',
+    parameters: objectSchema({
+      sourceId: { type: 'string', description: '当前对话中用户指定的图片附件 ID 或生成结果 ID。最近仅有一张图时可省略。' },
+      prompt: { type: 'string', maxLength: 4000, description: '根据用户要求写出需要单独拆分的对象和应保留在底图的内容；用户没有指定对象时要求自动分层。' },
+      fileName: { type: 'string', description: '交付的 PSD 文件名。' },
+    }, ['prompt']),
+  } },
   { type: 'function', function: { name: 'web_search', description: `通用互联网搜索，可查询新闻、网页、资料、行情等公开信息，并返回摘要、正文摘录、发布时间和来源链接。同一条用户消息最多使用 ${MAX_WEB_SEARCH_QUERIES_PER_TURN} 个不同关键词。`, parameters: objectSchema({ query: { type: 'string', description: '完整、具体的搜索词；涉及相对日期时必须写成明确日期。' }, limit: { type: ['number', 'null'], minimum: 1, maximum: 8 } }, ['query']) } },
   { type: 'function', function: { name: 'create_file', description: '创建一个可打开、下载和另存为的真实文件。仅当用户明确要求生成文件、文档、报告、表格、PPT/PowerPoint 演示文稿、HTML 网页/交互文档（非 Figma 结构化原型）或可下载内容时调用。HTML 使用完整的单文件 HTML（内联 CSS/JS），可在 Canvas 预览中交互；不依赖 CDN、联网 API 或本地路径。DOCX/PDF 的 content 使用 Markdown；XLSX 使用 sheets；PPTX 使用 presentation 创建可编辑幻灯片；不要返回 Base64、XML 或伪造下载链接。', parameters: objectSchema({ fileName: { type: 'string', description: '用户可见的文件名，包含对应扩展名。' }, format: { type: 'string', enum: ['txt', 'md', 'html', 'svg', 'csv', 'json', 'docx', 'xlsx', 'pdf', 'pptx'] }, content: { type: ['string', 'null'], description: 'HTML 的完整源代码（不带 Markdown 围栏）；TXT/MD/CSV/JSON 的文件正文；DOCX/PDF 使用 Markdown 正文；XLSX/PPTX 可为 null。' }, sheets: { type: ['array', 'null'], description: '仅 XLSX 使用。第一行应为表头。', items: { type: 'object', properties: { name: { type: 'string' }, rows: { type: 'array', items: { type: 'array', items: { type: ['string', 'number', 'boolean', 'null'] } } } }, required: ['name', 'rows'], additionalProperties: false } }, presentation: CHAT_PRESENTATION_SCHEMA }, ['fileName', 'format']) } },
   { type: 'function', function: { name: 'create_agent', description: '仅当用户明确要求新建并保存可复用的 Chat 智能体、技能、skill、skills（也兼容 skllis）时调用。描述“我做了个智能体”“已有一个技能”，或者给已有智能体做封面/介绍/图片，都不是新建授权；不能把这些背景或其他交付物误保存为新智能体。真实新建时保存到智能体列表。根据用户需求生成具体的名称、适用场景、触发关键词和可执行的 Markdown 技能指令。指令应写清角色、步骤、输出格式及成功标准；涉及软件操作时仅使用灵感抽屉 Chat 已提供的画布、素材、图片、视频、工作流和文件工具，不要编造脚本、插件或不存在的能力。默认只创建不启用；用户明确要求立即使用时才传 activate=true。', parameters: objectSchema({ name: { type: 'string', maxLength: 80, description: '简洁的智能体名称，不超过 80 字。' }, description: { type: 'string', maxLength: 240, description: '智能体适用场景和职责，不超过 240 字。' }, triggers: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'string' }, description: '3 到 8 个具体任务关键词或短语，用于在 Chat 中推荐启用。' }, instructions: { type: 'string', maxLength: 16000, description: '完整的 Markdown 技能指令：角色、工作步骤、输出要求、边界和画布工具使用方式；仅写当前客户端支持的能力。' }, activate: { type: ['boolean', 'null'], description: '仅当用户明确要求创建后立即使用时为 true，否则为 false 或 null。' } }, ['name', 'description', 'triggers', 'instructions']) } },
@@ -152,11 +161,11 @@ export const getChatToolDefinitions = (
   skillEnabled = false,
   agentCreationFollowup = false,
   currentUserText = text,
-  _imageContextAvailable = false,
+  imageContextAvailable = false,
   hasHtmlArtifact = false,
   hasPrototypeArtifact = false,
   githubSkillsEnabled = false,
-  svgEnabled = false,
+  desktopFileToolsEnabled = false,
 ) => {
   const presentationRequested = isChatPresentationRequest(text);
   const exposePresentationImageTools = canGenerateChatPresentationImages(text);
@@ -179,11 +188,15 @@ export const getChatToolDefinitions = (
     || isChatFileDeliveryRequest(text) || skillEnabled || hasChatHtmlContext(text) || hasHtmlArtifact;
   // Expose the capability for semantic routing, including .fig/.sketch and indirect UI requests.
   const exposePrototype = !presentationRequested;
+  const exposeLayeredPsd = desktopFileToolsEnabled && !presentationRequested && (
+    imageContextAvailable || imageAttachmentCount > 0 || hasRecentGeneratedMedia || /psd|photoshop|图层|分层/i.test(text)
+  );
   void hasPrototypeArtifact;
   const exposeAgentCreation = isChatAgentCreationRequest(text) || agentCreationFollowup;
   const exposeWebSearch = !webSearchBlocked && (webSearchEnabled || shouldExposeWebSearch(text));
   return CHAT_TOOL_DEFINITIONS.filter(tool => (
-    tool.function.name === 'create_svg' ? svgEnabled && !presentationRequested : PROTOTYPE_AUXILIARY_TOOLS.some(t=>t.function.name===tool.function.name) ? hasPrototypeArtifact : isGithubSkillTool(tool.function.name) ? githubSkillsEnabled : tool.function.name === 'create_ui_prototype'
+    tool.function.name === 'create_layered_psd' ? exposeLayeredPsd :
+    tool.function.name === 'create_svg' ? desktopFileToolsEnabled && !presentationRequested : PROTOTYPE_AUXILIARY_TOOLS.some(t=>t.function.name===tool.function.name) ? hasPrototypeArtifact : isGithubSkillTool(tool.function.name) ? githubSkillsEnabled : tool.function.name === 'create_ui_prototype'
       ? exposePrototype
       : tool.function.name === 'web_search'
       ? exposeWebSearch

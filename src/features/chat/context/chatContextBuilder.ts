@@ -4,14 +4,14 @@ import { CHAT_PROTOTYPE_RULES } from '../prototypes/prototypeTools';
 import { buildDesignMemoryContextMessage, buildDesignMemoryStatusMessage, DESIGN_MEMORY_CAPABILITY_RULE, DESIGN_MEMORY_CONTEXT_RULE } from '../../designMemory/context';
 import type { DesignMemorySnapshot } from '../../designMemory/storage';
 import type { DesignMemoryRecallResult } from '../../designMemory/recall';
-import { parseChatToolResult, type ChatAttachment, type ChatMessage, type ChatSummary } from '../model/chatTypes';
+import { parseChatToolResult, type ChatAttachment, type ChatMessage, type ChatSummary, type ChatVisionAttachment } from '../model/chatTypes';
 import type { ChatVisionAttachmentResolution } from '../attachments/chatVisionAttachmentResolver';
 import { compactChatToolResultForProvider, serializeChatToolResult } from '../tools/chatToolResult';
 import { parseWorkflowAttachmentSnapshot } from '../attachments/chatWorkflowAttachments';
 import type { ChatSkill } from '../skills/chatSkills';
 import { CHAT_PRESENTATION_SYSTEM_RULES, isChatPresentationRequest } from '../presentations/chatPresentation';
 import { planPresentationDesign } from '../presentations/presentationSkillPlanner';
-import { estimateDataUrlBytes, MAX_INLINE_VISION_BYTES } from './chatRequestSize';
+import { estimateDataUrlBytes, MAX_CHAT_VISION_IMAGES, MAX_INLINE_VISION_BYTES } from './chatRequestSize';
 import {
   DEFAULT_CHAT_CONTEXT_BUDGET,
   estimateChatTokens,
@@ -34,12 +34,13 @@ export const GENERAL_CHAT_SYSTEM_PROMPT = [
   '用户要求“融合、综合参考、根据这些参考生成一个结果”时，使用普通 generate_image，让多张图片共同作为一次生成的参考；不要误用 batch_image_operation。',
   '用户明确要求对已有媒体补帧、增强清晰度或溶图时，必须使用对应的 interpolate_video、enhance_image、enhance_video 或 fuse_images；不要把补帧或视频增强路由为 generate_video，也不要把溶图路由为 edit_image。fuse_images 的两张输入按主体图、风格图顺序提供。',
   '图片附件标签会提供稳定 attachmentId。工具只使用 attachmentId，绝不能猜测或输出用户的本地文件路径。',
-  '同一对话中，用户说“开始做、继续、按刚才方案”等明确承接前文时，程序会把最近一组历史图片标记为“历史图片附件”重新提供。仅当本轮实际提供了有效 image_url 时，它们才可直接用于视觉分析或生成编辑；若标记加载失败，请说明本轮未收到图片像素，不得声称已看图。',
+  '图片按对话顺序提供，标签区分历史图片附件、历史生成图和本轮图片附件。根据用户指代选择原图或生成结果。指定图片时把对应的 attachmentId 传给工具；仅讨论图片时直接回答。只有带 image_url 的图片可用于看图，加载失败时说明缺失的那一张。',
   '如果通过普通文字即可回答，就直接回答。不得为了显得主动而读取画布、素材库或执行软件操作。不要把每个请求都解释成操作命令。',
   '生成图片后结果会显示在聊天中并自动加入画布；不要重复调用 add_to_canvas，除非用户要求定位或再次添加已有媒体。',
   '用户开启联网搜索，或明确要求查询最新、实时、网页信息时，调用 web_search。使用搜索结果回答时，要用 Markdown 链接 [来源标题](URL) 标注来源，不要编造链接。',
   '当用户明确要求生成可下载文件、Word、Excel、PDF、PPT/PowerPoint/PPTX、CSV、JSON、Markdown、HTML 或 TXT 时，必须调用 create_file 创建真实文件，不要只把内容贴在聊天里，也不要伪造下载链接。DOCX/PDF 的正文使用 Markdown；XLSX 使用 sheets 结构化数据。',
   CHAT_SVG_RULES,
+  '桌面 Chat 中，用户要求制作 PSD 或 Photoshop 分层文件时，先确定源图。可以使用当前对话的附件或已有生成结果；没有源图时请用户提供，多张且指代不明时先询问。根据用户需要拟好分层提示词，调用 create_layered_psd 展示可选择的付费拆分方案，界面负责确认。用户拒绝后停止。只有工具返回文件才算交付 PSD。仅讨论 Photoshop 用法时直接回答。',
   'HTML/交互文档/UI 原型不是生图请求。可编辑的 UI/Figma 交互原型使用 create_ui_prototype；下面的 HTML 规则仅适用于需要普通网页代码或 HTML 文件的任务。根据当前用户语义和上下文判断：仅讲解、提示词、设计讨论或用户要求只看代码时不要擅自创建文件；要求制作普通可运行 HTML 页面、网页应用时使用 create_file(format="html")，fileName 以 .html 结尾，content 为完整单文件 HTML，CSS 和原生 JavaScript 内联，不带 Markdown 围栏。Canvas 安全预览不支持外部脚本/CDN、联网 API、远程图片、本地文件、表单提交和持久化存储；优先用内联 CSS、SVG、data 图片和内存状态实现交互。不要把 JSX/TSX、Markdown、片段或伪代码冒充完整 HTML。',
   '用户后续修改已有 HTML 时，保留原有内容和交互并交付完整更新版本，不只输出补丁。工具完成后现有文件卡片和 Canvas 预览会提供打开、预览、另存为；不要再重复粘贴整份 HTML，也不要编造链接或声称没有文件生成能力。',
   CHAT_PROTOTYPE_RULES,
@@ -102,10 +103,11 @@ const appendMessageForContext = (
 
 const buildAttachmentContent = async (
   text: string,
-  attachments: ChatAttachment[],
+  attachments: ChatVisionAttachment[],
   resolveAttachmentUrl?: (attachment: ChatAttachment) => Promise<string | ChatVisionAttachmentResolution>,
   reusedFromHistory = false,
   visionDetail?: 'low' | 'high' | 'auto',
+  latestMessageId?: string,
 ) => {
   if (attachments.length === 0) return text;
   const parts: Array<Record<string, unknown>> = [{ type: 'text', text }];
@@ -118,14 +120,17 @@ const buildAttachmentContent = async (
       text: `工作流附件 ${attachment.id}\n结构快照（仅供分析；未经用户确认不得应用或运行）：\n${JSON.stringify(snapshot)}`,
     });
   }
-  const images = attachments.filter(item => item.type === 'image').slice(0, 9);
+  const images = attachments.filter(item => item.type === 'image').slice(0, MAX_CHAT_VISION_IMAGES);
   const resolved = await Promise.all(images.map(attachment => (
     resolveAttachmentUrl ? resolveAttachmentUrl(attachment).catch(() => '') : Promise.resolve('')
   )));
+  const counts = { '历史生成图': 0, '历史图片附件': 0, '图片附件': 0 };
   for (const [index, attachment] of images.entries()) {
     const resolution = resolved[index];
     const url = typeof resolution === 'string' ? resolution : resolution?.url || '';
-    const label = `${reusedFromHistory ? '历史图片附件' : '图片附件'} ${index + 1}\nattachmentId: ${attachment.id}`;
+    const historical = reusedFromHistory || (latestMessageId !== undefined && attachment.messageId !== latestMessageId);
+    const origin = attachment.generated ? '历史生成图' : historical ? '历史图片附件' : '图片附件';
+    const label = `${origin} ${++counts[origin]}\nattachmentId: ${attachment.id}`;
     const isReferenceObjectKey = /^reference-images\/[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(url);
     const oversizedInline = /^data:image\//i.test(url) && estimateDataUrlBytes(url) > MAX_INLINE_VISION_BYTES;
     if (oversizedInline || (!/^https:\/\//i.test(url) && !/^data:image\//i.test(url) && !isReferenceObjectKey)) {
@@ -142,7 +147,7 @@ const buildAttachmentContent = async (
 
 const attachmentsForLatestUserContext = (
   latestAttachments: ChatAttachment[],
-  visionAttachments?: ChatAttachment[],
+  visionAttachments?: ChatVisionAttachment[],
 ) => {
   if (!visionAttachments || visionAttachments.length === 0) return latestAttachments;
   const visionIds = new Set(visionAttachments.map(attachment => attachment.id));
@@ -158,7 +163,7 @@ export const buildChatContext = async (input: {
   summary?: ChatSummary | null;
   budget?: Partial<ChatContextBudget>;
   resolveAttachmentUrl?: (attachment: ChatAttachment) => Promise<string | ChatVisionAttachmentResolution>;
-  visionAttachments?: ChatAttachment[];
+  visionAttachments?: ChatVisionAttachment[];
   reusedVisionAttachments?: boolean;
   visionDetail?: 'low' | 'high' | 'auto';
   skill?: ChatSkill;
@@ -174,6 +179,7 @@ export const buildChatContext = async (input: {
     input.resolveAttachmentUrl,
     input.reusedVisionAttachments,
     input.visionDetail,
+    input.visionAttachments ? input.latestUserMessage.id : undefined,
   );
   const snapshot = input.designMemoryRecall ? input.designMemoryRecall.snapshot : input.designMemory;
   const memoryMessage = buildDesignMemoryContextMessage(snapshot);
@@ -243,7 +249,12 @@ export const buildChatContext = async (input: {
       content: `此前对话摘要：\n${trimTextToTokenBudget(input.summary.summary, budget.summaryBudget)}`,
     });
   }
-  recent.forEach(message => appendMessageForContext(providerMessages, message));
+  recent.forEach(message => {
+    const ids = message.role === 'user' && input.visionAttachments?.filter(image => image.messageId === message.id).map(image => image.id);
+    appendMessageForContext(providerMessages, ids && ids.length
+      ? { ...message, content: `${message.content}\n[当时上传的图片：${ids.join('、')}]` }
+      : message);
+  });
   providerMessages.push({
     role: 'user',
     content: latestContent,

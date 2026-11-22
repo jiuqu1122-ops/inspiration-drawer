@@ -6,6 +6,7 @@ import { isSeedanceLikeVideoModel } from '../../canvasAiImage';
 import { normalizeCanvasWorkflowUserInput } from '../../canvasWorkflowUserInput';
 import { shouldExitThreeSceneInteraction } from '../../three/model/threeSceneInteraction';
 import { CanvasNodeLayer } from './CanvasNodeLayer';
+import { CanvasItemResizeHandles } from './CanvasItemResizeHandles';
 import type { CanvasImageItem,CanvasItemBox,CanvasResizeCorner } from '../../canvasModel';
 
 type CanvasRenderConnection = { source: CanvasImageItem; target: CanvasImageItem };
@@ -360,7 +361,7 @@ export function CanvasWorkbench({ scope, canvasItemsRef }: { scope: CanvasWorkbe
                         })}
 <CanvasNodeLayer
   canvasItemsRef={canvasItemsRef}
-  scope={{ canvasLayersUi: scope.canvasLayersUi, canvasSnapshotViewport: scope.canvasSnapshotViewport, canvasLiveScaleRef: scope.canvasScaleRef, canvasSnapshotDark: isDark, canvasPanRef, isCanvasSpacePressedRef, activeThreeSceneId, activeThreeSceneIdRef, analyzeCanvasThreeSceneNode, assignSelectedImagesToCanvasWorkflowSlot, beginThreeSceneInteraction, cancelCanvasEnhancementEstimate, CANVAS_TEXT_CONTEXT_ROUTING_OPTIONS, canvasAgent, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiExpandedOutputNodeIds, canvasAiPromptEditingId, canvasAiPromptEditorSessions, startCanvasAiPromptResize, canvasAiPromptTextAreaRefs, canvasAiProvider, canvasAiUnifiedImageModelOptions, canvasConnectionDraft, canvasHoveredItemIdRef, canvasInputMenuForId, canvasInputPickTargetId, canvasItems, canvasItemsById, canvasPromptOptimizingId, canvasReferenceDragState, canvasReferenceSuppressClickRef, canvasRenderableItems, canvasRenderScale, canvasScaledNodeRadius, canvasSelectedIdsRef, canvasSelectedIdsSet, canvasTextAgentRunningIds, canvasTextAreaRefs, canvasTextOutputAreaRefs, canvasWorkflowSingleEditGroupIds, canvasWorkflowTemplates, canvasWorkingTimerTick, captureThreeSceneView, chooseLocalImagesForCanvasWorkflowSlot, getCanvasItemRenderedBox, commitCanvasAiPromptDraft, commitCanvasTextDraft, commitCanvasTextOutputDraft, copyCanvasAiOutputToCanvas, copyCanvasImageToSystemClipboard, copyCanvasTextOutput, DESIGN_AGENT_ARTIFACT_OPTIONS, DESIGN_AGENT_ROLE_OPTIONS, DESIGN_AGENT_THINKING_MODE_OPTIONS, disconnectCanvasInput, downloadBufferItems, enableCanvasWorkflowSingleEditForItem, endThreeSceneInteraction, exitThreeSceneInteraction, getCanvasAiErrorSummary, getCanvasAiNodeDesignSizeForItem, getCanvasAiResolvedModel, getCanvasAiUnifiedImageModelValue, getCanvasImageInputBufferItemsForNode, getStableCanvasImageSource, handleCanvasAiRunClick, handleCanvasAiRunPointerDown, handleCanvasWorkflowSlotDrop, openCanvasBrushEditor, openCanvasBrushEditorFromSource, openCanvasContextMenu, openCanvasReferenceAddMenu, openCanvasReferenceReplaceMenu, openSelectedImagePreview, openSelectedVideoPreview, optimizeCanvasPrompt, pendingCanvasFusionRoleRef, preventCanvasNativeDrag, removeCanvasItemsByIds, replaceCanvasWorkflowSlotAssets, resizeCanvasAiPromptEditor, retryCanvasWorkflowOutput, rotateCanvasImageClockwise, runCanvasTextAgentNode, scheduleCanvasAiPromptDraftCommit, scheduleCanvasTextDraftCommit, scheduleCanvasTextOutputDraftCommit, setCanvasAiPromptEditingId, setCanvasDesignAgentConfig, setCanvasInputMenuForId, setCanvasReferenceReplacement, setCanvasTextContextRouting, setCanvasTextNodeMode, setCanvasWorkflowOutputMode, showToast, startCanvasItemDrag, startCanvasReferenceLongPress, threeSceneAnalyzingIds, toggleCanvasAiOutputsExpanded, toggleCanvasImageRule, toggleCanvasImageRulePanel, updateCanvasAiGeneratorData, updateCanvasSelection, updateCollapsedCanvasWorkflowSlot, updateThreeScenePreview, updateThreeSceneReferenceOverlay, updateThreeSceneSpec, WORKFLOW_SLOT_ASSET_DRAG_MIME }}
+  scope={{ startCanvasItemResize, canvasLayersUi: scope.canvasLayersUi, canvasSnapshotViewport: scope.canvasSnapshotViewport, canvasLiveScaleRef: scope.canvasScaleRef, canvasSnapshotDark: isDark, canvasPanRef, isCanvasSpacePressedRef, activeThreeSceneId, activeThreeSceneIdRef, analyzeCanvasThreeSceneNode, assignSelectedImagesToCanvasWorkflowSlot, beginThreeSceneInteraction, cancelCanvasEnhancementEstimate, CANVAS_TEXT_CONTEXT_ROUTING_OPTIONS, canvasAgent, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiExpandedOutputNodeIds, canvasAiPromptEditingId, canvasAiPromptEditorSessions, startCanvasAiPromptResize, canvasAiPromptTextAreaRefs, canvasAiProvider, canvasAiUnifiedImageModelOptions, canvasConnectionDraft, canvasHoveredItemIdRef, canvasInputMenuForId, canvasInputPickTargetId, canvasItems, canvasItemsById, canvasPromptOptimizingId, canvasReferenceDragState, canvasReferenceSuppressClickRef, canvasRenderableItems, canvasRenderScale, canvasScaledNodeRadius, canvasSelectedIdsRef, canvasSelectedIdsSet, canvasTextAgentRunningIds, canvasTextAreaRefs, canvasTextOutputAreaRefs, canvasWorkflowSingleEditGroupIds, canvasWorkflowTemplates, canvasWorkingTimerTick, captureThreeSceneView, chooseLocalImagesForCanvasWorkflowSlot, getCanvasItemRenderedBox, commitCanvasAiPromptDraft, commitCanvasTextDraft, commitCanvasTextOutputDraft, copyCanvasAiOutputToCanvas, copyCanvasImageToSystemClipboard, copyCanvasTextOutput, DESIGN_AGENT_ARTIFACT_OPTIONS, DESIGN_AGENT_ROLE_OPTIONS, DESIGN_AGENT_THINKING_MODE_OPTIONS, disconnectCanvasInput, downloadBufferItems, enableCanvasWorkflowSingleEditForItem, endThreeSceneInteraction, exitThreeSceneInteraction, getCanvasAiErrorSummary, getCanvasAiNodeDesignSizeForItem, getCanvasAiResolvedModel, getCanvasAiUnifiedImageModelValue, getCanvasImageInputBufferItemsForNode, getStableCanvasImageSource, handleCanvasAiRunClick, handleCanvasAiRunPointerDown, handleCanvasWorkflowSlotDrop, openCanvasBrushEditor, openCanvasBrushEditorFromSource, openCanvasContextMenu, openCanvasReferenceAddMenu, openCanvasReferenceReplaceMenu, openSelectedImagePreview, openSelectedVideoPreview, optimizeCanvasPrompt, pendingCanvasFusionRoleRef, preventCanvasNativeDrag, removeCanvasItemsByIds, replaceCanvasWorkflowSlotAssets, resizeCanvasAiPromptEditor, retryCanvasWorkflowOutput, rotateCanvasImageClockwise, runCanvasTextAgentNode, scheduleCanvasAiPromptDraftCommit, scheduleCanvasTextDraftCommit, scheduleCanvasTextOutputDraftCommit, setCanvasAiPromptEditingId, setCanvasDesignAgentConfig, setCanvasInputMenuForId, setCanvasReferenceReplacement, setCanvasTextContextRouting, setCanvasTextNodeMode, setCanvasWorkflowOutputMode, showToast, startCanvasItemDrag, startCanvasReferenceLongPress, threeSceneAnalyzingIds, toggleCanvasAiOutputsExpanded, toggleCanvasImageRule, toggleCanvasImageRulePanel, updateCanvasAiGeneratorData, updateCanvasSelection, updateCollapsedCanvasWorkflowSlot, updateThreeScenePreview, updateThreeSceneReferenceOverlay, updateThreeSceneSpec, WORKFLOW_SLOT_ASSET_DRAG_MIME }}
 />
                         {canvasRenderableItems.map((canvasItem: CanvasImageItem) => {
                           const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
@@ -578,7 +579,7 @@ export function CanvasWorkbench({ scope, canvasItemsRef }: { scope: CanvasWorkbe
                             </div>
                           );
                         })()}
-                        {canvasSingleSelectedBoxForRender && canvasSingleSelectedItemForRender && (
+                        {canvasSingleSelectedBoxForRender && canvasSingleSelectedItemForRender && !canvasSingleSelectedItemForRender.layerResult?.group && (
                           <div
                             data-canvas-selection-frame="true"
                             className="pointer-events-none absolute z-[60] border-2 border-stone-900/80 bg-stone-900/[0.025] shadow-[0_0_0_3px_rgba(255,255,255,0.42)] dark:border-stone-100/70 dark:bg-white/[0.035] dark:shadow-[0_0_0_3px_rgba(0,0,0,0.24)]"
@@ -590,32 +591,8 @@ export function CanvasWorkbench({ scope, canvasItemsRef }: { scope: CanvasWorkbe
                               borderRadius: canvasScaledSelectionRadius,
                             }}
                           >
-                            {!canvasAiPromptEditorSessions?.[canvasSingleSelectedItemForRender.id] && (['nw', 'ne', 'sw', 'se'] as CanvasResizeCorner[]).map(corner => (
-                              <button
-                                key={corner}
-                                data-no-drag="true"
-                                type="button"
-                                tabIndex={-1}
-                                className={`pointer-events-auto absolute z-10 flex h-8 w-8 items-center justify-center ${
-                                  corner === 'nw' ? '-left-4 -top-4 cursor-nwse-resize' :
-                                  corner === 'ne' ? '-right-4 -top-4 cursor-nesw-resize' :
-                                  corner === 'sw' ? '-left-4 -bottom-4 cursor-nesw-resize' :
-                                  '-right-4 -bottom-4 cursor-nwse-resize'
-                                }`}
-                                style={{
-                                  transform: `scale(${1 / Math.max(0.25, canvasRenderScale)})`,
-                                  transformOrigin: 'center',
-                                }}
-                                onPointerDown={(event) => startCanvasItemResize(
-                                  event,
-                                  canvasSingleSelectedItemForRender.id,
-                                  corner,
-                                )}
-                                title="拖动缩放"
-                              >
-                                <span className="h-3 w-3 rounded-[3px] border-2 border-white bg-stone-900 shadow-[0_2px_8px_rgba(24,24,27,0.28)] dark:border-stone-950 dark:bg-stone-100" />
-                              </button>
-                            ))}
+                            {!canvasAiPromptEditorSessions?.[canvasSingleSelectedItemForRender.id] && <CanvasItemResizeHandles
+                              itemId={canvasSingleSelectedItemForRender.id} scale={canvasRenderScale} onResize={startCanvasItemResize} />}
                           </div>
                         )}
                         {canvasSelectedBounds && (

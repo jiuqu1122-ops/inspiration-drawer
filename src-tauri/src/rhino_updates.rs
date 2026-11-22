@@ -257,7 +257,7 @@ fn download_component(component: &Component) -> Result<Vec<u8>, String> {
     }
     Err(errors.join("; "))
 }
-fn check_updates() -> Result<UpdateResult, String> {
+fn check_updates(prepare_only: bool) -> Result<UpdateResult, String> {
     let _guard = UPDATE_LOCK.lock().map_err(|_| "Rhino updater is busy")?;
     let channel = config()?; let root = root()?;
     let mut errors = Vec::new(); let mut envelope = None;
@@ -272,8 +272,13 @@ fn check_updates() -> Result<UpdateResult, String> {
     let updated = if let Some(envelope) = envelope { apply_catalog(&root, &envelope, &channel, download_component)? } else { Vec::new() };
     // Retry any previously downloaded but incompletely registered plugin, even
     // if this catalog contains no newer revision. Matching installations skip.
-    let selected_plugins = read_state(&root)?.current.keys().filter(|id| id.starts_with("plugin")).cloned().collect::<Vec<_>>();
-    let (plugin_restart_required, installation_error) = apply_installed_plugins(&selected_plugins);
+    let (plugin_restart_required, installation_error) = if prepare_only {
+        // The manual installer will register all detected versions in one pass.
+        (false, None)
+    } else {
+        let selected_plugins = read_state(&root)?.current.keys().filter(|id| id.starts_with("plugin")).cloned().collect::<Vec<_>>();
+        apply_installed_plugins(&selected_plugins)
+    };
     Ok(UpdateResult { desktop_restart_required: updated.iter().any(|id| id == "runtime"), updated, published, plugin_restart_required, installation_error, status: status_at(&root, &channel)? })
 }
 pub(crate) fn plugin_payload(major: u8) -> Result<Option<BTreeMap<String, Vec<u8>>>, String> {
@@ -293,8 +298,9 @@ pub async fn rhino_update_status(window: tauri::WebviewWindow) -> Result<UpdateS
     tauri::async_runtime::spawn_blocking(|| status_at(&root()?, &config()?)).await.map_err(|e| e.to_string())?
 }
 #[tauri::command]
-pub async fn check_rhino_updates(window: tauri::WebviewWindow) -> Result<UpdateResult, String> {
-    require_main(&window)?; tauri::async_runtime::spawn_blocking(check_updates).await.map_err(|e| e.to_string())?
+pub async fn check_rhino_updates(window: tauri::WebviewWindow, prepare_only: Option<bool>) -> Result<UpdateResult, String> {
+    require_main(&window)?;
+    tauri::async_runtime::spawn_blocking(move || check_updates(prepare_only.unwrap_or(false))).await.map_err(|e| e.to_string())?
 }
 #[tauri::command]
 pub async fn rhino_runtime_location(window: tauri::WebviewWindow) -> Result<Option<RuntimeLocation>, String> {
