@@ -2,7 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { formatReferenceUploadError } from '../../referenceUploadError';
 import type { LayerCatalog, LayerMode, LayerReceipt, LayerSelection } from './canvasLayerTypes';
 
-export type LayerRequest = { operation: LayerMode; clientRequestId: string; image: string; prompt: string; expectedCredits: string; selection?: LayerSelection };
+export type LayerRequest = { operation: LayerMode; clientRequestId: string; image: string; prompt: string; expectedCredits: string; expectedCreditsPerOutputImage?: string; selection?: LayerSelection };
 
 const cloudDevOrigin = import.meta.env.VITE_CANVAS_LAYER_CLOUD_DEV_ORIGIN;
 const usesCloudInDev = cloudDevOrigin && cloudDevOrigin === globalThis.location?.origin;

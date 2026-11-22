@@ -44,7 +44,10 @@ export function patchLayerOperation(ctx: CanvasLayerContext, nodeId: string, pat
   ctx.update(ctx.canvasId(), nodeId, item => item.layerOperation ? { ...item, layerOperation: { ...item.layerOperation, ...patch } } : item);
 }
 
-export function startCanvasLayerRun(ctx: CanvasLayerContext, nodeId: string, mode: LayerMode, expectedCredits: string, referenceUpload = false) {
+export function startCanvasLayerRun(
+  ctx: CanvasLayerContext, nodeId: string, mode: LayerMode, expectedCredits: string, referenceUpload = false,
+  expectedCreditsPerOutputImage?: string,
+) {
   const canvasId = ctx.canvasId();
   const items = ctx.getItems();
   const node = items.find(item => item.id === nodeId);
@@ -74,6 +77,7 @@ export function startCanvasLayerRun(ctx: CanvasLayerContext, nodeId: string, mod
     const image = await normalizeLayerInput(await ctx.read(src, false));
     return {
       operation: mode, clientRequestId: requestId, prompt, expectedCredits,
+      ...(expectedCreditsPerOutputImage !== undefined ? { expectedCreditsPerOutputImage } : {}),
       image: await prepareLayerRequestImage(image, referenceUpload),
       ...(mode === 'edit' && selection ? { selection } : {}),
     };
@@ -100,7 +104,8 @@ export function observeCanvasLayerRun(ctx: CanvasLayerContext, canvasId: string,
     const { width, height } = group ?? asset!;
     patch(item => ({ ...item, height: item.width * height / width,
       item: { ...item.item, ...media },
-      layerResult: { ...item.layerResult!, ...replacement, status: 'success', message: undefined, chargedCredits: receipt.chargedCredits } }));
+      layerResult: { ...item.layerResult!, ...replacement, status: 'success', message: undefined,
+        chargedCredits: receipt.chargedCredits, ...(receipt.imageBilling && { imageBilling: receipt.imageBilling }) } }));
   };
   void followLayerJob(requestId, create, complete, notice => patch(item => ({ ...item, layerResult: { ...item.layerResult!, message: notice } })));
 }

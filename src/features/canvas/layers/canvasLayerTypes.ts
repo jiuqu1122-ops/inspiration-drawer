@@ -19,21 +19,23 @@ export type CanvasLayerOperation = {
   outputs?: Partial<Record<LayerMode, string>>;
 };
 export type LayerLink = { groupId: string; layerId: string; path: string };
+type LayerImageBilling = { creditsPerOutputImage: string; imageCount: number };
 export type CanvasLayerResult = {
   mode: LayerMode;
   requestId: string;
   status: 'processing' | 'success' | 'failed';
   message?: string;
   chargedCredits?: string;
+  imageBilling?: LayerImageBilling;
   group?: CanvasLayerGroup;
   asset?: LayerAsset;
   sourceLayer?: LayerLink;
 };
-export type LayerOffer = { creditsPerRequest: string };
+export type LayerOffer = { creditsPerRequest: string; creditsPerOutputImage?: string; maxOutputImages?: number };
 export type LayerCatalog = Record<LayerMode, LayerOffer[]> & { referenceUpload?: boolean };
 export type LayerOutput = ({ operation: 'split'; width: number; height: number; base: LayerPixels & { asset: number }; layers: (LayerPlacement & { asset: number })[] }
   | { operation: 'edit'; image: LayerPixels & { asset: number } }) & { assets: string[] };
 export type LayerReceipt =
-  | { status: 'success'; result: LayerOutput; chargedCredits: string }
+  | { status: 'success'; result: LayerOutput; chargedCredits: string; imageBilling?: LayerImageBilling }
   | { status: 'processing' }
   | { status: 'failed'; message: string };
