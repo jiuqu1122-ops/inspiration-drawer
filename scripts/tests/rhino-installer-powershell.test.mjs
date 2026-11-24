@@ -6,10 +6,11 @@ import { spawnSync } from 'node:child_process';
 const root = new URL('../../', import.meta.url);
 const registration = readFileSync(new URL('src-tauri/src/rhino_installer_register.ps1', root), 'utf8');
 const detection = readFileSync(new URL('src-tauri/src/rhino_installer_detect.ps1', root), 'utf8');
+const powershellTimeoutMs = 60_000;
 function run(script, env = {}) {
   const result = spawnSync(join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
     ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-    { encoding: 'utf8', timeout: 60000, env: { ...process.env, ...env } });
+    { encoding: 'utf8', timeout: powershellTimeoutMs, env: { ...process.env, ...env } });
   if (result.error || result.status !== 0) throw new Error(result.error?.message || result.stderr);
   return JSON.parse(result.stdout.trim());
 }
@@ -56,7 +57,7 @@ const capture = [
   '})',
   '@{error=$failure;values=$values} | ConvertTo-Json -Compress -Depth 6',
 ].join('\n');
-describe.runIf(process.platform === 'win32')('Rhino PowerShell registrar and runtime detection fixtures', () => {
+describe.runIf(process.platform === 'win32')('Rhino PowerShell registrar and runtime detection fixtures', { timeout: powershellTimeoutMs + 5_000 }, () => {
   it('registers both versions without touching unrelated user values', () => {
     const plans=fixtureRegistrations();
     const result=run(fakeRegistry+'\n$failure=$null\n& {\n'+mockScript+'\n} | Out-Null\n'+capture,{DRAWER_RHINO_REGISTRATIONS:JSON.stringify(plans)});
