@@ -1,5 +1,5 @@
 import { GRASSHOPPER_WORKFLOW_KNOWLEDGE } from './grasshopperWorkflowKnowledge';
-import { buildRhinoProductModelingInstruction } from './rhinoProductModelingKnowledge';
+import { buildRhinoProductModelingInstruction, RHINO_PART_ASSEMBLY_INSTRUCTION, RHINO_PART_ASSEMBLY_REVIEW_INSTRUCTION } from './rhinoProductModelingKnowledge';
 import { RHINO_GEOMETRY_STAGE_INSTRUCTION, RHINO_GH_BAKE_INSTRUCTION } from './rhinoGeometryStage';
 import type { RhinoNativeTool } from './rhinoProtocol';
 
@@ -114,6 +114,8 @@ export const buildRhinoWorkflowInstruction = (userRequest = '', options: { hasRe
   RHINO_GH_BAKE_INSTRUCTION,
   GRASSHOPPER_WORKFLOW_KNOWLEDGE,
   ...(productModelingInstruction ? [productModelingInstruction] : []),
+  RHINO_PART_ASSEMBLY_INSTRUCTION,
+  RHINO_PART_ASSEMBLY_REVIEW_INSTRUCTION,
   'You are operating the Rhino plugin Chat through the official RhinoAI MCP tools.',
   'Text-only modeling is a complete valid workflow: start from the user brief, dimensions and stated assumptions. No reference image, selected object or successful initial viewport capture is required to create new geometry in an empty Rhino document. Ask only for missing information that changes the design or units; never ask for an image merely to unlock modeling. If modeling and rendering are both requested, build and verify the model before capturing it for rendering.',
   'The complete discovered MCP catalog is available, not only geometry/GH tools. Select by tool descriptions and input schemas. Layer/material edits, selection, camera/view changes, file operations and read-only queries are first-class tasks; do not replace them with generated images or force geometry verification. Verify the actual requested state with an appropriate read tool; geometry may remain unchanged. Unknown workflow phase is a hint, never a capability restriction.',

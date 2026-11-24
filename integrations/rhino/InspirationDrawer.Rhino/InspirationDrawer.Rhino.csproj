@@ -9,7 +9,7 @@
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <AssemblyName>InspirationDrawer.Rhino</AssemblyName>
     <TargetExt>.rhp</TargetExt>
-    <Version>0.1.0-beta.36.8</Version>
+    <Version>0.1.0-beta.36.9</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RhinoSystemDir Condition="'$(RhinoSystemDir)' == ''">D:/Program Files/Rhino 9/System</RhinoSystemDir>
