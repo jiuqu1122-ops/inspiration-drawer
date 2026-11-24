@@ -4,12 +4,16 @@
 
 ## 下载
 
-当前已发布版本：**9.0.4**
+当前已发布版本：**9.0.5**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v9.0.4/Inspiration.Drawer_9.0.4_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v9.0.4)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v9.0.5/Inspiration.Drawer_9.0.5_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v9.0.5)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 9.0.5 更新
+
+- 画布 Chat 后台建模支持原生 Rhino SubD，可调整控制点和折痕，导出的 3DM 保留可编辑的控制笼。
 
 ## 9.0.4 更新
 

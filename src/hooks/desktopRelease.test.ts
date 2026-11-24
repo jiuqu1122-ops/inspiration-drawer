@@ -9,9 +9,9 @@ import cargoSource from '../../src-tauri/Cargo.toml?raw';
 import cargoLock from '../../src-tauri/Cargo.lock?raw';
 import workflow from '../../.github/workflows/desktop-release.yml?raw';
 import readme from '../../README.md?raw';
-import releaseNotes from '../../docs/releases/9.0.4.md?raw';
+import releaseNotes from '../../docs/releases/9.0.5.md?raw';
 
-describe('9.0.4 formal desktop release', () => {
+describe('9.0.5 formal desktop release', () => {
   it('renders this release in the startup highlights and the full update log', () => {
     const appVersion = JSON.parse(packageSource).version;
     for (const showUpdateLog of [false, true]) {
@@ -27,7 +27,7 @@ describe('9.0.4 formal desktop release', () => {
   });
   it('uses one version across the app, native crate and lockfiles without changing identity', () => {
     const pkg = JSON.parse(packageSource); const lock = JSON.parse(npmLock); const tauri = JSON.parse(tauriSource);
-    expect(pkg.version).toBe('9.0.4'); expect(lock.version).toBe(pkg.version); expect(lock.packages[''].version).toBe(pkg.version);
+    expect(pkg.version).toBe('9.0.5'); expect(lock.version).toBe(pkg.version); expect(lock.packages[''].version).toBe(pkg.version);
     expect(tauri.version).toBe(pkg.version); expect(cargoSource.match(/^version = "([^"]+)"/m)?.[1]).toBe(pkg.version);
     expect(cargoLock.replace(/\r\n/g, '\n')).toContain(`name = "inspiration-drawer"\nversion = "${pkg.version}"`);
     expect(tauri.identifier).toBe('com.inspirationdrawer.app'); expect(tauri.productName).toBe('Inspiration Drawer');
@@ -43,7 +43,7 @@ describe('9.0.4 formal desktop release', () => {
     expect(workflow).toContain("VITE_DISABLE_APP_UPDATES: 'false'");
     expect(workflow).toContain('dtolnay/rust-toolchain@1.98.0');
     expect(workflow).toContain('--latest'); expect(workflow).toContain('TAURI_SIGNING_PRIVATE_KEY');
-    for (const feature of ['画布 Chat 后台建模', '运行中追加需求', 'Rhino 连接检查']) expect(releaseNotes).toContain(feature);
+    for (const feature of ['画布 Chat 支持 Rhino SubD', '控制点和折痕', '3DM']) expect(releaseNotes).toContain(feature);
     expect(tauriSource).toContain('https://gitee.com/zibinyou/inspiration-drawer/releases/download/latest/latest.json');
     expect(tauriSource).toContain('https://github.com/jiuqu1122-ops/inspiration-drawer/releases/latest/download/latest.json');
   });

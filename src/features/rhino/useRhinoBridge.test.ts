@@ -82,6 +82,29 @@ describe('Canvas Chat target discovery', () => {
       expect(mocks.invoke.mock.calls[0][1].workspaceId).toBe(mocks.invoke.mock.calls[1][1].workspaceId);
     } finally { target.release(); }
   });
+  it('exposes SubD cage creation, inspection and edits through the same background document', async () => {
+    const id = '6bf3c007-8d6b-4d2a-b48f-59ad46386594';
+    mocks.invoke.mockResolvedValue({ objects: [{ id, geometryType: 'SubD' }] });
+    const conversationId = 'subd-workspace';
+    const target = await prepareCanvasRhinoTurn(conversationId, 'canvas-one', '帮我用 SubD 做一个外壳');
+    try {
+      const build = getRhinoTools(conversationId, 'rhino').find(tool => tool.function.name === 'rhino_native_headless_build');
+      expect(build?.function.parameters).toMatchObject({
+        properties: { operation: { enum: expect.arrayContaining(['subd', 'edit_subd']) } },
+      });
+      expect(target).toMatchObject({ modelingInstruction: expect.stringContaining('native Rhino SubD') });
+      const execute = withRhinoTools(vi.fn(), 'canvas-one');
+      const request = { conversationId, messageId: 'task', executionSource: 'rhino' as const, userText: '帮我用 SubD 做一个外壳', recentMessages: [] };
+      const cage = { operation: 'subd', cageVertices: [[0, 0, 0], [10, 0, 0], [0, 10, 0]], cageFaces: [[0, 1, 2]] };
+      const edits = { operation: 'edit_subd', ids: [id], cageEdits: [{ vertexId: 1, point: [0, 0, 2] }] };
+      for (const [tool, args] of [['build', cage], ['inspect', { subdId: id }], ['build', edits]] as const) {
+        await execute(`rhino_native_headless_${tool}`, args, request);
+        expect(mocks.invoke).toHaveBeenLastCalledWith('rhino_headless_mcp_call', expect.objectContaining({
+          conversationId, tool, arguments: args, workspaceId: mocks.invoke.mock.calls[0][1].workspaceId,
+        }));
+      }
+    } finally { target.release(); }
+  });
   it('locks and pins the active document and never silently switches the same conversation to another document', async () => {
     const target = await prepareCanvasRhinoTurn('canvas-model-thread', 'canvas-one', '在当前 Rhino 文档建模');
     try {

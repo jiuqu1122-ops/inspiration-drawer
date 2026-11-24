@@ -12,21 +12,23 @@ export class RhinoHeadlessGeometryError extends RhinoNativeArgumentError {}
 
 const xyz = { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 };
 const points = { type: 'array', items: xyz, minItems: 3, maxItems: 80 };
+const cageIndex = { type: 'integer', minimum: 0, maximum: 383 };
+const componentId = { type: 'integer', minimum: 1, maximum: 4294967295 };
 const backgroundTools: RhinoNativeTool[] = [
   {
     name: RHINO_HEADLESS_INSPECT_TOOL,
-    description: 'Read the saved background Rhino model. Returns real object IDs, dimensions, closed-solid flags and volumes in millimeters.',
+    description: 'Read geometry types, object IDs, dimensions, closure and Brep volumes in millimeters. With subdId, inspect one native SubD cage and return stable native vertex and edge IDs, XYZ control points and crease states.',
     readOnly: true, destructive: false, workflowPhase: 'context',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    inputSchema: { type: 'object', properties: { subdId: { type: 'string', description: 'Existing SubD object ID from the inventory.' } }, additionalProperties: false },
   },
   {
     name: RHINO_HEADLESS_BUILD_TOOL,
-    description: 'Commit one verified, closed-solid modeling step in the background 3DM. Use Rhino object IDs from receipts. Primitive, extrude, loft or revolve can replace one existing part if supplied one ID. For difference, ids[0] is the housing and following IDs are sacrificial cutters, which are consumed. Create the actual separate insert with clearance after cutting its matching seat. For union all IDs are consumed. Use only when geometry relationships call for it.',
+    description: 'Commit one verified modeling step in the background 3DM. Use subd to create native Rhino SubD from a consistently wound control cage, with optional crease edges and closure. Use edit_subd to move control points or edit creases on one SubD, using native component IDs from inspect(subdId). SubD stays editable. Primitive, extrude, loft or revolve create closed Breps. These constructions and subd can replace one existing part via ids. Brep difference consumes the housing at ids[0] and the sacrificial cutters after it. Use matching seats and clearance for separate inserts. Brep union consumes all supplied IDs.',
     readOnly: false, destructive: false, workflowPhase: 'build',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['operation'],
       properties: {
-        operation: { type: 'string', enum: ['box', 'cylinder', 'sphere', 'extrude', 'loft', 'revolve', 'difference', 'union', 'move', 'rotate', 'remove'] },
+        operation: { type: 'string', enum: ['box', 'cylinder', 'sphere', 'extrude', 'loft', 'revolve', 'subd', 'edit_subd', 'difference', 'union', 'move', 'rotate', 'remove'] },
         name: { type: 'string', maxLength: 100 },
         origin: { ...xyz, description: 'Base origin, sphere center or rotation pivot.' },
         axis: { ...xyz, description: 'Plane normal for box/cylinder or rotation/revolution axis.' },
@@ -39,6 +41,18 @@ const backgroundTools: RhinoNativeTool[] = [
         angleDegrees: { type: 'number', minimum: -360, maximum: 360 },
         ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 16 },
         color: { type: 'string', pattern: '^#[0-9a-fA-F]{6}$' },
+        cageVertices: { type: 'array', items: xyz, minItems: 3, maxItems: 384, description: 'For subd: XYZ control cage coordinates in millimeters. Adjacent faces share vertex indices.' },
+        cageFaces: { type: 'array', items: { type: 'array', items: cageIndex, minItems: 3, maxItems: 4 }, minItems: 1, maxItems: 512, description: 'For subd: ordered triangles or quads of zero-based cageVertices indices. Use opposite directions on shared edges. Prefer quads for continuous surface flow.' },
+        creaseEdges: { type: 'array', items: { type: 'array', items: cageIndex, minItems: 2, maxItems: 2 }, maxItems: 128, description: 'For subd: pairs of zero-based cageVertices indices identifying actual edges to crease.' },
+        requireClosed: { type: 'boolean', description: 'For SubD operations: set true for a closed part; omit for intentional open surfaces. Editing a closed part preserves closure.' },
+        cageEdits: {
+          type: 'array', minItems: 1, maxItems: 384, description: 'For edit_subd: replace selected control point locations using native vertex IDs from inspection.',
+          items: { type: 'object', additionalProperties: false, required: ['vertexId', 'point'], properties: { vertexId: componentId, point: xyz } },
+        },
+        creaseEdits: {
+          type: 'array', minItems: 1, maxItems: 128, description: 'For edit_subd: change the crease state using native edge IDs from inspection.',
+          items: { type: 'object', additionalProperties: false, required: ['edgeId', 'crease'], properties: { edgeId: componentId, crease: { type: 'boolean' } } },
+        },
       },
     },
   },
@@ -82,7 +96,7 @@ export async function prepareBackgroundRhinoTurn(conversationId: string, canvasI
     return {
       context: JSON.stringify(context),
       documentName: '本机后台 Rhino',
-      modelingInstruction: 'This turn uses local headless Rhino. Use the exposed background Rhino inspect/build tools for the same working document. The host saves every validated modeling step and automatically exports a 3DM and mesh preview. Use measured bounds, volumes, and the fresh model raster to verify fit, openings and assembly. Do not promise interactive Rhino/Grasshopper commands or settings in this background mode.',
+      modelingInstruction: 'This turn uses local headless Rhino. The background build tool can create and edit native Rhino SubD in the same working document. For SubD or 细分建模 requests, use operation subd with an explicit control cage, then inspect its native control points and edges with subdId and refine with edit_subd. Plan matching openings and mating surfaces into the cage topology. Model separate parts separately as required by the assembly. Preserve native SubD through the exported 3DM. The host saves each validated step and automatically exports a 3DM and a preview. Verify geometry type, bounds, closure where required, fit and silhouette with inspection and fresh previews. Interactive Rhino and Grasshopper commands are unavailable in this mode.',
       exportModel: () => call(conversationId, target, 'export'),
       release: () => {
         if (active.get(conversationId) === target) {
@@ -103,7 +117,7 @@ export async function executeHeadlessRhinoTool(conversationId: string, canvasId:
   if (!target || target.canvasId !== canvasId) throw new Error('后台 Rhino 任务的画布或会话已切换。');
   switch (name) {
     case RHINO_MODELING_SKILL_RESOURCE_TOOL: return readRhinoModelingSkillResource(args.resourcePath);
-    case RHINO_HEADLESS_INSPECT_TOOL: return call(conversationId, target, 'inspect');
+    case RHINO_HEADLESS_INSPECT_TOOL: return call(conversationId, target, 'inspect', args);
     case RHINO_HEADLESS_BUILD_TOOL:
       try { return await call(conversationId, target, 'build', args); }
       catch (error) {

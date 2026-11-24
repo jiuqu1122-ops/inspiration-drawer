@@ -4,6 +4,13 @@ import { isRhinoBlankViewportError, isRhinoDocumentWriteRequest, isRhinoGeometry
 import { isRhinoCanvasImageRequest } from './useRhinoBridge';
 
 describe('Canvas Chat Rhino routing', () => {
+  it.each(['帮我用细分建模这个', '帮我用 SubD 做一个外壳', 'Build a SubD housing', '把这个 SubD 的控制点往里收'])('routes native SubD edits and creation: %s', text => {
+    expect(isCanvasRhinoModelingRequest(text)).toBe(true);
+    expect(isRhinoCanvasImageRequest(text, 1)).toBe(false);
+  });
+  it.each(['怎么用 SubD 建模？', 'Explain how to create a SubD housing', '不要用 SubD 建模，生成一张效果图'])('keeps SubD questions and image requests in ordinary Chat: %s', text => {
+    expect(isCanvasRhinoModelingRequest(text)).toBe(false);
+  });
   it.each(['帮我建模', '照着三视图把它做成三维模型', '帮我建个圆柱', '用 Rhino 把按钮做进外壳', '给外壳开个孔', '帮我先建模再渲染一张效果图', 'Build a 3D model from the attached drawings'])('routes modeling requests: %s', text => {
     expect(isCanvasRhinoModelingRequest(text)).toBe(true);
   });

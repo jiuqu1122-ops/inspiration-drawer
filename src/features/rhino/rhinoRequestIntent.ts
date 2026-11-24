@@ -5,6 +5,8 @@ export function rhinoUserRequest(text: string) {
   return text.split(/\n\n\[Rhino \u53ea\u8bfb\u4e0a\u4e0b\u6587[^\]]*\]/)[0].trim();
 }
 
+const subdWriteIntent = /(?:\b(?:build|create|make|model|edit|sculpt|modify|move|crease)\b|用|创建|生成|建|做|修改|编辑|调整|移动|挪动|设为|改成|改为).{0,30}(?:\bsub[ -]?d\b|细分曲面|控制笼)|(?:\bsub[ -]?d\b|细分曲面|控制笼).{0,24}(?:内缩|外扩|往里收|往外推|加折痕|去掉折痕)/i;
+
 /** Canvas Chat needs a write intent and a CAD target before connecting to Rhino. */
 export function isCanvasRhinoModelingRequest(text: string, followsModeling = false) {
   const request = rhinoUserRequest(text).replace(
@@ -22,6 +24,7 @@ export function isCanvasRhinoModelingRequest(text: string, followsModeling = fal
       || /(?:在|用|通过)\s*(?:rhino|犀牛|grasshopper).{0,36}(?:建个|做进|做出来|嵌入|并入)/i.test(request)
       || (followsModeling && /(?:截面|壁厚|边缘|外壳|孔|槽|零件|按钮).{0,18}(?:一点|一些|\d+\s*(?:mm|cm|毫米|厘米)|加宽|缩小|放大|内缩|嵌入)/i.test(request));
   }
+  if (subdWriteIntent.test(request)) return true;
   if (/(?:在|用|通过|打开)\s*(?:rhino|犀牛|grasshopper)|\b(?:rhino|grasshopper|cad)\b.{0,24}\b(?:build|create|edit|model|geometry|part)\b|(?:建模|3[ -]?d\s*(?:模型|model)|三维模型|几何模型)|(?:做|建|重建|修改|编辑|调整|转成|转为).{0,12}(?:模型|三维|实体|曲面|曲线|圆柱|球体|立方体|长方体)|\b(?:build|create|rebuild|reconstruct|make|modify|edit)\b.{0,50}\b(?:3[ -]?d|geometry|solid|cylinder|sphere|brep)\b/i.test(request)) return true;
   if (/外壳|壳体|面板/.test(request) && /(?:开|切|挖|钻)(?:出|个|一个)?(?:贯穿|通)?(?:孔|槽)|凹座|并入|合并|做成一体/.test(request)) return true;
   return followsModeling && /截面|壳体|外壳|倒角|圆角|装配|壁厚|零件|零部件|凹座|布尔|开孔|(?:按钮|按键).{0,8}(?:嵌入|移到|内缩)|\b(?:fillet|chamfer|boolean|shell|section|assembly)\b/i.test(request);
@@ -45,7 +48,7 @@ export function isRhinoGeometryOnlyRequest(text: string) {
   const positive = request.replace(/(?:\u4e0d\u8981|\u4e0d\u7528|\u65e0\u9700|\u4e0d\u9700\u8981|\u5148\u522b|\u5148\u4e0d|don'?t|do not)\s*(?:\u5e2e\u6211|\u8fdb\u884c)?\s*(?:\u5efa\u6a21|model(?:ing)?)/gi, ' ');
   const geometry = /(?:\u5efa\u6a21|\u5efa.{0,16}\u6a21\u578b|\u5efa\u6210.{0,12}(?:\u6a21\u578b|\u4e09\u7ef4|3d)|(?:\u521b\u5efa|\u751f\u6210|\u642d\u5efa|\u91cd\u5efa|\u505a|\u8f6c\u6210|\u8f6c\u4e3a).{0,24}(?:\u4e09\u7ef4|3d|\u6a21\u578b|\u51e0\u4f55)|\b(?:build|create|rebuild|reconstruct|make|convert|model|modify|edit)\b.{0,60}\b(?:3[ -]?d|geometry|cad|rhino|model)\b|\b(?:grasshopper|gh)\b|\u8349\u8722)/i.test(positive);
   // A combined modeling-and-rendering request still needs the visual path.
-  return geometry && !hasRhinoVisualDeliverable(request);
+  return (geometry || subdWriteIntent.test(positive)) && !hasRhinoVisualDeliverable(request);
 }
 
 /** Preserve the active viewport mode unless the user specifically requests a Rendered-mode capture. */

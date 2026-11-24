@@ -9,7 +9,7 @@ using Rhino.FileIO;
 using Rhino.Geometry;
 using Rhino.Runtime.InProcess;
 
-internal static class Program
+internal static partial class Program
 {
     private const double Tolerance = 0.01;
     private const int MaxParts = 256;
@@ -52,7 +52,7 @@ internal static class Program
         return parameters["name"]?.GetValue<string>() switch
         {
             "context" => Context(doc),
-            "inspect" => new { units = "Millimeters", objects = Inventory(doc) },
+            "inspect" => Inspect(doc, input),
             "build" => CommitStep(doc, input, checkpoint),
             "preview" => new { mimeType = "image/png", data = Convert.ToBase64String(Preview(doc)) },
             "export" => Export(doc, directory),
@@ -85,18 +85,24 @@ internal static class Program
         return new { document = "Background Rhino document", units = "Millimeters", rhinoVersion = RhinoApp.Version.ToString(), objects = Inventory(doc) };
     }
 
+    private const ObjectType ModelObjectTypes = ObjectType.Brep | ObjectType.SubD;
+
     private static object[] Inventory(RhinoDoc doc) => doc.Objects
-        .GetObjectList(ObjectType.Brep)
+        .GetObjectList(ModelObjectTypes)
         .Select(obj =>
         {
-            var shape = (Brep)obj.Geometry;
+            var shape = obj.Geometry;
             var bounds = shape.GetBoundingBox(true);
-            using var volume = shape.IsSolid ? VolumeMassProperties.Compute(shape) : null;
+            var brep = shape as Brep;
+            var subd = shape as SubD;
+            using var volume = brep is { IsSolid: true } ? VolumeMassProperties.Compute(brep) : null;
             return (object)new
             {
-                id = obj.Id, name = obj.Name, valid = shape.IsValid, closed = shape.IsSolid,
+                id = obj.Id, name = obj.Name, valid = shape.IsValid,
+                geometryType = subd == null ? "Brep" : "SubD",
+                closed = subd?.IsSolid ?? brep?.IsSolid ?? false,
                 min = Coordinates(bounds.Min), max = Coordinates(bounds.Max),
-                volume = volume?.Volume,
+                volume = volume?.Volume, controlVertices = subd?.Vertices.Count, controlFaces = subd?.Faces.Count,
             };
         }).ToArray();
 
@@ -124,12 +130,16 @@ internal static class Program
             foreach (var target in targets)
             {
                 using var copy = target.Geometry.Duplicate();
-                if (copy == null || !copy.Transform(transform) || !copy.IsValid || !doc.Objects.Replace(target.Id, (Brep)copy))
+                if (copy == null || !copy.Transform(transform) || !copy.IsValid || !ReplaceGeometry(doc, target.Id, copy))
                     throw new InvalidOperationException("The transformation did not produce valid geometry.");
             }
         }
+        else if (op == "subd") AddSubD(doc, input, targets, name);
+        else if (op == "edit_subd") EditSubD(doc, input, targets);
         else
         {
+            if ((op is "union" or "difference") && targets.Any(target => target.Geometry is not Brep))
+                throw new ArgumentException("This Boolean operation takes Brep solids. Keep SubD parts editable and model the matching opening in the control cage.");
             var origin = input["origin"] == null ? Point3d.Origin : Point(input["origin"]);
             var plane = new Plane(origin, input["axis"] == null ? Vector3d.ZAxis : Direction(input["axis"]));
             Brep[] shapes = op switch
@@ -167,15 +177,7 @@ internal static class Program
                 if (before == null || before.Volume - after <= Tolerance * Tolerance)
                     throw new InvalidOperationException("The cutter did not remove a measurable volume. Check the fit and penetration.");
             }
-            var attributes = new ObjectAttributes { Name = string.IsNullOrWhiteSpace(name)
-                ? targets.FirstOrDefault()?.Name ?? op ?? "Part" : name[..Math.Min(name.Length, 100)] };
-            if (input["color"] is JsonValue color && color.TryGetValue<string>(out var rgb))
-            {
-                if (rgb.Length != 7 || rgb[0] != '#') throw new ArgumentException("Color must be #RRGGBB.");
-                var value = Convert.ToInt32(rgb[1..], 16);
-                attributes.ObjectColor = Color.FromArgb(255, Color.FromArgb(value));
-                attributes.ColorSource = ObjectColorSource.ColorFromObject;
-            }
+            using var attributes = PartAttributes(input, name, targets.FirstOrDefault()?.Name ?? op ?? "Part");
             foreach (var target in targets)
                 if (!doc.Objects.Delete(target.Id, true)) throw new InvalidOperationException("Could not replace a consumed object.");
             foreach (var shape in shapes)
@@ -188,6 +190,33 @@ internal static class Program
         var objects = Inventory(doc);
         Save(doc, checkpoint);
         return new { committed = true, operation = op, objects };
+    }
+
+    private static bool ReplaceGeometry(RhinoDoc doc, Guid id, GeometryBase geometry) => geometry switch
+    {
+        Brep brep => doc.Objects.Replace(id, brep),
+        SubD subd => doc.Objects.Replace(id, subd),
+        _ => false,
+    };
+
+    private static ObjectAttributes PartAttributes(JsonObject input, string? name, string defaultName)
+    {
+        var color = Color.Empty;
+        if (input["color"] is JsonValue value && value.TryGetValue<string>(out var rgb))
+        {
+            if (rgb.Length != 7 || rgb[0] != '#') throw new ArgumentException("Color must be #RRGGBB.");
+            color = Color.FromArgb(255, Color.FromArgb(Convert.ToInt32(rgb[1..], 16)));
+        }
+        var attributes = new ObjectAttributes
+        {
+            Name = string.IsNullOrWhiteSpace(name) ? defaultName : name[..Math.Min(name.Length, 100)],
+        };
+        if (!color.IsEmpty)
+        {
+            attributes.ObjectColor = color;
+            attributes.ColorSource = ObjectColorSource.ColorFromObject;
+        }
+        return attributes;
     }
 
     private static Brep BoxShape(Plane plane, JsonNode? dimensions)
@@ -314,11 +343,16 @@ internal static class Program
         var up = new Vector3d(-0.35355, 0.35355, 0.86603);
         var towardCamera = Vector3d.CrossProduct(right, up);
         var polygons = new List<(Point3d[] Points, double Depth, Color Color)>();
-        foreach (var obj in doc.Objects.GetObjectList(ObjectType.Brep))
+        foreach (var obj in doc.Objects.GetObjectList(ModelObjectTypes))
         {
             var color = obj.Attributes.ColorSource == ObjectColorSource.ColorFromObject
                 ? obj.Attributes.ObjectColor : Color.FromArgb(137, 164, 177);
-            var meshes = Mesh.CreateFromBrep((Brep)obj.Geometry, MeshingParameters.FastRenderMesh) ?? [];
+            Mesh[] meshes = obj.Geometry switch
+            {
+                Brep brep => Mesh.CreateFromBrep(brep, MeshingParameters.FastRenderMesh) ?? [],
+                SubD subd when Mesh.CreateFromSubD(subd, 2) is { } mesh => [mesh],
+                _ => [],
+            };
             foreach (var mesh in meshes)
             {
                 using (mesh)
@@ -337,7 +371,7 @@ internal static class Program
                 }
             }
         }
-        if (polygons.Count == 0) throw new InvalidOperationException("There are no visible solids to preview.");
+        if (polygons.Count == 0) throw new InvalidOperationException("There is no visible geometry to preview.");
         PointF Project(Point3d point)
         {
             var v = point - Point3d.Origin;
