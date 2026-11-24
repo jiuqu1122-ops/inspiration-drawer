@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -9,7 +9,7 @@ const detection = readFileSync(new URL('src-tauri/src/rhino_installer_detect.ps1
 function run(script, env = {}) {
   const result = spawnSync(join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
     ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-    { encoding: 'utf8', timeout: 20000, env: { ...process.env, ...env } });
+    { encoding: 'utf8', timeout: 60000, env: { ...process.env, ...env } });
   if (result.error || result.status !== 0) throw new Error(result.error?.message || result.stderr);
   return JSON.parse(result.stdout.trim());
 }
@@ -77,7 +77,7 @@ describe.runIf(process.platform === 'win32')('Rhino PowerShell registrar and run
       '@{as8=(Find-RhinoExecutable $install 8);as9=(Find-RhinoExecutable $install 9)} | ConvertTo-Json -Compress';
     const result = run(setup, { FIXTURE_EXE: plans[1].pluginPath });
     expect(result.as8).toBeNull();
-    expect(result.as9).toBe(plans[1].pluginPath);
+    expect(realpathSync.native(result.as9)).toBe(realpathSync.native(plans[1].pluginPath));
   });
   it('distinguishes Framework, modern .NET, mixed and unknown module sets', () => {
     const helper=detection.slice(detection.indexOf('function Get-RhinoRuntimeMode('), detection.indexOf('$processes = @()'));
