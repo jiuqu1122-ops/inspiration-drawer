@@ -141,10 +141,13 @@ beta build and does not publish a stable auto-update or change the wallet backen
 ## 安装
 
 1. 保存工作并退出旧版灵感抽屉和 Rhino，再运行本目录的 x64-setup.exe。
-2. 打开新版抽屉，进入「设置 → Rhino 插件」，点击「一键安装 / 更新插件」。会自动为检测到的 Rhino 8 / 9 安装对应插件和工具栏资源。
+2. 打开新版抽屉，进入「设置 → Rhino 插件」，点击「一键安装 / 更新插件」。设置先从本机安装对应 Rhino 8 / 9 的插件和工具栏，再检查在线更新。
 3. 启动或重启 Rhino，使用灵感抽屉工具栏按钮；也可输入 InspirationDrawer 打开面板。
 4. 桌面端必须运行并完成正常登录与模型设置。原生 Rhino MCP 操作仍需要另外安装 RhinoAI / Rhino-MCP-Platform；本包不会替换它。
 5. Rhino 8 的原生 MCP 功能请使用 8.19 或更新版本。早期 Rhino 8.0 不应被当作可自动建模的支持环境。
+
+也可以双击独立离线安装器 `InspirationDrawer-Rhino-Setup.exe`，在当前 Windows 账户安装同一套插件。开发构建使用 `cargo build --release --locked --manifest-path src-tauri/Cargo.toml --example rhino_plugin_setup`，产物位于 `src-tauri/target/release/examples/rhino_plugin_setup.exe`。
+Rhino 启动后，在抽屉的「Rhino 插件」中点击「刷新检测」查看实际加载状态。若 Rhino 报告未知命令，在 `PlugInManager` 查看插件是否已启用和加载错误。
 
 如果不使用设置中的一键安装，可选择对应 Rhino 主版本的插件 ZIP；RHP、deps、runtimeconfig、RUI 和 SVG 必须保留在同一目录。Rhino 8 使用 net7.0 包，Rhino 9 使用 net8.0 包，不要混用。若出现缺少 `System.Runtime, Version=8.0.0.0` 并带有 FusionLog 绑定错误，应先用 Rhino 的 SystemInfo 核实实际加载的 .NET 运行模式与完整版本，再检查启动参数是否有 /netfx。本插件不支持旧 .NET Framework 模式；不要复制 System.Runtime.dll 作为修复，也不要只凭推荐运行时版本就认定目标框架错误。
 
@@ -342,7 +345,7 @@ This release does not hard-code a product, industry, shape or object vocabulary.
 - `plugin8` / `plugin9`：原生面板和桥接插件，各自保留版本与递增 revision。更新某个组件不会移除其它组件。
 - 启动时加载已验证的建模模块，然后查询独立渠道。软件升级后的既有自动同步在渠道查询之后执行：仅对现有启用的受管插件安装有变化的目标文件；最新插件保持不动，禁用插件不自动启用。查询失败继续使用已验证的本地缓存/内嵌包；不会用较旧缓存替换新桌面内嵌的插件。
 - 所有下载和校验完成后一次切换索引。建模模块重启桌面后启用；原生插件重启 Rhino 后启用。失败不标记桌面版本已同步；已下载但注册失败的独立插件也会在后续检查时重试。
-- 在设置 → Rhino 插件中点击“一键安装 / 更新插件”会先检查并准备组件，再为检测到的 Rhino 8 / 9 安装插件。离线时可使用本机已有的插件包。“版本与回退”列出当前和已准备的版本，可回退上次更新。回退保留 revision 上限，更高 revision 仍可更新。
+- 在设置 → Rhino 插件中点击“一键安装 / 更新插件”会先用本机插件包安装或修复已检测到的 Rhino 8 / 9，再联网检查组件。有新版插件时会安装对应包。“版本与回退”列出当前和已准备的版本，可回退上次更新。回退保留 revision 上限，更高 revision 仍可更新。
 - 固定发布渠道、公钥验签、SHA-256 与大小校验，每次加载也复核解出的文件。Host API 不兼容时需要升级桌面。缓存位于 `%LOCALAPPDATA%/InspirationDrawer/RhinoUpdates`，不写模型、聊天或画布。
 
 构建机首次初始化独立签名密钥（不覆盖已有密钥）：

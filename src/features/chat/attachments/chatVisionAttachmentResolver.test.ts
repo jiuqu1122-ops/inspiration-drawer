@@ -13,6 +13,27 @@ const attachment = (id: string): ChatAttachment => ({
 });
 
 describe('Chat Vision attachment resolver', () => {
+  it('uses the canvas image source when its saved local path is missing', async () => {
+    const invokeCommand = vi.fn().mockRejectedValue(new Error('file no longer exists'));
+    const resolver = createChatVisionAttachmentResolver({ invokeCommand });
+    const image = attachment('moved');
+    const source = 'https://example.test/three-view.jpg';
+    const result = await resolver.resolve({ ...image, metadataJson: JSON.stringify({ canvasImageSource: source }) });
+    expect(invokeCommand).toHaveBeenCalledWith('prepare_chat_vision_image', { source: image.path });
+    expect(result.url).toBe(source);
+    expect(resolver.failures()).toEqual([]);
+  });
+
+  it('prepares a Tauri asset URL locally instead of sending it to the cloud', async () => {
+    const invokeCommand = vi.fn()
+      .mockResolvedValueOnce({ path: 'C:/cache/three-view.jpg', byteLength: 100 })
+      .mockResolvedValueOnce(['reference-images/three-view.jpg']);
+    const resolver = createChatVisionAttachmentResolver({ invokeCommand });
+    const source = 'https://asset.localhost/C%3A%5Cimages%5Cthree-view.jpg';
+    expect((await resolver.resolve({ ...attachment('tauri'), path: source })).url).toBe('reference-images/three-view.jpg');
+    expect(invokeCommand).toHaveBeenCalledWith('prepare_chat_vision_image', { source });
+  });
+
   it('uploads a local image to wallet storage once and reuses its object key in the same turn', async () => {
     const invokeCommand = vi.fn(async (command: string, args?: Record<string, unknown>) => {
       if (command === 'prepare_chat_vision_image') {

@@ -85,4 +85,29 @@ describe.runIf(process.platform === 'win32')('Rhino PowerShell registrar and run
     const result=run(helper+'\n@((Get-RhinoRuntimeMode @("clr.dll")),(Get-RhinoRuntimeMode @("coreclr.dll")),(Get-RhinoRuntimeMode @("clr.dll","coreclr.dll")),(Get-RhinoRuntimeMode @())) | ConvertTo-Json -Compress');
     expect(result).toEqual(['netfx','netcore','mixed','unknown']);
   });
+  it('finds a default-location Rhino candidate only when its executable major version matches', () => {
+    const helper = detection.slice(detection.indexOf('function Find-RhinoExecutable('), detection.indexOf('function Get-RhinoRuntimeMode('));
+    const [{ pluginPath }] = fixtureRegistrations();
+    const script = helper + '\nfunction Get-RhinoExecutableMajor([string]$path) { return 9 }\n'
+      + '@{as8=(Find-RhinoExecutable $null 8 @($env:FIXTURE_EXE));as9=(Find-RhinoExecutable $null 9 @($env:FIXTURE_EXE))} | ConvertTo-Json -Compress';
+    const result = run(script, { FIXTURE_EXE: pluginPath });
+    expect(result.as8).toBeNull();
+    expect(realpathSync.native(result.as9)).toBe(realpathSync.native(pluginPath));
+  });
+  it('ignores earlier process logs and old payloads when reporting actual plugin startup', () => {
+    const helper = detection.slice(detection.indexOf('function Get-RhinoPluginLoadState('), detection.indexOf('$processes = @()'));
+    const localAppData = mkdtempSync(join(tmpdir(), 'rhino-startup-fixture-'));
+    const logs = join(localAppData, 'InspirationDrawer', 'RhinoBeta');
+    mkdirSync(logs, { recursive: true });
+    const assembly = 'C:\\App\\InspirationDrawer.Rhino.rhp';
+    const entry = (phase, at, path = assembly) => JSON.stringify({ at, phase, assembly: path });
+    writeFileSync(join(logs, 'startup-100.log'), entry('plugin.load.completed', '2026-11-24T00:00:00Z'));
+    writeFileSync(join(logs, 'startup-101.log'), entry('plugin.load.completed', '2026-11-24T02:00:00Z', 'C:\\Old\\InspirationDrawer.Rhino.rhp'));
+    writeFileSync(join(logs, 'startup-102.log'), entry('plugin.load.completed', '2026-11-24T02:00:00Z'));
+    writeFileSync(join(logs, 'startup-103.log'), entry('plugin.load.failed', '2026-11-24T02:00:00Z'));
+    const script = helper + '\n@(100,101,102,103 | ForEach-Object {'
+      + 'Get-RhinoPluginLoadState @{ Id=$_; Started=[DateTimeOffset]::Parse("2026-11-24T01:00:00Z") } $env:FIXTURE_PLUGIN'
+      + '}) | ConvertTo-Json -Compress';
+    expect(run(script, { FIXTURE_PLUGIN: assembly, LOCALAPPDATA: localAppData })).toEqual(['awaiting', 'awaiting', 'loaded', 'failed']);
+  });
 });

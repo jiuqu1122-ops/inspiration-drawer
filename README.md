@@ -4,12 +4,18 @@
 
 ## 下载
 
-当前已发布版本：**9.0.1**
+当前已发布版本：**9.0.2**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v9.0.1/Inspiration.Drawer_9.0.1_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v9.0.1)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v9.0.2/Inspiration.Drawer_9.0.2_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v9.0.2)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 9.0.2 更新
+
+- Rhino 8/9 插件支持独立离线安装。设置中可检查命令注册和实际加载状态。
+- 按图建模先检查参考图。后续部件发生可确认的网格错误时，可单独检查和修正该部件。
+- 设置新增云服务连接检测，显示当前网络路径和请求耗时。
 
 ## 9.0.1 更新
 

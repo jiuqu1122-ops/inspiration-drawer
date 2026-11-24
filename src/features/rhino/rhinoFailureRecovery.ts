@@ -1,5 +1,5 @@
 import type { ChatToolCall } from '../chat/model/chatTypes';
-import { rhinoDiagnosticText } from './rhinoErrorDiagnostic';
+import { rhinoDiagnosticText, rhinoOutwardMeshFailurePart } from './rhinoErrorDiagnostic';
 import { rhinoExecutableScriptCode } from './rhinoScriptPreflight';
 
 export const RHINO_FAILURE_DIAGNOSIS_MARKER = 'RHINO_NATIVE_FAILURE_DIAGNOSIS_V1:';
@@ -7,13 +7,23 @@ export const RHINO_FAILURE_VERIFIED_MARKER = 'RHINO_NATIVE_FAILURE_VERIFIED_V1:'
 export const RHINO_FAILURE_CORRECTED_MARKER = 'RHINO_NATIVE_FAILURE_CORRECTED_V1:';
 export const RHINO_FAILURE_INSPECTED_MARKER = 'RHINO_NATIVE_FAILURE_INSPECTED_V1:';
 
-export const hasRhinoFailureDiagnosis = (messages: Array<{ role?: string; content?: unknown }>) => (
-  messages.some(message => message.role === 'system' && String(message.content || '').startsWith(RHINO_FAILURE_DIAGNOSIS_MARKER))
-);
+type RecoveryMessages = Array<{ role?: string; content?: unknown }>;
+const isRecoveryMarker = (message: RecoveryMessages[number], marker: string) =>
+  message.role === 'system' && String(message.content || '').startsWith(marker);
 
-export const hasRhinoFailureInspection = (messages: Array<{ role?: string; content?: unknown }>) => (
-  messages.some(message => message.role === 'system' && String(message.content || '').startsWith(RHINO_FAILURE_INSPECTED_MARKER))
-);
+export const hasRhinoFailureDiagnosis = (messages: RecoveryMessages) =>
+  messages.some(message => isRecoveryMarker(message, RHINO_FAILURE_DIAGNOSIS_MARKER));
+
+const hasCurrentRecoveryMarker = (messages: RecoveryMessages, marker: string) => {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (isRecoveryMarker(messages[index], marker)) return true;
+    if (isRecoveryMarker(messages[index], RHINO_FAILURE_DIAGNOSIS_MARKER)) return false;
+  }
+  return false;
+};
+
+export const hasRhinoFailureInspection = (messages: RecoveryMessages) =>
+  hasCurrentRecoveryMarker(messages, RHINO_FAILURE_INSPECTED_MARKER);
 
 const receiptOf = (call: Pick<ChatToolCall, 'resultJson'>) => {
   try {
@@ -27,6 +37,19 @@ const receiptOf = (call: Pick<ChatToolCall, 'resultJson'>) => {
 type FailedRhinoCall = Pick<ChatToolCall, 'toolName'> & Partial<Pick<ChatToolCall, 'argumentsJson' | 'resultJson'>>;
 export const isRhinoUnconfirmedWriteFailure = (call: Pick<ChatToolCall, 'resultJson'>) =>
   rhinoDiagnosticText(receiptOf(call)).split('\n').some(line => line.startsWith('RHINO_NATIVE_OUTCOME_UNCONFIRMED:'));
+
+export const canRecoverLaterRhinoMeshFailure = (messages: RecoveryMessages, call: ChatToolCall, priorCalls: ChatToolCall[]) => {
+  if (call.toolName !== 'rhino_native_run_python' || !hasRhinoFailureVerification(messages)
+      || messages.filter(message => isRecoveryMarker(message, RHINO_FAILURE_DIAGNOSIS_MARKER)).length !== 1) return false;
+  const receipt = receiptOf(call);
+  const verification = receipt.geometryVerification as Record<string, unknown> | undefined;
+  const part = rhinoOutwardMeshFailurePart(receipt);
+  return Boolean(part && verification?.writeFailed === true && verification.documentWriteWasDispatched === true
+    && ['passed', 'no_geometry_change', 'needs_attention'].includes(String(verification.status))
+    && !priorCalls.some(previous => previous.id !== call.id && previous.status === 'error'
+      && (rhinoOutwardMeshFailurePart(receiptOf(previous)) === part
+        || previous.toolName === call.toolName && previous.argumentsJson === call.argumentsJson)));
+};
 
 function requiresGh2CanvasRead(call?: FailedRhinoCall) {
   if (call?.toolName.startsWith('rhino_native_g2_')) return true;
@@ -45,6 +68,8 @@ export const buildRhinoNativeFailureDiagnosisInstruction = (call: Pick<ChatToolC
     ? receipt.geometryVerification as Record<string, unknown>
     : undefined;
   const receiptJson = JSON.stringify(receipt).slice(0, 12_000);
+  const meshPart = rhinoOutwardMeshFailurePart(receipt);
+  const meshGuidance = meshPart ? '\nFor this mesh, inspect only the failed part and preserve the existing assembly. Construct or duplicate that part in memory. Check IsValid, IsClosed, IsManifold(), IsOriented and SolidOrientation(). A valid solid with SolidOrientation() == -1 can be flipped on its private copy. If it is 0, diagnose boundaries, non-manifold edges or inconsistent winding and repair that part’s topology while preserving intentional openings. Validate again before writing. Use DrawerGeometryStage for solid validation and inward-mesh normalization, and write only the verified missing or replacement part. Report checks for this part; never replay the assembly script.\n' : '';
   const verificationWarning = verification?.status === 'inspection_failed'
     ? 'The automatic document inspection failed. Do not issue any write or retry while the current document state cannot be verified. Attempt the required live read-only inspection; if it fails, stop with the exact failure evidence.'
     : verification?.writeFailed
@@ -62,7 +87,7 @@ Required bounded procedure:
 3. After inspection, only if the cause is clear and a safe targeted correction is possible, perform one minimal changed correction that preserves successful work and the user's design. Never clear/recreate the model, repeat the same script/arguments, or replay an uncertain write. Keep existing object IDs and inspect the result afterward.
 4. If state cannot be inspected, the error is ambiguous, a dependency/capability is missing, or the targeted correction fails, stop and report the concrete cause, what was inspected, what remains and the safest next step. Do not enter another automatic recovery loop.
 
-${verificationWarning}`;
+${verificationWarning}${meshGuidance}`;
 };
 
 // An explicit allowlist: discovery alone is not evidence of the live document state.
@@ -86,9 +111,8 @@ export const isFreshRhinoFailureInspection = (call: Pick<ChatToolCall, 'toolName
     return Array.isArray(graph?.objects) && Array.isArray(graph?.wires);
   } catch { return false; }
 };
-export const hasRhinoFailureCorrection = (messages: Array<{ role?: string; content?: unknown }>) => (
-  messages.some(message => message.role === 'system' && String(message.content || '').startsWith(RHINO_FAILURE_CORRECTED_MARKER))
-);
+export const hasRhinoFailureCorrection = (messages: RecoveryMessages) =>
+  hasCurrentRecoveryMarker(messages, RHINO_FAILURE_CORRECTED_MARKER);
 export const selectRhinoFailureInspectionTool = (names: string[], failed?: FailedRhinoCall) => {
   const preferred = requiresGh2CanvasRead(failed) ? 'rhino_native_g2_get_canvas_graph'
     : failed?.toolName.includes('_g1_') ? 'rhino_native_g1_get_canvas_graph'
@@ -105,9 +129,8 @@ export const isUnchangedRhinoFailureReplay = (failed: Pick<ChatToolCall, 'toolNa
   try { return canonical(JSON.parse(failed.argumentsJson)) === canonical(args); } catch { return true; }
 };
 
-export const hasRhinoFailureVerification = (messages: Array<{ role?: string; content?: unknown }>) => (
-  messages.some(message => message.role === 'system' && String(message.content || '').startsWith(RHINO_FAILURE_VERIFIED_MARKER))
-);
+export const hasRhinoFailureVerification = (messages: RecoveryMessages) =>
+  hasCurrentRecoveryMarker(messages, RHINO_FAILURE_VERIFIED_MARKER);
 
 export const isRhinoFailureReadOnlyTool = (name: string, nativeReadOnly?: boolean) => (
   isRhinoFailureInspectionTool(name) || name === 'web_search' || (name.startsWith('rhino_native_') && nativeReadOnly === true)

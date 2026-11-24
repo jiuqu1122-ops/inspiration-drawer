@@ -19406,6 +19406,7 @@ fn main() {
             rhino_installer::rhino_plugin_status,
             rhino_installer::auto_update_managed_rhino_plugins,
             rhino_installer::install_rhino_plugin,
+            commands::license::check_cloud_connection,
             rhino_updates::rhino_update_status,
             rhino_updates::check_rhino_updates,
             rhino_updates::rhino_runtime_location,

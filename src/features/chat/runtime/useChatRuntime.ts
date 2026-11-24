@@ -20,9 +20,9 @@ import {
 import { collectGhPythonComponentIds, isRhinoViewportObservationTool, keepRhinoViewportObservations, splitRhinoVisionObservation, VERIFY_GH_TOOL } from '../../rhino/rhinoGhSafety';
 import { GH2_VERIFY_MODEL_TOOL, gh2CompletionState, gh2IssueSummary } from '../../rhino/rhinoGh2Model';
 import { buildGhSolveRecoveryInstruction, hasGhSolveRecoveryContinuation, isStructuredGhSolveFailure, summarizeGhSolveFailure } from '../../rhino/rhinoGhSolveRecovery';
-import { buildRhinoNativeFailureDiagnosisInstruction, hasRhinoFailureDiagnosis, hasRhinoFailureInspection, hasRhinoFailureCorrection, hasRhinoFailureVerification, isFreshRhinoFailureInspection, isRhinoFailureInspectionTool, isRhinoFailureReadOnlyTool, isRhinoUnconfirmedWriteFailure, isUnchangedRhinoFailureReplay, selectRhinoFailureInspectionTool, RHINO_FAILURE_DIAGNOSIS_MARKER, RHINO_FAILURE_INSPECTED_MARKER, RHINO_FAILURE_CORRECTED_MARKER, RHINO_FAILURE_VERIFIED_MARKER } from '../../rhino/rhinoFailureRecovery';
+import { buildRhinoNativeFailureDiagnosisInstruction, canRecoverLaterRhinoMeshFailure, hasRhinoFailureDiagnosis, hasRhinoFailureInspection, hasRhinoFailureCorrection, hasRhinoFailureVerification, isFreshRhinoFailureInspection, isRhinoFailureInspectionTool, isRhinoFailureReadOnlyTool, isRhinoUnconfirmedWriteFailure, isUnchangedRhinoFailureReplay, selectRhinoFailureInspectionTool, RHINO_FAILURE_DIAGNOSIS_MARKER, RHINO_FAILURE_INSPECTED_MARKER, RHINO_FAILURE_CORRECTED_MARKER, RHINO_FAILURE_VERIFIED_MARKER } from '../../rhino/rhinoFailureRecovery';
 import { GEOMETRY_PREFLIGHT_REJECTION, RhinoGeometryPreflightError, SAFE_PROFILE_TOOL } from '../../rhino/rhinoSafeModeling';
-import { isExplicitGhComponentsRequest, isRhinoGeometryOnlyRequest } from '../../rhino/rhinoRequestIntent';
+import { isExplicitGhComponentsRequest, isRhinoGeometryOnlyRequest, requestsRhinoModelingReference, rhinoUserRequest } from '../../rhino/rhinoRequestIntent';
 import { connectDesignMemoryEvents, designMemory } from '../../designMemory/storage';
 import { beginChatDesignSummaryMemory, completeChatDesignSummaryMemory, designMemoryProjectId, rememberExplicitChatDesign } from '../../designMemory/sources';
 import { describeDesignMemoryTurn, designMemoryKindsInMessages, getDesignMemoryTurnReport, recallDesignMemoryForTurn, validateDesignMemoryMessages } from '../../designMemory/context';
@@ -59,7 +59,7 @@ import {
   upsertChatToolCall,
   writeActiveChatConversationId,
 } from '../storage/chatStorage';
-import { buildChatContext, buildSummaryRequestMessages } from '../context/chatContextBuilder';
+import { buildChatContext, buildSummaryRequestMessages, RequiredChatVisionError } from '../context/chatContextBuilder';
 import { getSelectedChatSkill } from '../skills/chatSkills';
 import { estimateChatTokens } from '../context/chatContextBudget';
 import type { ChatVisionAttachmentResolver } from '../attachments/chatVisionAttachmentResolver';
@@ -1234,9 +1234,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           }
           if (verifyingRhinoCorrection && !isRhinoFailureInspectionTool(call.toolName, failedRhinoCall)) throw new Error('Verify the correction with live read-only evidence before continuing.');
           if ((rhinoRecoveryActive || refiningRhino) && native?.readOnly === false) {
-            const failed = [...(getConversationMessages(run.conversationId).find(message => message.id === run.assistantMessageId)?.toolCalls || [])]
-              .reverse().find(previous => previous.status === 'error' && previous.toolName.startsWith('rhino_native_'));
-            if (isUnchangedRhinoFailureReplay(failed, call.toolName, args)) {
+            const priorCalls = getConversationMessages(run.conversationId).find(message => message.id === run.assistantMessageId)?.toolCalls || [];
+            if (priorCalls.some(previous => previous.status === 'error' && isUnchangedRhinoFailureReplay(previous, call.toolName, args))) {
               throw new Error('The original failed call cannot be replayed; the write/replay was not dispatched.');
             }
           }
@@ -1562,7 +1561,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         if (run.executionSource === 'rhino' && call.toolName.startsWith('rhino_native_') && call.status === 'error'
           && !isRecoverableRhinoNativeReadFailure(call.toolName, run.conversationId)
           && !rhinoPostprocessFailure(mergePresentationToolCalls(getConversationMessages(run.conversationId).find(message => message.id === run.assistantMessageId)?.toolCalls || [], run.calls), call)
-          && !hasRhinoFailureDiagnosis(run.providerMessages)
+          && (!hasRhinoFailureDiagnosis(run.providerMessages) || canRecoverLaterRhinoMeshFailure(
+            run.providerMessages, call, getConversationMessages(run.conversationId).find(message => message.id === run.assistantMessageId)?.toolCalls || [],
+          ))
           && !hasGhSolveRecoveryContinuation(run.providerMessages)
           && !unconfirmedNativeWrite
           && !(call.resultJson || '').includes(RHINO_FAILURE_DIAGNOSIS_MARKER)) {
@@ -1706,7 +1707,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       const recoveryTransitions: Array<Record<string, unknown>> = [];
       if (diagnosingRhinoFailure && recoveryInspectionSucceeded) recoveryTransitions.push({ role: 'system', content: RHINO_FAILURE_INSPECTED_MARKER + ' Live read-only inspection succeeded. Explain the root cause using the failure and inspection evidence before one minimal changed correction. Do not replay the failed write.' });
       if (recoveryWriteDispatched) recoveryTransitions.push({ role: 'system', content: RHINO_FAILURE_CORRECTED_MARKER + ' The changed correction ran. Inspect the actual object or graph read-only before making any further writes.' });
-      if (verifyingRhinoCorrection && recoveryInspectionSucceeded) recoveryTransitions.push({ role: 'system', content: RHINO_FAILURE_VERIFIED_MARKER + ' The read-only inspection receipt is available. If the correction is sound, continue unfinished stages of the original task. The failed write must not be replayed, nor may a new failure start another recovery loop.' });
+      if (verifyingRhinoCorrection && recoveryInspectionSucceeded) recoveryTransitions.push({ role: 'system', content: RHINO_FAILURE_VERIFIED_MARKER + ' The read-only inspection receipt is available. If the correction is sound, continue unfinished stages of the original task. Never replay a failed write. The runtime decides whether a separate later failure qualifies for bounded diagnosis.' });
       await runModelLoopRef.current(
         run.conversationId,
         run.assistantMessageId,
@@ -1850,8 +1851,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     }
     if (executionSource === 'rhino') requestInstructions.push({ role: 'system', content: `${buildRhinoTurnInstruction()}\n${buildRhinoWorkflowInstruction(userText, { hasReferenceImage: currentImageAttachmentCount > 0 })}${rhinoFailureDiagnosisActive ? '\nRHINO FAILURE DIAGNOSIS ACTIVE: read-only inspection only. Do not call any write, modeling, script, solve, bake or material-change tool until the exact failure has been diagnosed from live state.' : ''}${rhinoFailureCorrectionActive ? '\nRHINO FAILURE CORRECTION ACTIVE: live read-only inspection succeeded. Never replay the failed call with identical tool and arguments. Correct its evidenced cause once, then verify read-only. AFTER verification, continue remaining stages of the original user task; do not stop at a blockout.' : ''}${isExplicitGhComponentsRequest(userText) ? '\nUSER REQUESTS NATIVE GRASSHOPPER COMPONENTS: build/edit the actual GH canvas with discovered native components, exact GUIDs/ports, apply/connect/solve and inspect. Do not use run_python, run_csharp, run_command or a hidden script as a substitute. If the graph API cannot satisfy the request, explain the limitation instead of silently switching to code.' : ''}` });
     if (rhinoFailureDiagnosisActive) {
-      const failedCall = currentTurnToolCalls.find(call => call.status === 'error' && call.toolName.startsWith('rhino_native_'));
-      if (failedCall) requestInstructions.push({ role: 'system', content: buildRhinoNativeFailureDiagnosisInstruction(failedCall) });
+      if (failedRhinoCall) requestInstructions.push({ role: 'system', content: buildRhinoNativeFailureDiagnosisInstruction(failedRhinoCall) });
     }
     if (rhinoFailureCorrectionActive) requestInstructions.push({ role: 'system', content: `${RHINO_FAILURE_INSPECTED_MARKER} The required read-only inspection has completed. Use its evidence and the original failure receipt to decide whether one minimal correction is safe. If the evidence is insufficient, stop and explain instead of writing.` });
     if (rhinoGeometryRequest) requestInstructions.push({ role: 'system', content: 'This is a native Rhino geometry task. Use every attached canvas image as a real modeling reference; do not substitute generated pictures. Structural validity is not visual fidelity. Complete the requested form rather than stopping at a primitive blockout; compare the final Rhino viewport against all references and correct obvious silhouette, proportion, transition or feature omissions before claiming completion.' });
@@ -3018,6 +3018,21 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         ? executionSource === 'desktop' ? await hydrateGithubSkill(selectedSkill) : undefined
         : selectedSkill;
       if (turnSkill?.github) pinGithubSkillForTurn({ conversationId, messageId: assistantMessage.id, userText: userMessage.content, executionSource, recentMessages: [] }, turnSkill.id, turnSkill.github.version, turnSkill.instructions.length);
+      let requiredVisionAttachmentIds: Set<string> | undefined;
+      if (executionSource === 'rhino' && isRhinoGeometryOnlyRequest(userMessage.content)) {
+        let references = visionImages.filter(image => image.messageId === userMessage.id);
+        if (requestsRhinoModelingReference(userMessage.content) && references.length === 0) {
+          // A request for the current canvas must not silently inherit an unrelated old image.
+          if (!/画布|\bcanvas\b/i.test(rhinoUserRequest(userMessage.content))) {
+            const history = visionImages.filter(image => !image.generated
+              && (!image.id.startsWith('rhino-') || image.id.startsWith('rhino-local-')));
+            const latestReference = history[history.length - 1];
+            if (latestReference) references = history.filter(image => image.messageId === latestReference.messageId);
+          }
+          if (!references.length) throw new RequiredChatVisionError('本轮没有收到建模参考图。请选中画布原图并勾选画布引用，或直接把原图附到消息里。Rhino 文档未修改。');
+        }
+        if (references.length) requiredVisionAttachmentIds = new Set(references.map(image => image.id));
+      }
       const providerMessages = await buildChatContext({
         messages: nextMessages,
         latestUserMessage: userMessage,
@@ -3028,6 +3043,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         // Rhino product reconstruction needs silhouettes and small transitions, not low-detail thumbnails.
         visionDetail: executionSource === 'rhino' ? 'high' : undefined,
         visionAttachments: visionImages,
+        requiredVisionAttachmentIds,
         reusedVisionAttachments: imageSelection.reusedFromHistory,
         skill: turnSkill,
         githubSkillsEnabled: executionSource === 'desktop',
@@ -3079,6 +3095,14 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       recoverableRequestIdsRef.current.delete(conversationId);
       return true;
     } catch (error) {
+      if (error instanceof RequiredChatVisionError) {
+        patchMessage(assistantMessage.id, message => finalizeChatMessageState({
+          ...message,
+          content: error.message,
+        }, 'error', Date.now(), '建模参考图未就绪'), true);
+        updateConversationBusy(conversationId, false);
+        return true; // The panel received a finalized message; no model request was dispatched.
+      }
       const cancelled = /取消|cancel/i.test(String(error));
       flushStreamDelta(assistantMessage.id);
       const currentAssistantMessage = messageCacheRef.current.get(assistantMessage.id);

@@ -11,7 +11,11 @@ export const selectionToChatAttachments = (items: AgentCanvasSelectionItem[]): P
     path: reference.path || reference.source || '',
     thumbnailPath: reference.thumbnail,
     mimeType: 'image/jpeg',
-    metadataJson: JSON.stringify({ nodeId: reference.nodeId, sourceItemId: reference.sourceItemId }),
+    metadataJson: JSON.stringify({
+      nodeId: reference.nodeId,
+      sourceItemId: reference.sourceItemId,
+      canvasImageSource: reference.path && reference.source !== reference.path ? reference.source : undefined,
+    }),
   }));
 
 export const getVisibleSelectionChatAttachments = (

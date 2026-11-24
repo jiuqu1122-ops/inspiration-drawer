@@ -6,14 +6,20 @@ function Get-RhinoExecutableMajor([string]$path) {
   try { return [Diagnostics.FileVersionInfo]::GetVersionInfo($path).FileMajorPart }
   catch { return 0 }
 }
-function Find-RhinoExecutable($installKey, [int]$expectedMajor) {
+function Find-RhinoExecutable($installKey, [int]$expectedMajor, [string[]]$fallbackPaths = @()) {
   $candidates = @()
-  $exe = [string]$installKey.GetValue('ExePath','')
-  if (-not [string]::IsNullOrWhiteSpace($exe)) { $candidates += $exe }
-  $directory = [string]$installKey.GetValue('Path','')
-  if (-not [string]::IsNullOrWhiteSpace($directory)) { $candidates += Join-Path $directory 'Rhino.exe' }
+  if ($installKey) {
+    $exe = [string]$installKey.GetValue('ExePath','')
+    if (-not [string]::IsNullOrWhiteSpace($exe)) { $candidates += $exe }
+    $directory = [string]$installKey.GetValue('Path','')
+    if (-not [string]::IsNullOrWhiteSpace($directory)) {
+      $candidates += Join-Path $directory 'Rhino.exe'
+      $candidates += Join-Path $directory 'System\Rhino.exe'
+    }
+  }
+  $candidates += $fallbackPaths
   foreach ($candidate in $candidates) {
-    if ((Test-Path -LiteralPath $candidate -PathType Leaf -ErrorAction SilentlyContinue) -and
+    if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf -ErrorAction SilentlyContinue) -and
         (Get-RhinoExecutableMajor $candidate) -eq $expectedMajor) {
       return [IO.Path]::GetFullPath($candidate)
     }
@@ -28,11 +34,32 @@ function Get-RhinoRuntimeMode([string[]]$moduleNames) {
   if ($framework) { return 'netfx' }
   return 'unknown'
 }
+function Get-RhinoPluginLoadState($process, [string]$pluginPath) {
+  if (-not $process.Started -or -not $pluginPath -or -not $env:LOCALAPPDATA) { return 'awaiting' }
+  $log = Join-Path $env:LOCALAPPDATA "InspirationDrawer\RhinoBeta\startup-$($process.Id).log"
+  $state = 'awaiting'
+  foreach ($line in @(Get-Content -LiteralPath $log -Tail 64 -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+    try {
+      $record = ConvertFrom-Json -InputObject $line -ErrorAction Stop
+      if ($record.phase -notin @('plugin.load.completed','plugin.load.failed','plugin.shutdown')) { continue }
+      if ([DateTimeOffset]::Parse([string]$record.at) -lt $process.Started) { continue }
+      if (-not [string]::Equals([string]$record.assembly,$pluginPath,[StringComparison]::OrdinalIgnoreCase)) { continue }
+      $state = switch ($record.phase) {
+        'plugin.load.completed' { 'loaded' }
+        'plugin.load.failed' { 'failed' }
+        default { 'awaiting' }
+      }
+    } catch { }
+  }
+  return $state
+}
 $processes = @()
 foreach ($process in @(Get-Process -Name Rhino -ErrorAction SilentlyContinue)) {
   $processPath = $null
+  $started = $null
   try { $processPath = $process.Path } catch { }
-  $processes += [pscustomobject]@{ Id=$process.Id; Path=$processPath }
+  try { $started = [DateTimeOffset]$process.StartTime } catch { }
+  $processes += [pscustomobject]@{ Id=$process.Id; Path=$processPath; Started=$started }
 }
 foreach ($version in @(8,9)) {
   $path = $null
@@ -45,6 +72,13 @@ foreach ($version in @(8,9)) {
       } finally { $key.Dispose() }
     }
   }
+  if (-not $path) {
+    $fallbacks = @($processes | Where-Object Path | ForEach-Object { $_.Path })
+    foreach ($programFiles in @($env:ProgramW6432, $env:ProgramFiles) | Where-Object { $_ } | Select-Object -Unique) {
+      $fallbacks += Join-Path $programFiles "Rhino $version\System\Rhino.exe"
+    }
+    $path = Find-RhinoExecutable $null $version $fallbacks
+  }
   if (-not $path) { continue }
   $pluginRoot = "SOFTWARE\McNeel\Rhinoceros\$version.0\Plug-Ins\$guid"
   $installed = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("$pluginRoot\PlugIn")
@@ -53,6 +87,12 @@ foreach ($version in @(8,9)) {
   $pluginSettings = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($pluginRoot)
   $loadMode = $null
   if ($pluginSettings) { try { $loadMode = $pluginSettings.GetValue('LoadMode',$null) } finally { $pluginSettings.Dispose() } }
+  $commandRegistered = $false
+  $commandKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("$pluginRoot\CommandList")
+  if ($commandKey) {
+    try { $commandRegistered = $commandKey.GetValue('InspirationDrawer','') -eq '2;InspirationDrawer' }
+    finally { $commandKey.Dispose() }
+  }
   $protectionKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("SOFTWARE\McNeel\Rhinoceros\$version.0\Global Settings\Plug-ins\$guid")
   $loadProtection = $null
   if ($protectionKey) { try { $loadProtection = $protectionKey.GetValue('LoadProtection',$null) } finally { $protectionKey.Dispose() } }
@@ -87,6 +127,8 @@ foreach ($version in @(8,9)) {
     if ($sameUser) { $runningAsCurrentUser = $true }
     elseif ($ownersChecked -eq $matchingProcesses.Count) { $runningAsCurrentUser = $false }
   }
-  $items += [ordered]@{majorVersion=$version;exePath=$path;running=$running;runningStateUncertain=$runningStateUncertain;runtimeModes=$runtimeModes;runningAsCurrentUser=$runningAsCurrentUser;pluginPath=$plugin;loadMode=$loadMode;loadProtection=$loadProtection;installed=$false}
+  $loadStates = @($matchingProcesses | Where-Object Path | ForEach-Object { Get-RhinoPluginLoadState $_ $plugin })
+  $pluginLoadState = if ($loadStates -contains 'failed') { 'failed' } elseif ($loadStates -contains 'loaded') { 'loaded' } else { 'awaiting' }
+  $items += [ordered]@{majorVersion=$version;exePath=$path;running=$running;runningStateUncertain=$runningStateUncertain;runtimeModes=$runtimeModes;runningAsCurrentUser=$runningAsCurrentUser;pluginPath=$plugin;loadMode=$loadMode;loadProtection=$loadProtection;commandRegistered=$commandRegistered;pluginLoadState=$pluginLoadState;installed=$false}
 }
 ConvertTo-Json -InputObject @($items) -Depth 4 -Compress

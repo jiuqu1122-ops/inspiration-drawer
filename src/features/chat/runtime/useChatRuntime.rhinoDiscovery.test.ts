@@ -11,6 +11,7 @@ import { useChatRuntime } from './useChatRuntime';
 import { registerRhinoNativeTools, rhinoToolDefinitions, RHINO_REFERENCE_REVIEW_TOOL, type RhinoNativeTool } from '../../rhino/rhinoProtocol';
 import { readRhinoModelingSkillResource, RHINO_MODELING_SKILL_RESOURCE_TOOL } from '../../rhino/rhinoProductModelingKnowledge';
 import { gh2ModelTools, GH2_VERIFY_MODEL_TOOL, GH2_REPAIR_OUTPUTS_TOOL } from '../../rhino/rhinoGh2Model';
+import { RhinoDocumentGeometryWriteError } from '../../rhino/rhinoDocumentGeometry';
 const executed=vi.fn(async(_name:string)=>({source:'rhino',content:'{"hits":[]}'}));
 const search='rhino_native_g1_search_components';
 const tools:RhinoNativeTool[]=[
@@ -25,7 +26,7 @@ const tools:RhinoNativeTool[]=[
  {name:'rhino_native_get_viewport_image',description:'Host camera-configurable viewport capture',readOnly:false,destructive:false,inputSchema:{type:'object',properties:{}}},
  {name:'rhino_native_run_python',description:'Run Python script',readOnly:false,destructive:true,inputSchema:{type:'object',properties:{script:{type:'string'}}}},
 ];
-const setup=()=>useChatRuntime({model:'fixture',approvalMode:'auto',resolveAttachmentUrl:async()=> 'data:image/png;base64,reference-fixture',executeTool:executed,additionalTools:(id,source)=>{
+const setup=(resolveAttachmentUrl: NonNullable<Parameters<typeof useChatRuntime>[0]['resolveAttachmentUrl']> = async()=> 'data:image/png;base64,reference-fixture')=>useChatRuntime({model:'fixture',approvalMode:'auto',resolveAttachmentUrl,executeTool:executed,additionalTools:(id,source)=>{
  if(source!=='rhino')return [];registerRhinoNativeTools(id,tools);return [...tools.map(t=>({type:'function' as const,function:{name:t.name,description:t.description,parameters:t.inputSchema}})), ...rhinoToolDefinitions];
 }});
 const call=(id:string,args:Record<string,unknown>,name=search)=>({content:'',toolCalls:[{id,name,arguments:JSON.stringify(args)}]});
@@ -45,6 +46,24 @@ beforeEach(()=>{
 });
 afterEach(()=>{vi.unstubAllGlobals();vi.restoreAllMocks();});
 const last=()=>[...h.messages.values()].filter(message=>message.role==='assistant').slice(-1)[0]!;
+
+it('reports missing canvas references before starting reference-based Rhino modeling', async () => {
+  expect(await setup().sendMessage('按画布里的三视图重新建模', [], undefined, undefined, undefined, 'rhino')).toBe(true);
+  expect(h.requests).toHaveLength(0);
+  expect(executed).not.toHaveBeenCalled();
+  expect(last().status).toBe('error');
+  expect(last().content).toContain('本轮没有收到建模参考图');
+});
+
+it('does not start Rhino modeling with a partially failed reference set', async () => {
+  const references = ['front', 'side'].map(id => ({ id, type: 'image' as const, path: `C:/fixture/${id}.jpg` }));
+  await setup(async image => image.id === 'front' ? 'data:image/jpeg;base64,QUJD' : '')
+    .sendMessage('根据三视图建模', references, undefined, undefined, undefined, 'rhino');
+  expect(h.requests).toHaveLength(0);
+  expect(executed).not.toHaveBeenCalled();
+  expect(last().status).toBe('error');
+  expect(last().content).toContain('有建模参考图未能读取或上传');
+});
 
 it('finishes a Rhino turn with more than 24 consecutive tool rounds', async () => {
   for (let round = 0; round < 32; round++) h.replies.push(call(`graph-${round}`, {}, 'rhino_native_g1_get_canvas_graph'));
@@ -318,6 +337,31 @@ describe('app-enforced Rhino native failure diagnosis',()=>{
  const run=(args:Record<string,unknown>,id='script')=>call(id,args,'rhino_native_run_python');
  const inspect=()=>call('inspect',{},'rhino_native_g1_get_canvas_graph');
  const request=()=>setup().sendMessage('Create the geometry with Python.',[],undefined,undefined,undefined,'rhino');
+ it('can inspect and correct a new confirmed mesh failure after verifying an earlier correction', async () => {
+  const python = (id: string) => run({ script: id + '()' }, id);
+  const graph = (id: string) => call(id, {}, 'rhino_native_g1_get_canvas_graph');
+  h.replies.push(python('first'), graph('inspect-first'), python('fix-first'), graph('verify-first'),
+    python('frame'), graph('inspect-frame'), python('fix-frame'), graph('verify-frame'), { content: 'Verified both parts.', toolCalls: [] });
+  let writes = 0;
+  executed.mockImplementation(async name => {
+   if (name === 'rhino_native_run_python') {
+    writes++;
+    if (writes === 1) throw Error('first stage failed');
+    if (writes === 3) throw new RhinoDocumentGeometryWriteError(
+      Error('ValueError: B05_背面调节窗边框 mesh is not an outward solid'),
+      { writeFailed: true, documentWriteWasDispatched: true, status: 'no_geometry_change' },
+    );
+   }
+   return { source: 'rhino', content: '{"objects":[]}' };
+  });
+  await request();
+  expect(executed.mock.calls.map(([name]) => name)).toEqual(
+    Array.from({ length: 4 }, () => ['rhino_native_run_python', 'rhino_native_g1_get_canvas_graph']).flat(),
+  );
+  expect(JSON.stringify(h.requests[5].messages)).toContain('SolidOrientation()');
+  expect(h.requests[5].tools.every((tool: any) => !tool.function.name.includes('run_python'))).toBe(true);
+  expect(last().status).toBe('completed');
+ });
  it('inspects first, corrects once and verifies before completion',async()=>{
   h.replies.push(run({script:'bad()'}),inspect(),{...run({script:'fixed()'},'fix'),content:'The error was caused by using the event as a point; inspection shows existing geometry is preserved.'},call('verify',{},'rhino_native_g1_get_canvas_graph'),{content:'The targeted correction passed read-only verification.',toolCalls:[]});
   executed.mockImplementation(async(name:string)=>{

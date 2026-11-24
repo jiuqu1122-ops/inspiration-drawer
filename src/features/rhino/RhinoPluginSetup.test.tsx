@@ -71,7 +71,7 @@ describe('Rhino plugin setup', () => {
     render(); mocks.effects[0](); await settle();
     const tree = JSON.stringify(render());
     expect(tree).toContain('\u5df2\u6ce8\u518c\uff08\u672a\u786e\u8ba4 Rhino \u5df2\u52a0\u8f7d\uff09');
-    expect(tree).toContain('插件状态只反映注册和文件校验');
+    expect(tree).toContain('启动 Rhino 后可刷新检测实际加载状态');
   });
   it('explains per-user install mismatches and Rhino load protection', async () => {
     mocks.detect.mockResolvedValueOnce([{
@@ -94,7 +94,7 @@ describe('Rhino plugin setup', () => {
     mocks.install.mockResolvedValueOnce({ installed, restartRequired: true });
     const button = installButton(render());
     button.props.onClick(); button.props.onClick(); await settle();
-    expect(mocks.invoke.mock.calls.slice(2)).toEqual([['check_rhino_updates', { prepareOnly: true }], ['install_rhino_plugin']]);
+    expect(mocks.invoke.mock.calls.slice(2)).toEqual([['install_rhino_plugin'], ['check_rhino_updates', { prepareOnly: true }]]);
     expect(mocks.states[0]).toEqual(installed);
     expect(String(mocks.states[3])).toContain('\u91cd\u542f');
     expect(installButton(render()).props.disabled).toBe(false);
@@ -115,6 +115,29 @@ describe('Rhino plugin setup', () => {
     expect(mocks.install).toHaveBeenCalledOnce();
     expect(mocks.states[2]).toContain('offline');
     expect(mocks.states[3]).toContain('安装完成');
+  });
+  it('shows the local registration before an outstanding online check finishes', async () => {
+    render(); mocks.effects[0](); await settle();
+    let finishUpdate!: (value: typeof update) => void;
+    const reply = new Promise<typeof update>(resolve => { finishUpdate = resolve; });
+    mocks.prepare.mockReturnValueOnce(reply);
+    installButton(render()).props.onClick();
+    await settle();
+    expect(mocks.install).toHaveBeenCalledOnce();
+    expect(mocks.states[3]).toContain('本地安装完成');
+    finishUpdate(update);
+    await settle();
+    expect(mocks.install).toHaveBeenCalledOnce();
+  });
+  it('distinguishes observed loading from missing command metadata', async () => {
+    mocks.detect.mockResolvedValueOnce([
+      { ...versions[0], installed: true, pluginLoadState: 'loaded' },
+      { ...versions[1], installed: true, commandRegistered: false },
+    ]);
+    render(); mocks.effects[0](); await settle();
+    const tree = JSON.stringify(render());
+    expect(tree).toContain('Rhino 已加载插件');
+    expect(tree).toContain('缺少命令注册');
   });
   it('preserves a prepared runtime and its restart notice when native registration fails', async () => {
     render(); mocks.effects[0](); await settle();

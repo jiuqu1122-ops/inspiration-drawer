@@ -5,6 +5,12 @@ export function rhinoUserRequest(text: string) {
   return text.split(/\n\n\[Rhino \u53ea\u8bfb\u4e0a\u4e0b\u6587[^\]]*\]/)[0].trim();
 }
 
+/** An explicit reference dependency can exist even when the user forgot to attach the image. */
+export const requestsRhinoModelingReference = (text: string) => {
+  const request = rhinoUserRequest(text).replace(/(?:不需要|不用|无需|别|不要)\s*(?:用|按|看|参考)?\s*(?:三视图|多视图|参考图|原图|图片|图纸|附图)|\b(?:without|ignore)\s+(?:(?:the|any)\s+)?(?:three[- ]views?|reference (?:images?|photos?))/gi, '');
+  return /三视图|多视图|(?:根据|按照|照着|对照|按|参考|用|看着).{0,16}(?:参考图|原图|图片|图纸|附图|画布.{0,6}图)|按图|\b(?:three[- ]views?|orthographic views?|reference images?|reference photos?|attached (?:images?|photos?|drawings?))\b/i.test(request);
+};
+
 /** Explicit geometry creation/editing must not become image editing merely
  * because a reference image is attached or the request contains "image". */
 export function isRhinoGeometryOnlyRequest(text: string) {

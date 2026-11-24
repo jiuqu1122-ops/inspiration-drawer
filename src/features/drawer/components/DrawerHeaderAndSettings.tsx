@@ -1,4 +1,5 @@
 import { RhinoPluginSetup } from '../../rhino/RhinoPluginSetup';
+import { CloudConnectionCheck } from './CloudConnectionCheck';
 import { DesignMemorySettingsPanel } from '../../designMemory';
 import { indexExistingDesignMemory } from '../indexExistingDesignMemory';
 import { invoke } from '@tauri-apps/api/core';
@@ -1040,6 +1041,7 @@ export function DrawerHeaderAndSettings({ scope }: { scope: DrawerHeaderAndSetti
                                       {!isCloudAccountLoading && cloudAccount && <span className="text-[9px] font-semibold text-stone-400 dark:text-stone-500">积分</span>}
                                     </div>
                                     {cloudAccountSyncError && <div className="mt-2 truncate text-[9px] font-semibold text-amber-600 dark:text-amber-300" title={cloudAccountSyncError}>同步失败，显示最近一次成功余额</div>}
+                                    <CloudConnectionCheck />
                                     <div className="mt-4 grid grid-cols-2 gap-2">
                                       <button type="button" onClick={requestOpenCreditRecharge} disabled={!cloudAccount || isCloudAccountLoading} className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-[10px] bg-blue-600 px-3 text-[10px] font-bold text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-45">
                                         <Wallet className="h-3.5 w-3.5" /> 充值积分

@@ -20,6 +20,8 @@ import {
   type ChatContextBudget,
 } from './chatContextBudget';
 
+export class RequiredChatVisionError extends Error {}
+
 export const GENERAL_CHAT_SYSTEM_PROMPT = [
   DESIGN_MEMORY_CAPABILITY_RULE,
   '你是灵感抽屉内置的通用 AI 助手。',
@@ -108,6 +110,7 @@ const buildAttachmentContent = async (
   reusedFromHistory = false,
   visionDetail?: 'low' | 'high' | 'auto',
   latestMessageId?: string,
+  requiredVisionAttachmentIds?: ReadonlySet<string>,
 ) => {
   if (attachments.length === 0) return text;
   const parts: Array<Record<string, unknown>> = [{ type: 'text', text }];
@@ -134,6 +137,9 @@ const buildAttachmentContent = async (
     const isReferenceObjectKey = /^reference-images\/[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(url);
     const oversizedInline = /^data:image\//i.test(url) && estimateDataUrlBytes(url) > MAX_INLINE_VISION_BYTES;
     if (oversizedInline || (!/^https:\/\//i.test(url) && !/^data:image\//i.test(url) && !isReferenceObjectKey)) {
+      if (requiredVisionAttachmentIds?.has(attachment.id)) {
+        throw new RequiredChatVisionError('有建模参考图未能读取或上传。请重新选择画布原图，或直接把原图附到消息里。Rhino 文档未修改。');
+      }
       parts.push({ type: 'text', text: `${label}\n该图片暂时未成功加载。本轮未收到该图片像素，不能声称已看图或描述原图细节。` });
       continue;
     }
@@ -164,6 +170,7 @@ export const buildChatContext = async (input: {
   budget?: Partial<ChatContextBudget>;
   resolveAttachmentUrl?: (attachment: ChatAttachment) => Promise<string | ChatVisionAttachmentResolution>;
   visionAttachments?: ChatVisionAttachment[];
+  requiredVisionAttachmentIds?: ReadonlySet<string>;
   reusedVisionAttachments?: boolean;
   visionDetail?: 'low' | 'high' | 'auto';
   skill?: ChatSkill;
@@ -180,6 +187,7 @@ export const buildChatContext = async (input: {
     input.reusedVisionAttachments,
     input.visionDetail,
     input.visionAttachments ? input.latestUserMessage.id : undefined,
+    input.requiredVisionAttachmentIds,
   );
   const snapshot = input.designMemoryRecall ? input.designMemoryRecall.snapshot : input.designMemory;
   const memoryMessage = buildDesignMemoryContextMessage(snapshot);

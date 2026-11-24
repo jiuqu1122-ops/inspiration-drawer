@@ -29,6 +29,15 @@ export type ChatVisionAttachmentResolver = {
   dispose: () => Promise<void>;
 };
 
+const canvasFallbackSource = (attachment: ChatAttachment) => {
+  try {
+    const metadata = JSON.parse(attachment.metadataJson || '{}');
+    return typeof metadata?.canvasImageSource === 'string' ? metadata.canvasImageSource.trim() : '';
+  } catch {
+    return '';
+  }
+};
+
 const createTaskLimiter = (limit: number) => {
   let active = 0;
   const pending: Array<() => void> = [];
@@ -59,9 +68,8 @@ export const createChatVisionAttachmentResolver = (options: {
   const cache = new Map<string, Promise<ChatVisionAttachmentResolution>>();
   const completed = new Map<string, ChatVisionAttachmentResolution>();
 
-  const resolveOne = async (attachment: ChatAttachment): Promise<ChatVisionAttachmentResolution> => {
-    const source = attachment.path.trim();
-    if (/^https:\/\//i.test(source)) {
+  const resolveSource = async (attachment: ChatAttachment, source: string): Promise<ChatVisionAttachmentResolution> => {
+    if (/^https:\/\//i.test(source) && !/^https:\/\/asset\.localhost(?=[:/]|$)/i.test(source)) {
       return {
         attachmentId: attachment.id,
         url: source,
@@ -124,10 +132,17 @@ export const createChatVisionAttachmentResolver = (options: {
   };
 
   const resolve = (attachment: ChatAttachment) => {
-    const key = `${attachment.id}\u0000${attachment.path}`;
+    const fallback = canvasFallbackSource(attachment);
+    const source = attachment.path.trim();
+    const key = `${attachment.id}\u0000${source}\u0000${fallback}`;
     const existing = cache.get(key);
     if (existing) return existing;
-    const pending = runLimited(() => resolveOne(attachment)).then(result => {
+    const pending = runLimited(async () => {
+      const primary = await resolveSource(attachment, source);
+      if (primary.url || !fallback || fallback === source) return primary;
+      const alternate = await resolveSource(attachment, fallback);
+      return alternate.url ? alternate : primary;
+    }).then(result => {
       completed.set(attachment.id, result);
       return result;
     });

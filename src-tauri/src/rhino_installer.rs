@@ -37,6 +37,10 @@ pub struct RhinoInstallation {
     #[serde(default)]
     pub running_as_current_user: Option<bool>,
     #[serde(default)]
+    pub command_registered: Option<bool>,
+    #[serde(default)]
+    pub plugin_load_state: Option<String>,
+    #[serde(default)]
     pub conflicting_package_paths: Vec<String>,
 }
 #[derive(Serialize)]
@@ -112,13 +116,18 @@ fn embedded_payload(version: u8) -> Result<[(&'static str, &'static [u8]); 5], S
 
 fn payload(version: u8) -> Result<Vec<(&'static str, Vec<u8>)>, String> {
     let embedded = embedded_payload(version)?;
-    let selected = crate::rhino_updates::plugin_payload(version)?;
+    let selected = crate::rhino_updates::plugin_payload(version).unwrap_or_else(|_| {
+        eprintln!("[rhino-installer] Invalid cached Rhino {version} package; using the embedded package.");
+        None
+    });
     // A newer desktop may embed a plugin newer than the previously cached
     // independent release. Never downgrade it during post-upgrade sync.
-    let selected = match selected {
-        Some(files) if plugin_version(&files["InspirationDrawer.Rhino.deps.json"])? >= plugin_version(embedded[1].1)? => Some(files),
-        _ => None,
-    };
+    let embedded_version = plugin_version(embedded[1].1)?;
+    let selected = selected.filter(|files| {
+        files.get("InspirationDrawer.Rhino.deps.json")
+            .and_then(|bytes| plugin_version(bytes).ok())
+            .is_some_and(|version| version >= embedded_version)
+    });
     embedded.into_iter().map(|(name, fallback)| {
         let bytes = match &selected {
             Some(files) => files.get(name).ok_or_else(|| format!("Signed Rhino payload is missing {name}"))?.clone(),
@@ -342,7 +351,7 @@ fn managed_payload_path_matches(plugin_path: &str, root: &Path, major_version: u
     true
 }
 
-fn install() -> Result<RhinoInstallResult, String> {
+pub(crate) fn install() -> Result<RhinoInstallResult, String> {
     let _lock = INSTALL_LOCK.lock().map_err(|_| "Rhino installer is busy")?;
     let versions = detect().map_err(|error| format!("Rhino installation detection failed: {error}"))?;
     if versions.is_empty() {
@@ -420,10 +429,11 @@ fn install_versions(versions: Vec<RhinoInstallation>) -> Result<RhinoInstallResu
     }
     let installed = detect().map_err(|error| format!("Rhino post-install verification failed: {error}"))?;
     let selected_installed = installed.iter().filter(|item| selected_versions.contains(&item.major_version)).collect::<Vec<_>>();
-    if selected_installed.len() != selected_versions.len()
-        || selected_installed.iter().any(|item| !item.installed || !item.conflicting_package_paths.is_empty()) {
-        let details = selected_installed.iter().filter(|item| !item.installed || !item.conflicting_package_paths.is_empty())
-            .map(|item| format!("Rhino {}: installed={}, registered path={:?}, duplicate packages={}", item.major_version, item.installed, item.plugin_path, item.conflicting_package_paths.len()))
+    let invalid = |item: &&RhinoInstallation| !item.installed || item.load_mode != Some(1)
+        || item.command_registered != Some(true) || !item.conflicting_package_paths.is_empty();
+    if selected_installed.len() != selected_versions.len() || selected_installed.iter().any(invalid) {
+        let details = selected_installed.iter().filter(|item| invalid(item))
+            .map(|item| format!("Rhino {}: files verified={}, command registered={:?}, load mode={:?}, duplicate packages={}", item.major_version, item.installed, item.command_registered, item.load_mode, item.conflicting_package_paths.len()))
             .collect::<Vec<_>>().join("; ");
         return Err(format!("Rhino registration verification failed after writing payloads. {details}. Existing models and conversations were not changed."));
     }

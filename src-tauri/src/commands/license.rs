@@ -1103,6 +1103,67 @@ fn cloud_transport_category(
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudConnectionProbe {
+    route: &'static str,
+    elapsed_ms: u64,
+    http_status: Option<u16>,
+    error: Option<&'static str>,
+}
+
+async fn probe_cloud_connection(endpoint: &str, route: Option<&crate::EffectiveProxy>) -> CloudConnectionProbe {
+    let begin = Instant::now();
+    let outcome = async {
+        let client = crate::build_async_http_client_for_route_with_redirects(route, 8, false)
+            .map_err(|_| CloudTransportErrorCategory::Initialization.label())?;
+        let response = client.get(endpoint).send().await
+            .map_err(|error| cloud_transport_category(&error, route.is_some()).label())?;
+        let status = response.status().as_u16();
+        let error = if !response.status().is_success() {
+            Some("服务返回异常状态")
+        } else {
+            match response.json::<serde_json::Value>().await {
+                Ok(body) if body["status"] == "ok" => None,
+                Ok(_) => Some("健康检查返回异常"),
+                Err(error) if error.is_timeout() => Some(CloudTransportErrorCategory::Timeout.label()),
+                Err(_) => Some("健康检查响应无法读取"),
+            }
+        };
+        Ok::<_, &'static str>((status, error))
+    }.await;
+    let (http_status, error) = match outcome {
+        Ok((status, error)) => (Some(status), error),
+        Err(error) => (None, Some(error)),
+    };
+    CloudConnectionProbe {
+        route: crate::proxy_route_label(route),
+        elapsed_ms: begin.elapsed().as_millis() as u64,
+        http_status,
+        error,
+    }
+}
+
+#[tauri::command]
+pub async fn check_cloud_connection(window: tauri::WebviewWindow) -> Result<Vec<CloudConnectionProbe>, String> {
+    if window.label() != "main" {
+        return Err("连接检测仅在主窗口可用".into());
+    }
+    let route = crate::effective_proxy_route(Some(window.app_handle()), None);
+    let endpoint = format!("{CLOUD_API_BASE_URL}/health");
+    if let Some(route) = route.as_ref() {
+        let direct_endpoint = endpoint.clone();
+        let direct = tauri::async_runtime::spawn(async move {
+            probe_cloud_connection(&direct_endpoint, None).await
+        });
+        let configured = probe_cloud_connection(&endpoint, Some(route)).await;
+        let direct = direct.await.map_err(|_| "无法完成直连检测")?;
+        Ok(vec![configured, direct])
+    } else {
+        Ok(vec![probe_cloud_connection(&endpoint, None).await])
+    }
+}
+
 fn should_retry_cloud_transport(error: &reqwest::Error, method: &str) -> bool {
     // POST may already have been accepted. Only replay it on a connect error.
     // GET and a signed PUT of the same bytes to the same object are idempotent.
@@ -1465,6 +1526,25 @@ mod cloud_transport_tests {
             captured,
             handle,
         )
+    }
+
+    #[test]
+    fn cloud_health_probe_uses_a_get_without_credentials_and_keeps_http_status() {
+        tauri::async_runtime::block_on(async {
+            for (status, body, expected_status, expected_error) in [
+                ("200 OK", br#"{"status":"ok"}"#.as_slice(), 200, None),
+                ("503 Service Unavailable", b"unavailable".as_slice(), 503, Some("服务返回异常状态")),
+            ] {
+                let (endpoint, request, worker) = spawn_test_server(status, body, Duration::ZERO);
+                let result = super::probe_cloud_connection(&endpoint, None).await;
+                worker.join().unwrap();
+                assert_eq!(result.http_status, Some(expected_status));
+                assert_eq!(result.error, expected_error);
+                let request = request.lock().unwrap();
+                assert!(request.starts_with(b"GET "));
+                assert!(!String::from_utf8_lossy(&request).to_ascii_lowercase().contains("authorization:"));
+            }
+        });
     }
 
     fn direct_test_client(timeout: Duration) -> reqwest::Client {

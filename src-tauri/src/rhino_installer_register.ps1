@@ -61,7 +61,12 @@ try {
     } finally { $parent.Dispose() }
     $commands = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($plan.commandKeyPath)
     if (-not $commands) { throw "Could not create Rhino $($plan.version) command registry key" }
-    try { $commands.SetValue('InspirationDrawer','2;InspirationDrawer',[Microsoft.Win32.RegistryValueKind]::String) } finally { $commands.Dispose() }
+    try {
+      $commands.SetValue('InspirationDrawer','2;InspirationDrawer',[Microsoft.Win32.RegistryValueKind]::String)
+      if ($commands.GetValue('InspirationDrawer','') -ne '2;InspirationDrawer') {
+        throw "Rhino $($plan.version) command verification failed"
+      }
+    } finally { $commands.Dispose() }
     $plugin = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($plan.pluginKeyPath)
     if (-not $plugin) { throw "Could not create Rhino $($plan.version) plugin registration key" }
     try {

@@ -15,6 +15,8 @@ export type RhinoInstallStatus = {
   pluginPath?: string | null;
   loadMode?: number | null;
   loadProtection?: number | null;
+  commandRegistered?: boolean | null;
+  pluginLoadState?: 'loaded' | 'failed' | 'awaiting' | null;
   installed: boolean;
   conflictingPackagePaths?: string[];
 };
@@ -24,6 +26,16 @@ type InstallResult = {
 };
 type SetupStep = 'detect' | 'check' | 'install' | 'rollback';
 const componentNames: Record<string, string> = { runtime: '建模模块', plugin8: 'Rhino 8 插件', plugin9: 'Rhino 9 插件' };
+
+function rhinoPluginStatusLabel(version: RhinoInstallStatus) {
+  if (version.conflictingPackagePaths?.length) return `旧包 ID 冲突（${version.conflictingPackagePaths.length}）`;
+  if (version.pluginLoadState === 'failed') return 'Rhino 加载插件失败';
+  if (version.pluginLoadState === 'loaded') return 'Rhino 已加载插件';
+  if (version.installed && version.loadMode === 0) return '已注册（Rhino 已禁用加载）';
+  if (version.commandRegistered === false && version.pluginPath) return '缺少命令注册，请重新安装';
+  if (version.installed) return '已注册（未确认 Rhino 已加载）';
+  return version.pluginPath ? '注册路径与安装文件不匹配' : '未安装';
+}
 
 export function RhinoPluginSetup({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
   const [versions, setVersions] = useState<RhinoInstallStatus[] | null>(null);
@@ -52,20 +64,7 @@ export function RhinoPluginSetup({ expanded, onToggle }: { expanded: boolean; on
     setError([hosts, updates].flatMap(r => r.status === 'rejected' ? [String(r.reason)] : []).join('\n'));
   }), [run]);
   useEffect(() => { if (expanded) void refresh(); }, [expanded, refresh]);
-  const install = () => run('check', async () => {
-    let updateNotice = '';
-    try {
-      const update = await invoke<RhinoComponentUpdateResult>('check_rhino_updates', { prepareOnly: true });
-      setComponents(update.status);
-      updateNotice = rhinoComponentUpdateMessage(update);
-      setMessage(updateNotice);
-    } catch (value) {
-      setError(`组件更新检查失败。${versions?.length === 0 ? '' : '插件安装将使用本机已有的安装包。'} ${String(value)}`);
-    }
-    if (versions?.length === 0) return;
-    setStep('install');
-    const result = await invoke<InstallResult>('install_rhino_plugin');
-    setVersions(result.installed);
+  const installationNotice = (result: InstallResult) => {
     const repairNotice = result.repairedConflicts ? `已修复 ${result.repairedConflicts} 个同 ID 旧包冲突，旧包已备份。${result.conflictBackups?.[0] ? '备份：' + result.conflictBackups[0] + '。' : ''}` : '';
     const cleanupNotice = result.cleanedVersions
       ? `\u5df2\u4ece\u5b89\u88c5\u76ee\u5f55\u6e05\u7406 ${result.cleanedVersions} \u4e2a\u65e7\u7248\u63d2\u4ef6\uff0c\u5df2\u4fdd\u7559\u6062\u590d\u5907\u4efd\u3002${result.cleanupBackups?.[0] ? '\u5907\u4efd\uff1a' + result.cleanupBackups[0] + '\u3002' : ''}`
@@ -75,9 +74,39 @@ export function RhinoPluginSetup({ expanded, onToggle }: { expanded: boolean; on
       : '';
     const cleanupWarnings = result.cleanupWarnings ?? [];
     if (cleanupWarnings.length) setError(previous => [previous, '以下旧版插件未清理', ...cleanupWarnings].filter(Boolean).join('\n'));
-    setMessage(updateNotice + repairNotice + cleanupNotice + deferredNotice + (result.restartRequired
-      ? '安装完成。请保存模型并重启正在运行的 Rhino，然后输入 InspirationDrawer 打开插件。'
-      : '安装完成。启动 Rhino，输入 InspirationDrawer 即可打开插件。'));
+    return repairNotice + cleanupNotice + deferredNotice + (result.restartRequired
+      ? '本地安装完成。请保存并重启 Rhino，再用 InspirationDrawer 打开面板。'
+      : '本地安装完成。启动 Rhino 后可用 InspirationDrawer 打开面板。');
+  };
+  const install = () => run('install', async () => {
+    const appendError = (message: unknown) => setError(previous => [previous, String(message)].filter(Boolean).join('\n'));
+    const installLocal = async () => {
+      const result = await invoke<InstallResult>('install_rhino_plugin');
+      setVersions(result.installed);
+      setMessage(previous => previous + installationNotice(result));
+      return result.installed;
+    };
+
+    let installed: RhinoInstallStatus[] = [];
+    if (versions?.length !== 0) {
+      try { installed = await installLocal(); }
+      catch (value) { appendError(value); }
+    }
+
+    setStep('check');
+    let update: RhinoComponentUpdateResult;
+    try {
+      update = await invoke<RhinoComponentUpdateResult>('check_rhino_updates', { prepareOnly: true });
+      setComponents(update.status);
+      setMessage(previous => previous + rhinoComponentUpdateMessage(update));
+    } catch (value) {
+      appendError(`联网组件更新检查失败。 ${String(value)}`);
+      return;
+    }
+    if (installed.some(version => update.updated.includes(version.majorVersion === 8 ? 'plugin8' : 'plugin9'))) {
+      setStep('install');
+      await installLocal();
+    }
   });
   const rollback = () => run('rollback', async () => {
     const result = await invoke<RhinoComponentUpdateResult>('rollback_rhino_update');
@@ -94,24 +123,16 @@ export function RhinoPluginSetup({ expanded, onToggle }: { expanded: boolean; on
         <ChevronDown className={`h-4 w-4 text-stone-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />
       </button>
       {expanded && <div className="space-y-3 border-t border-stone-100 p-3 dark:border-stone-700/60">
-        <p className="text-[11px] leading-relaxed text-stone-500 dark:text-stone-400">为当前 Windows 账户安装或更新 Rhino 8 / 9 插件，同时检查建模模块更新。</p>
+        <p className="text-[11px] leading-relaxed text-stone-500 dark:text-stone-400">为当前 Windows 账户安装 Rhino 8 / 9 插件。本地安装完成后再检查在线更新。</p>
         {versions?.map(version => {
-          const statusLabel = version.conflictingPackagePaths?.length
-            ? `\u65e7\u5305 ID \u51b2\u7a81\uff08${version.conflictingPackagePaths.length}\uff09`
-            : version.installed && version.loadMode === 0
-              ? '\u5df2\u6ce8\u518c\uff08Rhino \u5df2\u7981\u7528\u52a0\u8f7d\uff09'
-              : version.installed
-                ? '\u5df2\u6ce8\u518c\uff08\u672a\u786e\u8ba4 Rhino \u5df2\u52a0\u8f7d\uff09'
-                : version.pluginPath
-                  ? '\u6ce8\u518c\u8def\u5f84\u4e0e\u5b89\u88c5\u6587\u4ef6\u4e0d\u5339\u914d'
-                  : '\u672a\u5b89\u88c5';
           return <div key={version.majorVersion} className="space-y-1 rounded-lg bg-stone-50 px-3 py-2 text-xs dark:bg-stone-900/50">
             <div className="flex items-center justify-between gap-2">
               <span>Rhino {version.majorVersion}{version.running && <small className="ml-2 text-stone-400">{'\u8fd0\u884c\u4e2d'}</small>}</span>
-              <span className="flex items-center gap-1 text-stone-500">{version.installed && <Check size={12} />}{statusLabel}</span>
+              <span className="flex items-center gap-1 text-stone-500">{version.pluginLoadState === 'loaded' && <Check size={12} />}{rhinoPluginStatusLabel(version)}</span>
             </div>
             {version.runtimeModes?.some(mode => mode === 'netfx' || mode === 'mixed') && <p role="status" className="text-[10px] leading-relaxed text-amber-700 dark:text-amber-400">检测到运行中的 Rhino 加载了旧 .NET Framework；本插件需要现代 .NET 模式，重复安装不能修复此模式冲突。请先用 SystemInfo 核实，再通过 SetDotNetRuntime 选择现代 .NET 并重启；同时检查快捷方式是否带 /netfx。切换可能影响依赖旧模式的其他插件。</p>}
             {version.runningStateUncertain && <p role="status" className="text-[10px] leading-relaxed text-amber-700 dark:text-amber-400">无法读取部分 Rhino 进程信息，已暂缓旧文件清理。请保存工程并退出 Rhino 后重试。</p>}
+            {version.pluginLoadState === 'failed' && <p role="status" className="text-[10px] leading-relaxed text-amber-700 dark:text-amber-400">在 Rhino 输入 PlugInManager 查看加载错误，或查看本机 %LOCALAPPDATA%\InspirationDrawer\RhinoBeta 下对应的启动日志。</p>}
             {version.pluginPath && <details className="text-[10px] text-stone-500">
               <summary className="cursor-pointer">{'\u67e5\u770b\u6ce8\u518c\u6587\u4ef6\u8def\u5f84'}</summary>
               <code className="mt-1 block break-all">{version.pluginPath}</code>
@@ -139,7 +160,7 @@ export function RhinoPluginSetup({ expanded, onToggle }: { expanded: boolean; on
             {components?.components.map(component => <p key={component.id}>
               {componentNames[component.id] || component.id}（已准备）　{component.error ? `校验失败 · ${component.error}` : component.version}
             </p>)}
-            <p>插件状态只反映注册和文件校验。软件升级后会自动同步已启用的托管插件。</p>
+            <p>已注册表示文件校验通过。启动 Rhino 后可刷新检测实际加载状态。软件升级后会自动同步已启用的托管插件。</p>
             {automaticSync && <p className="break-words whitespace-pre-wrap">最近一次自动同步　{automaticSync.message}</p>}
             <button type="button" disabled={busy || !components?.canRollback} onClick={() => void rollback()}
               className="rounded-lg border border-stone-200 px-2 py-1.5 disabled:opacity-40 dark:border-stone-600">
