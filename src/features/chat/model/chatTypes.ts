@@ -67,6 +67,7 @@ export type ChatGeneratedFile = {
   id: string;
   name: string;
   path: string;
+  previewPath?: string;
   format: string;
   mimeType?: string;
   size?: number;
@@ -207,7 +208,7 @@ export const getGeneratedMediaFromToolCall = (call: ChatToolCall): ChatGenerated
 };
 
 export const getGeneratedFilesFromToolCall = (call: ChatToolCall): ChatGeneratedFile[] => {
-  if (!['create_file', 'create_layered_psd', 'create_svg', 'create_ui_prototype', 'animate_ui_prototype'].includes(call.toolName) || call.status !== 'completed') return [];
+  if (!['create_file', 'create_layered_psd', 'create_svg', 'create_ui_prototype', 'animate_ui_prototype', 'rhino_headless_export'].includes(call.toolName) || call.status !== 'completed') return [];
   const parsed = parseChatToolResult(call.resultJson);
   if (!parsed || typeof parsed !== 'object') return [];
   const files = Array.isArray((parsed as Record<string, unknown>).files)
@@ -222,6 +223,7 @@ export const getGeneratedFilesFromToolCall = (call: ChatToolCall): ChatGenerated
       id: String(file.id || createChatId('generated-file')),
       name: String(file.name || 'AI 生成文件'),
       path,
+      previewPath: call.toolName === 'rhino_headless_export' && typeof file.previewPath === 'string' ? file.previewPath : undefined,
       format: String(file.format || '').trim().toLowerCase(),
       mimeType: String(file.mimeType || '').trim() || undefined,
       size: Number.isFinite(Number(file.size)) ? Number(file.size) : undefined,

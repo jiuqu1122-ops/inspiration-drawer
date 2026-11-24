@@ -59,7 +59,28 @@ fn read_connections_from(directory: &std::path::Path) -> Result<Vec<Value>, Stri
 }
 
 fn read_connections() -> Result<Vec<Value>, String> {
-    read_connections_from(&descriptor_directory()?)
+    let mut values = read_connections_from(&descriptor_directory()?)?;
+    #[cfg(windows)]
+    values.retain(|value| value["processId"].as_u64().map_or(true, live_rhino_process));
+    Ok(values)
+}
+
+#[cfg(windows)]
+fn live_rhino_process(pid: u64) -> bool {
+    use winapi::um::{handleapi::CloseHandle, processthreadsapi::{GetExitCodeProcess, OpenProcess}, winbase::QueryFullProcessImageNameW, winnt::PROCESS_QUERY_LIMITED_INFORMATION};
+    let Ok(pid) = u32::try_from(pid) else { return false };
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() { return false; }
+    let mut exit_code = 0;
+    let mut path = [0u16; 1024];
+    let mut length = path.len() as u32;
+    let active = unsafe {
+        let valid = GetExitCodeProcess(handle, &mut exit_code) != 0 && exit_code == 259
+            && QueryFullProcessImageNameW(handle, 0, path.as_mut_ptr(), &mut length) != 0;
+        CloseHandle(handle);
+        valid
+    };
+    active && String::from_utf16_lossy(&path[..length as usize]).rsplit('\\').next().is_some_and(|name| name.eq_ignore_ascii_case("Rhino.exe"))
 }
 
 #[tauri::command]

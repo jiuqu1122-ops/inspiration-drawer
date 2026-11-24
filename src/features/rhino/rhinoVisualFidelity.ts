@@ -93,6 +93,7 @@ const isGeometryCommit = (call: ChatToolCall) => {
   const result = receipt(call);
   if (result.reusedCompletedReceipt === true) return false;
   if (call.toolName === SAFE_PROFILE_TOOL) return result.status === 'committed' && result.documentChanged === true;
+  if (call.toolName === 'rhino_native_headless_build') return result.committed === true && Array.isArray(result.objects) && result.objects.length > 0;
   if (!['rhino_native_run_command', 'rhino_native_run_python', 'rhino_native_run_csharp'].includes(call.toolName)) return false;
   const report = result.geometryVerification as Record<string, unknown> | undefined;
   return report?.status === 'passed' && Number(report.addedCount || 0) + Number(report.changedCount || 0) + Number(report.deletedCount || 0) > 0;

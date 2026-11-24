@@ -1,0 +1,65 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v7.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v7.0": {
+      "InspirationDrawer.Rhino.Headless/1.0.0": {
+        "dependencies": {
+          "Rhino.Inside": "8.0.6-beta"
+        },
+        "runtime": {
+          "InspirationDrawer.Rhino.Headless.dll": {}
+        }
+      },
+      "Grasshopper/8.0.23304.9001": {
+        "dependencies": {
+          "RhinoCommon": "8.0.23304.9001"
+        }
+      },
+      "Rhino.Inside/8.0.6-beta": {
+        "dependencies": {
+          "Grasshopper": "8.0.23304.9001",
+          "RhinoCommon": "8.0.23304.9001"
+        },
+        "runtime": {
+          "lib/net7.0-windows7.0/Rhino.Inside.dll": {
+            "assemblyVersion": "8.0.6.0",
+            "fileVersion": "8.0.6.0"
+          }
+        }
+      },
+      "RhinoCommon/8.0.23304.9001": {}
+    }
+  },
+  "libraries": {
+    "InspirationDrawer.Rhino.Headless/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "Grasshopper/8.0.23304.9001": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-L1Cse6nAxryzcZ7jsu3WzBiG9BYtgYsaNbRV+p55N+THKTFGmXx1PdBbiWtuxK9kB4jyuLVpeV8XBiYlSGA1Vw==",
+      "path": "grasshopper/8.0.23304.9001",
+      "hashPath": "grasshopper.8.0.23304.9001.nupkg.sha512"
+    },
+    "Rhino.Inside/8.0.6-beta": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-TNbaz5vvOZRY7L8dYsXOQ1ur+t9Ckiv6m/zqCDdHj5JYngTF//J5IWcK9aQsA8vQJhlkoO53j6HZ2h7rnCnVng==",
+      "path": "rhino.inside/8.0.6-beta",
+      "hashPath": "rhino.inside.8.0.6-beta.nupkg.sha512"
+    },
+    "RhinoCommon/8.0.23304.9001": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-hWuqXjcj/eb1/z8+bml4Bav/8Oug2p6t0mAVf37GhX9sP+M1aYNO9FappqeN8oefcIBkLBmAzr46DYNhTxFAGQ==",
+      "path": "rhinocommon/8.0.23304.9001",
+      "hashPath": "rhinocommon.8.0.23304.9001.nupkg.sha512"
+    }
+  }
+}

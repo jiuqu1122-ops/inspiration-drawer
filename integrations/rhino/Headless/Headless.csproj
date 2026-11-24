@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>InspirationDrawer.Rhino.Headless</AssemblyName>
+    <RhinoMajorVersion Condition="'$(RhinoMajorVersion)' == ''">9</RhinoMajorVersion>
+    <TargetFramework Condition="'$(RhinoMajorVersion)' == '8'">net7.0-windows</TargetFramework>
+    <TargetFramework Condition="'$(RhinoMajorVersion)' != '8'">net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>12</LangVersion>
+    <RollForward>Major</RollForward>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <NuGetAudit>false</NuGetAudit>
+    <!-- McNeel ships this resolver as net48. Its Windows Core hosting path is exercised by the smoke test. -->
+    <NoWarn>$(NoWarn);NU1701;NETSDK1138</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Rhino.Inside" Version="9.0.10-beta" Condition="'$(RhinoMajorVersion)' != '8'" />
+    <PackageReference Include="Rhino.Inside" Version="8.0.6-beta" Condition="'$(RhinoMajorVersion)' == '8'" />
+    <Reference Include="RhinoCommon"><HintPath>$(RhinoSystemDir)/RhinoCommon.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

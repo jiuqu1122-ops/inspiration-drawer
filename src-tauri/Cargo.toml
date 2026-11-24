@@ -1,6 +1,6 @@
 [package]
 name = "inspiration-drawer"
-version = "9.0.3"
+version = "9.0.4"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -75,6 +75,8 @@ winapi = { version = "0.3.9", features = [
   "wtypesbase",
   "combaseapi",
   "processthreadsapi",
+  "handleapi",
+  "winreg",
   "winver"
 ] }
 

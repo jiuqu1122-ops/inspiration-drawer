@@ -33,6 +33,7 @@ export function ChatComposer({
   onStop,
   busy,
   stoppable,
+  canAppendToActiveTurn = false,
   model,
   modelOptions,
   modelOptionsLoading = false,
@@ -66,6 +67,7 @@ export function ChatComposer({
   onStop: () => void;
   busy: boolean;
   stoppable: boolean;
+  canAppendToActiveTurn?: boolean;
   model: string;
   modelOptions: string[];
   modelOptionsLoading?: boolean;
@@ -172,11 +174,11 @@ export function ChatComposer({
           event.stopPropagation();
           if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
             event.preventDefault();
-            if (!busy) onSend();
+            if (!busy || canAppendToActiveTurn && value.trim()) onSend();
           }
         }}
         rows={2}
-        placeholder="发消息，或让 AI 使用灵感抽屉工具"
+        placeholder={canAppendToActiveTurn ? '追加需求，在下一步应用' : '发消息，或让 AI 使用灵感抽屉工具'}
         aria-label="聊天消息"
       />
       {imageSettingsOpen && (
@@ -296,6 +298,8 @@ export function ChatComposer({
             )}
           </div>
         </div>
+        {canAppendToActiveTurn && <button type="button" className="chat-composer__send" onClick={onSend}
+          disabled={!value.trim()} title="追加到当前任务" aria-label="追加到当前任务"><ArrowUp size={16} /></button>}
         {busy && stoppable ? (
           <button type="button" className="chat-composer__send is-stop" onClick={onStop} title="停止生成"><Square size={13} fill="currentColor" /></button>
         ) : busy ? (

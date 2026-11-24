@@ -24,6 +24,7 @@ mod recharge;
 mod reference_upload;
 mod renderer_diagnostics;
 mod rhino_beta;
+mod rhino_headless;
 mod rhino_installer;
 mod rhino_updates;
 use renderer_diagnostics::{window_action, WindowAction};
@@ -19413,6 +19414,7 @@ fn main() {
             rhino_updates::rollback_rhino_update,
             rhino_beta::rhino_beta_get_connection,
             rhino_beta::rhino_beta_get_connections,
+            rhino_headless::rhino_headless_mcp_call,
             rhino_beta::rhino_beta_request,
             renderer_diagnostics::record_renderer_diagnostic,
             renderer_diagnostics::diagnostic_minimize_window,

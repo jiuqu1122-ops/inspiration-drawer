@@ -242,6 +242,12 @@ export const ChatView = memo(function ChatView({
     setCanvasChatSidebarWidth(canvasRenderedWidth + CANVAS_CHAT_EDGE_GAP);
   }, [canvasRenderedWidth, variant]);
   const send = async (skipSuggestion = false) => {
+    if (runtime.busy) {
+      const nextRequirement = input.trim();
+      if (!nextRequirement || !runtime.canAppendToActiveTurn) return;
+      if (await runtime.appendToActiveTurn(nextRequirement)) setInput(current => current.trim() === nextRequirement ? '' : current);
+      return;
+    }
     if (!skipSuggestion && input.trim()
       && !isChatAgentCreationRequest(input)
       && !isChatAgentCreationFollowup(runtime.messages, input)) {
@@ -426,6 +432,7 @@ export const ChatView = memo(function ChatView({
             onSend={() => void send()}
             onStop={() => void runtime.stop()}
             busy={runtime.busy}
+            canAppendToActiveTurn={runtime.canAppendToActiveTurn}
             stoppable={runtime.stoppable}
             model={effectiveModel}
             modelOptions={chatModelOptions}

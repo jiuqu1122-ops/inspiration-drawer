@@ -166,7 +166,7 @@ export function ChatHost({
   const runtime = useChatRuntime({
     ...runtimeOptions,
     conversationScope: 'desktop',
-    prepareCanvasRhinoTurn: viewProps.variant === 'canvas' ? conversationId => prepareCanvasRhinoTurn(conversationId, canvasId) : undefined,
+    prepareCanvasRhinoTurn: viewProps.variant === 'canvas' ? (conversationId, text) => prepareCanvasRhinoTurn(conversationId, canvasId, text) : undefined,
   });
   const rhinoRuntime = useChatRuntime({
     ...runtimeOptions, conversationScope: 'rhino', defaultExecutionSource: 'rhino',

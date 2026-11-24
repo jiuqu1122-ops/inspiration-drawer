@@ -1,0 +1,89 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "InspirationDrawer.Rhino.Headless/1.0.0": {
+        "dependencies": {
+          "Rhino.Inside": "9.0.10-beta"
+        },
+        "runtime": {
+          "InspirationDrawer.Rhino.Headless.dll": {}
+        }
+      },
+      "Grasshopper/9.0.25350.305-wip": {
+        "dependencies": {
+          "RhinoCommon": "9.0.25350.305-wip"
+        }
+      },
+      "Microsoft.Win32.SystemEvents/8.0.0": {},
+      "Rhino.Inside/9.0.10-beta": {
+        "dependencies": {
+          "Grasshopper": "9.0.25350.305-wip",
+          "RhinoCommon": "9.0.25350.305-wip"
+        },
+        "runtime": {
+          "lib/net48/Rhino.Inside.dll": {
+            "assemblyVersion": "9.0.10.0",
+            "fileVersion": "9.0.10.0"
+          }
+        }
+      },
+      "RhinoCommon/9.0.25350.305-wip": {
+        "dependencies": {
+          "System.Drawing.Common": "8.0.0"
+        }
+      },
+      "System.Drawing.Common/8.0.0": {
+        "dependencies": {
+          "Microsoft.Win32.SystemEvents": "8.0.0"
+        }
+      }
+    }
+  },
+  "libraries": {
+    "InspirationDrawer.Rhino.Headless/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "Grasshopper/9.0.25350.305-wip": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-xpHvialc/neqxzvgIAguSPpqT/db40a1kX3idmEPH1eOHI/vgt9nNtjfp3xjKgGwd5od4PY24SzqkwD7dh87Aw==",
+      "path": "grasshopper/9.0.25350.305-wip",
+      "hashPath": "grasshopper.9.0.25350.305-wip.nupkg.sha512"
+    },
+    "Microsoft.Win32.SystemEvents/8.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-9opKRyOKMCi2xJ7Bj7kxtZ1r9vbzosMvRrdEhVhDz8j8MoBGgB+WmC94yH839NPH+BclAjtQ/pyagvi/8gDLkw==",
+      "path": "microsoft.win32.systemevents/8.0.0",
+      "hashPath": "microsoft.win32.systemevents.8.0.0.nupkg.sha512"
+    },
+    "Rhino.Inside/9.0.10-beta": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-Jw3v+o75H2nQRI6Deu7f1LxMTZrvaN2vUBUwAYkMoZpzGtJ9eQ2uamGd45e9olzh7xMKQh27jkF4CzLEiJpnSw==",
+      "path": "rhino.inside/9.0.10-beta",
+      "hashPath": "rhino.inside.9.0.10-beta.nupkg.sha512"
+    },
+    "RhinoCommon/9.0.25350.305-wip": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-C/oMUSCv6rd9CHXk/GXNxvImXPcSsLExH2+RU9SdXYSlkJi4jOimIxMCXC6/XhpMXZ7U+8i5dZtofn4x7nOSAA==",
+      "path": "rhinocommon/9.0.25350.305-wip",
+      "hashPath": "rhinocommon.9.0.25350.305-wip.nupkg.sha512"
+    },
+    "System.Drawing.Common/8.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-JkbHJjtI/dWc5dfmEdJlbe3VwgZqCkZRtfuWFh5GOv0f+gGCfBtzMpIVkmdkj2AObO9y+oiOi81UGwH3aBYuqA==",
+      "path": "system.drawing.common/8.0.0",
+      "hashPath": "system.drawing.common.8.0.0.nupkg.sha512"
+    }
+  }
+}

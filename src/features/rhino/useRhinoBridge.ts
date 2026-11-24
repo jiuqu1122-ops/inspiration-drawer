@@ -21,6 +21,7 @@ import type { useChatRuntime } from '../chat/runtime/useChatRuntime';
 import type { AgentCanvasSelectionItem } from '../agentModel';
 import { callRhinoTool, discoverNativeRhino, discoverRhinoConnections, getActiveRhinoDocument, hasRhinoNativeWriteTools, isRhinoCSharpImmutableV9LoadFailure, rhinoRequest } from './rhinoClient';
 import { assertRhinoCanvas, getRhinoNativeTools, isRhinoNativeTool, isRhinoReadTool, lockRhinoCanvas, registerRhinoNativeTools, RHINO_REFERENCE_REVIEW_TOOL, RhinoCommandLedger, rhinoToolDefinitions, type RhinoBinding, type RhinoCommand } from './rhinoProtocol';
+import { executeHeadlessRhinoTool, getHeadlessRhinoTools, hasHeadlessRhinoTurn, prepareBackgroundRhinoTurn } from './rhinoHeadless';
 
 type Runtime = ReturnType<typeof useChatRuntime>;
 const liveConversationState = (runtime: Runtime) => typeof runtime.getConversationState === 'function' ? runtime.getConversationState() : runtime;
@@ -74,7 +75,7 @@ function rememberDocumentBinding(conversationId: string, binding: RhinoBinding) 
   try { localStorage.setItem(bindingStorageKey(conversationId), JSON.stringify({ documentId: binding.documentId, canvasId: binding.canvasId, instanceId: binding.connection.instanceId })); } catch { /* Keep the in-memory pin if storage is unavailable. */ }
 }
 
-export async function prepareCanvasRhinoTurn(conversationId: string, canvasId: string) {
+async function prepareOpenRhinoTurn(conversationId: string, canvasId: string) {
   const pinned = bindingForConversation(conversationId);
   if (pinned && pinned.canvasId !== canvasId) throw new Error('这段建模对话已绑定另一张画布。请返回原画布，或新建对话。');
   const releaseCanvas = lockRhinoCanvas(`canvas-rhino:${conversationId}`);
@@ -103,6 +104,16 @@ export async function prepareCanvasRhinoTurn(conversationId: string, canvasId: s
     throw error;
   }
 }
+
+export function prepareCanvasRhinoTurn(conversationId: string, canvasId: string, userText: string) {
+  const explicitOpenDocument = /(?:在|写入|修改).{0,10}(?:当前|已打开).{0,10}(?:Rhino|犀牛)?.{0,4}文档|(?:Rhino|犀牛).{0,6}(?:当前|已打开).{0,4}文档|\b(?:current|open|active) Rhino document\b/i.test(userText);
+  const explicitlyBackground = /后台|无界面|\b(?:headless|background)\b/i.test(userText);
+  if (explicitOpenDocument || (!explicitlyBackground && bindingForConversation(conversationId)?.canvasId === canvasId))
+    return prepareOpenRhinoTurn(conversationId, canvasId);
+  if (isExplicitGhComponentsRequest(userText))
+    return Promise.reject(new Error('后台建模可交付 3DM 实体。要编辑 Grasshopper 原生组件，请在目标 Rhino 文档中发送此请求。'));
+  return prepareBackgroundRhinoTurn(conversationId, canvasId);
+}
 async function selectOrCreateDocumentConversation(runtime: Runtime, documentId: number, canvasId: string, connection: RhinoBinding['connection']) {
   const { conversations, activeConversationId } = liveConversationState(runtime);
   const matches = (id: string) => bindingBelongsTo(bindingForConversation(id), documentId, canvasId, connection.instanceId);
@@ -119,9 +130,13 @@ async function selectOrCreateDocumentConversation(runtime: Runtime, documentId: 
   writeDocumentConversationId(connection.instanceId, documentId, canvasId, targetId);
   return targetId;
 }
-export const getRhinoTools = (conversationId: string, executionSource: ChatExecutionSource = 'desktop') => executionSource === 'rhino' && bindings.has(conversationId)
-  ? [...rhinoToolDefinitions, ...getRhinoNativeTools(conversationId).map(tool => ({ type: 'function' as const, function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } }))]
-  : [];
+export const getRhinoTools = (conversationId: string, executionSource: ChatExecutionSource = 'desktop') => {
+  if (executionSource !== 'rhino') return [];
+  if (hasHeadlessRhinoTurn(conversationId)) return getHeadlessRhinoTools();
+  return bindings.has(conversationId)
+    ? [...rhinoToolDefinitions, ...getRhinoNativeTools(conversationId).map(tool => ({ type: 'function' as const, function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } }))]
+    : [];
+};
 export function assertRhinoResultTarget(conversationId: string, canvasId: string) {
   const binding = bindings.get(conversationId);
   if (binding) assertRhinoCanvas(binding, canvasId);
@@ -132,6 +147,7 @@ export function withRhinoTools(execute: ChatToolExecutor, canvasId: string): Cha
     const executionSource = context.executionSource || 'desktop';
     const rhinoTool = isRhinoReadTool(name) || isRhinoNativeTool(name, context.conversationId);
     if (rhinoTool && executionSource !== 'rhino') throw new Error('Rhino MCP 仅在已绑定文档的建模对话中可用。');
+    if (rhinoTool && hasHeadlessRhinoTurn(context.conversationId)) return executeHeadlessRhinoTool(context.conversationId, canvasId, name, args);
     if (binding) assertRhinoCanvas(binding, canvasId);
     if (isRhinoNativeTool(name, context.conversationId)) {
       if (!binding?.native) throw new Error('\u5f53\u524d Rhino \u6587\u6863\u6ca1\u6709\u552f\u4e00\u5339\u914d\u7684\u539f\u751f MCP \u8fde\u63a5\uff1b\u8bf7\u5148\u5728 Rhino \u6267\u884c MCPStart');

@@ -202,7 +202,7 @@ describe('Gitee release upload sequencing (local mock API only)', () => {
   it('lists real release attachments, replaces matching metadata last and refreshes existing release notes', async () => {
     const f = fixture();
     const api = await startApi();
-    const result = await runSync(f.directory, { GITEE_TOKEN: 'local-test-only', GITEE_API_BASE_URL: api.apiBase }, false);
+    const result = await runSync(f.directory, { GITEE_TOKEN: 'local-test-only', GITEE_API_BASE_URL: api.apiBase, GITEE_PRERELEASE: 'true' }, false);
     expect(result.code, result.stderr).toBe(0);
     const uploads = api.requests.filter(r => r.method === 'POST');
     expect(uploads.map(r => r.body.match(/filename="([^"]+)"/)?.[1])).toEqual([assetName(), assetName() + '.sig', 'latest.json']);
@@ -228,7 +228,7 @@ describe('Gitee release upload sequencing (local mock API only)', () => {
   });
 });
 
-const startIndexApi = async (f, { previousVersion = '8.0.27', corrupt = false, prerelease = false, failOnce = false } = {}) => {
+const startIndexApi = async (f, { previousVersion = '8.0.27', corrupt = false, prerelease = false, failOnce = false, publish = false } = {}) => {
   let previous = JSON.stringify({ version: previousVersion });
   const writes = [];
   const prefix = '/api/v5/repos/fixture-owner/fixture-repo/releases';
@@ -237,6 +237,8 @@ const startIndexApi = async (f, { previousVersion = '8.0.27', corrupt = false, p
   const server = createServer(async (req, res) => {
     const pathname = new URL(req.url, 'http://127.0.0.1').pathname;
     if (req.method === 'GET') {
+      if (publish && pathname === prefix + '/tags/v8.0.28') return res.end(JSON.stringify({ id: 17, tag_name: 'v8.0.28' }));
+      if (publish && pathname === prefix + '/17/attach_files') return res.end('[]');
       if (pathname === prefix + '/latest') {
         return res.end(JSON.stringify({ tag_name: 'v8.0.28', prerelease, assets: files.map(name => ({ name })) }));
       }
@@ -247,6 +249,16 @@ const startIndexApi = async (f, { previousVersion = '8.0.27', corrupt = false, p
       if (pathname.startsWith(downloads + 'v8.0.28/') && files.includes(file)) {
         return res.end(corrupt && file === assetName() ? 'corrupted' : readFileSync(path.join(f.directory, file)));
       }
+    }
+    if (publish && req.method === 'POST' && pathname === prefix + '/17/attach_files') {
+      let body = '';
+      for await (const chunk of req) body += chunk.toString();
+      writes.push(body.match(/filename="([^"]+)"/)?.[1]);
+      return res.writeHead(201).end(JSON.stringify({ id: 18 }));
+    }
+    if (publish && req.method === 'PATCH' && pathname === prefix + '/17') {
+      writes.push('published');
+      return res.end(JSON.stringify({ id: 17 }));
     }
     if (req.method === 'DELETE' && pathname === prefix + '/42/attach_files/3') {
       writes.push('delete');
@@ -267,11 +279,18 @@ const startIndexApi = async (f, { previousVersion = '8.0.27', corrupt = false, p
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const run = () => runSync(f.directory, {
     GITEE_TOKEN: 'local-test-only', GITEE_API_BASE_URL: `http://127.0.0.1:${server.address().port}/api/v5`,
-  }, false, ['--sync-latest']);
+  }, false, publish ? [] : ['--sync-latest']);
   return { run, writes, current: () => JSON.parse(previous) };
 };
 
 describe('Gitee fixed index follows the manually published stable release', () => {
+  it('synchronizes the fixed index after the standard stable release upload', async () => {
+    const api = await startIndexApi(fixture(), { publish: true });
+    const result = await api.run();
+    expect(result.code, result.stderr).toBe(0);
+    expect(api.current().version).toBe('8.0.28');
+    expect(api.writes).toEqual([assetName(), assetName() + '.sig', 'latest.json', 'published', 'delete', 'upload']);
+  });
   it('only writes the fixed index, puts Gitee first, and skips an unchanged index', async () => {
     const api = await startIndexApi(fixture());
     const result = await api.run();

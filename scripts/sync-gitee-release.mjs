@@ -428,9 +428,17 @@ const fetchPublicReleaseAsset = async (url, allowMissing = false) => {
   return Buffer.from(await response.arrayBuffer());
 };
 
-const syncLatestDesktopIndex = async ({ owner, repo, token }) => {
+const syncLatestDesktopIndex = async ({ owner, repo, token, expectedTag }) => {
   const repository = '/repos/' + encodeURIComponent(owner) + '/' + encodeURIComponent(repo);
-  const release = await request('GET', repository + '/releases/latest');
+  let release;
+  for (let attempt = 0; attempt < (expectedTag ? 6 : 1); attempt++) {
+    release = await request('GET', repository + '/releases/latest', { query: { _: Date.now() } });
+    const published = release?.tag_name?.slice(1);
+    if (!expectedTag || release?.tag_name === expectedTag
+      || stableVersionPattern.test(published || '') && isNewerVersion(published, expectedTag.slice(1))) break;
+    if (attempt < 5) await new Promise(resolve => setTimeout(resolve, 3000));
+    else throw new Error(`Gitee published ${expectedTag}, but release discovery has not picked it up. Retry with --sync-latest.`);
+  }
   const tag = release?.tag_name;
   const version = typeof tag === 'string' && tag.startsWith('v') ? tag.slice(1) : '';
   if (release?.prerelease !== false || !stableVersionPattern.test(version)) {
@@ -659,6 +667,9 @@ const main = async () => {
 
   await updateRelease({ owner, repo, releaseId, tag, latestJson, token });
   console.log('Gitee Release upload complete.');
+  if (optionalEnv('GITEE_PRERELEASE').toLowerCase() !== 'true' && stableVersionPattern.test(latestJson.version)) {
+    await syncLatestDesktopIndex({ owner, repo, token, expectedTag: tag });
+  }
 };
 
 main().catch(error => {

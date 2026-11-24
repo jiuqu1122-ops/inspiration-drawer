@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import type { ChatMessage } from '../model/chatTypes';
-const h = vi.hoisted(() => ({ invoke: vi.fn(), replies: [] as Array<Record<string, unknown> | Error>, requests: [] as Array<Record<string, any>>, messages: new Map<string, ChatMessage>(), deferStateUpdaters: false }));
+const h = vi.hoisted(() => ({ invoke: vi.fn(), replies: [] as Array<Record<string, unknown> | Promise<Record<string, unknown>> | Error>, requests: [] as Array<Record<string, any>>, messages: new Map<string, ChatMessage>(), deferStateUpdaters: false }));
 vi.mock('react', () => ({ useEffect: () => {}, useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => { let value = typeof initial === 'function' ? initial() : initial; return [value, (next: unknown) => { if (typeof next === 'function' && h.deferStateUpdaters) return; value = typeof next === 'function' ? next(value) : next; }]; }, useCallback: (callback: unknown) => callback, useMemo: (factory: () => unknown) => factory() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: h.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }));
@@ -35,7 +35,7 @@ beforeEach(()=>{
  const storage=new Map();vi.stubGlobal('localStorage',{getItem:(k:string)=>storage.get(k)||null,setItem:(k:string,v:string)=>storage.set(k,v)});vi.stubGlobal('window',{dispatchEvent:vi.fn(),setTimeout:()=>1,clearTimeout:()=>{}});
  h.messages.clear();h.replies.length=0;h.requests.length=0;h.invoke.mockReset();executed.mockReset();executed.mockImplementation(async()=>({source:'rhino',content:'{"hits":[]}'}));
  h.invoke.mockImplementation(async(command:string,args:Record<string,any>)=>{
-  if(command==='agent_openai_chat'){h.requests.push(args.request);const next=h.replies.shift();if(!next)throw Error('Unexpected extra model request');if(next instanceof Error)throw next;return {requestId:args.request.requestId,...next};}
+  if(command==='agent_openai_chat'){h.requests.push(args.request);const next=await h.replies.shift();if(!next)throw Error('Unexpected extra model request');if(next instanceof Error)throw next;return {requestId:args.request.requestId,...next};}
   if(command==='chat_list_messages')return {messages:[...h.messages.values()],hasMore:false};
   if(command==='chat_upsert_message'){h.messages.set(args.message.id,args.message);return args.message;}
   if(command==='chat_upsert_conversation')return args.conversation;
@@ -46,6 +46,68 @@ beforeEach(()=>{
 });
 afterEach(()=>{vi.unstubAllGlobals();vi.restoreAllMocks();});
 const last=()=>[...h.messages.values()].filter(message=>message.role==='assistant').slice(-1)[0]!;
+
+it('takes a new requirement during a model request before dispatching the old plan', async () => {
+  let answerOldPlan!: (value: Record<string, unknown>) => void;
+  h.replies.push(new Promise(resolve => { answerOldPlan = resolve; }), { content: '按追加要求继续。', toolCalls: [] });
+  const runtime = setup();
+  const task = runtime.sendMessage('帮我建模', [], undefined, undefined, undefined, 'rhino');
+  await vi.waitFor(() => expect(h.requests).toHaveLength(1));
+  expect(await runtime.appendToActiveTurn('按钮再内缩 1 毫米')).toBe(true);
+  answerOldPlan(call('old', {}, 'rhino_get_context'));
+  expect(await task).toBe(true);
+  expect(executed).not.toHaveBeenCalled();
+  expect(h.requests[1].messages).toContainEqual({ role: 'user', content: '按钮再内缩 1 毫米' });
+  expect([...h.messages.values()].some(message => message.role === 'user' && message.content === '按钮再内缩 1 毫米')).toBe(true);
+});
+
+it('keeps a finished tool receipt and replans before the unexecuted sibling tool', async () => {
+  let finishCurrentCall!: () => void;
+  executed.mockImplementationOnce(async () => {
+    await new Promise<void>(resolve => { finishCurrentCall = resolve; });
+    return { source: 'rhino', content: 'verified current state' };
+  });
+  h.replies.push({ content: '', toolCalls: [
+    { id: 'current', name: 'rhino_get_context', arguments: '{}' },
+    { id: 'stale', name: 'rhino_list_objects', arguments: '{}' },
+  ] }, { content: '按新要求继续。', toolCalls: [] });
+  const runtime = setup();
+  const task = runtime.sendMessage('帮我建模', [], undefined, undefined, undefined, 'rhino');
+  await vi.waitFor(() => expect(executed).toHaveBeenCalledTimes(1));
+  expect(await runtime.appendToActiveTurn('保留已有外壳')).toBe(true);
+  finishCurrentCall();
+  expect(await task).toBe(true);
+  expect(executed).toHaveBeenCalledTimes(1);
+  expect(h.requests[1].messages).toEqual(expect.arrayContaining([
+    expect.objectContaining({ role: 'tool', content: expect.stringContaining('verified current state') }),
+    expect.objectContaining({ role: 'tool', content: expect.stringContaining('cancelled') }),
+    { role: 'user', content: '保留已有外壳' },
+  ]));
+});
+
+it('publishes a downloadable 3DM after a committed background modeling step', async () => {
+  const name = 'rhino_native_headless_build';
+  const exportModel = vi.fn(async () => ({ files: [{ id: 'model', name: '模型.3dm', format: '3dm', path: 'C:/generated/model.3dm', previewPath: 'C:/generated/model.png' }] }));
+  const release = vi.fn();
+  const tool: RhinoNativeTool = {
+    name, description: 'Build a solid', readOnly: false, destructive: false, workflowPhase: 'build',
+    inputSchema: { type: 'object', properties: { operation: { type: 'string' } }, required: ['operation'] },
+  };
+  const runtime = setup(undefined, {
+    prepareCanvasRhinoTurn: async () => ({ context: '{"objects":[]}', documentName: '后台 Rhino', exportModel, release }),
+    additionalTools: (id, source) => {
+      if (source !== 'rhino') return [];
+      registerRhinoNativeTools(id, [tool]);
+      return [{ type: 'function', function: { name, description: tool.description, parameters: tool.inputSchema } }];
+    },
+  });
+  executed.mockResolvedValueOnce({ source: 'rhino', content: '{"committed":true}' });
+  h.replies.push(call('box', { operation: 'box' }, name), { content: '建模完成。', toolCalls: [] });
+  expect(await runtime.sendMessage('帮我建模')).toBe(true);
+  expect(exportModel).toHaveBeenCalledTimes(1);
+  expect(last().toolCalls).toContainEqual(expect.objectContaining({ toolName: 'rhino_headless_export', status: 'completed', resultJson: expect.stringContaining('model.3dm') }));
+  expect(release).toHaveBeenCalledTimes(1);
+});
 
 it('routes a canvas Chat request through Rhino, passing actual image pixels and the verified scene context', async () => {
   const release = vi.fn();

@@ -66,24 +66,40 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup?.(); cleanup = undefined; vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('Canvas Chat target discovery', () => {
+  it('uses the background tool host without discovering or changing any open Rhino window', async () => {
+    mocks.invoke.mockImplementation(async (command, args) => {
+      expect(command).toBe('rhino_headless_mcp_call');
+      return args.tool === 'context' ? { units: 'Millimeters', objects: [] } : { committed: true, objects: [{ id: 'part' }] };
+    });
+    const target = await prepareCanvasRhinoTurn('background-workspace', 'canvas-one', '根据这个图帮我建模');
+    try {
+      expect(mocks.discover).not.toHaveBeenCalled();
+      expect(getRhinoTools('background-workspace', 'rhino').map(tool => tool.function.name)).toContain('rhino_native_headless_build');
+      expect(getRhinoTools('background-workspace', 'desktop')).toHaveLength(0);
+      const execute = withRhinoTools(vi.fn(), 'canvas-one');
+      const request = { conversationId: 'background-workspace', messageId: 'task', executionSource: 'rhino' as const, userText: '帮我建模', recentMessages: [] };
+      expect(await execute('rhino_native_headless_build', { operation: 'box', size: [1, 2, 3] }, request)).toMatchObject({ committed: true });
+      expect(mocks.invoke.mock.calls[0][1].workspaceId).toBe(mocks.invoke.mock.calls[1][1].workspaceId);
+    } finally { target.release(); }
+  });
   it('locks and pins the active document and never silently switches the same conversation to another document', async () => {
-    const target = await prepareCanvasRhinoTurn('canvas-model-thread', 'canvas-one');
+    const target = await prepareCanvasRhinoTurn('canvas-model-thread', 'canvas-one', '在当前 Rhino 文档建模');
     try {
       expect(target.documentName).toBe('Product Housing');
       expect(isRhinoCanvasLocked()).toBe(true);
       expect(mocks.discoverNative).toHaveBeenCalledWith(expect.objectContaining({ documentId: 12, canvasId: 'canvas-one' }), 'canvas-model-thread');
-      await expect(prepareCanvasRhinoTurn('another-thread', 'canvas-two')).rejects.toThrow('已有任务');
+      await expect(prepareCanvasRhinoTurn('another-thread', 'canvas-two', '在当前 Rhino 文档建模')).rejects.toThrow('已有任务');
     } finally { target.release(); }
     mocks.activeDocument.mockResolvedValue({ documentId: 31, rhinoVersion: '9.0', name: 'Another Document' });
-    await expect(prepareCanvasRhinoTurn('canvas-model-thread', 'canvas-one')).rejects.toThrow('绑定的文档不同');
+    await expect(prepareCanvasRhinoTurn('canvas-model-thread', 'canvas-one', '在当前 Rhino 文档建模')).rejects.toThrow('绑定的文档不同');
     expect(isRhinoCanvasLocked()).toBe(false);
   });
   it('does not guess among several Rhino instances or accept a read-only target', async () => {
     mocks.discover.mockResolvedValueOnce([connection, { ...connection, instanceId: 'c'.repeat(32) }]);
-    await expect(prepareCanvasRhinoTurn('ambiguous-thread', 'canvas-one')).rejects.toThrow('多个 Rhino 实例');
+    await expect(prepareCanvasRhinoTurn('ambiguous-thread', 'canvas-one', '在当前 Rhino 文档建模')).rejects.toThrow('多个 Rhino 实例');
     expect(mocks.activeDocument).not.toHaveBeenCalled();
     mocks.discoverNative.mockResolvedValueOnce(undefined);
-    await expect(prepareCanvasRhinoTurn('readonly-thread', 'canvas-one')).rejects.toThrow('Rhino-MCP-Platform');
+    await expect(prepareCanvasRhinoTurn('readonly-thread', 'canvas-one', '在当前 Rhino 文档建模')).rejects.toThrow('Rhino-MCP-Platform');
     expect(isRhinoCanvasLocked()).toBe(false);
   });
 });
