@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execSync } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { prepareRemainingGiteeUploads, uploadRemainingGiteePlans } from './gitee-remaining-assets.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
@@ -138,18 +139,15 @@ const validateReleaseVersion = (latestJson, tag, baseUrl) => {
   }
 };
 
-const validateInstaller = (latestJson, installerPath, installerUploadName, sigPath) => {
+const validateInstallerContents = (latestJson, installerUploadName, bytes, signature) => {
   const version = String(latestJson.version).trim();
   if (!containsVersion(installerUploadName, version)) {
     throw new Error(`Installer upload name ${installerUploadName} does not match release version ${version}.`);
   }
-  if (!fs.existsSync(sigPath)) throw new Error('Missing installer signature: ' + sigPath);
   const platform = getPlatform(latestJson);
-  const signature = fs.readFileSync(sigPath, 'utf8').trim();
   if (!signature || signature !== String(platform?.signature || '').trim()) {
     throw new Error('Installer signature file does not match latest.json.');
   }
-  const bytes = fs.readFileSync(installerPath);
   const sha256 = createHash('sha256').update(bytes).digest('hex').toUpperCase();
   const hashes = [latestJson.sha256, platform?.sha256].filter(value => value !== undefined && value !== null);
   if (!hashes.length || hashes.some(value => String(value).toUpperCase() !== sha256)) {
@@ -159,6 +157,11 @@ const validateInstaller = (latestJson, installerPath, installerUploadName, sigPa
   if (!sizes.length || sizes.some(value => Number(value) !== bytes.length)) {
     throw new Error('Installer size does not match latest.json.');
   }
+};
+
+const validateInstaller = (latestJson, installerPath, installerUploadName, sigPath) => {
+  if (!fs.existsSync(sigPath)) throw new Error('Missing installer signature: ' + sigPath);
+  validateInstallerContents(latestJson, installerUploadName, fs.readFileSync(installerPath), fs.readFileSync(sigPath, 'utf8').trim());
 };
 
 const getInstallerLocalPath = (files, latestJson) => {
@@ -395,16 +398,124 @@ const deleteAttachment = async ({ owner, repo, releaseId, attachmentId, token })
   await request('DELETE', '/repos/' + encodedOwner + '/' + encodedRepo + '/releases/' + releaseId + '/attach_files/' + attachmentId, { token });
 };
 
-const uploadAsset = async ({ owner, repo, releaseId, filePath, uploadName, token }) => {
+const uploadAsset = async ({ owner, repo, releaseId, filePath, uploadName, token, contents }) => {
   const encodedOwner = encodeURIComponent(owner);
   const encodedRepo = encodeURIComponent(repo);
   const form = new FormData();
-  const bytes = fs.readFileSync(filePath);
+  const bytes = contents ?? fs.readFileSync(filePath);
   form.append('file', new Blob([bytes], { type: 'application/octet-stream' }), uploadName);
   return await request('POST', '/repos/' + encodedOwner + '/' + encodedRepo + '/releases/' + releaseId + '/attach_files', {
     token,
     formData: form,
   });
+};
+
+const stableVersionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+
+const isNewerVersion = (left, right) => {
+  const leftParts = left.split('.').map(BigInt);
+  const rightParts = right.split('.').map(BigInt);
+  const differingPart = leftParts.findIndex((part, index) => part !== rightParts[index]);
+  return differingPart >= 0 && leftParts[differingPart] > rightParts[differingPart];
+};
+
+const fetchPublicReleaseAsset = async (url, allowMissing = false) => {
+  const fresh = new URL(url);
+  fresh.searchParams.set('sync', Date.now().toString());
+  const response = await fetch(fresh, { signal: AbortSignal.timeout(60_000), cache: 'no-store' });
+  if (allowMissing && response.status === 404) return null;
+  if (!response.ok) throw new Error(`Cannot read published ${fresh.pathname}: HTTP ${response.status}`);
+  return Buffer.from(await response.arrayBuffer());
+};
+
+const syncLatestDesktopIndex = async ({ owner, repo, token }) => {
+  const repository = '/repos/' + encodeURIComponent(owner) + '/' + encodeURIComponent(repo);
+  const release = await request('GET', repository + '/releases/latest');
+  const tag = release?.tag_name;
+  const version = typeof tag === 'string' && tag.startsWith('v') ? tag.slice(1) : '';
+  if (release?.prerelease !== false || !stableVersionPattern.test(version)) {
+    throw new Error('Gitee latest release is not a stable desktop version.');
+  }
+
+  const downloadRoot = new URL(`/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases/download/`, apiBase);
+  const versionRoot = new URL(tag + '/', downloadRoot);
+  const fixedUrl = new URL('latest/latest.json', downloadRoot);
+  const manifest = JSON.parse(await fetchPublicReleaseAsset(new URL('latest.json', versionRoot)));
+  validateReleaseVersion(manifest, tag, versionRoot);
+  const platform = getPlatform(manifest);
+  const installer = decodeUrlAssetName(platform?.url);
+  const names = new Set(release.assets?.map(getAttachmentName));
+  if (!/\.(exe|msi|zip)$/i.test(installer) || !names.has(installer) || !names.has(installer + '.sig')) {
+    throw new Error(`Gitee ${tag} is missing the installer or its signature; the fixed index was not changed.`);
+  }
+
+  normalizeLatestJsonForGitee(manifest, versionRoot.href.replace(/\/$/, ''), installer);
+  const contents = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
+  const previous = await fetchPublicReleaseAsset(fixedUrl, true);
+  let alreadyCurrent = false;
+  if (previous) {
+    const previousManifest = JSON.parse(previous);
+    if (!stableVersionPattern.test(previousManifest.version)) throw new Error('Published fixed index has an invalid version.');
+    if (isNewerVersion(previousManifest.version, version)) {
+      console.log(`Fixed index is already newer (${previousManifest.version}); skipping ${version}.`);
+      return;
+    }
+    alreadyCurrent = JSON.stringify(previousManifest) === JSON.stringify(manifest);
+    if (alreadyCurrent && !dryRun) {
+      console.log(`Gitee desktop index is already current (${version}).`);
+      return;
+    }
+  }
+
+  const [installerContents, signature] = await Promise.all([
+    fetchPublicReleaseAsset(new URL(encodeURIComponent(installer), versionRoot)),
+    fetchPublicReleaseAsset(new URL(encodeURIComponent(installer) + '.sig', versionRoot)),
+  ]);
+  validateInstallerContents(manifest, installer, installerContents, signature.toString('utf8').trim());
+  if (dryRun) {
+    console.log(`Verified Gitee ${tag} installer and signature.`);
+    console.log(alreadyCurrent ? `Fixed index already serves ${version}.` : `Would update latest/latest.json to ${version}.`);
+    return;
+  }
+
+  const fixed = await request('GET', repository + '/releases/tags/latest', { token });
+  const releaseId = getReleaseId(fixed);
+  if (!releaseId) throw new Error('Gitee fixed update release is missing.');
+  const target = { owner, repo, releaseId, token };
+  const indexAttachments = async () => (await listReleaseAttachments(target)).filter(asset => getAttachmentName(asset) === 'latest.json');
+  const attachments = await indexAttachments();
+  const current = await fetchPublicReleaseAsset(fixedUrl, true);
+  const indexUnchanged = previous && current ? previous.equals(current) : previous === current;
+  if (attachments.length > 1 || Boolean(current) !== Boolean(attachments.length) || !indexUnchanged) {
+    throw new Error('The fixed index changed during verification. Run synchronization again.');
+  }
+  if (attachments.length && optionalEnv('GITEE_OVERWRITE').toLowerCase() === 'false') {
+    throw new Error('GITEE_OVERWRITE=false prevents replacing latest/latest.json.');
+  }
+  const old = attachments[0];
+  if (old) {
+    const attachmentId = old.id || old.attach_file_id;
+    if (!attachmentId) throw new Error('Gitee fixed index attachment ID is missing.');
+    await deleteAttachment({ ...target, attachmentId });
+  }
+  try {
+    await uploadAsset({ ...target, uploadName: 'latest.json', contents });
+  } catch (error) {
+    if (current && !(await indexAttachments()).length) {
+      await uploadAsset({ ...target, uploadName: 'latest.json', contents: current });
+      console.warn('Restored the previous Gitee desktop index.');
+    }
+    throw error;
+  }
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const publishedIndex = await fetchPublicReleaseAsset(fixedUrl, true);
+    if (publishedIndex?.equals(contents)) {
+      console.log(`Published and verified Gitee desktop index ${version}.`);
+      return;
+    }
+    if (attempt < 4) await delay(2000);
+  }
+  throw new Error(`Gitee accepted the upload, but latest/latest.json has not returned ${version} yet.`);
 };
 
 const explainReleaseCreateFailure = async ({ owner, repo, token, error }) => {
@@ -434,6 +545,10 @@ const explainReleaseCreateFailure = async ({ owner, repo, token, error }) => {
 const main = async () => {
   const token = dryRun ? optionalEnv('GITEE_TOKEN') : requiredEnv('GITEE_TOKEN');
   const { owner, repo } = parseRepository();
+  if (process.argv.includes('--sync-latest')) {
+    await syncLatestDesktopIndex({ owner, repo, token });
+    return;
+  }
   if (process.argv.includes('--remaining')) {
     const channel = JSON.parse(fs.readFileSync(path.join(repoRoot, 'integrations/rhino/update-channel.json'), 'utf8'));
     const plans = prepareRemainingGiteeUploads({ directory: distDir, owner, repo, channel });

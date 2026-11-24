@@ -16,6 +16,8 @@ export const isStandaloneCanvasImage = (item: CanvasImageItem) => (
 
 export const getCanvasNodeRenderDependencies = (scope: Scope, item: CanvasImageItem): unknown[] => {
   const image = isStandaloneCanvasImage(item);
+  const outputId = item.layerOperation?.outputs?.[item.layerOperation.mode];
+  const layerOutput = outputId ? scope.canvasItemsById.get(outputId) as CanvasImageItem | undefined : undefined;
   return [
     item,
     item.item.type === 'video' || getCanvasAiMediaType(item.ai) === 'video'
@@ -41,7 +43,9 @@ export const getCanvasNodeRenderDependencies = (scope: Scope, item: CanvasImageI
     image ? null : scope.canvasAgent.settings,
     image ? null : scope.canvasWorkflowTemplates,
     image ? null : scope.canvasWorkflowSingleEditGroupIds,
-    item.ai?.status === 'working' ? scope.canvasWorkingTimerTick : null,
+    layerOutput?.layerResult,
+    item.ai?.status === 'working' || item.layerResult?.status === 'processing' || layerOutput?.layerResult?.status === 'processing'
+      ? scope.canvasWorkingTimerTick : null,
     item.layerResult?.sourceLayer ? scope.canvasItemsById.get(item.layerResult.sourceLayer.groupId) : null,
     ...(item.inputs || []).map(id => scope.canvasItemsById.get(id)),
   ];

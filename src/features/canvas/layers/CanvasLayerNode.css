@@ -346,9 +346,15 @@
 .canvas-layer-panel .canvas-layer-panel__toggle { max-width: 100%; min-width: 0; font-weight: 650; }
 .canvas-layer-panel__toggle svg { flex: none; }
 .canvas-layer-panel__toggle[aria-expanded="true"] svg:last-child { transform: rotate(180deg); }
-.canvas-layer-panel__exports { margin-inline-start: auto; color: var(--layer-muted); }
-.canvas-layer-panel__exports button { font-size: 10px; }
-.canvas-layer-panel__exports button + button { border-inline-start: 1px solid var(--layer-line); border-radius: 0 5px 5px 0; }
+.canvas-layer-panel .canvas-layer-panel__export {
+  margin-inline-start: auto;
+  padding-inline: 9px;
+  border-radius: 999px;
+  background: var(--layer-soft);
+  color: var(--layer-ink);
+}
+.canvas-layer-panel__export svg { flex: none; }
+.canvas-layer-panel .canvas-layer-panel__export[aria-expanded="true"] { background: var(--layer-hover); }
 
 .canvas-layer-panel__list {
   max-height: 142px;

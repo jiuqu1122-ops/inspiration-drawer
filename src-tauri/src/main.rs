@@ -3321,6 +3321,134 @@ fn fetch_app_update_manifest_probe(
     ))
 }
 
+const GITEE_DESKTOP_REPOSITORY: &str = "zibinyou/inspiration-drawer";
+
+fn gitee_desktop_release_manifest(release: &serde_json::Value) -> Option<(Url, String)> {
+    if release.get("prerelease")?.as_bool()? {
+        return None;
+    }
+    let tag = release.get("tag_name")?.as_str()?;
+    let version = tag.strip_prefix('v')?;
+    let parts: Vec<_> = version.split('.').collect();
+    if parts.len() != 3
+        || parts.iter().any(|part| {
+            part.parse::<u64>().is_err() || !part.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    {
+        return None;
+    }
+    let url = Url::parse(&format!(
+        "https://gitee.com/{GITEE_DESKTOP_REPOSITORY}/releases/download/{tag}/latest.json"
+    ))
+    .ok()?;
+    Some((url, version.to_owned()))
+}
+
+fn prepare_gitee_desktop_manifest(
+    raw_json: &mut serde_json::Value,
+    endpoint: &Url,
+    version: &str,
+) -> bool {
+    if raw_json.get("version").and_then(serde_json::Value::as_str) != Some(version)
+        || !extract_app_update_sha256(raw_json).is_some_and(|hash| {
+            hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+        || !extract_app_update_size(raw_json).is_some_and(|size| size > 0)
+        || !find_app_update_platform_field(raw_json, "signature")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|signature| !signature.trim().is_empty())
+    {
+        return false;
+    }
+
+    let mut sources = collect_app_update_sources(raw_json, None);
+    // A version page may mirror the same installer and manifest uploaded to GitHub.
+    let Some(installer) = sources
+        .first()
+        .and_then(|source| source.url.path_segments()?.next_back())
+    else {
+        return false;
+    };
+    if !installer.ends_with(".exe") && !installer.ends_with(".msi") && !installer.ends_with(".zip")
+    {
+        return false;
+    }
+    let Ok(mirror) = endpoint.join(installer) else {
+        return false;
+    };
+    if mirror.origin() != endpoint.origin()
+        || !mirror
+            .path()
+            .starts_with(endpoint.path().trim_end_matches("latest.json"))
+    {
+        return false;
+    }
+    sources.retain(|source| source.url != mirror);
+    let mut urls = vec![serde_json::json!({ "name": "Gitee 国内镜像", "url": mirror.as_str() })];
+    urls.extend(
+        sources
+            .into_iter()
+            .map(|source| serde_json::json!({ "name": source.name, "url": source.url.as_str() })),
+    );
+    raw_json["urls"] = serde_json::Value::Array(urls);
+    true
+}
+
+#[cfg(test)]
+mod gitee_desktop_update_tests {
+    use super::*;
+
+    #[test]
+    fn versioned_manifest_uses_the_stable_gitee_tag_and_existing_signature() {
+        let (endpoint, version) = gitee_desktop_release_manifest(&serde_json::json!({
+            "tag_name": "v9.0.1", "prerelease": false
+        }))
+        .unwrap();
+        assert!(endpoint
+            .as_str()
+            .ends_with("/releases/download/v9.0.1/latest.json"));
+        let name = "Inspiration.Drawer_9.0.1_x64-setup.exe";
+        let github = format!("https://github.com/example/app/releases/download/v9.0.1/{name}");
+        let mut manifest = serde_json::json!({
+            "version": "9.0.0", "sha256": "a".repeat(64), "size": 200,
+            "platforms": { "windows-x86_64": { "url": github, "signature": "unchanged" } }
+        });
+        assert!(!prepare_gitee_desktop_manifest(
+            &mut manifest,
+            &endpoint,
+            &version
+        ));
+        manifest["version"] = serde_json::json!(version);
+        assert!(prepare_gitee_desktop_manifest(
+            &mut manifest,
+            &endpoint,
+            &version
+        ));
+        let sources = collect_app_update_sources(&manifest, None);
+        assert_eq!(sources[0].url, endpoint.join(name).unwrap());
+        assert_eq!(sources[1].url.as_str(), github);
+        assert_eq!(
+            manifest["platforms"]["windows-x86_64"]["signature"],
+            "unchanged"
+        );
+    }
+
+    #[test]
+    fn ignores_preview_and_fixed_index_release_tags() {
+        for (tag, preview) in [
+            ("v9.0.1", true),
+            ("v9.0.1-beta.2", false),
+            ("latest", false),
+            ("rhino-updates", false),
+        ] {
+            assert!(gitee_desktop_release_manifest(&serde_json::json!({
+                "tag_name": tag, "prerelease": preview
+            }))
+            .is_none());
+        }
+    }
+}
+
 fn fetch_app_update_manifest_probe_for_current_version(
     app_handle: &tauri::AppHandle,
     progress_id: &str,
@@ -3334,7 +3462,20 @@ fn fetch_app_update_manifest_probe_for_current_version(
     let mut failures = Vec::new();
     let mut best_probe: Option<(AppUpdateManifestProbe, String)> = None;
 
-    for endpoint in endpoints {
+    let discovery_url = Url::parse(&format!(
+        "https://gitee.com/api/v5/repos/{GITEE_DESKTOP_REPOSITORY}/releases/latest"
+    )).expect("valid Gitee releases API URL");
+    let discovered = send_app_update_manifest_request(&client, route.as_ref(), timeout_secs, &discovery_url)
+        .ok()
+        .and_then(|response| response.error_for_status().ok())
+        .and_then(|response| response.json::<serde_json::Value>().ok())
+        .and_then(|release| gitee_desktop_release_manifest(&release));
+    let candidates = discovered
+        .into_iter()
+        .map(|(endpoint, version)| (endpoint, Some(version)))
+        .chain(endpoints.into_iter().map(|endpoint| (endpoint, None)));
+
+    for (endpoint, expected_version) in candidates {
         let endpoint_text = endpoint.as_str().to_string();
         emit_app_update_progress_detail(
             app_handle,
@@ -3406,7 +3547,7 @@ fn fetch_app_update_manifest_probe_for_current_version(
                 continue;
             }
         };
-        let raw_json = match serde_json::from_str::<serde_json::Value>(&body) {
+        let mut raw_json = match serde_json::from_str::<serde_json::Value>(&body) {
             Ok(raw_json) => raw_json,
             Err(err) => {
                 let snippet = body.chars().take(180).collect::<String>();
@@ -3417,6 +3558,12 @@ fn fetch_app_update_manifest_probe_for_current_version(
             }
         };
 
+        if let Some(expected_version) = expected_version {
+            if !prepare_gitee_desktop_manifest(&mut raw_json, &endpoint, &expected_version) {
+                failures.push(format!("Gitee 发行版清单与版本 {expected_version} 不匹配或字段不完整"));
+                continue;
+            }
+        }
         let parsed_version = extract_app_update_version(&raw_json);
         emit_app_update_progress_detail(
             app_handle,

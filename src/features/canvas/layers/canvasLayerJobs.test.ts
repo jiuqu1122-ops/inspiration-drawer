@@ -1,9 +1,11 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { scheduleCloudAccountQuotaRefresh } from '../../cloudAccountQuotaRefresh';
 import { lookupLayer, submitLayer } from './canvasLayerApi';
 import { followLayerJob } from './canvasLayerJobs';
 import type { LayerReceipt } from './canvasLayerTypes';
 
 vi.mock('./canvasLayerApi', () => ({ lookupLayer: vi.fn(), submitLayer: vi.fn() }));
+vi.mock('../../cloudAccountQuotaRefresh', () => ({ scheduleCloudAccountQuotaRefresh: vi.fn() }));
 
 afterEach(() => {
   vi.resetAllMocks();
@@ -33,10 +35,12 @@ it('keeps following a slow split on the same request and stops at the two-hour d
   await vi.advanceTimersByTimeAsync(9 * 60_000);
   await run;
   expect(pending).toHaveBeenCalledOnce();
+  expect(scheduleCloudAccountQuotaRefresh).not.toHaveBeenCalled();
   expect(submitLayer).not.toHaveBeenCalled();
   lookup.mockResolvedValue(receipt);
   await followLayerJob(requestId, undefined, complete, pending);
   expect(complete).toHaveBeenCalledExactlyOnceWith(receipt);
+  expect(scheduleCloudAccountQuotaRefresh).toHaveBeenCalledOnce();
   expect(lookup).toHaveBeenLastCalledWith(requestId);
 });
 
@@ -56,6 +60,7 @@ it('automatically applies an edit that becomes available twenty minutes after a 
   expect(complete).toHaveBeenCalledExactlyOnceWith(receipt);
   expect(pending).not.toHaveBeenCalled();
   expect(submitLayer).toHaveBeenCalledOnce();
+  expect(scheduleCloudAccountQuotaRefresh).toHaveBeenCalledOnce();
   expect(lookupLayer).toHaveBeenLastCalledWith(requestId);
 });
 
@@ -70,6 +75,7 @@ it('reports a cache failure immediately and lets the original request be recover
   await vi.runAllTimersAsync();
   await first;
 
+  expect(scheduleCloudAccountQuotaRefresh).toHaveBeenCalledOnce();
   expect(lookupLayer).toHaveBeenCalledExactlyOnceWith(requestId);
   expect(complete).toHaveBeenCalledExactlyOnceWith(receipt);
   expect(pending).toHaveBeenCalledExactlyOnceWith('结果暂未保存，可重新查询。Failed to fetch');
@@ -81,4 +87,13 @@ it('reports a cache failure immediately and lets the original request be recover
   expect(complete).toHaveBeenCalledTimes(2);
   expect(pending).toHaveBeenCalledTimes(1);
   expect(submitLayer).not.toHaveBeenCalled();
+});
+
+it('refreshes the available balance when a failed task releases its reservation', async () => {
+  const failed: LayerReceipt = { status: 'failed', message: 'download timeout' };
+  vi.mocked(lookupLayer).mockResolvedValue(failed);
+  const complete = vi.fn().mockResolvedValue(undefined);
+  await followLayerJob('canvas-layer-refunded', undefined, complete, vi.fn());
+  expect(complete).toHaveBeenCalledExactlyOnceWith(failed);
+  expect(scheduleCloudAccountQuotaRefresh).toHaveBeenCalledOnce();
 });

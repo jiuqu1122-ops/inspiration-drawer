@@ -58,6 +58,20 @@ describe('canvas render dependencies', () => {
     expect(areCanvasRenderDependenciesEqual(getCanvasNodeRenderDependencies(before, video),
       getCanvasNodeRenderDependencies({ ...before, canvasSelectedIdsSet: new Set(['image']) }, video))).toBe(false);
   });
+  it('refreshes both active layer cards on ticks and the operation card when its result finishes', () => {
+    const result = item({ id: 'result', layerResult: { requestId: 'request', mode: 'edit', status: 'processing' } });
+    const operation = item({ id: 'operation', layerOperation: { mode: 'edit', outputs: { edit: result.id } } });
+    const before = scope();
+    before.canvasItemsById.set(result.id, result);
+    const tick = { ...before, canvasWorkingTimerTick: 1000 };
+    const ended = { ...tick, canvasItemsById: new Map([[result.id,
+      { ...result, layerResult: { ...result.layerResult!, status: 'success' as const } }]]) };
+    for (const node of [result, operation]) {
+      expect(getCanvasNodeRenderDependencies(before, node)).not.toEqual(getCanvasNodeRenderDependencies(tick, node));
+    }
+    expect(getCanvasNodeRenderDependencies(tick, operation)).not.toEqual(getCanvasNodeRenderDependencies(ended, operation));
+    expect(getCanvasNodeRenderDependencies(ended, operation)).toEqual(getCanvasNodeRenderDependencies({ ...ended, canvasWorkingTimerTick: 2000 }, operation));
+  });
   it('cached node event handlers call current actions while render data stays a snapshot', () => {
     const first = vi.fn(), second = vi.fn();
     const latest = { current: { drag: first, label: 'old', getValue: () => 10 } };

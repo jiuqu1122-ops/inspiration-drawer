@@ -400,6 +400,7 @@ pub struct CloudCreditUsageEntry {
 pub struct CloudCreditUsageResult {
     items: Vec<CloudCreditUsageEntry>,
     next_cursor: Option<String>,
+    available_credits: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2644,7 +2645,15 @@ pub async fn get_cloud_credit_usage(
     app_handle: tauri::AppHandle,
 ) -> Result<CloudCreditUsageResult, String> {
     let access_token = cloud_access_token(&app_handle).await?;
-    get_cloud_with_bearer(&app_handle, "/v1/wallet/usage?limit=50", &access_token).await
+    let mut usage: CloudCreditUsageResult =
+        get_cloud_with_bearer(&app_handle, "/v1/wallet/usage?limit=50", &access_token).await?;
+    if usage.available_credits.is_none() {
+        // Older servers only include ledger rows. Use the same account session for the live balance.
+        let account: CloudAccountResponse =
+            get_cloud_with_bearer(&app_handle, "/v1/account", &access_token).await?;
+        usage.available_credits = account.wallet.map(|wallet| wallet.available_credits);
+    }
+    Ok(usage)
 }
 
 #[tauri::command]
@@ -3257,6 +3266,12 @@ mod tests {
         assert_eq!(result.items.len(), 1);
         assert_eq!(result.items[0].entry_type, "CHARGE");
         assert_eq!(result.items[0].amount, "16");
+        assert!(result.available_credits.is_none());
+        let empty: CloudCreditUsageResult = serde_json::from_value(serde_json::json!({
+            "availableCredits": "0.000000", "items": [], "nextCursor": null
+        }))
+        .unwrap();
+        assert_eq!(empty.available_credits.as_deref(), Some("0.000000"));
     }
 
     #[test]

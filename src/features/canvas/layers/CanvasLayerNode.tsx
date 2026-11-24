@@ -1,7 +1,10 @@
 import { ArrowDown, ArrowUp, ChevronDown, Download, Eye, EyeOff, GripHorizontal, ImagePlus, Layers2, LockKeyhole, Scan, Undo2, Upload } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from 'react';
 import { CanvasRunAction } from '../../../components/CanvasAiRunButton';
+import { RoundedSelect, type RoundedSelectOption } from '../../../components/RoundedSelect';
+import { CANVAS_AI_NODE_SELECT_MENU_CLASS, CANVAS_AI_NODE_SELECT_OPTION_CLASS } from '../../../components/canvasAiNodeControlStyles';
 import type { CanvasImageItem } from '../../canvasModel';
+import { formatCanvasWorkingElapsed } from '../../canvasLocalMediaTools';
 import { getCanvasItemThumbnailSource, getCanvasOriginalImageSource } from '../../../utils/canvasItemSelectors';
 import { CanvasStableImage } from '../components/CanvasStableImage';
 import { CanvasItemResizeHandles } from '../components/CanvasItemResizeHandles';
@@ -12,6 +15,11 @@ import type { CanvasLayer, CanvasLayerGroup, LayerCatalog } from './canvasLayerT
 import './CanvasLayerNode.css';
 
 const button = 'rounded-md bg-stone-200/65 px-2 py-1 text-xs font-semibold hover:bg-cyan-100 disabled:opacity-40 dark:bg-stone-700/80 dark:hover:bg-stone-600';
+const layerExportOptions: RoundedSelectOption[] = [
+  { value: '', label: '导出', hiddenInMenu: true },
+  { value: 'zip', label: 'PNG 组' },
+  { value: 'psd', label: 'PSD' },
+];
 
 function Frame({ scope, item, children, onDoubleClick }: { scope: Record<string, any>; item: CanvasImageItem; children: ReactNode; onDoubleClick?: () => void }) {
   const group = item.layerResult?.group;
@@ -131,7 +139,7 @@ function OperationCard({ scope, item }: { scope: Record<string, any>; item: Canv
         </span>
         {(error || catalog) && <button type="button" className="canvas-layer-operation__retry" onClick={refresh}>刷新目录</button>}
       </div>}
-      <CanvasRunAction label={busy ? '运行中' : '运行'} isWorking={busy}
+      <CanvasRunAction label={busy ? `运行中 ${formatCanvasWorkingElapsed(latest?.item.createdAt, scope.canvasWorkingTimerTick)}` : '运行'} isWorking={busy}
         disabled={price === undefined || !src || busy || (mode === 'edit' && !prompt.trim())}
         creditLabel={creditLabel}
         onClick={() => { if (price !== undefined) scope.startCanvasLayerOperation(item.id, mode, price, catalog?.referenceUpload, unit); }} />
@@ -184,7 +192,8 @@ function ResultCard({ scope, item }: { scope: Record<string, any>; item: CanvasI
       {item.item.name}
     </div>}
     {result.status !== 'success' ? <div className={`flex h-full flex-col items-center justify-center gap-2 p-3 text-center text-xs ${group ? 'canvas-layer-group__preview' : ''}`}>
-      <span>{result.message || (result.status === 'processing' ? '正在处理…' : '任务失败')}</span>
+      <span>{result.message || (result.status === 'processing' ? '正在处理' : '任务失败')}
+        {result.status === 'processing' && ` · ${formatCanvasWorkingElapsed(item.item.createdAt, scope.canvasWorkingTimerTick)}`}</span>
       {result.status === 'processing' && result.message && <button type="button" className={button} onPointerDown={event => event.stopPropagation()}
         onClick={() => scope.resumeCanvasLayerOperation(item)}>查询原请求</button>}
     </div> : group && open ? <div ref={viewport} className="canvas-layer-group__preview relative w-full overflow-hidden" style={{ touchAction: 'none' }}
@@ -223,11 +232,22 @@ function ResultCard({ scope, item }: { scope: Record<string, any>; item: CanvasI
         <button type="button" className="canvas-layer-panel__toggle" aria-expanded={open} title={open ? '收起图层' : '编辑图层'} onClick={() => setOpen(value => !value)}>
           {open ? '收起图层' : '编辑图层'}<ChevronDown size={12} />
         </button>
-        <div className="canvas-layer-panel__exports" role="group" aria-label="导出图层组">
-          <Download size={12} aria-hidden="true" />
-          <button type="button" title="导出 PNG 图层压缩包" disabled={saving} onClick={() => void perform(() => scope.exportCanvasLayerStack(group, 'zip'))}>PNG 组</button>
-          <button type="button" title="导出分层 PSD" disabled={saving} onClick={() => void perform(() => scope.exportCanvasLayerStack(group, 'psd'))}>PSD</button>
-        </div>
+        <RoundedSelect
+          className="canvas-layer-panel__export"
+          title="导出图层组"
+          value=""
+          options={layerExportOptions}
+          disabled={saving}
+          icon={<Download size={12} aria-hidden="true" />}
+          chevronClassName="hidden"
+          menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+          optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+          menuMinWidth={116}
+          menuScale={scope.canvasRenderScale}
+          onChange={format => {
+            if (format === 'zip' || format === 'psd') void perform(() => scope.exportCanvasLayerStack(group, format));
+          }}
+        />
       </div>
       {open && <>
         <ul className="canvas-layer-panel__list" aria-label="图层列表" data-canvas-wheel-scroll="true">

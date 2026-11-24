@@ -157,6 +157,7 @@ export const runAppLifecycleEffect06 = (ctx: Pick<appLifecycleEffectContext, 'ca
   const { canvasItems, setCanvasWorkingTimerTick } = ctx;
     const hasWorkingCanvasAi = canvasItems.some(item => (
       item.ai?.status === 'working'
+      || item.layerResult?.status === 'processing'
       || item.ai?.outputs?.some(output => output.status === 'working')
       || normalizeCanvasWorkflowRuntimeSnapshots(item.ai?.workflowRuntime)
         .some(snapshot => snapshot.ai?.status === 'working' || snapshot.ai?.outputs?.some(output => output.status === 'working'))

@@ -4,12 +4,19 @@
 
 ## 下载
 
-当前已发布版本：**9.0.0**
+当前已发布版本：**9.0.1**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v9.0.0/Inspiration.Drawer_9.0.0_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v9.0.0)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v9.0.1/Inspiration.Drawer_9.0.1_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v9.0.1)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 9.0.1 更新
+
+- 图层任务显示处理时长，撤销后保留已完成的结果。
+- 图层组用一个导出菜单提供 PNG 组和分层 PSD。
+- 积分明细显示当前可用积分与结算后余额，图层任务结束后自动刷新。
+- 支持从 Gitee 最新正式版读取更新清单。
 
 ## 9.0.0 更新
 

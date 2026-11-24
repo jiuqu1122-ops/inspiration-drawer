@@ -4,6 +4,21 @@
 默认输入目录是 `dist-updater`；GitHub Actions 打包不会更新本机这个目录。
 上传前必须确认标签、`latest.json.version`、安装包、签名、SHA256 和大小一致。
 
+## 桌面更新索引
+
+在 Gitee 的版本发行页上传安装包、`.sig` 和 `latest.json`，并发布为正式版。
+支持版本发现的客户端会读取 Gitee 最新正式版中的 `latest.json`。
+
+GitHub Actions 的 **Sync Gitee desktop update index** 每半小时检查一次 Gitee，也可以手动运行。它验证正式版的安装包和签名文件，再同步旧客户端使用的 `latest/latest.json`。使用此流程需在 GitHub 仓库配置有 Gitee 发行版附件写权限的 Actions secret `GITEE_TOKEN`。
+
+本机可用以下命令对已发布的 Gitee 版本进行只读校验。移除 `--dry-run` 并提供有效的 `GITEE_TOKEN` 后即可同步。
+
+```powershell
+$env:GITEE_OWNER = "zibinyou"
+$env:GITEE_REPO = "inspiration-drawer"
+npm run updater:sync:gitee -- --sync-latest --dry-run
+```
+
 ## 使用已下载并校验的正式包
 
 在 PowerShell 设置目标仓库、版本和文件目录。访问令牌只在本机私下设置，不能提交到代码或截图中。

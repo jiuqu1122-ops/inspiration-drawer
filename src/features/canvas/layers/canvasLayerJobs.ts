@@ -1,5 +1,6 @@
 import { lookupLayer, submitLayer, type LayerRequest } from './canvasLayerApi';
 import type { LayerReceipt } from './canvasLayerTypes';
+import { scheduleCloudAccountQuotaRefresh } from '../../cloudAccountQuotaRefresh';
 
 const running = new Set<string>();
 // The split worker may receive its 90-minute download window after submission.
@@ -13,6 +14,11 @@ export async function followLayerJob(requestId: string, create: (() => Promise<L
   if (running.has(requestId)) return;
   running.add(requestId);
   try {
+    // Refresh on the receipt, even when saving the returned images locally fails.
+    const finish = async (receipt: LayerReceipt) => {
+      scheduleCloudAccountQuotaRefresh();
+      await complete(receipt);
+    };
     let submissionFinished = !create;
     let terminal: LayerReceipt | undefined;
     let submissionError = '';
@@ -34,7 +40,7 @@ export async function followLayerJob(requestId: string, create: (() => Promise<L
     const started = Date.now();
     const deadline = started + pollingWindowMs;
     for (let attempt = 0; ; attempt++) {
-      if (terminal) { await complete(terminal); return; }
+      if (terminal) { await finish(terminal); return; }
       if (submissionFinished || attempt % 3 === 0 || Date.now() >= deadline) {
         let receipt: LayerReceipt | undefined;
         try {
@@ -48,10 +54,10 @@ export async function followLayerJob(requestId: string, create: (() => Promise<L
         }
         if (receipt) {
           missing = 0;
-          if (receipt.status !== 'processing') { await complete(receipt); return; }
+          if (receipt.status !== 'processing') { await finish(receipt); return; }
         }
       }
-      if (terminal) { await complete(terminal); return; }
+      if (terminal) { await finish(terminal); return; }
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
       const interval = Date.now() - started < 5 * 60_000 ? 2_000 : 10_000;

@@ -106,6 +106,7 @@ function RoundedSelect({
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const openedWithKeyboard = useRef(false);
   const [menuStyle, setMenuStyle] = useState<React.CSSProperties>({});
   const selected = options.find(option => option.value === value) || options[0];
 
@@ -173,6 +174,12 @@ function RoundedSelect({
     updateMenuPosition();
   }, [open, options.length, menuScale, menuPlacement]);
 
+  useLayoutEffect(() => {
+    if (open && openedWithKeyboard.current) {
+      menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true });
+    }
+  }, [open]);
+
   useEffect(() => {
     if (!open) return;
 
@@ -183,7 +190,9 @@ function RoundedSelect({
       setOpen(false);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
+      if (event.key !== 'Escape') return;
+      if (menuRef.current?.contains(document.activeElement)) buttonRef.current?.focus({ preventScroll: true });
+      setOpen(false);
     };
     const handleLayoutChange = () => updateMenuPosition();
 
@@ -312,6 +321,7 @@ function RoundedSelect({
         ref={buttonRef}
         type="button"
         title={title}
+        aria-expanded={open}
         onMouseDown={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -319,6 +329,7 @@ function RoundedSelect({
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
+          openedWithKeyboard.current = e.detail === 0;
           setOpen(prev => !prev);
         }}
         className={`inline-flex min-w-0 items-center transition-colors ${revealLabelOnHover || hasSwappedLabel ? 'group/rounded-select gap-0 overflow-hidden hover:gap-1.5' : 'gap-1.5'} ${className}`}

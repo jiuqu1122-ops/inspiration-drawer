@@ -94,6 +94,7 @@ export type CloudCreditUsageEntry = {
 };
 
 export type CloudCreditUsageResult = {
+  availableCredits: string | null;
   items: CloudCreditUsageEntry[];
   nextCursor?: string | null;
 };

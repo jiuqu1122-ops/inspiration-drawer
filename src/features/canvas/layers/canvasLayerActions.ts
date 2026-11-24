@@ -1,4 +1,5 @@
 import type { CanvasImageItem } from '../../canvasModel';
+import type { CanvasUndoSnapshot } from '../../../types/canvasRuntime';
 import { getCanvasAiOutputDisplaySource, getCanvasAiSuccessfulOutputs, getCanvasOriginalImageSource } from '../../../utils/canvasItemSelectors';
 import { cacheLayerComposite, cacheLayerResult, layerAssetUrl, normalizeLayerInput } from './canvasLayerAssets';
 import { prepareLayerRequestImage } from './canvasLayerApi';
@@ -27,6 +28,7 @@ export type CanvasLayerContext = {
   getItems: () => CanvasImageItem[];
   append: (items: CanvasImageItem[], label: string, select?: boolean) => number;
   update: (canvasId: string, nodeId: string, change: (item: CanvasImageItem) => CanvasImageItem) => unknown;
+  settleHistory?: (canvasId: string, nodeId: string, change: (item: CanvasImageItem) => CanvasImageItem) => void;
   read: (source: string, optimize?: boolean) => Promise<string>;
   cacheImage: (source: string, name: string) => Promise<string>;
   undo: (label: string) => void;
@@ -87,12 +89,17 @@ export function startCanvasLayerRun(
 export function observeCanvasLayerRun(ctx: CanvasLayerContext, canvasId: string, node: CanvasImageItem, create?: Parameters<typeof followLayerJob>[1]) {
   if (!node.layerResult || node.layerResult.status !== 'processing') return;
   const { requestId, mode } = node.layerResult;
-  const patch = (change: (item: CanvasImageItem) => CanvasImageItem) => ctx.update(canvasId, node.id,
-    item => item.layerResult?.requestId === requestId && item.layerResult.status === 'processing' ? change(item) : item);
+  const whilePending = (change: (item: CanvasImageItem) => CanvasImageItem) => (item: CanvasImageItem) =>
+    item.layerResult?.requestId === requestId && item.layerResult.status === 'processing' ? change(item) : item;
+  const settle = (change: (item: CanvasImageItem) => CanvasImageItem) => {
+    const apply = whilePending(change);
+    ctx.update(canvasId, node.id, apply);
+    ctx.settleHistory?.(canvasId, node.id, apply);
+  };
   const complete = async (receipt: LayerReceipt) => {
     if (receipt.status === 'processing') return;
     if (receipt.status === 'failed') {
-      patch(item => ({ ...item, layerResult: { ...item.layerResult!, status: 'failed', message: receipt.message } }));
+      settle(item => ({ ...item, layerResult: { ...item.layerResult!, status: 'failed', message: receipt.message } }));
       return;
     }
     if (receipt.result.operation !== mode) throw new Error('结果操作类型不一致');
@@ -102,12 +109,27 @@ export function observeCanvasLayerRun(ctx: CanvasLayerContext, canvasId: string,
     if (!group && !asset) throw new Error('图层结果缺少素材');
     const media = group ? await cacheLayerComposite(group, requestId) : { path: asset!.path, url: layerAssetUrl(asset!.path) };
     const { width, height } = group ?? asset!;
-    patch(item => ({ ...item, height: item.width * height / width,
+    settle(item => ({ ...item, height: item.width * height / width,
       item: { ...item.item, ...media },
       layerResult: { ...item.layerResult!, ...replacement, status: 'success', message: undefined,
         chargedCredits: receipt.chargedCredits, ...(receipt.imageBilling && { imageBilling: receipt.imageBilling }) } }));
   };
-  void followLayerJob(requestId, create, complete, notice => patch(item => ({ ...item, layerResult: { ...item.layerResult!, message: notice } })));
+  void followLayerJob(requestId, create, complete, notice => ctx.update(canvasId, node.id,
+    whilePending(item => ({ ...item, layerResult: { ...item.layerResult!, message: notice } }))));
+}
+
+// A receipt belongs to the request even when a user action is undone.
+// Apply it to pending snapshots at their own position and width.
+export function settleCanvasLayerHistory(history: CanvasUndoSnapshot[], nodeId: string, change: (item: CanvasImageItem) => CanvasImageItem) {
+  return history.map(snapshot => {
+    const index = snapshot.items.findIndex(item => item.id === nodeId);
+    if (index < 0) return snapshot;
+    const settled = change(snapshot.items[index]);
+    if (settled === snapshot.items[index]) return snapshot;
+    const items = snapshot.items.slice();
+    items[index] = settled;
+    return { ...snapshot, items };
+  });
 }
 
 export async function updateCanvasLayerGroup(ctx: CanvasLayerContext, nodeId: string,
