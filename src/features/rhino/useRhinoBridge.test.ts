@@ -4,12 +4,12 @@ import type { RhinoNativeBinding } from './rhinoProtocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   effects: [] as Array<() => (() => void)>,
-  discover: vi.fn(), discoverNative: vi.fn(async (_binding: unknown, _conversationId: string, onNotice?: (message: string) => void): Promise<RhinoNativeBinding | undefined> => { onNotice?.('MCPStart required'); return undefined; }), hasNativeWrites: vi.fn((binding: RhinoNativeBinding | undefined) => Boolean(binding?.tools?.some(tool => tool.readOnly === false && ['build','connect','solve','write'].includes(tool.workflowPhase || '')))), request: vi.fn(), call: vi.fn(), invoke: vi.fn(),
+  discover: vi.fn(), activeDocument: vi.fn(), discoverNative: vi.fn(async (_binding: unknown, _conversationId: string, onNotice?: (message: string) => void): Promise<RhinoNativeBinding | undefined> => { onNotice?.('MCPStart required'); return undefined; }), hasNativeWrites: vi.fn((binding: RhinoNativeBinding | undefined) => Boolean(binding?.tools?.some(tool => tool.readOnly === false && ['build','connect','solve','write'].includes(tool.workflowPhase || '')))), request: vi.fn(), call: vi.fn(), invoke: vi.fn(),
 }));
 vi.mock('react', () => ({ useRef: (value: unknown) => ({ current: value }), useEffect: (effect: () => (() => void)) => mocks.effects.push(effect) }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
-vi.mock('./rhinoClient', () => ({ discoverRhinoConnections: mocks.discover, discoverNativeRhino: mocks.discoverNative, hasRhinoNativeWriteTools: mocks.hasNativeWrites, rhinoRequest: mocks.request, callRhinoTool: mocks.call }));
-import { getRhinoTools, isRhinoCanvasImageRequest, useRhinoBridge, withRhinoTools } from './useRhinoBridge';
+vi.mock('./rhinoClient', () => ({ discoverRhinoConnections: mocks.discover, getActiveRhinoDocument: mocks.activeDocument, discoverNativeRhino: mocks.discoverNative, hasRhinoNativeWriteTools: mocks.hasNativeWrites, rhinoRequest: mocks.request, callRhinoTool: mocks.call }));
+import { getRhinoTools, isRhinoCanvasImageRequest, prepareCanvasRhinoTurn, useRhinoBridge, withRhinoTools } from './useRhinoBridge';
 import { isRhinoCanvasLocked } from './rhinoProtocol';
 import { RHINO_MODELING_SKILL_RESOURCE_TOOL } from './rhinoProductModelingKnowledge';
 import type { useChatRuntime } from '../chat/runtime/useChatRuntime';
@@ -59,11 +59,34 @@ beforeEach(() => {
   const storage = new Map<string, string>();
   vi.stubGlobal('localStorage', { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, String(value)), removeItem: (key: string) => storage.delete(key) });
   mocks.discover.mockResolvedValue([connection]);
+  mocks.activeDocument.mockResolvedValue({ documentId: 12, rhinoVersion: '9.0', name: 'Product Housing' });
   mocks.discoverNative.mockResolvedValue({ tools: [{ name: 'rhino_native_run_python', description: 'Python writes', inputSchema: { type: 'object' }, readOnly: false, destructive: true, workflowPhase: 'write' }] });
   mocks.call.mockResolvedValue([{ type: 'text', text: '{"documentId":12,"rhinoVersion":"9.0.26300.9401","rhinoMajorVersion":9,"rhinoMinorVersion":0}' }]);
   mocks.invoke.mockResolvedValue('C:/fixture/viewport.png');
 });
 afterEach(() => { cleanup?.(); cleanup = undefined; vi.unstubAllGlobals(); vi.useRealTimers(); });
+describe('Canvas Chat target discovery', () => {
+  it('locks and pins the active document and never silently switches the same conversation to another document', async () => {
+    const target = await prepareCanvasRhinoTurn('canvas-model-thread', 'canvas-one');
+    try {
+      expect(target.documentName).toBe('Product Housing');
+      expect(isRhinoCanvasLocked()).toBe(true);
+      expect(mocks.discoverNative).toHaveBeenCalledWith(expect.objectContaining({ documentId: 12, canvasId: 'canvas-one' }), 'canvas-model-thread');
+      await expect(prepareCanvasRhinoTurn('another-thread', 'canvas-two')).rejects.toThrow('已有任务');
+    } finally { target.release(); }
+    mocks.activeDocument.mockResolvedValue({ documentId: 31, rhinoVersion: '9.0', name: 'Another Document' });
+    await expect(prepareCanvasRhinoTurn('canvas-model-thread', 'canvas-one')).rejects.toThrow('绑定的文档不同');
+    expect(isRhinoCanvasLocked()).toBe(false);
+  });
+  it('does not guess among several Rhino instances or accept a read-only target', async () => {
+    mocks.discover.mockResolvedValueOnce([connection, { ...connection, instanceId: 'c'.repeat(32) }]);
+    await expect(prepareCanvasRhinoTurn('ambiguous-thread', 'canvas-one')).rejects.toThrow('多个 Rhino 实例');
+    expect(mocks.activeDocument).not.toHaveBeenCalled();
+    mocks.discoverNative.mockResolvedValueOnce(undefined);
+    await expect(prepareCanvasRhinoTurn('readonly-thread', 'canvas-one')).rejects.toThrow('Rhino-MCP-Platform');
+    expect(isRhinoCanvasLocked()).toBe(false);
+  });
+});
 describe('Rhino desktop Chat bridge', () => {
   it.each([
     ['image-aspect-ratio', '16:9', 'onImageAspectRatioChange'],
@@ -560,7 +583,7 @@ describe('Rhino desktop Chat bridge', () => {
     const execute = vi.fn();
     await expect(withRhinoTools(execute, 'canvas-one')('rhino_get_context', {}, {
       conversationId: runtime.activeConversationId, messageId: 'desktop-message', userText: 'read Rhino', recentMessages: [],
-    })).rejects.toThrow('only available in Rhino plugin mode');
+    })).rejects.toThrow('已绑定文档的建模对话');
     expect(execute).not.toHaveBeenCalled();
   });
   it('enforces the original canvas for later tool calls', async () => {

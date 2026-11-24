@@ -5,6 +5,28 @@ export function rhinoUserRequest(text: string) {
   return text.split(/\n\n\[Rhino \u53ea\u8bfb\u4e0a\u4e0b\u6587[^\]]*\]/)[0].trim();
 }
 
+/** Canvas Chat needs a write intent and a CAD target before connecting to Rhino. */
+export function isCanvasRhinoModelingRequest(text: string, followsModeling = false) {
+  const request = rhinoUserRequest(text).replace(
+    /(?:不要|不用|无需|不需要|先别|先不|\bdon't\b|\bdo not\b)\s*[^，。；;\n]*/gi,
+    '',
+  ).trim();
+  if (!request || /(?:教程|提示词|工作流|写.{0,12}脚本|\b(?:tutorial|prompt|workflow)\b)/i.test(request)) return false;
+  if (/(?:生成|制作|画|设计).{0,20}(?:效果图|示意图|概念图|三视图|海报|图片|渲染图)/.test(request)
+    && !/(?:先.{0,16}建模|建模.{0,12}(?:后|再|然后)|\brhino\b)/i.test(request)) return false;
+  if (followsModeling && /^(?:请)?(?:继续|接着做|继续做|继续建模|按刚才的方案继续)[！!。.]?$|^(?:continue|go ahead)[.!]?$/i.test(request)) return true;
+  if (/(?:训练|统计|财务|数据|预测|语言|数学|业务|机器学习|风险|需求|概念|AI)\s*(?:建模|模型)/i.test(request)) return false;
+  if (!isRhinoDocumentWriteRequest(request)) {
+    if (/(?:如何|怎么|为什么|说明|教程|检查|查看|\b(?:how|why|check)\b)/i.test(request)) return false;
+    return /先.{0,12}建模.{0,12}(?:再|然后|之后)|(?:建|造)(?:个|一根|一段|一条)\s*(?:圆柱|球体|立方体|长方体|曲线|曲面)/i.test(request)
+      || /(?:在|用|通过)\s*(?:rhino|犀牛|grasshopper).{0,36}(?:建个|做进|做出来|嵌入|并入)/i.test(request)
+      || (followsModeling && /(?:截面|壁厚|边缘|外壳|孔|槽|零件|按钮).{0,18}(?:一点|一些|\d+\s*(?:mm|cm|毫米|厘米)|加宽|缩小|放大|内缩|嵌入)/i.test(request));
+  }
+  if (/(?:在|用|通过|打开)\s*(?:rhino|犀牛|grasshopper)|\b(?:rhino|grasshopper|cad)\b.{0,24}\b(?:build|create|edit|model|geometry|part)\b|(?:建模|3[ -]?d\s*(?:模型|model)|三维模型|几何模型)|(?:做|建|重建|修改|编辑|调整|转成|转为).{0,12}(?:模型|三维|实体|曲面|曲线|圆柱|球体|立方体|长方体)|\b(?:build|create|rebuild|reconstruct|make|modify|edit)\b.{0,50}\b(?:3[ -]?d|geometry|solid|cylinder|sphere|brep)\b/i.test(request)) return true;
+  if (/外壳|壳体|面板/.test(request) && /(?:开|切|挖|钻)(?:出|个|一个)?(?:贯穿|通)?(?:孔|槽)|凹座|并入|合并|做成一体/.test(request)) return true;
+  return followsModeling && /截面|壳体|外壳|倒角|圆角|装配|壁厚|零件|零部件|凹座|布尔|开孔|(?:按钮|按键).{0,8}(?:嵌入|移到|内缩)|\b(?:fillet|chamfer|boolean|shell|section|assembly)\b/i.test(request);
+}
+
 /** An explicit reference dependency can exist even when the user forgot to attach the image. */
 export const requestsRhinoModelingReference = (text: string) => {
   const request = rhinoUserRequest(text).replace(/(?:不需要|不用|无需|别|不要)\s*(?:用|按|看|参考)?\s*(?:三视图|多视图|参考图|原图|图片|图纸|附图)|\b(?:without|ignore)\s+(?:(?:the|any)\s+)?(?:three[- ]views?|reference (?:images?|photos?))/gi, '');
@@ -13,13 +35,17 @@ export const requestsRhinoModelingReference = (text: string) => {
 
 /** Explicit geometry creation/editing must not become image editing merely
  * because a reference image is attached or the request contains "image". */
+export function hasRhinoVisualDeliverable(text: string) {
+  const request = rhinoUserRequest(text);
+  return !defersVisualGeneration(request) && /(?:渲染|效果图|生图|出图|生成.{0,12}(?:图片|图像)|\b(?:render(?:ing)?|visuali[sz]ation)\b|\b(?:generate|edit)\b.{0,12}\b(?:image|picture)\b)/i.test(request);
+}
+
 export function isRhinoGeometryOnlyRequest(text: string) {
   const request = rhinoUserRequest(text);
   const positive = request.replace(/(?:\u4e0d\u8981|\u4e0d\u7528|\u65e0\u9700|\u4e0d\u9700\u8981|\u5148\u522b|\u5148\u4e0d|don'?t|do not)\s*(?:\u5e2e\u6211|\u8fdb\u884c)?\s*(?:\u5efa\u6a21|model(?:ing)?)/gi, ' ');
   const geometry = /(?:\u5efa\u6a21|\u5efa.{0,16}\u6a21\u578b|\u5efa\u6210.{0,12}(?:\u6a21\u578b|\u4e09\u7ef4|3d)|(?:\u521b\u5efa|\u751f\u6210|\u642d\u5efa|\u91cd\u5efa|\u505a|\u8f6c\u6210|\u8f6c\u4e3a).{0,24}(?:\u4e09\u7ef4|3d|\u6a21\u578b|\u51e0\u4f55)|\b(?:build|create|rebuild|reconstruct|make|convert|model|modify|edit)\b.{0,60}\b(?:3[ -]?d|geometry|cad|rhino|model)\b|\b(?:grasshopper|gh)\b|\u8349\u8722)/i.test(positive);
   // A combined modeling-and-rendering request still needs the visual path.
-  const explicitImage = !defersVisualGeneration(request) && /(?:\u6e32\u67d3|\u6548\u679c\u56fe|\u751f\u56fe|\u51fa\u56fe|\u751f\u6210.{0,12}(?:\u56fe\u7247|\u56fe\u50cf)|\b(?:render(?:ing)?|visuali[sz]ation)\b|\b(?:generate|edit)\b.{0,12}\b(?:image|picture)\b)/i.test(request);
-  return geometry && !explicitImage;
+  return geometry && !hasRhinoVisualDeliverable(request);
 }
 
 /** Preserve the active viewport mode unless the user specifically requests a Rendered-mode capture. */
@@ -36,6 +62,9 @@ export function isRhinoDocumentWriteRequest(text: string) {
   const visualOnly = /(?:\b(?:render|rendering|visuali[sz]ation|generate|create|edit)\b.{0,32}\b(?:image|picture|render)\b|(?:\u6e32\u67d3|\u6548\u679c\u56fe|\u751f\u56fe|\u51fa\u56fe|\u751f\u6210.{0,12}(?:\u56fe\u7247|\u56fe\u50cf)))/i.test(request);
   const explicitModeling = /(?:\b(?:model|modeling|build|rebuild|reconstruct|create|make|convert)\b.{0,48}\b(?:3d|geometry|cad|rhino|model|object|part)\b|(?:\u5efa\u6a21|\u5efa.{0,12}(?:\u6a21\u578b|\u7269\u4f53|\u5bf9\u8c61|\u96f6\u4ef6)|\u65b0\u5efa.{0,12}(?:\u6a21\u578b|\u7269\u4f53|\u5bf9\u8c61|\u96f6\u4ef6)|\u521b\u5efa.{0,12}(?:\u6a21\u578b|\u7269\u4f53|\u5bf9\u8c61|\u96f6\u4ef6)|\u751f\u6210.{0,12}(?:\u6a21\u578b|\u7269\u4f53|\u5bf9\u8c61|\u96f6\u4ef6)))/i.test(request);
   if (visualOnly && !explicitModeling) return false;
+  const shellInterfaceEdit = /外壳|壳体|面板/.test(request)
+    && /(?:开|切|挖|钻)(?:出|个|一个)?(?:贯穿|通)?(?:孔|槽)|并入|合并|(?:做|连|合|融)(?:成|为)一体/.test(request);
+  if (shellInterfaceEdit) return true;
 
   const mutation = /(?:\u5220\u9664|\u79fb\u9664|\u6e05\u7a7a|\u79fb\u52a8|\u65cb\u8f6c|\u7f29\u653e|\u53d8\u6362|\u4fee\u6539|\u7f16\u8f91|\u66f4\u6539|\u66ff\u6362|\u5408\u5e76|\u62c6\u5206|\u5012\u89d2|\u5012\u5706|\u5e03\u5c14|\u653e\u6837|\u626b\u63a0|\u62c9\u4f38|\u9690\u85cf|\u663e\u793a|\u4fdd\u5b58|\u53e6\u5b58|\u5bfc\u51fa|\u5bfc\u5165|\u8bbe\u7f6e|\u8d4b\u4e88|\u4e0a\u8272|\u7740\u8272|\u6539\u6210|\u5efa\u4e00\u4e2a|\u505a\u4e00\u4e2a|\u6dfb\u52a0|\u63d2\u5165|\u521b\u5efa|\u65b0\u5efa|\u751f\u6210|\u8c03\u6574|\u91cd\u547d\u540d|\u70b8\u5f00|\u5206\u89e3|\u590d\u5236|\u955c\u50cf|\u9635\u5217|\u4fee\u526a|\u5ef6\u4f38|\u5706\u89d2|\u504f\u79fb|\u6295\u5f71|\b(?:change|modify|edit|create|make|build|add|insert|delete|remove|clear|move|rotate|scale|transform|join|split|fillet|boolean|loft|sweep|extrude|hide|show|save|export|import|set|assign|color|rename|duplicate|mirror|array|trim|extend|offset)\b)/i.test(request);
   const target = /(?:rhino|grasshopper|\bgh\b|\b3d\b|\bcad\b|\u6a21\u578b|\u5efa\u6a21|\u7269\u4f53|\u5bf9\u8c61|\u5b9e\u4f53|\u51e0\u4f55|\u66f2\u7ebf|\u66f2\u9762|\u7f51\u683c|\u56fe\u5c42|\u6750\u8d28|\u573a\u666f|\u6587\u6863|\u89c6\u7a97|\u89c6\u53e3|\u9009\u4e2d|\u6240\u9009|\u5f53\u524d\u5bf9\u8c61|\u96f6\u4ef6|\u7ec4\u4ef6|\u5b83|\u8fd9\u4e2a)/i.test(request);

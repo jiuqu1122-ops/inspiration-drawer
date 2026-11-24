@@ -1,7 +1,22 @@
-import { isExplicitGhComponentsRequest } from './rhinoRequestIntent';
+import { isCanvasRhinoModelingRequest, isExplicitGhComponentsRequest } from './rhinoRequestIntent';
 import { describe, expect, it } from 'vitest';
 import { isRhinoBlankViewportError, isRhinoDocumentWriteRequest, isRhinoGeometryOnlyRequest, isRhinoExplicitRenderedCaptureRequest, rhinoUserRequest, rhinoWriteCapabilityNotice } from './rhinoRequestIntent';
 import { isRhinoCanvasImageRequest } from './useRhinoBridge';
+
+describe('Canvas Chat Rhino routing', () => {
+  it.each(['帮我建模', '照着三视图把它做成三维模型', '帮我建个圆柱', '用 Rhino 把按钮做进外壳', '给外壳开个孔', '帮我先建模再渲染一张效果图', 'Build a 3D model from the attached drawings'])('routes modeling requests: %s', text => {
+    expect(isCanvasRhinoModelingRequest(text)).toBe(true);
+  });
+  it.each(['帮我画一张 3D 模型效果图', '怎么用 Rhino 建模？', '先别帮我建模，生成产品图', '帮我建立数据模型', '帮我做个按钮', '给这张图片做个 PSD'])('leaves other intents in ordinary Chat: %s', text => {
+    expect(isCanvasRhinoModelingRequest(text)).toBe(false);
+  });
+  it('routes short corrections only in a modeling follow-up', () => {
+    expect(isCanvasRhinoModelingRequest('尾部截面再薄一点', true)).toBe(true);
+    expect(isCanvasRhinoModelingRequest('尾部截面再薄一点')).toBe(false);
+    expect(isCanvasRhinoModelingRequest('继续', true)).toBe(true);
+    expect(isCanvasRhinoModelingRequest('检查一下外壳厚度', true)).toBe(false);
+  });
+});
 
 describe('Rhino image references vs geometry requests', () => {
   it.each([
@@ -41,6 +56,9 @@ describe('Rhino image references vs geometry requests', () => {
     expect(isRhinoDocumentWriteRequest('\u5e2e\u6211\u5efa\u4e00\u4e2a\u6444\u50cf\u5934')).toBe(true);
     expect(isRhinoDocumentWriteRequest('\u5220\u9664\u9009\u4e2d\u7684\u5bf9\u8c61')).toBe(true);
     expect(isRhinoDocumentWriteRequest('Move the selected object in Rhino')).toBe(true);
+    expect(isRhinoDocumentWriteRequest('给外壳的按键开一个贯穿孔')).toBe(true);
+    expect(isRhinoDocumentWriteRequest('把加强筋和壳体做成一体')).toBe(true);
+    expect(isRhinoDocumentWriteRequest('检查外壳有没有给按键开孔')).toBe(false);
     expect(isRhinoDocumentWriteRequest('\u67e5\u8be2\u9009\u4e2d\u5bf9\u8c61\u7684\u6750\u8d28')).toBe(false);
     expect(isRhinoDocumentWriteRequest('\u5e2e\u6211\u751f\u6210\u4e00\u5f20\u8f66\u5185\u6444\u50cf\u5934\u6548\u679c\u56fe')).toBe(false);
   });

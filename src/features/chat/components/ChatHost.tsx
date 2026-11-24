@@ -20,7 +20,7 @@ import { useCloudAccount } from '../../cloudAccountContext';
 import { getWorkflowChatBinding, saveWorkflowChatBinding } from '../storage/workflowChatStorage';
 import type { WorkflowResultCardData } from '../../agentModel';
 import { createCanvasWorkflowSnapshot, workflowSnapshotHash } from '../attachments/chatWorkflowAttachments';
-import { assertRhinoResultTarget, getRhinoTools, useRhinoBridge, withRhinoTools } from '../../rhino/useRhinoBridge';
+import { assertRhinoResultTarget, getRhinoTools, prepareCanvasRhinoTurn, useRhinoBridge, withRhinoTools } from '../../rhino/useRhinoBridge';
 
 export type ChatHostProps = Omit<ChatViewProps, 'runtime'> & {
   visible: boolean;
@@ -163,7 +163,11 @@ export function ChatHost({
     prepareAttachment: prepareChatAttachment,
     createVisionAttachmentResolver: createChatVisionAttachmentResolver,
   };
-  const runtime = useChatRuntime({ ...runtimeOptions, conversationScope: 'desktop' });
+  const runtime = useChatRuntime({
+    ...runtimeOptions,
+    conversationScope: 'desktop',
+    prepareCanvasRhinoTurn: viewProps.variant === 'canvas' ? conversationId => prepareCanvasRhinoTurn(conversationId, canvasId) : undefined,
+  });
   const rhinoRuntime = useChatRuntime({
     ...runtimeOptions, conversationScope: 'rhino', defaultExecutionSource: 'rhino',
     imageModel: rhinoOutput.model, imageResolution: rhinoOutput.resolution,

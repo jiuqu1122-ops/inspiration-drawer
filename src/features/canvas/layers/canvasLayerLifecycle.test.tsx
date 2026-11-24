@@ -38,6 +38,9 @@ it.each(['split', 'edit'] as const)('ticks both %s cards from the persisted star
   const stop = runAppLifecycleEffect06({ canvasItems: [operation, node], setCanvasWorkingTimerTick: setTick });
   vi.advanceTimersByTime(2000);
   for (const card of [operation, node]) expect(renderToStaticMarkup(<CanvasLayerNode scope={scope} item={card} />)).toContain('9秒');
+  const processing = renderToStaticMarkup(<CanvasLayerNode scope={scope} item={operation} />);
+  expect(processing).toContain('aria-busy="true"');
+  expect(processing).toContain('disabled:cursor-wait');
   stop?.();
   const failed = { ...node, layerResult: { ...node.layerResult!, status: 'failed' as const } };
   scope.canvasItemsById.set(node.id, failed);
@@ -45,6 +48,11 @@ it.each(['split', 'edit'] as const)('ticks both %s cards from the persisted star
   vi.advanceTimersByTime(1000);
   expect(setTick).toHaveBeenCalledTimes(3);
   for (const card of [operation, failed]) expect(renderToStaticMarkup(<CanvasLayerNode scope={scope} item={card} />)).not.toContain('9秒');
+  const idle = renderToStaticMarkup(<CanvasLayerNode scope={scope} item={operation} />);
+  expect(idle).toContain('disabled:cursor-not-allowed');
+  expect(idle).not.toContain('disabled:cursor-wait');
+  expect(idle).not.toContain('aria-busy="true"');
+  expect(idle.includes('修改要求（必填）')).toBe(mode === 'edit');
 });
 
 it.each(['split', 'edit'] as const)('keeps a settled %s receipt when undo restores a pending snapshot', async mode => {

@@ -82,7 +82,7 @@ function OperationCard({ scope, item }: { scope: Record<string, any>; item: Canv
   const failed = latest?.layerResult?.status === 'failed';
   useEffect(refresh, [refresh, mode, failed]);
   const prompt = config.prompts?.[mode] ?? '';
-  const promptLabel = mode === 'split' ? '拆分要求' : '修改要求';
+  const promptLabel = mode === 'split' ? '拆分要求' : '修改要求（必填）';
   const selection = config.selection?.sourceId === source?.id && config.selection?.source === layerSourceKey(src) ? config.selection?.value : undefined;
   return <Frame scope={scope} item={item}>
     <header className="canvas-layer-operation__header">
@@ -125,6 +125,7 @@ function OperationCard({ scope, item }: { scope: Record<string, any>; item: Canv
           </button>}
         </div>
         <textarea id={`layer-prompt-${item.id}`} data-canvas-edit-control="true" maxLength={4000} value={prompt}
+          required={mode === 'edit'}
           placeholder={mode === 'split' ? '留空自动拆分，或指定人物、标题等元素' : '描述要怎么修改。选区用于引导。'}
           onChange={event => scope.patchCanvasLayerOperation(item.id, { prompts: { ...config.prompts, [mode]: event.target.value } })} />
       </div>

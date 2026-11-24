@@ -1,6 +1,6 @@
 import { validateSvgToolArguments } from './chatSvgTool';
 import { proposeLayeredPsd } from './chatLayeredPsd';
-import { isGithubSkillTool, validateGithubSkillTool } from '../skills/githubSkillTools';
+import { isGithubSkillTool, mayUseGithubSkillTool, validateGithubSkillTool } from '../skills/githubSkillTools';
 import { parsePrototype } from '../prototypes/prototypeSchema';
 import { assertGeometryCorrection } from '../../rhino/rhinoGeometryRecovery';
 import { assertRhinoScriptPreflight } from '../../rhino/rhinoRuntime';
@@ -97,7 +97,7 @@ export const routeChatToolCall = async (input: {
     }
   }
   if (isGithubSkillTool(name)) {
-    if (input.context.executionSource !== 'desktop') throw new Error('GitHub Skills 仅支持桌面 Chat；Rhino 和 HTML 无权访问');
+    if (!mayUseGithubSkillTool(name, input.args, input.context)) throw new Error('GitHub Skills 仅支持桌面 Chat；画布建模仅可读取本轮选用的已安装技能资料。');
     validateGithubSkillTool(name, input.args);
     // Never accept approved or auto mode as a grant. Persistence always opens a native Rust-owned confirmation.
     const writes = name === 'install_github_skill';
@@ -106,7 +106,7 @@ export const routeChatToolCall = async (input: {
     return { requiresApproval: false, result: compactChatToolResult(name, await input.executor(name, input.args, input.context)), permission };
   }
   const rhinoTool = isRhinoReadTool(name) || isRhinoNativeTool(name, input.context.conversationId);
-  if (rhinoTool && input.context.executionSource !== 'rhino') throw new Error('Rhino MCP tools are only available in Rhino plugin mode; desktop Chat cannot access Rhino.');
+  if (rhinoTool && input.context.executionSource !== 'rhino') throw new Error('Rhino MCP tools require Rhino plugin mode or a bound canvas modeling turn.');
   if (!SUPPORTED_TOOLS.has(name) && !rhinoTool) throw new Error(`???? Chat ???${input.name}`);
   if (isRhinoNativeTool(name, input.context.conversationId)) {
     const native = getRhinoNativeTool(name, input.context.conversationId)!;
@@ -117,8 +117,7 @@ export const routeChatToolCall = async (input: {
     if (!validation.valid) throw new RhinoNativeArgumentError(validation.message);
     const permission = {
       riskLevel: native.readOnly ? 'read' : native.destructive ? 'destructive' : 'safe_write',
-      // The Rhino panel is an explicit command surface: native tool calls there
-      // run directly. Desktop-origin Chat is rejected above before reaching here.
+      // Native calls run directly after the host binds an explicit modeling turn.
       requiresConfirmation: false,
       reasons: [native.readOnly ? 'rhino-read-only' : 'rhino-native-document-change'],
     } as const;

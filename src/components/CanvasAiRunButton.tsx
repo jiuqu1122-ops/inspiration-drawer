@@ -32,10 +32,11 @@ export function CanvasRunAction({
       data-canvas-run-control="true"
       type="button"
       disabled={disabled}
+      aria-busy={isWorking || undefined}
       onPointerDown={onPointerDown}
       onClick={onClick}
       title={creditTitle}
-      className="ml-auto flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[11px] px-2.5 text-[12px] font-black text-stone-500 transition-colors hover:bg-stone-950/[0.05] hover:text-stone-900 disabled:cursor-wait disabled:opacity-45 dark:text-white/58 dark:hover:bg-white/[0.07] dark:hover:text-white"
+      className={`ml-auto flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[11px] px-2.5 text-[12px] font-black text-stone-500 transition-colors hover:bg-stone-950/[0.05] hover:text-stone-900 disabled:opacity-45 dark:text-white/58 dark:hover:bg-white/[0.07] dark:hover:text-white ${isWorking ? 'disabled:cursor-wait' : 'disabled:cursor-not-allowed'}`}
     >
       <Play className={`h-4 w-4 fill-current ${isWorking ? 'animate-pulse' : ''}`} aria-hidden="true" />
       {label}

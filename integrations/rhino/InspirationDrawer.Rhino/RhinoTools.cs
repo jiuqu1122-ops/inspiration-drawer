@@ -273,7 +273,8 @@ internal static class RhinoTools
             if (result.Task.IsCompleted) return;
             try
             {
-                var doc = RhinoDoc.FromRuntimeSerialNumber(documentId) ?? throw new InvalidOperationException("Bound Rhino document is closed");
+                var doc = (documentId == 0 ? RhinoDoc.ActiveDoc : RhinoDoc.FromRuntimeSerialNumber(documentId))
+                    ?? throw new InvalidOperationException(documentId == 0 ? "No active Rhino document" : "Bound Rhino document is closed");
                 result.TrySetResult(action(doc));
             }
             catch (Exception error) { result.TrySetException(error); }

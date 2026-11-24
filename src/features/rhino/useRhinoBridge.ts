@@ -19,12 +19,35 @@ import { defersVisualGeneration, isImagePromptTextRequest } from '../chat/contex
 import { getGeneratedMediaFromToolCall, type ChatExecutionSource, type ChatMessage, type ChatToolExecutor, type PendingChatAttachment } from '../chat/model/chatTypes';
 import type { useChatRuntime } from '../chat/runtime/useChatRuntime';
 import type { AgentCanvasSelectionItem } from '../agentModel';
-import { callRhinoTool, discoverNativeRhino, discoverRhinoConnections, hasRhinoNativeWriteTools, isRhinoCSharpImmutableV9LoadFailure, rhinoRequest } from './rhinoClient';
+import { callRhinoTool, discoverNativeRhino, discoverRhinoConnections, getActiveRhinoDocument, hasRhinoNativeWriteTools, isRhinoCSharpImmutableV9LoadFailure, rhinoRequest } from './rhinoClient';
 import { assertRhinoCanvas, getRhinoNativeTools, isRhinoNativeTool, isRhinoReadTool, lockRhinoCanvas, registerRhinoNativeTools, RHINO_REFERENCE_REVIEW_TOOL, RhinoCommandLedger, rhinoToolDefinitions, type RhinoBinding, type RhinoCommand } from './rhinoProtocol';
 
 type Runtime = ReturnType<typeof useChatRuntime>;
 const liveConversationState = (runtime: Runtime) => typeof runtime.getConversationState === 'function' ? runtime.getConversationState() : runtime;
 const bindings = new Map<string, RhinoBinding>();
+const documentExecutions = new Map<string, () => boolean>();
+const documentExecutionKey = (instanceId: string, documentId: number) => `${instanceId}:${documentId}`;
+
+function isDocumentExecuting(instanceId: string, documentId: number) {
+  const key = documentExecutionKey(instanceId, documentId);
+  const owner = documentExecutions.get(key);
+  if (!owner) return false;
+  if (owner()) return true;
+  documentExecutions.delete(key);
+  return false;
+}
+
+function reserveDocumentExecution(instanceId: string, documentId: number, hasPendingWork: () => boolean = () => false) {
+  if (isDocumentExecuting(instanceId, documentId)) throw new Error('这个 Rhino 文档已有任务在运行或等待确认。');
+  let preparingOrRunning = true;
+  const key = documentExecutionKey(instanceId, documentId);
+  const owner = () => preparingOrRunning || hasPendingWork();
+  documentExecutions.set(key, owner);
+  return () => {
+    preparingOrRunning = false;
+    if (documentExecutions.get(key) === owner && !owner()) documentExecutions.delete(key);
+  };
+}
 const bindingStorageKey = (id: string) => `rhino-beta-binding-v1:${id}`;
 function persistedBinding(id: string): Pick<RhinoBinding, 'documentId' | 'canvasId'> & { instanceId: string } | undefined {
   try { return JSON.parse(localStorage.getItem(bindingStorageKey(id)) || 'null') || undefined; } catch { return undefined; }
@@ -49,6 +72,36 @@ function bindingForConversation(conversationId: string) {
 function rememberDocumentBinding(conversationId: string, binding: RhinoBinding) {
   bindings.set(conversationId, binding);
   try { localStorage.setItem(bindingStorageKey(conversationId), JSON.stringify({ documentId: binding.documentId, canvasId: binding.canvasId, instanceId: binding.connection.instanceId })); } catch { /* Keep the in-memory pin if storage is unavailable. */ }
+}
+
+export async function prepareCanvasRhinoTurn(conversationId: string, canvasId: string) {
+  const pinned = bindingForConversation(conversationId);
+  if (pinned && pinned.canvasId !== canvasId) throw new Error('这段建模对话已绑定另一张画布。请返回原画布，或新建对话。');
+  const releaseCanvas = lockRhinoCanvas(`canvas-rhino:${conversationId}`);
+  let releaseDocument: (() => void) | undefined;
+  const release = () => { releaseDocument?.(); releaseCanvas(); };
+  try {
+    const connections = await discoverRhinoConnections();
+    const candidates = pinned ? connections.filter(connection => connection.instanceId === pinned.instanceId) : connections;
+    if (!candidates.length) throw new Error(pinned
+      ? '这段对话绑定的 Rhino 实例已关闭。请新建 Chat 对话连接当前 Rhino 文档。'
+      : '没有连接到 Rhino。请打开目标文档，输入 InspirationDrawer 加载插件后再试。');
+    if (candidates.length > 1) throw new Error('检测到多个 Rhino 实例。请只保留目标实例，或在目标文档的 Rhino 插件面板发送。');
+    const connection = candidates[0];
+    const document = await getActiveRhinoDocument(connection);
+    if (pinned && pinned.documentId !== document.documentId) throw new Error('当前 Rhino 文档与此对话绑定的文档不同。请切回原文档，或新建 Chat 对话。');
+    const binding: RhinoBinding = { connection, documentId: document.documentId, canvasId };
+    releaseDocument = reserveDocumentExecution(connection.instanceId, document.documentId);
+    binding.native = await discoverNativeRhino(binding, conversationId);
+    if (!hasRhinoNativeWriteTools(binding.native)) {
+      throw new Error(rhinoWriteCapabilityNotice(document.rhinoVersion, Boolean(binding.native)));
+    }
+    rememberDocumentBinding(conversationId, binding);
+    return { context: JSON.stringify(document), documentName: document.name, release };
+  } catch (error) {
+    release();
+    throw error;
+  }
 }
 async function selectOrCreateDocumentConversation(runtime: Runtime, documentId: number, canvasId: string, connection: RhinoBinding['connection']) {
   const { conversations, activeConversationId } = liveConversationState(runtime);
@@ -78,7 +131,7 @@ export function withRhinoTools(execute: ChatToolExecutor, canvasId: string): Cha
     const binding = bindings.get(context.conversationId);
     const executionSource = context.executionSource || 'desktop';
     const rhinoTool = isRhinoReadTool(name) || isRhinoNativeTool(name, context.conversationId);
-    if (rhinoTool && executionSource !== 'rhino') throw new Error('Rhino MCP tools are only available in Rhino plugin mode; desktop Chat cannot access Rhino.');
+    if (rhinoTool && executionSource !== 'rhino') throw new Error('Rhino MCP 仅在已绑定文档的建模对话中可用。');
     if (binding) assertRhinoCanvas(binding, canvasId);
     if (isRhinoNativeTool(name, context.conversationId)) {
       if (!binding?.native) throw new Error('\u5f53\u524d Rhino \u6587\u6863\u6ca1\u6709\u552f\u4e00\u5339\u914d\u7684\u539f\u751f MCP \u8fde\u63a5\uff1b\u8bf7\u5148\u5728 Rhino \u6267\u884c MCPStart');
@@ -266,7 +319,6 @@ export function useRhinoBridge(options: {
   useEffect(() => {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
-    const executingDocuments = new Set<string>();
     const pollingInstances = new Set<string>();
     let rhinoMaskLayer = 'selection';
 
@@ -311,7 +363,7 @@ export function useRhinoBridge(options: {
             documentId,
             conversationId,
             conversations: conversationState.conversations.filter(item => bindingBelongsTo(bindingForConversation(item.id), documentId, current.canvasId, connection.instanceId)).slice(0, 100).map(item => ({ id: item.id, title: conversationDisplayTitle(item, current.runtime.messagesForConversation(item.id)) })),
-            busy: current.runtime.isConversationBusy(conversationId) || executingDocuments.has(documentSessionKey(connection.instanceId, documentId, current.canvasId)),
+            busy: current.runtime.isConversationBusy(conversationId) || isDocumentExecuting(connection.instanceId, documentId),
             stoppable: current.runtime.isConversationStoppable(conversationId),
             model: conversation?.model || '',
             messages: await summarizeRhinoMessages(messages),
@@ -324,7 +376,7 @@ export function useRhinoBridge(options: {
           documents,
           conversationId: activeConversationId,
           conversations: activeDocumentId ? (documents.find(item => item.documentId === activeDocumentId)?.conversations || []) : [],
-          busy: activeDocumentId ? current.runtime.isConversationBusy(activeConversationId) || executingDocuments.has(documentSessionKey(connection.instanceId, activeDocumentId, current.canvasId)) : false,
+          busy: activeDocumentId ? current.runtime.isConversationBusy(activeConversationId) || isDocumentExecuting(connection.instanceId, activeDocumentId) : false,
           stoppable: activeConversationId ? current.runtime.isConversationStoppable(activeConversationId) : false,
           model: activeConversation?.model || '',
           messages: await summarizeRhinoMessages(activeConversationId ? current.runtime.messagesForConversation(activeConversationId) : []),
@@ -338,7 +390,7 @@ export function useRhinoBridge(options: {
         // Claim must be acknowledged before a model or generation task is started.
         await acknowledge('accepted');
         let releaseCanvas: (() => void) | undefined;
-        let executionKey: string | undefined;
+        let releaseDocument: (() => void) | undefined;
         const run = async () => {
           const live = latest.current;
           const runtime = live.runtime;
@@ -390,7 +442,7 @@ export function useRhinoBridge(options: {
           let conversationId = '';
           const globalImageSetting = ['image-model', 'image-aspect-ratio', 'image-resolution', 'image-quality', 'mask-mode'].includes(command.kind);
           if (command.kind === 'send') {
-            if (executingDocuments.has(documentSessionKey(connection.instanceId, command.documentId, live.canvasId))) throw new Error('This Rhino document already has a modeling task running');
+            if (isDocumentExecuting(connection.instanceId, command.documentId)) throw new Error('这个 Rhino 文档已有任务在运行或等待确认。');
             conversationId = await selectOrCreateDocumentConversation(runtime, command.documentId, live.canvasId, connection);
             if (command.conversationId && command.conversationId !== conversationId) {
               const submittedBinding = bindingForConversation(command.conversationId);
@@ -464,9 +516,7 @@ export function useRhinoBridge(options: {
             live.onImageMaskModeChange?.(enabled ? 'on' : 'off');
             return;
           }
-          if (executingDocuments.has(documentSessionKey(connection.instanceId, command.documentId, live.canvasId))) throw new Error('This Rhino document already has a modeling task running');
-          executionKey = documentSessionKey(connection.instanceId, command.documentId, live.canvasId);
-          executingDocuments.add(executionKey);
+          releaseDocument = reserveDocumentExecution(connection.instanceId, command.documentId, () => runtime.isConversationBusy(conversationId));
           releaseCanvas = lockRhinoCanvas(command.id);
           const binding: RhinoBinding = { connection, documentId: command.documentId, canvasId: live.canvasId };
           rememberDocumentBinding(conversationId, binding);
@@ -570,7 +620,7 @@ export function useRhinoBridge(options: {
           if (!ok) throw new Error('Chat 未接受消息，请检查当前模型与连接；不要重复提交仍在执行的生成任务');
         };
         // Do not block heartbeats while a chat/generation request is in flight.
-        void run().then(() => acknowledge('completed'), error => acknowledge('failed', String(error))).catch(() => {}).finally(() => { releaseCanvas?.(); if (executionKey) executingDocuments.delete(executionKey); });
+        void run().then(() => acknowledge('completed'), error => acknowledge('failed', String(error))).catch(() => {}).finally(() => { releaseCanvas?.(); releaseDocument?.(); });
       } catch {
         // One dead Rhino instance must never starve other windows' heartbeats.
         // Accepted commands are never replayed by discovery or transport retries.

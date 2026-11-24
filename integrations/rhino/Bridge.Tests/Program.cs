@@ -15,7 +15,7 @@ using var server = new BetaServer(file, (name, args) =>
     calledDocument = args["documentId"]!.GetValue<uint>();
     if (calledDocument == 999) throw new InvalidOperationException("The document is closed");
     return Task.FromResult<JsonNode>(new JsonObject { ["documentId"] = calledDocument, ["name"] = name });
-}, id => Task.FromResult<JsonNode>(new JsonObject { ["documentId"] = id, ["name"] = "Test Rhino document" }),
+}, id => Task.FromResult<JsonNode>(new JsonObject { ["documentId"] = id == 0 ? 7U : id, ["name"] = "Test Rhino document" }),
     id => Task.FromResult<JsonNode>(new JsonObject { ["documentId"] = id, ["selectedObjectCount"] = 0, ["partCount"] = 0, ["visibleAreaMaskAvailable"] = false, ["layers"] = new JsonArray(new JsonObject { ["path"] = "Default", ["visible"] = true }), ["parts"] = new JsonArray() }));
 using var client = new HttpClient { BaseAddress = new Uri(server.Url) };
 async Task<(HttpStatusCode Code, JsonNode Json)> Request(string path, JsonObject? body = null, bool auth = true, string? origin = null)
@@ -23,9 +23,9 @@ async Task<(HttpStatusCode Code, JsonNode Json)> Request(string path, JsonObject
     using var message = new HttpRequestMessage(body == null ? HttpMethod.Get : HttpMethod.Post, path);
     if (auth) message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", server.Token);
     if (origin != null) message.Headers.Add("Origin", origin);
-    if (body != null) message.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
-    // An unauthenticated request is rejected before its body is read. Avoid a TCP reset from unread upload bytes.
-    if (!auth && body != null) message.Headers.ExpectContinue = true;
+    // Authentication is checked before the payload. Exercise the same HTTP
+    // method without an unread upload that can reset the connection on Windows.
+    if (body != null) message.Content = new StringContent(auth ? body.ToJsonString() : "", Encoding.UTF8, "application/json");
     using var response = await client.SendAsync(message);
     return (response.StatusCode, JsonNode.Parse(await response.Content.ReadAsStringAsync())!);
 }
@@ -405,6 +405,11 @@ try
         && nativeCall["inputSchema"]?["properties"]?["toolName"] != null
         && nativeCall["inputSchema"]?["properties"]?["arguments"] != null,
         "native MCP proxy is declared as a write-capable tool with an explicit native tool name and arguments");
+    rpc["method"] = "drawer/activeDocument";
+    Check((await Request("mcp", rpc, auth: false)).Code == HttpStatusCode.Unauthorized,
+        "active document discovery requires the authenticated desktop connection");
+    Check((await Request("mcp", rpc)).Json["result"]?["documentId"]?.GetValue<uint>() == 7 && calledDocument == 0,
+        "active document discovery reads context without dispatching a modeling tool");
     rpc["method"] = "tools/call"; rpc["params"] = new JsonObject { ["name"] = "rhino_list_native_tools", ["arguments"] = new JsonObject { ["documentId"] = 7 } };
     var nativeList = await Request("mcp", rpc);
     var nativeListText = nativeList.Json["result"]?["content"]?[0]?["text"]?.GetValue<string>();

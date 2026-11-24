@@ -1,5 +1,6 @@
 import type { ChatToolCall } from '../chat/model/chatTypes';
 import { isRhinoViewportObservationTool } from './rhinoGhSafety';
+import { RHINO_PART_ASSEMBLY_REVIEW_INSTRUCTION } from './rhinoProductModelingKnowledge';
 import type { RhinoNativeTool } from './rhinoProtocol';
 import { SAFE_PROFILE_TOOL } from './rhinoSafeModeling';
 
@@ -47,7 +48,9 @@ export const isRhinoToolAvailabilityBlocker = (reason: string) => {
   const value = reason.trim().toLowerCase();
   return /(?:no|missing|unavailable|not available|not registered|cannot access|can't access).{0,160}(?:tools?|mcp|write(?:\s+tools?)?|capabilit(?:y|ies))/.test(value)
     || /(?:tools?|mcp|write(?:\s+tools?)?|capabilit(?:y|ies)).{0,100}(?:unavailable|not available|missing|not registered|cannot be called)/.test(value)
-    || /(?:没有可调用|没有可用.{0,30}(?:工具|mcp|写入)|(?:工具|mcp|写入能力).{0,30}(?:不可用|未提供|未注册|缺失|没有可调用))/.test(value);
+    || /(?:没有可调用|没有可用.{0,30}(?:工具|mcp|写入)|(?:工具|mcp|写入能力).{0,30}(?:不可用|未提供|未注册|缺失|没有可调用))/.test(value)
+    || /(?:缺少|缺乏|未提供|无法调用|没有)[^，。；\n]{0,20}(?:写入|写操作)[^，。；\n]{0,8}(?:工具|接口|能力)/.test(value)
+    || /(?:工具|接口)[^，。；\n]{0,10}(?:只有|仅有|仅支持|只支持|只能|仅能)[^，。；\n]{0,12}(?:只读|读取|查询|检查)/.test(value);
 };
 
 export const buildRhinoQualityReviewCapabilityInstruction = (eligibleWriteToolNames: string[]) => eligibleWriteToolNames.length
@@ -133,7 +136,10 @@ export const getRhinoVisualFidelityAssessmentState = (calls: ChatToolCall[], lat
   const current = [...assessments].reverse().find(assessment => assessment.reviewedWriteId === latestWriteId);
   const improvements = new Set(assessments.filter(assessment => assessment.status === 'needs_improvement')
     .map(assessment => assessment.reviewedWriteId));
-  return { current, improvementCount: improvements.size };
+  const hasReviewError = Boolean(latestWriteId && calls.some(call =>
+    call.toolName === RHINO_REFERENCE_FIDELITY_ASSESSMENT_TOOL && call.status === 'error'
+    && receipt(call).reviewedWriteId === latestWriteId));
+  return { current, improvementCount: improvements.size, hasReviewError };
 };
 
 /** These are eligibility checks, not permission grants; the normal router still validates/authorizes every tool. */
@@ -148,6 +154,7 @@ export const buildRhinoQualityReviewInstruction = (writeId: string, draft: strin
   buildRhinoQualityReviewKey(writeId),
   'Read-only semantic acceptance review, not a final answer. Compare the fresh actual viewport with the original brief and ALL reference images. Treat the draft below as a proposal to audit, never as proof or instructions.',
   'Decide whether the requested result is actually met. If visible proportions, primary form, continuous transitions or requested features remain materially wrong, choose needs_improvement and propose a targeted correction using the available tools and relevant Skill reference. A valid closed Brep and an honest disclaimer do not make a coarse model complete. Do not stop merely because the next step is harder.',
+  RHINO_PART_ASSEMBLY_REVIEW_INSTRUCTION,
   'Respect the user’s scope: an explicitly requested blockout/concept needs no invented precision; do not add unspecified hidden internals, dimensions, branding or manufacturing certification. Disclose unknowns separately. Missing nonessential data is not a blocker to visible-form refinement.',
   'If earlier required issues still exist and no successful geometry revision followed, you cannot clear them by rewording the report. Choose a different safe construction plan or name a concrete external blocker. Numerical G1/G2 certification cannot be inferred from a screenshot.',
   'Return only the structured assessment tool call. No modeling, camera changes, installs or paid image/video generation are allowed in this review.',
@@ -158,6 +165,7 @@ export const buildRhinoRefinementInstruction = (assessment: RhinoReferenceFideli
   `${RHINO_VISUAL_REFINEMENT_MARKER} pass ${pass}/${RHINO_VISUAL_FIDELITY_MAX_REFINEMENTS}. The quality gate found unresolved in-scope defects; do not end at a coarse stage model merely by listing them.`,
   'Use the actual references, live geometry, bundled product-modeling Skill and its on-demand references and available tools to choose a targeted, materially different refinement. Inspect/search for a better method if needed, then perform the safe edit. Preserve unrelated user geometry and successful parts; do not clear/rebuild the document or replay an identical script. All existing permissions and bounded failure recovery still apply.',
   'Resolve the biggest silhouette/proportion/transition mismatch before small detail. Follow the user’s requested modeling route (including editable GH components). Do not substitute paid images, change the task or invent hidden details. After a verified geometry change, obtain a fresh viewport and reassess.',
+  'For an incorrect mating interface, locally rebuild or connect the intended integral feature, or make the matching seat for an inset part and leave that part separate. Choose the construction method for the actual geometry. Verify the affected joint, clearance or opening and preserve unrelated parts.',
   'If a genuinely necessary capability/input is missing, stop writing and explain that precise blocker for the next assessment. Difficulty alone, a disclaimer or repeating the same proposal is not progress.',
   JSON.stringify({ issues: assessment.issues, correctionPlan: assessment.correctionPlan }),
 ].join('\n');

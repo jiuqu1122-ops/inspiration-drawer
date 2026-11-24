@@ -457,6 +457,14 @@ internal sealed class BetaServer : IDisposable
             ["serverInfo"] = new JsonObject { ["name"] = "inspiration-drawer-rhino-beta", ["version"] = PluginVersion },
         };
         else if (method == "notifications/initialized") return new JsonObject();
+        else if (method == "drawer/activeDocument")
+        {
+            try { result = await getContext(0); }
+            catch (Exception error)
+            {
+                return new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["error"] = new JsonObject { ["code"] = -32000, ["message"] = error.Message } };
+            }
+        }
         else if (method == "tools/list")
         {
             var names = new[] { "rhino_get_context", "rhino_list_objects", "rhino_list_layers", "rhino_list_parts", "rhino_capture_viewport", "rhino_list_native_tools", "rhino_call_native_tool" };

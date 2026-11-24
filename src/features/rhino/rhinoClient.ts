@@ -35,6 +35,19 @@ export async function rhinoRequest<T>(connection: RhinoConnection, path: string,
   return invoke<T>('rhino_beta_request', { instanceId: connection.instanceId, path, body: body ?? {} });
 }
 
+export async function getActiveRhinoDocument(connection: RhinoConnection) {
+  const reply = await rhinoRequest<{ result?: Record<string, unknown>; error?: { code: number; message: string } }>(connection, '/mcp', {
+    jsonrpc: '2.0', id: crypto.randomUUID(), method: 'drawer/activeDocument',
+  });
+  if (reply.error?.code === -32601) throw new Error('请在设置里更新 Rhino 插件并重启 Rhino，再从画布 Chat 建模。');
+  if (reply.error) throw new Error(reply.error.message);
+  const document = reply.result;
+  if (!document || typeof document.documentId !== 'number' || !Number.isSafeInteger(document.documentId) || document.documentId <= 0) {
+    throw new Error('Rhino 没有可用的活动文档，请先打开或新建一个文档。');
+  }
+  return { ...document, documentId: document.documentId, name: typeof document.name === 'string' ? document.name : 'Rhino', rhinoVersion: String(document.rhinoVersion || '') };
+}
+
 const reservedNativeNames = new Set(['safe_profile_solids', 'verify_gh_geometry', 'snapshot_document_geometry', 'g2_inspect_parameters', 'g2_verify_model', 'g2_repair_output_conversion']);
 /** MCP names and provider function names have different alphabets/length limits. */
 export function rhinoNativeFunctionName(rawName: string) {

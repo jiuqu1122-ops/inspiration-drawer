@@ -26,9 +26,9 @@ const tools:RhinoNativeTool[]=[
  {name:'rhino_native_get_viewport_image',description:'Host camera-configurable viewport capture',readOnly:false,destructive:false,inputSchema:{type:'object',properties:{}}},
  {name:'rhino_native_run_python',description:'Run Python script',readOnly:false,destructive:true,inputSchema:{type:'object',properties:{script:{type:'string'}}}},
 ];
-const setup=(resolveAttachmentUrl: NonNullable<Parameters<typeof useChatRuntime>[0]['resolveAttachmentUrl']> = async()=> 'data:image/png;base64,reference-fixture')=>useChatRuntime({model:'fixture',approvalMode:'auto',resolveAttachmentUrl,executeTool:executed,additionalTools:(id,source)=>{
+const setup=(resolveAttachmentUrl: NonNullable<Parameters<typeof useChatRuntime>[0]['resolveAttachmentUrl']> = async()=> 'data:image/png;base64,reference-fixture', options: Partial<Parameters<typeof useChatRuntime>[0]> = {})=>useChatRuntime({model:'fixture',approvalMode:'auto',resolveAttachmentUrl,executeTool:executed,additionalTools:(id,source)=>{
  if(source!=='rhino')return [];registerRhinoNativeTools(id,tools);return [...tools.map(t=>({type:'function' as const,function:{name:t.name,description:t.description,parameters:t.inputSchema}})), ...rhinoToolDefinitions];
-}});
+},...options});
 const call=(id:string,args:Record<string,unknown>,name=search)=>({content:'',toolCalls:[{id,name,arguments:JSON.stringify(args)}]});
 beforeEach(()=>{
  h.deferStateUpdaters=false;
@@ -46,6 +46,36 @@ beforeEach(()=>{
 });
 afterEach(()=>{vi.unstubAllGlobals();vi.restoreAllMocks();});
 const last=()=>[...h.messages.values()].filter(message=>message.role==='assistant').slice(-1)[0]!;
+
+it('routes a canvas Chat request through Rhino, passing actual image pixels and the verified scene context', async () => {
+  const release = vi.fn();
+  const prepareCanvasRhinoTurn = vi.fn(async () => ({
+    context: '{"documentId":28,"units":"Millimeters"}', documentName: 'Fixture Rhino', release,
+  }));
+  const runtime = setup(undefined, { prepareCanvasRhinoTurn });
+  h.replies.push(call('ctx', {}, 'rhino_get_context'), { content: '已读取当前文档。', toolCalls: [] });
+  const content = '按参考图建模';
+  expect(await runtime.sendMessage(content, [{ id: 'source', type: 'image', path: 'fixture.png' }])).toBe(true);
+  expect(prepareCanvasRhinoTurn).toHaveBeenCalledTimes(1);
+  expect(executed).toHaveBeenCalledWith('rhino_get_context', {}, expect.objectContaining({ executionSource: 'rhino' }));
+  expect(h.requests[0].tools.map((tool: any) => tool.function.name)).toContain(RHINO_MODELING_SKILL_RESOURCE_TOOL);
+  const messages = h.requests[0].messages;
+  expect(messages).toContainEqual({ role: 'user', content: '{"documentId":28,"units":"Millimeters"}' });
+  expect(messages.at(-1).content).toContainEqual(expect.objectContaining({ type: 'image_url' }));
+  expect([...h.messages.values()].find(message => message.role === 'user')?.content).toBe(content);
+  expect(release).toHaveBeenCalledTimes(1);
+});
+
+it('reports a missing Rhino connection in the Chat transcript without falling back to a model request', async () => {
+  const prepareCanvasRhinoTurn = vi.fn(async () => { throw new Error('请打开 Rhino 文档'); });
+  const runtime = setup(undefined, { prepareCanvasRhinoTurn });
+  expect(await runtime.sendMessage('帮我建模')).toBe(true);
+  expect(last()).toMatchObject({ status: 'error', content: expect.stringContaining('请打开 Rhino 文档') });
+  expect(h.requests).toHaveLength(0);
+  h.replies.push({ content: '这里是建模步骤。', toolCalls: [] });
+  expect(await runtime.sendMessage('怎么用 Rhino 建模？')).toBe(true);
+  expect(prepareCanvasRhinoTurn).toHaveBeenCalledTimes(1);
+});
 
 it('reports missing canvas references before starting reference-based Rhino modeling', async () => {
   expect(await setup().sendMessage('按画布里的三视图重新建模', [], undefined, undefined, undefined, 'rhino')).toBe(true);
@@ -435,6 +465,27 @@ describe('reference-modeling visual review in the actual Chat runtime',()=>{
  const pass=()=>call('pass',{status:'complete',issues:[],correctionPlan:'',blockedReason:''},quality);
  const improve=(id='more')=>call(id,{status:'needs_improvement',issues:['握把与外壳过渡太直'],correctionPlan:'重做侧面控制截面及导轨，替换该过渡面',blockedReason:''},quality);
  const text=(content:string)=>({content,toolCalls:[]});
+ it('checks both integral housing joints and openings for separate inset parts', async () => {
+  h.replies.push(
+   call('initial-shell', { script: 'build_housing_button_and_rib()' }, python), call('first-view', {}, view),
+   text('按键可见，壳体开孔和加强筋连接尚未验证'),
+   call('review-mounting', {
+    status: 'needs_improvement', issues: ['按钮下方壳体缺少贯穿孔', '一体加强筋仍是与壳体重叠的独立实体'],
+    correctionPlan: '合并壳体和加强筋，保留独立按钮，对壳体做局部布尔差并检查截面', blockedReason: '',
+   }, quality),
+   call('correct-shell', { script: 'unite_rib_and_cut_button_opening()' }, python), call('new-view', {}, view),
+   text('已复查外壳一体加强筋和按键开口'), pass(), text('已复查装配关系。'),
+  );
+  executed.mockImplementation(async name => name === python ? writeReceipt : shot);
+  await setup().sendMessage('根据参考图建模，加强筋和外壳一体，机械按键是嵌入件并需要贯穿孔。', [reference], undefined, undefined, undefined, 'rhino');
+  expect(JSON.stringify(h.requests[0].messages)).toContain('plan how the relevant parts meet before choosing a construction method');
+  expect(JSON.stringify(h.requests[0].messages)).toContain('Boolean difference if suitable');
+  expect(JSON.stringify(h.requests[3].messages)).toContain('two overlapping objects fail that check');
+  expect(JSON.stringify(h.requests[3].messages)).toContain('section or mating-part evidence');
+  expect(JSON.stringify(h.requests[4].messages)).toContain('leave that part separate');
+  expect(executed.mock.calls.map(([name]) => name)).toEqual([python, view, python, view]);
+  expect(last().status).toBe('completed');
+ });
  it('intercepts the coarse draft, edits the identified defect and reviews the new revision before completing',async()=>{
   h.replies.push(call('initial',{script:'build()'},python),call('first-view',{},view),text('目前只是阶段模型，握把没有自然过渡。'),improve(),call('refine',{script:'correct_transition()'},python),text('Finishing'),call('second-view',{},view),text('Compared actual viewport; blend updated.'),pass(),text('已完善过渡。'));
   let views=0;
@@ -495,7 +546,31 @@ describe('reference-modeling visual review in the actual Chat runtime',()=>{
   expect(executed.mock.calls.map(([name])=>name)).toEqual([python,view,python,view]);
   expect(last().status).toBe('completed');
   expect(last().content).toBe('已完成定向完善。');
- }); it('rejects a pass with unfinished issues and does not dispatch writes smuggled into the read-only review',async()=>{
+ });
+ it('rechecks a Chinese read-only blocker on a later geometry revision even after an earlier recheck', async () => {
+  const blocked = (id: string, blockedReason: string) => call(id, {
+   status: 'blocked', issues: ['刀座过渡和尾部截面还需要重建'], correctionPlan: '', blockedReason,
+  }, quality);
+  h.replies.push(
+   call('initial', { script: 'build()' }, python), call('initial-view', {}, view), text('初版'),
+   blocked('first-blocker', 'No Rhino geometry write tools are available.'), improve('first-review'),
+   call('refine-transition', { script: 'refit_transition()' }, python), call('transition-view', {}, view), text('刀座过渡已改'),
+   blocked('later-blocker', '本轮实际可调用的接口只有读取与检查，缺少几何写入工具，无法继续完成局部截面重建。'),
+   improve('later-review'), call('refine-tail', { script: 'refit_tail_section()' }, python),
+   call('tail-view', {}, view), text('尾部已复查'), pass(), text('已完成刀座过渡和尾部截面。'),
+  );
+  executed.mockImplementation(async name => name === python ? writeReceipt : shot);
+  await send();
+  expect(executed.mock.calls.map(([name]) => name)).toEqual([python, view, python, view, python, view]);
+  const rechecks = last().toolCalls.filter(tool => tool.toolName === quality && tool.status === 'error');
+  expect(rechecks.map(tool => JSON.parse(tool.resultJson!).reviewedWriteId)).toEqual(['initial', 'refine-transition']);
+  const resumed = h.requests[10];
+  expect(resumed.tools.map((tool: any) => tool.function.name)).toContain(python);
+  expect(JSON.stringify(resumed.messages)).toContain('The read-only assessment has ended.');
+  expect(last().status).toBe('completed');
+  expect(last().content).toBe('已完成刀座过渡和尾部截面。');
+ });
+ it('rejects a pass with unfinished issues and does not dispatch writes smuggled into the read-only review',async()=>{
   h.replies.push(call('initial',{script:'build()'},python),call('first-view',{},view),text('仍然粗糙'),
    call('not-a-pass',{status:'complete',issues:['轮廓不够准确'],correctionPlan:'',blockedReason:''},quality),
    {content:'绕过检查',toolCalls:[...improve().toolCalls,...call('extra',{script:'unauthorized()'},python).toolCalls]});

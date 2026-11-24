@@ -16,6 +16,7 @@ const schemas = {
 };
 export const GITHUB_SKILL_TOOL_NAMES = Object.keys(schemas);
 export const isGithubSkillTool = (name: string) => Object.prototype.hasOwnProperty.call(schemas, name);
+export const isGithubSkillResourceTool = (name: string) => name === 'read_skill_resource' || name === 'search_skill_resources';
 export function validateGithubSkillTool(name: string, args: Record<string, unknown>) {
   const schema = schemas[name as keyof typeof schemas];
   if (!schema) throw new Error("未知技能工具");
@@ -34,16 +35,30 @@ export const GITHUB_SKILL_TOOL_DEFINITIONS = [
   definition('activate_skill', "在本会话依现有选择规则启用已安装固定版本，加载完整 SKILL.md；不覆盖用户已选其他技能。缺少脚本/MCP/工具时只用可执行的方法论，不伪造执行。", { skillId: str, version: str }, ['skillId', 'version']),
 ];
 // Per-turn state prevents re-prompts after rejection and pins resource reads. Not a model-controlled grant.
-type Turn = { rejected: Set<string>; previews: Map<string, GithubSkillInspection>; pins: Map<string, string>; readCharacters: number; searches: number };
+type Turn = { rejected: Set<string>; previews: Map<string, GithubSkillInspection>; pins: Map<string, string>; readCharacters: number; searches: number; canvasRhino?: { skillId: string; version: string } };
 const turns = new Map<string, Turn>();
+export const hasCanvasRhinoSkillForTurn = (conversationId: string, messageId: string) => Boolean(turns.get(`${conversationId}:${messageId}`)?.canvasRhino);
+export function mayUseGithubSkillTool(name: string, args: Record<string, unknown>, context: ChatToolExecutionContext) {
+  if (context.executionSource === 'desktop') return true;
+  const allowed = turns.get(`${context.conversationId}:${context.messageId}`)?.canvasRhino;
+  return context.executionSource === 'rhino' && allowed && isGithubSkillResourceTool(name)
+    && allowed.skillId === args.skillId && allowed.version === args.version;
+}
 function turn(context: ChatToolExecutionContext) {
   const key = `${context.conversationId}:${context.messageId}`;
   if (!turns.has(key)) { if (turns.size > 100) turns.delete(turns.keys().next().value!); turns.set(key, { rejected: new Set(), previews: new Map(), pins: new Map(), readCharacters: 0, searches: 0 }); }
   return turns.get(key)!;
 }
-export function pinGithubSkillForTurn(context: ChatToolExecutionContext, skillId: string, commit: string, loadedCharacters = 0) { const current = turn(context); current.pins.set(skillId, commit); current.readCharacters += loadedCharacters; }
+export function pinGithubSkillForTurn(context: ChatToolExecutionContext, skillId: string, commit: string, loadedCharacters = 0, canvasRhino = false) {
+  const current = turn(context);
+  current.pins.set(skillId, commit);
+  current.readCharacters += loadedCharacters;
+  if (canvasRhino) current.canvasRhino = { skillId, version: commit };
+}
 export async function executeGithubSkillTool(name: string, args: Record<string, unknown>, context: ChatToolExecutionContext, searchWeb: (query: string, limit: number) => Promise<unknown>): Promise<unknown> {
-  if (context.executionSource !== 'desktop') throw new Error("GitHub Skills 仅支持桌面 Chat；Rhino/HTML 不得访问");
+  if (!mayUseGithubSkillTool(name, args, context)) {
+    throw new Error('GitHub Skills 仅支持桌面 Chat；画布建模仅可读取本轮选用的已安装技能资料。');
+  }
   validateGithubSkillTool(name, args);
   const state = turn(context);
   if (name === 'search_github_skills') {

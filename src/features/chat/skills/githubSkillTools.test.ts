@@ -119,6 +119,16 @@ describe('GitHub Skills through the real router and executor (offline native fix
     await expect(tool('read_skill_resource', { skillId: id, version: commit, path: 'references/check.md' })).rejects.toThrow('60000');
     expect(prompts).toBe(0);
   });
+  it('lets a canvas Rhino turn read only resources from its selected installed skill', async () => {
+    context.executionSource = 'rhino';
+    const args = { skillId: id, version: commit, path: 'references/check.md' };
+    await expect(tool('read_skill_resource', args)).rejects.toThrow('本轮选用');
+    pinGithubSkillForTurn(context, id, commit, text.length, true);
+    await expect(tool('read_skill_resource', args)).resolves.toMatchObject({ result: { content: 'reference text' } });
+    await expect(tool('read_skill_resource', { ...args, version: '2'.repeat(40) })).rejects.toThrow('本轮选用');
+    await expect(tool('install_github_skill', { skillId: id, previewId: 'fake' })).rejects.toThrow('本轮选用');
+    expect(prompts).toBe(0);
+  });
   it('keeps an explicitly selected legacy agent when installation asks to use another', async () => {
     const legacy = createChatSkill('Legacy', '', 'Legacy method', []); saveChatSkill(legacy); selectChatSkill(context.conversationId, legacy.id);
     await tool('inspect_github_skill', { url: 'https://github.com/fixture/skills' });
