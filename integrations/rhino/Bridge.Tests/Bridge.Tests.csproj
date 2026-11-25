@@ -6,6 +6,7 @@
     <Compile Include="../InspirationDrawer.Rhino/DeferredMcpStartup.cs" Link="DeferredMcpStartup.cs" />
     <Compile Include="../InspirationDrawer.Rhino/JsonNodeCompat.cs" Link="JsonNodeCompat.cs" />
     <Compile Include="../InspirationDrawer.Rhino/BetaServer.cs" Link="BetaServer.cs" />
+    <Compile Include="../InspirationDrawer.Rhino/SubDToolDefinitions.cs" Link="SubDToolDefinitions.cs" />
     <Compile Include="../InspirationDrawer.Rhino/ViewportCaptureValidation.cs" Link="ViewportCaptureValidation.cs" />
     <Compile Include="../InspirationDrawer.Rhino/NativeRhinoMcpClient.cs" Link="NativeRhinoMcpClient.cs" />
     <EmbeddedResource Include="../InspirationDrawer.Rhino/Panel/*" Link="Panel/%(Filename)%(Extension)" LogicalName="InspirationDrawer.Rhino.Panel.%(Filename)%(Extension)" />

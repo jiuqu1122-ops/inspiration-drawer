@@ -139,6 +139,21 @@ it('reports a missing Rhino connection in the Chat transcript without falling ba
   expect(prepareCanvasRhinoTurn).toHaveBeenCalledTimes(1);
 });
 
+it('retains the Rhino route across consecutive short retries after a failed SubD attempt', async () => {
+  const prepareCanvasRhinoTurn = vi.fn(async () => { throw new Error('Rhino test connection unavailable'); });
+  const runtime = setup(undefined, { prepareCanvasRhinoTurn });
+  for (const message of ['帮我用细分建模这个', '再试试', '重试一下。']) {
+    expect(await runtime.sendMessage(message)).toBe(true);
+    expect(last()).toMatchObject({ status: 'error', content: expect.stringContaining('Rhino test connection unavailable') });
+  }
+  expect(prepareCanvasRhinoTurn).toHaveBeenCalledTimes(3);
+  expect(h.requests).toHaveLength(0);
+  h.replies.push({ content: '换个话题。', toolCalls: [] }, { content: '普通对话。', toolCalls: [] });
+  expect(await runtime.sendMessage('讲一个故事')).toBe(true);
+  expect(await runtime.sendMessage('再试试')).toBe(true);
+  expect(prepareCanvasRhinoTurn).toHaveBeenCalledTimes(3);
+});
+
 it('reports missing canvas references before starting reference-based Rhino modeling', async () => {
   expect(await setup().sendMessage('按画布里的三视图重新建模', [], undefined, undefined, undefined, 'rhino')).toBe(true);
   expect(h.requests).toHaveLength(0);

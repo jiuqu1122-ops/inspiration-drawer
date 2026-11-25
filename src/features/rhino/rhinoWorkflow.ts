@@ -15,10 +15,10 @@ export type RhinoNativeWorkflowPhase =
   | 'unknown';
 
 const PHASES: Array<[RhinoNativeWorkflowPhase, string[]]> = [
-  ['context', ['snapshot_document_geometry', 'get_context', 'get_selection', 'get_commands', 'list_objects', 'get_viewport_image']],
+  ['context', ['drawer_subd_inspect', 'snapshot_document_geometry', 'get_context', 'get_selection', 'get_commands', 'list_objects', 'get_viewport_image']],
   ['lifecycle', ['g1_start', 'g2_start', 'open_doc', 'close_doc']],
   ['discover', ['search_components', 'describe_component']],
-  ['build', ['place_component', 'place_slider', 'apply_graph', 'delete_component', 'g2_repair_output_conversion']],
+  ['build', ['drawer_subd_build', 'place_component', 'place_slider', 'apply_graph', 'delete_component', 'g2_repair_output_conversion']],
   ['connect', ['connect', 'connect_many']],
   ['solve', ['solve_graph', 'solve_canvas']],
   ['verify', ['verify_document_geometry', 'get_canvas_graph', 'verify_gh_geometry', 'g2_inspect_parameters', 'g2_verify_model']],

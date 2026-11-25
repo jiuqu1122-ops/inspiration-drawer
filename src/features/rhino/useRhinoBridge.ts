@@ -20,7 +20,7 @@ import { getGeneratedMediaFromToolCall, type ChatExecutionSource, type ChatMessa
 import type { useChatRuntime } from '../chat/runtime/useChatRuntime';
 import type { AgentCanvasSelectionItem } from '../agentModel';
 import { callRhinoTool, discoverNativeRhino, discoverRhinoConnections, getActiveRhinoDocument, hasRhinoNativeWriteTools, isRhinoCSharpImmutableV9LoadFailure, rhinoRequest } from './rhinoClient';
-import { assertRhinoCanvas, getRhinoNativeTools, isRhinoNativeTool, isRhinoReadTool, lockRhinoCanvas, registerRhinoNativeTools, RHINO_REFERENCE_REVIEW_TOOL, RhinoCommandLedger, rhinoToolDefinitions, type RhinoBinding, type RhinoCommand } from './rhinoProtocol';
+import { assertRhinoCanvas, getRhinoNativeTools, isRhinoNativeTool, isRhinoReadTool, lockRhinoCanvas, registerRhinoNativeTools, RHINO_PLUGIN_SUBD_BUILD_TOOL, RHINO_PLUGIN_SUBD_INSPECT_TOOL, RHINO_REFERENCE_REVIEW_TOOL, RhinoCommandLedger, rhinoToolDefinitions, type RhinoBinding, type RhinoCommand } from './rhinoProtocol';
 import { executeHeadlessRhinoTool, getHeadlessRhinoTools, hasHeadlessRhinoTurn, prepareBackgroundRhinoTurn } from './rhinoHeadless';
 
 type Runtime = ReturnType<typeof useChatRuntime>;
@@ -161,6 +161,13 @@ export function withRhinoTools(execute: ChatToolExecutor, canvasId: string): Cha
         const automaticGeometryCheck=Boolean(native && isRhinoDocumentGeometryWrite(native,args)
           && (isRhinoGeometryOnlyRequest(context.userText) || hasExplicitRhinoGeometryMutation(name,args)) && name!==SAFE_PROFILE_TOOL);
         const execute=()=>callRhinoTool(binding,name,args);
+        if (name === RHINO_PLUGIN_SUBD_BUILD_TOOL || name === RHINO_PLUGIN_SUBD_INSPECT_TOOL) {
+          const blocks = await execute();
+          const content = blocks.find(block => block.type === 'text')?.text;
+          const result = JSON.parse(content || 'null');
+          if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('Rhino SubD 返回了无效的结果。');
+          return { ...result, source: 'rhino', documentId: binding.documentId };
+        }
         if(name===SAFE_PROFILE_TOOL)return {source:'rhino',documentId:binding.documentId,...parseSafeProfileResult(await execute())};
         if(automaticGeometryCheck){
           const snapshot=async()=>parseDocumentGeometrySnapshot(await callRhinoTool(binding,SNAPSHOT_DOCUMENT_GEOMETRY_TOOL,{}));

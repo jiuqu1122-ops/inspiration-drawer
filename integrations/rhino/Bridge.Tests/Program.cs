@@ -413,8 +413,14 @@ try
     rpc["method"] = "tools/call"; rpc["params"] = new JsonObject { ["name"] = "rhino_list_native_tools", ["arguments"] = new JsonObject { ["documentId"] = 7 } };
     var nativeList = await Request("mcp", rpc);
     var nativeListText = nativeList.Json["result"]?["content"]?[0]?["text"]?.GetValue<string>();
-    Check(nativeList.Json["result"]?["isError"]?.GetValue<bool>() == false && JsonNode.Parse(nativeListText!)?["available"]?.GetValue<bool>() == false,
-        "native MCP discovery fails closed when no native connector is configured");
+    var builtInTools = JsonNode.Parse(nativeListText!)?["tools"]?.AsArray();
+    Check(nativeList.Json["result"]?["isError"]?.GetValue<bool>() == false && builtInTools?.Count == 2
+        && builtInTools.Any(tool => tool?["name"]?.GetValue<string>() == SubDToolDefinitions.Inspect && tool["annotations"]?["readOnlyHint"]?.GetValue<bool>() == true)
+        && builtInTools.Any(tool => tool?["name"]?.GetValue<string>() == SubDToolDefinitions.Build && tool["annotations"]?["readOnlyHint"]?.GetValue<bool>() == false),
+        "native MCP discovery lists only built-in SubD tools without an external listener");
+    rpc["params"] = new JsonObject { ["name"] = "rhino_call_native_tool", ["arguments"] = new JsonObject { ["documentId"] = 7, ["toolName"] = SubDToolDefinitions.Build, ["arguments"] = new JsonObject { ["documentId"] = 999, ["operation"] = "subd" } } };
+    Check((await Request("mcp", rpc)).Json["result"]?["isError"]?.GetValue<bool>() == false && calledTool == SubDToolDefinitions.Build && calledDocument == 7,
+        "the built-in SubD write uses the outer bound document through the authenticated transport");
     rpc["params"] = new JsonObject { ["name"] = "rhino_call_native_tool", ["arguments"] = new JsonObject { ["documentId"] = 7, ["toolName"] = "run_command", ["arguments"] = new JsonObject { ["command"] = "_Box" } } };
     Check((await Request("mcp", rpc)).Json["result"]?["isError"]?.GetValue<bool>() == true,
         "native modeling calls fail closed without a matched RhinoAI MCP listener");

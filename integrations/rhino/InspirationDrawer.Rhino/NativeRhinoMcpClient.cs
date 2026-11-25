@@ -130,6 +130,17 @@ internal sealed class NativeRhinoMcpClient
         finally { documentCallGate.Release(); }
     }
 
+    internal async Task<JsonNode> CallLocal(Func<Task<JsonNode>> call, bool readOnly)
+    {
+        if (!documentCallGate.Wait(0)) throw new InvalidOperationException(BusyMessage);
+        try
+        {
+            if (!readOnly && hasUnconfirmedWrite) throw new InvalidOperationException(UnconfirmedMessage);
+            return await call();
+        }
+        finally { documentCallGate.Release(); }
+    }
+
     private static bool IsStableRead(string toolName) => toolName is "get_context" or "get_selection"
         or "get_commands" or "list_objects" or "g1_get_canvas_graph" or "g2_get_canvas_graph";
 

@@ -1,7 +1,7 @@
 import type { ChatToolCall } from '../chat/model/chatTypes';
 import { isRhinoViewportObservationTool } from './rhinoGhSafety';
 import { RHINO_PART_ASSEMBLY_REVIEW_INSTRUCTION } from './rhinoProductModelingKnowledge';
-import type { RhinoNativeTool } from './rhinoProtocol';
+import { RHINO_PLUGIN_SUBD_BUILD_TOOL, type RhinoNativeTool } from './rhinoProtocol';
 import { SAFE_PROFILE_TOOL } from './rhinoSafeModeling';
 
 export const RHINO_VISUAL_FIDELITY_INSTRUCTION_MARKER = 'RHINO_VISUAL_FIDELITY_CHECK_V1:';
@@ -94,6 +94,10 @@ const isGeometryCommit = (call: ChatToolCall) => {
   if (result.reusedCompletedReceipt === true) return false;
   if (call.toolName === SAFE_PROFILE_TOOL) return result.status === 'committed' && result.documentChanged === true;
   if (call.toolName === 'rhino_native_headless_build') return result.committed === true && Array.isArray(result.objects) && result.objects.length > 0;
+  if (call.toolName === RHINO_PLUGIN_SUBD_BUILD_TOOL) {
+    const part = result.object as Record<string, unknown> | undefined;
+    return result.committed === true && part?.geometryType === 'SubD' && part.valid === true;
+  }
   if (!['rhino_native_run_command', 'rhino_native_run_python', 'rhino_native_run_csharp'].includes(call.toolName)) return false;
   const report = result.geometryVerification as Record<string, unknown> | undefined;
   return report?.status === 'passed' && Number(report.addedCount || 0) + Number(report.changedCount || 0) + Number(report.deletedCount || 0) > 0;

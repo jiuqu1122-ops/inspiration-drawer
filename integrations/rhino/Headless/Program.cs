@@ -80,7 +80,7 @@ internal static partial class Program
         }
         catch (Exception error)
         {
-            throw new InvalidOperationException($"Rhino {RhinoApp.Version} 未通过后台几何检查。请升级 Rhino，或使用支持的本机 Rhino 内核。", error);
+            throw new InvalidOperationException($"Rhino {RhinoApp.Version} 未通过后台几何检查。可打开目标 Rhino 文档，在灵感抽屉插件面板继续建模。", error);
         }
         return new { document = "Background Rhino document", units = "Millimeters", rhinoVersion = RhinoApp.Version.ToString(), objects = Inventory(doc) };
     }

@@ -15,6 +15,7 @@
     <NoWarn>$(NoWarn);NU1701;NETSDK1138</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../Shared/RhinoSubD.cs" Link="RhinoSubD.cs" />
     <PackageReference Include="Rhino.Inside" Version="9.0.10-beta" Condition="'$(RhinoMajorVersion)' != '8'" />
     <PackageReference Include="Rhino.Inside" Version="8.0.6-beta" Condition="'$(RhinoMajorVersion)' == '8'" />
     <Reference Include="RhinoCommon"><HintPath>$(RhinoSystemDir)/RhinoCommon.dll</HintPath><Private>false</Private></Reference>

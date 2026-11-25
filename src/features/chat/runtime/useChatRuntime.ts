@@ -23,7 +23,7 @@ import { GH2_VERIFY_MODEL_TOOL, gh2CompletionState, gh2IssueSummary } from '../.
 import { buildGhSolveRecoveryInstruction, hasGhSolveRecoveryContinuation, isStructuredGhSolveFailure, summarizeGhSolveFailure } from '../../rhino/rhinoGhSolveRecovery';
 import { buildRhinoNativeFailureDiagnosisInstruction, canRecoverLaterRhinoMeshFailure, hasRhinoFailureDiagnosis, hasRhinoFailureInspection, hasRhinoFailureCorrection, hasRhinoFailureVerification, isFreshRhinoFailureInspection, isRhinoFailureInspectionTool, isRhinoFailureReadOnlyTool, isRhinoUnconfirmedWriteFailure, isUnchangedRhinoFailureReplay, selectRhinoFailureInspectionTool, RHINO_FAILURE_DIAGNOSIS_MARKER, RHINO_FAILURE_INSPECTED_MARKER, RHINO_FAILURE_CORRECTED_MARKER, RHINO_FAILURE_VERIFIED_MARKER } from '../../rhino/rhinoFailureRecovery';
 import { GEOMETRY_PREFLIGHT_REJECTION, RhinoGeometryPreflightError, SAFE_PROFILE_TOOL } from '../../rhino/rhinoSafeModeling';
-import { hasRhinoVisualDeliverable, isCanvasRhinoModelingRequest, isExplicitGhComponentsRequest, isRhinoGeometryOnlyRequest, requestsRhinoModelingReference, rhinoUserRequest } from '../../rhino/rhinoRequestIntent';
+import { hasRhinoVisualDeliverable, isCanvasRhinoModelingRequest, isExplicitGhComponentsRequest, isRhinoGeometryOnlyRequest, isRhinoModelingContinuation, requestsRhinoModelingReference, rhinoUserRequest } from '../../rhino/rhinoRequestIntent';
 import { connectDesignMemoryEvents, designMemory } from '../../designMemory/storage';
 import { beginChatDesignSummaryMemory, completeChatDesignSummaryMemory, designMemoryProjectId, rememberExplicitChatDesign } from '../../designMemory/sources';
 import { describeDesignMemoryTurn, designMemoryKindsInMessages, getDesignMemoryTurnReport, recallDesignMemoryForTurn, validateDesignMemoryMessages } from '../../designMemory/context';
@@ -3084,7 +3084,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       for (let index = existingMessages.length - 1; index >= 0; index--) {
         const message = existingMessages[index];
         previousTurn.push(message);
-        if (message.role === 'user' && !message.id.startsWith('chat-user-steering-')) break;
+        if (message.role === 'user' && !message.id.startsWith('chat-user-steering-')
+          && !isRhinoModelingContinuation(message.content)) break;
       }
       const followsModeling = previousTurn.some(message => (message.role === 'user' && isCanvasRhinoModelingRequest(message.content))
         || message.toolCalls.some(call => call.toolName.startsWith('rhino_')));

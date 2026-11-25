@@ -8,7 +8,7 @@ using Rhino.Geometry;
 
 namespace InspirationDrawer.Rhino;
 
-internal static class RhinoTools
+internal static partial class RhinoTools
 {
     private static Bitmap CaptureViewport(RhinoView view, int width, int height, bool selectedOnly)
     {
@@ -265,12 +265,19 @@ internal static class RhinoTools
         }
     }
 
-    private static async Task<JsonNode> OnUi(uint documentId, Func<RhinoDoc, JsonNode> action)
+    private static async Task<JsonNode> OnUi(uint documentId, Func<RhinoDoc, JsonNode> action, bool waitForDispatchedWrite = false)
     {
         var result = new TaskCompletionSource<JsonNode>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var claimed = 0;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var registration = timeout.Token.Register(() =>
+        {
+            if (!waitForDispatchedWrite || Interlocked.CompareExchange(ref claimed, 1, 0) == 0)
+                result.TrySetException(new TimeoutException("Rhino is busy or showing a dialog; finish the current operation and retry"));
+        });
         RhinoApp.InvokeOnUiThread((Action)(() =>
         {
-            if (result.Task.IsCompleted) return;
+            if (waitForDispatchedWrite ? Interlocked.CompareExchange(ref claimed, 1, 0) != 0 : result.Task.IsCompleted) return;
             try
             {
                 var doc = (documentId == 0 ? RhinoDoc.ActiveDoc : RhinoDoc.FromRuntimeSerialNumber(documentId))
@@ -279,8 +286,6 @@ internal static class RhinoTools
             }
             catch (Exception error) { result.TrySetException(error); }
         }));
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-        using var registration = timeout.Token.Register(() => result.TrySetException(new TimeoutException("Rhino is busy or showing a dialog; finish the current operation and retry")));
         return await result.Task;
     }
 
@@ -563,6 +568,8 @@ internal static class RhinoTools
         var id = args["documentId"]?.GetValue<uint>() ?? throw new ArgumentException("Missing Rhino document ID");
         return OnUi(id, doc =>
         {
+            if (name == SubDToolDefinitions.Inspect) return InspectSubD(doc, args);
+            if (name == SubDToolDefinitions.Build) return BuildSubD(doc, args);
             if (name == "rhino_get_context") return ContextFor(doc);
             if (name == "rhino_list_parts") return PartsFor(doc, limit: args["limit"]?.GetValue<int>() ?? 100);
             if (name == "rhino_list_objects")
@@ -631,6 +638,6 @@ internal static class RhinoTools
                 return result;
             }
             throw new ArgumentException("Beta session requires a valid Rhino document");
-        });
+        }, waitForDispatchedWrite: name == SubDToolDefinitions.Build);
     }
 }

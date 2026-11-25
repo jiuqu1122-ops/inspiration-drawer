@@ -7,6 +7,9 @@ export function rhinoUserRequest(text: string) {
 
 const subdWriteIntent = /(?:\b(?:build|create|make|model|edit|sculpt|modify|move|crease)\b|用|创建|生成|建|做|修改|编辑|调整|移动|挪动|设为|改成|改为).{0,30}(?:\bsub[ -]?d\b|细分曲面|控制笼)|(?:\bsub[ -]?d\b|细分曲面|控制笼).{0,24}(?:内缩|外扩|往里收|往外推|加折痕|去掉折痕)/i;
 
+export const isRhinoModelingContinuation = (text: string) =>
+  /^(?:请\s*)?(?:继续|接着做|继续做|继续建模|按刚才的方案继续|再试试(?:看)?|再试一次|重试(?:一下)?|重新试(?:一下)?|重新建模|continue|go ahead|try again|retry)[！!。.]?$/i.test(rhinoUserRequest(text));
+
 /** Canvas Chat needs a write intent and a CAD target before connecting to Rhino. */
 export function isCanvasRhinoModelingRequest(text: string, followsModeling = false) {
   const request = rhinoUserRequest(text).replace(
@@ -16,7 +19,7 @@ export function isCanvasRhinoModelingRequest(text: string, followsModeling = fal
   if (!request || /(?:教程|提示词|工作流|写.{0,12}脚本|\b(?:tutorial|prompt|workflow)\b)/i.test(request)) return false;
   if (/(?:生成|制作|画|设计).{0,20}(?:效果图|示意图|概念图|三视图|海报|图片|渲染图)/.test(request)
     && !/(?:先.{0,16}建模|建模.{0,12}(?:后|再|然后)|\brhino\b)/i.test(request)) return false;
-  if (followsModeling && /^(?:请)?(?:继续|接着做|继续做|继续建模|按刚才的方案继续)[！!。.]?$|^(?:continue|go ahead)[.!]?$/i.test(request)) return true;
+  if (followsModeling && isRhinoModelingContinuation(request)) return true;
   if (/(?:训练|统计|财务|数据|预测|语言|数学|业务|机器学习|风险|需求|概念|AI)\s*(?:建模|模型)/i.test(request)) return false;
   if (!isRhinoDocumentWriteRequest(request)) {
     if (/(?:如何|怎么|为什么|说明|教程|检查|查看|\b(?:how|why|check)\b)/i.test(request)) return false;

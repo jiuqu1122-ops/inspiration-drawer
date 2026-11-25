@@ -493,9 +493,16 @@ internal sealed class BetaServer : IDisposable
                     var args = body["params"]?["arguments"]?.AsObject() ?? throw new ArgumentException("\u7f3a\u5c11\u5de5\u5177\u53c2\u6570");
                     var documentId = args["documentId"]?.GetValue<uint>() ?? 0;
                     if (documentId == 0) throw new ArgumentException("\u7f3a\u5c11\u7ed1\u5b9a\u6587\u6863 ID");
-                    JsonNode payload = nativeMcp == null
+                    var payload = nativeMcp == null
                         ? new JsonObject { ["available"] = false, ["reason"] = "Native MCP client is not configured", ["tools"] = new JsonArray() }
                         : await nativeMcp.ListTools(documentId);
+                    var tools = payload["tools"]!.AsArray();
+                    for (var index = tools.Count - 1; index >= 0; index--)
+                    {
+                        if (SubDToolDefinitions.Includes(tools[index]?["name"]?.GetValue<string>() ?? "")) tools.RemoveAt(index);
+                    }
+                    foreach (var tool in SubDToolDefinitions.Create()) tools.Add(tool);
+                    payload["available"] = true;
                     result = new JsonObject { ["isError"] = false, ["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = payload.ToJsonString() }) };
                 }
                 else if (name == "rhino_call_native_tool")
@@ -506,8 +513,19 @@ internal sealed class BetaServer : IDisposable
                     if (documentId == 0) throw new ArgumentException("\u7f3a\u5c11\u7ed1\u5b9a\u6587\u6863 ID");
                     if (string.IsNullOrWhiteSpace(toolName) || !System.Text.RegularExpressions.Regex.IsMatch(toolName, "^[A-Za-z0-9_-]{1,128}$")) throw new ArgumentException("Rhino MCP \u5de5\u5177\u540d\u79f0\u65e0\u6548");
                     var nativeArgs = args["arguments"]?.DeepClone() as JsonObject ?? new JsonObject();
-                    result = nativeMcp == null ? throw new InvalidOperationException("\u672a\u914d\u7f6e Rhino \u539f\u751f MCP \u5ba2\u6237\u7aef") : await nativeMcp.Call(documentId, toolName, nativeArgs)
-                        ?? throw new InvalidOperationException("没有发现与当前文档唯一匹配的 Rhino 原生 MCP，本次工具尚未派发。自动匹配/重绑定未通过：" + nativeMcp.LastDiscoveryDiagnostic + "。已完成的操作不会重放；请检查连接与文档状态。");
+                    if (SubDToolDefinitions.Includes(toolName))
+                    {
+                        nativeArgs["documentId"] = documentId;
+                        var value = nativeMcp == null
+                            ? await callTool(toolName, nativeArgs)
+                            : await nativeMcp.CallLocal(() => callTool(toolName, nativeArgs), toolName == SubDToolDefinitions.Inspect);
+                        result = new JsonObject { ["isError"] = false, ["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = value.ToJsonString() }) };
+                    }
+                    else
+                    {
+                        result = nativeMcp == null ? throw new InvalidOperationException("\u672a\u914d\u7f6e Rhino \u539f\u751f MCP \u5ba2\u6237\u7aef") : await nativeMcp.Call(documentId, toolName, nativeArgs)
+                            ?? throw new InvalidOperationException("没有发现与当前文档唯一匹配的 Rhino 原生 MCP，本次工具尚未派发。自动匹配/重绑定未通过：" + nativeMcp.LastDiscoveryDiagnostic + "。已完成的操作不会重放；请检查连接与文档状态。");
+                    }
                 }
                 else
                 {

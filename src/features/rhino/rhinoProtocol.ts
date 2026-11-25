@@ -2,6 +2,8 @@ import { RHINO_MODELING_SKILL_RESOURCE_PATHS, RHINO_MODELING_SKILL_RESOURCE_TOOL
 
 /** Versioned contract shared by the desktop Chat and the Rhino Beta host. */
 export const RHINO_PROTOCOL = 1;
+export const RHINO_PLUGIN_SUBD_BUILD_TOOL = 'rhino_native_drawer_subd_build';
+export const RHINO_PLUGIN_SUBD_INSPECT_TOOL = 'rhino_native_drawer_subd_inspect';
 const activeRuns = new Set<string>();
 export const isRhinoCanvasLocked = () => activeRuns.size > 0;
 export function lockRhinoCanvas(requestId: string) {
