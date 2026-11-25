@@ -265,7 +265,15 @@ internal static partial class RhinoTools
         }
     }
 
-    private static async Task<JsonNode> OnUi(uint documentId, Func<RhinoDoc, JsonNode> action, bool waitForDispatchedWrite = false)
+    private static Task<JsonNode> OnUi(uint documentId, Func<RhinoDoc, JsonNode> action, bool waitForDispatchedWrite = false)
+        => OnUi(() =>
+        {
+            var doc = (documentId == 0 ? RhinoDoc.ActiveDoc : RhinoDoc.FromRuntimeSerialNumber(documentId))
+                ?? throw new InvalidOperationException(documentId == 0 ? "No active Rhino document" : "Bound Rhino document is closed");
+            return action(doc);
+        }, waitForDispatchedWrite);
+
+    private static async Task<JsonNode> OnUi(Func<JsonNode> action, bool waitForDispatchedWrite)
     {
         var result = new TaskCompletionSource<JsonNode>(TaskCreationOptions.RunContinuationsAsynchronously);
         var claimed = 0;
@@ -280,9 +288,7 @@ internal static partial class RhinoTools
             if (waitForDispatchedWrite ? Interlocked.CompareExchange(ref claimed, 1, 0) != 0 : result.Task.IsCompleted) return;
             try
             {
-                var doc = (documentId == 0 ? RhinoDoc.ActiveDoc : RhinoDoc.FromRuntimeSerialNumber(documentId))
-                    ?? throw new InvalidOperationException(documentId == 0 ? "No active Rhino document" : "Bound Rhino document is closed");
-                result.TrySetResult(action(doc));
+                result.TrySetResult(action());
             }
             catch (Exception error) { result.TrySetException(error); }
         }));

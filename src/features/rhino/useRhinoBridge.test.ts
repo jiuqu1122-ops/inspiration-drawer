@@ -66,6 +66,20 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup?.(); cleanup = undefined; vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('Canvas Chat target discovery', () => {
+  it('passes the explicitly requested Rhino version to the background host', async () => {
+    mocks.invoke.mockResolvedValue({ rhinoVersion: '9.0.26300.9401', objects: [] });
+    const target = await prepareCanvasRhinoTurn('background-rhino-nine', 'canvas-one', '帮我在rhino9用犀牛建模这个');
+    try {
+      expect(mocks.invoke).toHaveBeenCalledWith('rhino_headless_mcp_call', expect.objectContaining({ tool: 'context', requestedMajor: 9 }));
+      expect(target.documentName).toBe('本机后台 Rhino 9.0.26300.9401');
+      expect(mocks.discover).not.toHaveBeenCalled();
+    } finally { target.release(); }
+  });
+  it('rejects an open document in a different version before discovering write tools', async () => {
+    mocks.activeDocument.mockResolvedValueOnce({ documentId: 12, rhinoVersion: '8.0.23304.9001', name: 'Rhino 8 document' });
+    await expect(prepareCanvasRhinoTurn('open-rhino-nine', 'canvas-one', '在当前 Rhino 9 文档建模')).rejects.toThrow('请求指定了 Rhino 9');
+    expect(mocks.discoverNative).not.toHaveBeenCalled();
+  });
   it('uses the background tool host without discovering or changing any open Rhino window', async () => {
     mocks.invoke.mockImplementation(async (command, args) => {
       expect(command).toBe('rhino_headless_mcp_call');

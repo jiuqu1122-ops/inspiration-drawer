@@ -72,9 +72,10 @@ function workspaceFor(conversationId: string, canvasId: string) {
   } catch { return crypto.randomUUID(); }
 }
 
-const call = (conversationId: string, target: Target, tool: string, args: Record<string, unknown> = {}) =>
+const call = (conversationId: string, target: Target, tool: string, args: Record<string, unknown> = {}, requestedMajor?: 8 | 9) =>
   invoke<Record<string, unknown>>('rhino_headless_mcp_call', {
     conversationId, workspaceId: target.workspaceId, tool, arguments: args,
+    ...(requestedMajor && { requestedMajor }),
   });
 
 export const hasHeadlessRhinoTurn = (conversationId: string) => active.has(conversationId);
@@ -86,16 +87,16 @@ export function getHeadlessRhinoTools() {
   ];
 }
 
-export async function prepareBackgroundRhinoTurn(conversationId: string, canvasId: string) {
+export async function prepareBackgroundRhinoTurn(conversationId: string, canvasId: string, requestedMajor?: 8 | 9) {
   const target = { canvasId, workspaceId: workspaceFor(conversationId, canvasId) };
   const unlock = lockRhinoCanvas(`rhino-headless:${conversationId}`);
   try {
-    const context = await call(conversationId, target, 'context');
+    const context = await call(conversationId, target, 'context', {}, requestedMajor);
     active.set(conversationId, target);
     registerRhinoNativeTools(conversationId, backgroundTools);
     return {
       context: JSON.stringify(context),
-      documentName: '本机后台 Rhino',
+      documentName: typeof context.rhinoVersion === 'string' ? `本机后台 Rhino ${context.rhinoVersion}` : '本机后台 Rhino',
       modelingInstruction: 'This turn uses local headless Rhino. The background build tool can create and edit native Rhino SubD in the same working document. For SubD or 细分建模 requests, use operation subd with an explicit control cage, then inspect its native control points and edges with subdId and refine with edit_subd. Plan matching openings and mating surfaces into the cage topology. Model separate parts separately as required by the assembly. Preserve native SubD through the exported 3DM. The host saves each validated step and automatically exports a 3DM and a preview. Verify geometry type, bounds, closure where required, fit and silhouette with inspection and fresh previews. Interactive Rhino and Grasshopper commands are unavailable in this mode.',
       exportModel: () => call(conversationId, target, 'export'),
       release: () => {

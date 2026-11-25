@@ -39,6 +39,8 @@ internal sealed class BetaServer : IDisposable
     private readonly Func<uint, Task<JsonNode>> getContext;
     private readonly Func<uint, Task<JsonNode>> getParts;
     private readonly NativeRhinoMcpClient? nativeMcp;
+    private readonly Func<JsonObject, Task<JsonNode>>? backgroundModel;
+    private readonly bool backgroundOnly;
     private readonly Dictionary<uint, JsonObject> documentSnapshots = new();
     private readonly Dictionary<string, JsonObject> commands = new();
     private readonly Dictionary<string, (DateTime At, string Image)> imagePreviews = new();
@@ -46,19 +48,25 @@ internal sealed class BetaServer : IDisposable
     private string? owner;
     private DateTime lastHeartbeat = DateTime.MinValue;
 
-    internal BetaServer(string descriptor, Func<string, JsonObject, Task<JsonNode>> callTool, Func<uint, Task<JsonNode>> getContext, Func<uint, Task<JsonNode>> getParts, NativeRhinoMcpClient? nativeMcp = null)
+    internal BetaServer(string descriptor, Func<string, JsonObject, Task<JsonNode>> callTool, Func<uint, Task<JsonNode>> getContext, Func<uint, Task<JsonNode>> getParts,
+        NativeRhinoMcpClient? nativeMcp = null, int? rhinoMajor = null, Func<JsonObject, Task<JsonNode>>? backgroundModel = null, bool backgroundOnly = false)
     {
         this.descriptor = descriptor;
         this.callTool = callTool;
         this.getContext = getContext;
         this.getParts = getParts;
         this.nativeMcp = nativeMcp;
+        this.backgroundModel = backgroundModel;
+        this.backgroundOnly = backgroundOnly;
         listener.Start();
         Url = $"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}/";
         var directory = Path.GetDirectoryName(descriptor)!;
         Directory.CreateDirectory(directory);
         var temporary = descriptor + "." + InstanceId + ".tmp";
-        File.WriteAllText(temporary, new JsonObject { ["protocol"] = 1, ["url"] = Url, ["token"] = Token, ["instanceId"] = InstanceId, ["processId"] = Environment.ProcessId }.ToJsonString());
+        var announcement = new JsonObject { ["protocol"] = 1, ["url"] = Url, ["token"] = Token, ["instanceId"] = InstanceId, ["processId"] = Environment.ProcessId };
+        if (backgroundModel != null && rhinoMajor.HasValue) announcement["backgroundRhinoMajor"] = rhinoMajor.Value;
+        if (backgroundOnly) announcement["backgroundOnly"] = true;
+        File.WriteAllText(temporary, announcement.ToJsonString());
         File.Move(temporary, descriptor, true);
         _ = AcceptLoop();
     }
@@ -450,6 +458,8 @@ internal sealed class BetaServer : IDisposable
     {
         var id = body["id"]?.DeepClone();
         var method = body["method"]?.GetValue<string>();
+        if (backgroundOnly && method != "drawer/backgroundModel")
+            return new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["error"] = new JsonObject { ["code"] = -32601, ["message"] = "This Rhino instance only hosts background modeling." } };
         JsonNode result;
         if (method == "initialize") result = new JsonObject
         {
@@ -457,6 +467,19 @@ internal sealed class BetaServer : IDisposable
             ["serverInfo"] = new JsonObject { ["name"] = "inspiration-drawer-rhino-beta", ["version"] = PluginVersion },
         };
         else if (method == "notifications/initialized") return new JsonObject();
+        else if (method == "drawer/backgroundModel" && backgroundModel != null)
+        {
+            try
+            {
+                var args = body["params"]?.AsObject() ?? throw new ArgumentException("Missing background modeling parameters.");
+                var readOnly = args["tool"]?.GetValue<string>() is "context" or "inspect" or "preview";
+                result = nativeMcp == null ? await backgroundModel(args) : await nativeMcp.CallLocal(() => backgroundModel(args), readOnly);
+            }
+            catch (Exception error)
+            {
+                return new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["error"] = new JsonObject { ["code"] = -32000, ["message"] = error.Message } };
+            }
+        }
         else if (method == "drawer/activeDocument")
         {
             try { result = await getContext(0); }

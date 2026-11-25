@@ -13,7 +13,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { blobToDataUrl } from '../../utils/canvasImageData';
 import { useEffect, useRef } from 'react';
 import { selectionToChatAttachments } from '../chat/attachments/chatSelectionAttachments';
-import { isExplicitGhComponentsRequest, isRhinoExplicitRenderedCaptureRequest, rhinoUserRequest } from './rhinoRequestIntent';
+import { isExplicitGhComponentsRequest, isRhinoExplicitRenderedCaptureRequest, requestedRhinoMajor, rhinoUserRequest } from './rhinoRequestIntent';
 import { resolveDirectVisualTool } from '../chat/tools/chatToolDefinitions';
 import { defersVisualGeneration, isImagePromptTextRequest } from '../chat/context/chatVisualIntent';
 import { getGeneratedMediaFromToolCall, type ChatExecutionSource, type ChatMessage, type ChatToolExecutor, type PendingChatAttachment } from '../chat/model/chatTypes';
@@ -75,7 +75,7 @@ function rememberDocumentBinding(conversationId: string, binding: RhinoBinding) 
   try { localStorage.setItem(bindingStorageKey(conversationId), JSON.stringify({ documentId: binding.documentId, canvasId: binding.canvasId, instanceId: binding.connection.instanceId })); } catch { /* Keep the in-memory pin if storage is unavailable. */ }
 }
 
-async function prepareOpenRhinoTurn(conversationId: string, canvasId: string) {
+async function prepareOpenRhinoTurn(conversationId: string, canvasId: string, requestedMajor?: 8 | 9) {
   const pinned = bindingForConversation(conversationId);
   if (pinned && pinned.canvasId !== canvasId) throw new Error('这段建模对话已绑定另一张画布。请返回原画布，或新建对话。');
   const releaseCanvas = lockRhinoCanvas(`canvas-rhino:${conversationId}`);
@@ -90,6 +90,8 @@ async function prepareOpenRhinoTurn(conversationId: string, canvasId: string) {
     if (candidates.length > 1) throw new Error('检测到多个 Rhino 实例。请只保留目标实例，或在目标文档的 Rhino 插件面板发送。');
     const connection = candidates[0];
     const document = await getActiveRhinoDocument(connection);
+    if (requestedMajor && Number(document.rhinoVersion.split('.')[0]) !== requestedMajor)
+      throw new Error(`请求指定了 Rhino ${requestedMajor}。请在对应版本里打开目标文档，从插件面板发送。`);
     if (pinned && pinned.documentId !== document.documentId) throw new Error('当前 Rhino 文档与此对话绑定的文档不同。请切回原文档，或新建 Chat 对话。');
     const binding: RhinoBinding = { connection, documentId: document.documentId, canvasId };
     releaseDocument = reserveDocumentExecution(connection.instanceId, document.documentId);
@@ -106,13 +108,14 @@ async function prepareOpenRhinoTurn(conversationId: string, canvasId: string) {
 }
 
 export function prepareCanvasRhinoTurn(conversationId: string, canvasId: string, userText: string) {
-  const explicitOpenDocument = /(?:在|写入|修改).{0,10}(?:当前|已打开).{0,10}(?:Rhino|犀牛)?.{0,4}文档|(?:Rhino|犀牛).{0,6}(?:当前|已打开).{0,4}文档|\b(?:current|open|active) Rhino document\b/i.test(userText);
+  const requestedMajor = requestedRhinoMajor(userText);
+  const explicitOpenDocument = /(?:在|写入|修改).{0,10}(?:当前|已打开).{0,10}(?:Rhino|犀牛)?.{0,4}文档|(?:Rhino|犀牛).{0,6}(?:当前|已打开).{0,4}文档|\b(?:current|open|active) Rhino(?:\s*[89])? document\b/i.test(userText);
   const explicitlyBackground = /后台|无界面|\b(?:headless|background)\b/i.test(userText);
   if (explicitOpenDocument || (!explicitlyBackground && bindingForConversation(conversationId)?.canvasId === canvasId))
-    return prepareOpenRhinoTurn(conversationId, canvasId);
+    return prepareOpenRhinoTurn(conversationId, canvasId, requestedMajor);
   if (isExplicitGhComponentsRequest(userText))
     return Promise.reject(new Error('后台建模可交付 3DM 实体。要编辑 Grasshopper 原生组件，请在目标 Rhino 文档中发送此请求。'));
-  return prepareBackgroundRhinoTurn(conversationId, canvasId);
+  return prepareBackgroundRhinoTurn(conversationId, canvasId, requestedMajor);
 }
 async function selectOrCreateDocumentConversation(runtime: Runtime, documentId: number, canvasId: string, connection: RhinoBinding['connection']) {
   const { conversations, activeConversationId } = liveConversationState(runtime);

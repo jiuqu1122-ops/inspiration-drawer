@@ -16,7 +16,8 @@ using var server = new BetaServer(file, (name, args) =>
     if (calledDocument == 999) throw new InvalidOperationException("The document is closed");
     return Task.FromResult<JsonNode>(new JsonObject { ["documentId"] = calledDocument, ["name"] = name });
 }, id => Task.FromResult<JsonNode>(new JsonObject { ["documentId"] = id == 0 ? 7U : id, ["name"] = "Test Rhino document" }),
-    id => Task.FromResult<JsonNode>(new JsonObject { ["documentId"] = id, ["selectedObjectCount"] = 0, ["partCount"] = 0, ["visibleAreaMaskAvailable"] = false, ["layers"] = new JsonArray(new JsonObject { ["path"] = "Default", ["visible"] = true }), ["parts"] = new JsonArray() }));
+    id => Task.FromResult<JsonNode>(new JsonObject { ["documentId"] = id, ["selectedObjectCount"] = 0, ["partCount"] = 0, ["visibleAreaMaskAvailable"] = false, ["layers"] = new JsonArray(new JsonObject { ["path"] = "Default", ["visible"] = true }), ["parts"] = new JsonArray() }),
+    rhinoMajor: 9, backgroundModel: args => Task.FromResult<JsonNode>(new JsonObject { ["workspaceId"] = args["workspaceId"]?.DeepClone() }));
 using var client = new HttpClient { BaseAddress = new Uri(server.Url) };
 async Task<(HttpStatusCode Code, JsonNode Json)> Request(string path, JsonObject? body = null, bool auth = true, string? origin = null)
 {
@@ -410,6 +411,13 @@ try
         "active document discovery requires the authenticated desktop connection");
     Check((await Request("mcp", rpc)).Json["result"]?["documentId"]?.GetValue<uint>() == 7 && calledDocument == 0,
         "active document discovery reads context without dispatching a modeling tool");
+    Check(JsonNode.Parse(File.ReadAllText(file))?["backgroundRhinoMajor"]?.GetValue<int>() == 9,
+        "a plugin that can host isolated background models advertises its exact Rhino major");
+    rpc["method"] = "drawer/backgroundModel";
+    rpc["params"] = new JsonObject { ["conversationId"] = "example", ["workspaceId"] = "work-a", ["rhinoMajor"] = 9, ["tool"] = "context" };
+    Check((await Request("mcp", rpc, auth: false)).Code == HttpStatusCode.Unauthorized, "background Rhino tools require the desktop token");
+    Check((await Request("mcp", rpc)).Json["result"]?["workspaceId"]?.GetValue<string>() == "work-a" && calledDocument == 0,
+        "background Rhino RPC passes the workspace without dispatching against the active document");
     rpc["method"] = "tools/call"; rpc["params"] = new JsonObject { ["name"] = "rhino_list_native_tools", ["arguments"] = new JsonObject { ["documentId"] = 7 } };
     var nativeList = await Request("mcp", rpc);
     var nativeListText = nativeList.Json["result"]?["content"]?[0]?["text"]?.GetValue<string>();

@@ -66,7 +66,7 @@ fn read_connections() -> Result<Vec<Value>, String> {
 }
 
 #[cfg(windows)]
-fn live_rhino_process(pid: u64) -> bool {
+pub(crate) fn live_rhino_process(pid: u64) -> bool {
     use winapi::um::{handleapi::CloseHandle, processthreadsapi::{GetExitCodeProcess, OpenProcess}, winbase::QueryFullProcessImageNameW, winnt::PROCESS_QUERY_LIMITED_INFORMATION};
     let Ok(pid) = u32::try_from(pid) else { return false };
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
@@ -84,12 +84,16 @@ fn live_rhino_process(pid: u64) -> bool {
 }
 
 #[tauri::command]
-pub fn rhino_beta_get_connections() -> Result<Vec<Value>, String> { read_connections() }
+pub fn rhino_beta_get_connections() -> Result<Vec<Value>, String> {
+    Ok(read_connections()?.into_iter().filter(|value| value["backgroundOnly"].as_bool() != Some(true)).collect())
+}
+
+pub(crate) fn rhino_background_connections() -> Result<Vec<Value>, String> { read_connections() }
 
 // Legacy single-connection callers must not silently choose the wrong window.
 #[tauri::command]
 pub fn rhino_beta_get_connection() -> Result<Value, String> {
-    let mut values = read_connections()?;
+    let mut values = rhino_beta_get_connections()?;
     if values.len() != 1 { return Err("Use instance discovery: expected exactly one Rhino connection".into()); }
     Ok(values.remove(0))
 }

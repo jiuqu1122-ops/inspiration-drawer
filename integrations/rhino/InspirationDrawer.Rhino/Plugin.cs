@@ -16,6 +16,8 @@ public sealed class DrawerPlugin : PlugIn
     private static DeferredMcpStartup startup = new();
     private static int stopping;
     private static bool loaded;
+    private static readonly int BackgroundParent = int.TryParse(Environment.GetEnvironmentVariable("DRAWER_RHINO_BACKGROUND_PARENT"), out var pid) && pid > 0 ? pid : 0;
+    private static System.Threading.Timer? backgroundLifetime;
     private static readonly object serverGate = new();
     internal static BetaServer EnsureServer()
     {
@@ -24,7 +26,9 @@ public sealed class DrawerPlugin : PlugIn
             if (Volatile.Read(ref stopping) != 0) throw new ObjectDisposedException(nameof(DrawerPlugin));
             if (Server != null) return Server;
             var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "InspirationDrawer", "RhinoBeta", $"connection-{Environment.ProcessId}.json");
-            return Server = new BetaServer(path, RhinoTools.Call, RhinoTools.Context, id => RhinoTools.Parts(id), new NativeRhinoMcpClient(RhinoTools.Fingerprint, RhinoTools.RebindNativeMcp));
+            return Server = new BetaServer(path, RhinoTools.Call, RhinoTools.Context, id => RhinoTools.Parts(id),
+                BackgroundParent == 0 ? new NativeRhinoMcpClient(RhinoTools.Fingerprint, RhinoTools.RebindNativeMcp) : null,
+                RhinoApp.Version.Major, RhinoTools.RunBackgroundModel, backgroundOnly: BackgroundParent != 0);
         }
     }
 
@@ -36,6 +40,11 @@ public sealed class DrawerPlugin : PlugIn
     private static void OnIdle(object? sender, EventArgs e)
     {
         if (Volatile.Read(ref stopping) != 0 || !loaded) return;
+        if (BackgroundParent != 0)
+        {
+            if (RhinoApp.InCommand == 0) EnsureServer();
+            return;
+        }
         if (!startup.TryBegin(RhinoDoc.ActiveDoc != null && RhinoApp.InCommand == 0, out var targetId)) return;
         var owner = startup;
         if (RhinoDoc.FromRuntimeSerialNumber(targetId) == null) { owner.Complete(false); return; }
@@ -72,6 +81,13 @@ public sealed class DrawerPlugin : PlugIn
         startup = new DeferredMcpStartup();
         try
         {
+            if (BackgroundParent != 0)
+            {
+                RhinoApp.Idle += OnIdle;
+                backgroundLifetime = new System.Threading.Timer(_ => CheckBackgroundOwner(), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+                loaded = true;
+                return LoadReturnCode.Success;
+            }
             Panels.RegisterPanel(this, typeof(DrawerPanel), "灵感抽屉 Beta", null, PanelType.PerDoc);
             RhinoDoc.ActiveDocumentChanged += OnActiveDocumentChanged;
             RhinoDoc.NewDocument += OnNewDocument;
@@ -91,6 +107,19 @@ public sealed class DrawerPlugin : PlugIn
             return LoadReturnCode.ErrorShowDialog;
         }
     }
+
+    private static void CheckBackgroundOwner()
+    {
+        if (Volatile.Read(ref stopping) != 0) return;
+        try
+        {
+            using var parent = System.Diagnostics.Process.GetProcessById(BackgroundParent);
+            if (!parent.HasExited) return;
+        }
+        catch (ArgumentException) { /* The parent process has exited. */ }
+        backgroundLifetime?.Dispose();
+        RhinoApp.InvokeOnUiThread((Action)(() => RhinoApp.RunScript("_-Exit", false)));
+    }
     private static void Unsubscribe()
     {
         RhinoDoc.ActiveDocumentChanged -= OnActiveDocumentChanged;
@@ -105,6 +134,8 @@ public sealed class DrawerPlugin : PlugIn
         loaded = false;
         Unsubscribe();
         startup.Stop();
+        backgroundLifetime?.Dispose();
+        backgroundLifetime = null;
         StartupDiagnostics.Write("plugin.shutdown");
         lock (serverGate)
         {

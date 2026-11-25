@@ -1,10 +1,11 @@
 using System.Text.Json.Nodes;
-using InspirationDrawer.Rhino;
 using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
 
-internal static partial class Program
+namespace InspirationDrawer.Rhino;
+
+internal static partial class BackgroundRhinoModel
 {
     private static object Inspect(RhinoDoc doc, JsonObject input)
     {

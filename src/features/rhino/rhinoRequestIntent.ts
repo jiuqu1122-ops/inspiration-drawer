@@ -10,6 +10,15 @@ const subdWriteIntent = /(?:\b(?:build|create|make|model|edit|sculpt|modify|move
 export const isRhinoModelingContinuation = (text: string) =>
   /^(?:请\s*)?(?:继续|接着做|继续做|继续建模|按刚才的方案继续|再试试(?:看)?|再试一次|重试(?:一下)?|重新试(?:一下)?|重新建模|continue|go ahead|try again|retry)[！!。.]?$/i.test(rhinoUserRequest(text));
 
+export function requestedRhinoMajor(text: string): 8 | 9 | undefined {
+  const request = rhinoUserRequest(text).replace(
+    /(?:不要|不用|无需|不需要|先别|先不|\bdon't\b|\bdo not\b)\s*[^，。；;\n]*/gi, '',
+  );
+  const versions = new Set(Array.from(request.matchAll(/(?:\brhino\s*|犀牛\s*)([89])(?!\d)/gi), match => match[1]));
+  if (versions.size !== 1) return undefined;
+  return versions.has('9') ? 9 : 8;
+}
+
 /** Canvas Chat needs a write intent and a CAD target before connecting to Rhino. */
 export function isCanvasRhinoModelingRequest(text: string, followsModeling = false) {
   const request = rhinoUserRequest(text).replace(

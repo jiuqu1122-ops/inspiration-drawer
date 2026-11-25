@@ -3079,6 +3079,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       }
     }
     let prepareCanvasRhino: UseChatRuntimeOptions['prepareCanvasRhinoTurn'];
+    let rhinoRoutingText = userMessage.content;
     if (executionSource === 'desktop' && optionsRef.current.prepareCanvasRhinoTurn) {
       const previousTurn: ChatMessage[] = [];
       for (let index = existingMessages.length - 1; index >= 0; index--) {
@@ -3089,7 +3090,12 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       }
       const followsModeling = previousTurn.some(message => (message.role === 'user' && isCanvasRhinoModelingRequest(message.content))
         || message.toolCalls.some(call => call.toolName.startsWith('rhino_')));
-      if (isCanvasRhinoModelingRequest(text, followsModeling)) prepareCanvasRhino = optionsRef.current.prepareCanvasRhinoTurn;
+      if (isCanvasRhinoModelingRequest(text, followsModeling)) {
+        prepareCanvasRhino = optionsRef.current.prepareCanvasRhinoTurn;
+        const previousRequest = previousTurn[previousTurn.length - 1];
+        if (isRhinoModelingContinuation(text) && previousRequest?.role === 'user'
+          && isCanvasRhinoModelingRequest(previousRequest.content)) rhinoRoutingText = previousRequest.content;
+      }
     }
     if (prepareCanvasRhino) executionSource = 'rhino';
     const nextMessages = [...existingMessages, userMessage, assistantMessage];
@@ -3129,7 +3135,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         });
         try {
           await ensureRhinoRuntimeLoaded();
-          const target = await prepareCanvasRhino(conversationId, userMessage.content);
+          const target = await prepareCanvasRhino(conversationId, rhinoRoutingText);
           canvasRhinoTurnsRef.current.set(conversationId, { messageId: assistantMessage.id, exportModel: target.exportModel, release: target.release });
           rhinoSceneContext = target.context;
           rhinoModelingInstruction = target.modelingInstruction;
