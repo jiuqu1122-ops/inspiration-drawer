@@ -393,3 +393,26 @@ describe('Rhino Python 3 None enum compatibility', () => {
     expect(inspectRhinoScript('rhino_native_run_csharp', 'var cap = Rhino.Geometry.PipeCapMode.None;')).toEqual([]);
   });
 });
+
+it.each([
+  ['import Rhino.Geometry as rg\ncap = rg.PipeCapMode.ROUND', 'rg.PipeCapMode.Round'],
+  ['import math, Rhino.Geometry as rg\ncap = rg.PipeCapMode.ROUND', 'rg.PipeCapMode.Round'],
+  ['from Rhino.Geometry import PipeCapMode as Cap\ncap = getattr(Cap, "FLAT")', 'Cap.Flat'],
+  ['from Rhino import Geometry as geo\nloft = geo.LoftType.NORMAL', 'geo.LoftType.Normal'],
+  ['#! python 2\nimport Rhino\nedge = Rhino.Geometry.SubDEdgeTag.CREASE', 'Rhino.Geometry.SubDEdgeTag.Crease'],
+])('flags a mis-cased RhinoCommon enum member: %s', (script, correction) => {
+  expect(inspectRhinoScript(python, script)).toContainEqual(expect.objectContaining({
+    code: 'rhino_python_enum_member_case', instruction: expect.stringContaining(correction),
+  }));
+});
+
+it('leaves guarded lookups and non-Rhino enum bindings alone', () => {
+  const scripts = [
+    'import Rhino.Geometry as rg\ncap = getattr(rg.PipeCapMode, "ROUND", rg.PipeCapMode.Round)',
+    'from custom_api import PipeCapMode as Cap\ncap = Cap.ROUND',
+    'import Rhino.Geometry as rg\nrg = custom_api()\ncap = rg.PipeCapMode.ROUND',
+    'import Rhino.Geometry as rg\nimport custom_api as rg\ncap = rg.PipeCapMode.ROUND',
+  ];
+  for (const script of scripts) expect(inspectRhinoScript(python, script)).toEqual([]);
+  expect(rhinoScriptFailureExplanation("AttributeError: type object 'PipeCapMode' has no attribute 'ROUND'")).toContain('PipeCapMode.Round');
+});

@@ -122,7 +122,7 @@ import {
 } from './chatThinkingRuntime';
 import { getChatToolStepTitle } from '../tools/chatToolLabels';
 import { isRhinoNativeRecoverableError, validateRhinoNativeArguments } from '../../rhino/rhinoWorkflow';
-import { completedRhinoWriteReceipt, RHINO_SCRIPT_PREFLIGHT_REJECTION, RHINO_RUNTIME_COMPATIBILITY_REJECTION, RhinoNativeArgumentError, RhinoNativeScriptPreflightError, RhinoNativeRuntimeCompatibilityError, rhinoArgumentRejection, rhinoArgumentRepairInstruction, rhinoArgumentRepairExhausted, rhinoGhReflectionRecoveryState, unresolvedRhinoArgumentRejection } from '../../rhino/rhinoArgumentRecovery';
+import { completedRhinoWriteReceipt, headlessGeometryRejection, headlessGeometryRepairExhausted, RHINO_HEADLESS_GEOMETRY_REJECTION, RHINO_SCRIPT_PREFLIGHT_REJECTION, RHINO_RUNTIME_COMPATIBILITY_REJECTION, RhinoNativeArgumentError, RhinoNativeScriptPreflightError, RhinoNativeRuntimeCompatibilityError, rhinoArgumentRejection, rhinoArgumentRepairInstruction, rhinoArgumentRepairExhausted, rhinoGhReflectionRecoveryState, unresolvedRhinoArgumentRejection } from '../../rhino/rhinoArgumentRecovery';
 import { getRhinoNativeTool, isRhinoReadTool, RHINO_REFERENCE_REVIEW_TOOL } from '../../rhino/rhinoProtocol';
 import {
   createKeyedSerialTaskQueue,
@@ -1294,6 +1294,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         let nativeDispatched = false;
         let rejectedNativeArguments = false;
         let rejectedGeometry = false;
+        let headlessGeometryRejected = false;
         let compatibilityRejected = false;
         let scriptRejected = false;
         try {
@@ -1318,6 +1319,16 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           }
           if (run.executionSource === 'rhino') {
             args = normalizeRhinoNativeArguments(call.toolName, args, run.userText);
+            if (native?.name === RHINO_HEADLESS_BUILD_TOOL) {
+              const priorCalls = getConversationMessages(run.conversationId).find(message => message.id === run.assistantMessageId)?.toolCalls || [];
+              for (const previous of priorCalls) {
+                if (previous.status !== 'error' || !isUnchangedRhinoFailureReplay(previous, call.toolName, args)) continue;
+                const receipt = JSON.parse(previous.resultJson || '{}');
+                if (receipt.kind === RHINO_HEADLESS_GEOMETRY_REJECTION) {
+                  throw new RhinoHeadlessGeometryError(`Same rejected geometry was skipped. ${receipt.error}`, false);
+                }
+              }
+            }
             if (call.toolName === VERIFY_GH_TOOL && (!Array.isArray(args.componentIds) || args.componentIds.length === 0)) {
               const priorCalls=getConversationMessages(run.conversationId).find(message=>message.id===run.assistantMessageId)?.toolCalls||[];
               args={...args,componentIds:collectGhPythonComponentIds(priorCalls)};
@@ -1543,8 +1554,10 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           const geometryRejected = rejectedGeometry = Boolean(native && call.toolName === SAFE_PROFILE_TOOL && error instanceof RhinoGeometryPreflightError);
           compatibilityRejected = Boolean(native && nativeDispatched && error instanceof RhinoNativeRuntimeCompatibilityError);
           scriptRejected = Boolean(native && error instanceof RhinoNativeScriptPreflightError);
-          rejectedNativeArguments = geometryRejected || compatibilityRejected || scriptRejected
-            || Boolean(native && (error instanceof RhinoHeadlessGeometryError || !nativeDispatched && error instanceof RhinoNativeArgumentError));
+          const headlessGeometryError = native?.name === RHINO_HEADLESS_BUILD_TOOL && error instanceof RhinoHeadlessGeometryError ? error : undefined;
+          headlessGeometryRejected = Boolean(headlessGeometryError);
+          rejectedNativeArguments = geometryRejected || headlessGeometryRejected || compatibilityRejected || scriptRejected
+            || Boolean(native && !nativeDispatched && error instanceof RhinoNativeArgumentError);
           call.resultJson = serializeChatToolResult(batchController?.signal.aborted
             ? { cancelled: true, error: '???????????' }
             : geometryRejected ? { kind: GEOMETRY_PREFLIGHT_REJECTION, toolName: call.toolName, correctionTool: call.toolName,
@@ -1553,6 +1566,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
               correctionTool: (error as RhinoNativeRuntimeCompatibilityError).correctionTool, dispatched: true, scriptExecuted: false,
               documentChanged: false, geometryVerification: (error as RhinoNativeRuntimeCompatibilityError).geometryVerification,
               error: String(error), instruction: 'Rhino confirmed the C# script failed during host assembly loading before script execution and the document geometry snapshot is unchanged. Do not call run_csharp again. Translate the intended geometry operation to rhino_native_run_python once, then verify.' }
+            : headlessGeometryError ? headlessGeometryRejection(call.toolName, headlessGeometryError, args, headlessGeometryError.dispatched)
             : rejectedNativeArguments ? rhinoArgumentRejection(native!, error as Error) : { error: String(error), ...(error instanceof RhinoDocumentGeometryWriteError ? { geometryVerification: error.geometryVerification } : {}) });
           call.completedAt = Date.now();
           patchThinkingStep(run.assistantMessageId, `tool-${index}`, {
@@ -1583,7 +1597,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         }
         if (rejectedNativeArguments) {
           const priorCalls = getConversationMessages(run.conversationId).find(message => message.id === run.assistantMessageId)?.toolCalls || [];
-          const exhausted = rhinoArgumentRepairExhausted(priorCalls.filter(previous => previous.id !== call.id), native!, rejectedGeometry ? MAX_GEOMETRY_PREFLIGHT_CORRECTIONS : 1);
+          const earlierCalls = priorCalls.filter(previous => previous.id !== call.id);
+          const exhausted = headlessGeometryRejected ? headlessGeometryRepairExhausted(earlierCalls, call.toolName)
+            : rhinoArgumentRepairExhausted(earlierCalls, native!, rejectedGeometry ? MAX_GEOMETRY_PREFLIGHT_CORRECTIONS : 1);
           // A later call in the same batch may depend on the rejected write. Do not dispatch it.
           for (const skipped of run.calls.slice(index + 1)) {
             skipped.status = 'cancelled';
@@ -1594,6 +1610,16 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           }
           patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: mergePresentationToolCalls(message.toolCalls, run.calls) }), true);
           if (exhausted) {
+            if (headlessGeometryRejected) {
+              const receipt = JSON.parse(call.resultJson || '{}');
+              const part = receipt.part ? `（${receipt.part}）` : '';
+              patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
+                ...message,
+                content: appendRhinoVisibleProgress(message.content, `后台 Rhino 几何校验未通过${part}。${receipt.error}\n本轮已达到修正上限，已保存的模型可在原对话中继续编辑。`),
+              }, 'error', Date.now(), 'Background Rhino geometry repair exhausted'), true);
+              updateConversationBusy(run.conversationId, false);
+              return;
+            }
             let parameterFailure = '参数不符合当前工具 schema，详情见工具回执。';
             try { parameterFailure = String(JSON.parse(call.resultJson || '{}').error || parameterFailure).slice(0, 900); } catch { /* Preserve the real receipt. */ }
             patchMessage(run.assistantMessageId, message => finalizeChatMessageState({
@@ -1601,6 +1627,16 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
               content: [message.content.trim(), scriptRejected ? `Rhino \u811a\u672c\u7c7b\u578b\u9884\u68c0\u4ecd\u672a\u901a\u8fc7: ${call.toolName}\n\u5df2\u81ea\u52a8\u4fee\u6b63\u4e00\u6b21\uff0c\u4ecd\u5b58\u5728 API \u7c7b\u578b\u95ee\u9898\u3002\u672c\u6b21\u811a\u672c\u672a\u6267\u884c\uff0c\u5148\u524d\u6210\u529f\u7684\u6b65\u9aa4\u5df2\u4fdd\u7559\uff1b\u9519\u8bef\u4f4d\u7f6e\u548c\u4fee\u6b63\u8981\u6c42\u89c1\u5de5\u5177\u56de\u6267\u3002` : rejectedGeometry ? `Rhino \u51e0\u4f55\u9884\u68c0\u4ecd\u672a\u901a\u8fc7: ${call.toolName}\n${geometryFailureSummary(JSON.parse(call.resultJson || '{}'))}\n\u5df2\u8fbe\u5230\u672c\u8f6e\u9884\u68c0\u4fee\u6b63\u4e0a\u9650\uff0c\u6ca1\u6709\u5199\u5165\u5bf9\u8c61\u3002\u65e0\u6548\u8ba1\u5212\u4e0d\u4f1a\u91cd\u590d\u6267\u884c\uff0c\u5df2\u5b8c\u6210\u7684\u6b65\u9aa4\u4fdd\u7559\u3002` : compatibilityRejected ? `Rhino C# \u8fd0\u884c\u73af\u5883\u4e0d\u517c\u5bb9: ${call.toolName}\n\u5df2\u6838\u5b9e\u9519\u8bef\u53d1\u751f\u5728\u811a\u672c\u6267\u884c\u4e4b\u524d\uff0c\u4e14\u6587\u6863\u51e0\u4f55\u672a\u53d8\u5316\uff1b\u5df2\u81ea\u52a8\u6362\u7528 Python \u5efa\u6a21\u4e00\u6b21\uff0c\u672a\u91cd\u653e C# \u811a\u672c\u3002` : `Rhino MCP \u53c2\u6570\u8865\u5168\u5931\u8d25: ${call.toolName}\n具体原因：${parameterFailure}\n${native!.readOnly ? '已达到本次未完成查询或本轮只读查询的参数修正上限。' : '已自动补全一次，仍不符合工具参数要求。'}\u672c\u6b21\u65e0\u6548\u8c03\u7528\u672a\u53d1\u9001\u5230 Rhino\uff1b\u5148\u524d\u6210\u529f\u7684\u6b65\u9aa4\u5df2\u4fdd\u7559\u3002`].filter(Boolean).join('\n\n'),
             }, 'error', Date.now(), 'Native Rhino argument repair exhausted'), true);
             updateConversationBusy(run.conversationId, false);
+            return;
+          }
+          if (headlessGeometryRejected) {
+            patchThinkingStep(run.assistantMessageId, `tool-${index}`, { type: 'tool',
+              title: '正在修正后台 Rhino 几何', detail: '当前部件校验失败，已保存的部件可以继续使用', status: 'running' });
+            await runModelLoopRef.current(
+              run.conversationId, run.assistantMessageId, run.userText, run.requestModel,
+              [...run.providerMessages, ...toolMessages, ...rhinoVisionMessages, { role: 'system', content: 'The trusted background Rhino kernel rejected a modeling step without changing the saved working document. Read the exact diagnostic and target part in the tool receipt. If needed, inspect the current document. Correct only that failed part, keeping the requested native SubD and previously committed parts. Use a simpler valid control cage before refining details. Do not repeat a failed call unchanged or replay earlier successful writes. Continue with the remaining requested parts and verify the result.' }],
+              run.depth + 1, undefined, run.emptyRecoveryCount, run.executionSource,
+            );
             return;
           }
           patchThinkingStep(run.assistantMessageId, `tool-${index}`, { type: 'tool',
@@ -2549,9 +2585,15 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       const unresolvedArguments = ghRecoveryState === 'complete' ? undefined
         : executionSource === 'rhino' ? unresolvedRhinoArgumentRejection(currentTurnToolCalls) : undefined;
       if (unresolvedArguments) {
+        const receipt = JSON.parse(unresolvedArguments.resultJson || '{}');
+        const summary = receipt.kind === RHINO_HEADLESS_GEOMETRY_REJECTION
+          ? `后台 Rhino 几何校验未通过${receipt.part ? `（${receipt.part}）` : ''}。${receipt.error}\n已保存的部件可在原对话中继续编辑。`
+          : receipt.kind === RHINO_SCRIPT_PREFLIGHT_REJECTION ? `Rhino 脚本预检未通过：${unresolvedArguments.toolName}\n本次被拒绝的脚本没有发送到 Rhino，尚未执行。请查看工具回执中的导入或 API 诊断；先前成功的步骤已保留，不会重放。`
+          : receipt.kind === GEOMETRY_PREFLIGHT_REJECTION ? `Rhino 几何预检未通过：${unresolvedArguments.toolName}\n本次几何计划未提交；请查看具体冲突，现有模型保持不变。`
+          : `Rhino MCP 参数检查未通过：${unresolvedArguments.toolName}\n本次调用未发送到 Rhino，请查看工具参数诊断。`;
         patchMessage(assistantMessageId, message => finalizeChatMessageState({
           ...message,
-          content: appendRhinoVisibleProgress(message.content, JSON.parse(unresolvedArguments.resultJson || '{}').kind === RHINO_SCRIPT_PREFLIGHT_REJECTION ? `Rhino 脚本预检未通过：${unresolvedArguments.toolName}\n本次被拒绝的脚本没有发送到 Rhino，尚未执行。请查看工具回执中的导入或 API 诊断；先前成功的步骤已保留，不会重放。` : JSON.parse(unresolvedArguments.resultJson || '{}').kind === GEOMETRY_PREFLIGHT_REJECTION ? `Rhino 几何预检未通过：${unresolvedArguments.toolName}\n本次几何计划未提交；请查看具体冲突，现有模型保持不变。` : `Rhino MCP 参数检查未通过：${unresolvedArguments.toolName}\n本次调用未发送到 Rhino，请查看工具参数诊断。`),
+          content: appendRhinoVisibleProgress(message.content, summary),
         }, 'error', Date.now(), 'Native Rhino arguments remain unresolved'), true);
         updateConversationBusy(conversationId, false);
         return;

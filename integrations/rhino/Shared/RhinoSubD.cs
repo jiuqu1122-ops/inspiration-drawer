@@ -38,23 +38,60 @@ internal static class RhinoSubD
             input["cageFaces"] is not JsonArray faces || faces.Count is < 1 or > MaxCageFaces)
             throw new ArgumentException($"A SubD cage needs 3–{MaxCageVertices} vertices and 1–{MaxCageFaces} faces.");
 
-        var points = vertices.Select(Point).ToArray();
-        if (points.Distinct().Count() != points.Length) throw new ArgumentException("Use one index per cage vertex and share it across adjoining faces.");
+        var points = vertices.Select((value, index) => ReadCageValue($"cageVertices[{index}]", () => Point(value))).ToArray();
+        var repeated = points.Select((point, index) => (point, index)).GroupBy(entry => entry.point).FirstOrDefault(group => group.Count() > 1);
+        if (repeated != null)
+            throw new ArgumentException($"Duplicate cageVertices at indices {string.Join(", ", repeated.Take(8).Select(entry => entry.index))}. Use one shared vertex index in the adjoining faces.");
         using var mesh = new Mesh();
         mesh.Vertices.UseDoublePrecisionVertices = true;
         foreach (var point in points) mesh.Vertices.Add(point);
         var used = new HashSet<int>();
-        foreach (var face in faces)
+        var edges = new Dictionary<(int, int), List<(int Face, bool Forward)>>();
+        for (var faceIndex = 0; faceIndex < faces.Count; faceIndex++)
         {
-            var indices = CageIndices(face, 3, 4, points.Length);
+            var indices = ReadCageValue($"cageFaces[{faceIndex}]", () => CageIndices(faces[faceIndex], 3, 4, points.Length));
             used.UnionWith(indices);
-            if (indices.Length == 3) mesh.Faces.AddFace(indices[0], indices[1], indices[2]);
-            else mesh.Faces.AddFace(indices[0], indices[1], indices[2], indices[3]);
+            var added = indices.Length == 3 ? mesh.Faces.AddFace(indices[0], indices[1], indices[2])
+                : mesh.Faces.AddFace(indices[0], indices[1], indices[2], indices[3]);
+            if (added < 0) throw new ArgumentException($"Rhino rejected cageFaces[{faceIndex}]. Supply an ordered triangle or quad with distinct vertices.");
+            for (var i = 0; i < indices.Length; i++)
+            {
+                var from = indices[i];
+                var to = indices[(i + 1) % indices.Length];
+                var edge = UndirectedEdge(from, to);
+                if (!edges.TryGetValue(edge, out var adjacent)) edges[edge] = adjacent = [];
+                adjacent.Add((faceIndex, from < to));
+            }
         }
-        if (used.Count != points.Length || !mesh.IsValid || !mesh.IsManifold(true, out var oriented, out var hasBoundary) || !oriented)
-            throw new ArgumentException("Use a valid manifold cage with consistent face winding and no unused vertices.");
+        if (used.Count != points.Length)
+            throw new ArgumentException($"Unused cageVertices indices: {string.Join(", ", Enumerable.Range(0, points.Length).Where(index => !used.Contains(index)).Take(8))}. Reference them in cageFaces, or remove them and update face and crease indices.");
+        foreach (var (edge, adjacent) in edges)
+            if (adjacent.Count > 2)
+                throw new ArgumentException($"Non-manifold edge {edge} is shared by cageFaces indices {string.Join(", ", adjacent.Take(8).Select(face => face.Face))}. At most two faces may share an edge.");
+        if (!mesh.IsValidWithLog(out var validityLog))
+        {
+            validityLog ??= "";
+            throw new ArgumentException($"Invalid cage mesh. {validityLog[..Math.Min(validityLog.Length, 400)].Trim()} Check for degenerate or crossed cageFaces.");
+        }
+        if (!mesh.IsManifold(true, out var oriented, out var hasBoundary))
+            throw new ArgumentException("The cage contains non-manifold connections. Check for coincident vertices or overlapping faces.");
+        if (!oriented)
+        {
+            // Work on the temporary cage only. Keep the same vertices, faces and crease indices.
+            mesh.UnifyNormals();
+            if (!mesh.IsManifold(true, out oriented, out hasBoundary) || !oriented)
+            {
+                var conflict = edges.FirstOrDefault(entry => entry.Value.Count == 2 && entry.Value[0].Forward == entry.Value[1].Forward);
+                var location = conflict.Value == null ? "" : $" For example, original cageFaces[{conflict.Value[0].Face}] and cageFaces[{conflict.Value[1].Face}] share edge {conflict.Key} in the same direction.";
+                throw new ArgumentException("The cage face directions cannot be made consistent." + location + " Reorder connected faces so each shared edge runs in opposite directions.");
+            }
+        }
         bool requireClosed = input["requireClosed"]?.GetValue<bool>() ?? false;
-        if (requireClosed && hasBoundary) throw new ArgumentException("The cage has open edges. Cap or join them to create a closed SubD.");
+        if (requireClosed && hasBoundary)
+        {
+            var openEdges = edges.Where(entry => entry.Value.Count == 1).Take(8).Select(entry => $"{entry.Key} on cageFaces[{entry.Value[0].Face}]");
+            throw new ArgumentException($"The closed SubD request has boundary edges: {string.Join(", ", openEdges)}. Join or cap the intended boundary.");
+        }
         if (!hasBoundary && mesh.SolidOrientation() < 0) mesh.Flip(true, true, true);
 
         var subd = SubD.CreateFromMesh(mesh, SubDCreationOptions.Smooth)
@@ -145,6 +182,15 @@ internal static class RhinoSubD
         var id = Number(value, 1, uint.MaxValue);
         if (Math.Truncate(id) != id) throw new ArgumentException("A component ID must be an integer.");
         return (uint)id;
+    }
+
+    private static T ReadCageValue<T>(string path, Func<T> read)
+    {
+        try { return read(); }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException or FormatException)
+        {
+            throw new ArgumentException($"{path}: {error.Message}", error);
+        }
     }
 
     private static int[] CageIndices(JsonNode? value, int min, int max, int vertexCount)

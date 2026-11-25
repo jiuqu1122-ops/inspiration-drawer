@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import type { ChatMessage } from '../model/chatTypes';
+import type { ChatMessage, ChatToolExecutor } from '../model/chatTypes';
 const h = vi.hoisted(() => ({ invoke: vi.fn(), replies: [] as Array<Record<string, unknown> | Promise<Record<string, unknown>> | Error>, requests: [] as Array<Record<string, any>>, messages: new Map<string, ChatMessage>(), deferStateUpdaters: false }));
 vi.mock('react', () => ({ useEffect: () => {}, useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => { let value = typeof initial === 'function' ? initial() : initial; return [value, (next: unknown) => { if (typeof next === 'function' && h.deferStateUpdaters) return; value = typeof next === 'function' ? next(value) : next; }]; }, useCallback: (callback: unknown) => callback, useMemo: (factory: () => unknown) => factory() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: h.invoke }));
@@ -12,6 +12,7 @@ import { registerRhinoNativeTools, rhinoToolDefinitions, RHINO_REFERENCE_REVIEW_
 import { readRhinoModelingSkillResource, RHINO_MODELING_SKILL_RESOURCE_TOOL } from '../../rhino/rhinoProductModelingKnowledge';
 import { gh2ModelTools, GH2_VERIFY_MODEL_TOOL, GH2_REPAIR_OUTPUTS_TOOL } from '../../rhino/rhinoGh2Model';
 import { RhinoDocumentGeometryWriteError } from '../../rhino/rhinoDocumentGeometry';
+import { RHINO_HEADLESS_BUILD_TOOL, RhinoHeadlessGeometryError } from '../../rhino/rhinoHeadless';
 const executed=vi.fn(async(_name:string)=>({source:'rhino',content:'{"hits":[]}'}));
 const search='rhino_native_g1_search_components';
 const tools:RhinoNativeTool[]=[
@@ -107,6 +108,39 @@ it('publishes a downloadable 3DM after a committed background modeling step', as
   expect(exportModel).toHaveBeenCalledTimes(1);
   expect(last().toolCalls).toContainEqual(expect.objectContaining({ toolName: 'rhino_headless_export', status: 'completed', resultJson: expect.stringContaining('model.3dm') }));
   expect(release).toHaveBeenCalledTimes(1);
+});
+
+it('repairs only the failed background part and does not resend the same rejected cage', async () => {
+  const name = RHINO_HEADLESS_BUILD_TOOL;
+  const exportModel = vi.fn(async () => ({ files: [{ id: 'model', name: '模型.3dm', format: '3dm', path: 'C:/generated/model.3dm' }] }));
+  const build = vi.fn<ChatToolExecutor>();
+  const tool: RhinoNativeTool = {
+    name, description: 'Build SubD', readOnly: false, destructive: false, workflowPhase: 'build',
+    inputSchema: { type: 'object', properties: { operation: { type: 'string' }, name: { type: 'string' }, cageVertices: { type: 'array' } } },
+  };
+  const runtime = setup(undefined, {
+    executeTool: build,
+    prepareCanvasRhinoTurn: async () => ({ context: '{"objects":[]}', documentName: '后台 Rhino', exportModel, release: vi.fn() }),
+    additionalTools: (id, source) => {
+      if (source !== 'rhino') return [];
+      registerRhinoNativeTools(id, [tool]);
+      return [{ type: 'function', function: { name, description: tool.description, parameters: tool.inputSchema } }];
+    },
+  });
+  const body = { operation: 'subd', name: 'body' };
+  const bad = { operation: 'subd', name: 'wing', cageVertices: [[0, 0, 0]] };
+  const corrected = { ...bad, cageVertices: [[0, 0, 0], [1, 0, 0], [0, 1, 0]] };
+  build.mockResolvedValueOnce({ committed: true })
+    .mockRejectedValueOnce(new RhinoHeadlessGeometryError('Unused cageVertices indices: 0.'))
+    .mockResolvedValueOnce({ committed: true });
+  h.replies.push(call('body', body, name), call('bad', bad, name), call('duplicate', bad, name), call('fixed', corrected, name),
+    { content: '已补完小翼。', toolCalls: [] });
+  expect(await runtime.sendMessage('用 SubD 建模')).toBe(true);
+  expect(build.mock.calls.map(entry => entry[1])).toEqual([body, bad, corrected]);
+  expect(last().toolCalls).toContainEqual(expect.objectContaining({ id: 'duplicate', status: 'error', resultJson: expect.stringContaining('"dispatched":false') }));
+  expect(JSON.stringify(h.requests[2].messages)).toContain('Unused cageVertices indices: 0.');
+  expect(exportModel).toHaveBeenCalled();
+  expect(last().status).toBe('completed');
 });
 
 it('routes a canvas Chat request through Rhino, passing actual image pixels and the verified scene context', async () => {

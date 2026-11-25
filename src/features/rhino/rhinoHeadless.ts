@@ -8,7 +8,9 @@ import { RhinoNativeArgumentError } from './rhinoArgumentRecovery';
 export const RHINO_HEADLESS_BUILD_TOOL = 'rhino_native_headless_build';
 export const RHINO_HEADLESS_INSPECT_TOOL = 'rhino_native_headless_inspect';
 export const RHINO_HEADLESS_EXPORT_TOOL = 'rhino_headless_export';
-export class RhinoHeadlessGeometryError extends RhinoNativeArgumentError {}
+export class RhinoHeadlessGeometryError extends RhinoNativeArgumentError {
+  constructor(message: string, readonly dispatched = true) { super(message); }
+}
 
 const xyz = { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 };
 const points = { type: 'array', items: xyz, minItems: 3, maxItems: 80 };

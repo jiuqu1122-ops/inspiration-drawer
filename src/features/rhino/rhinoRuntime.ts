@@ -1,6 +1,7 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import * as bundled from './runtime/entry';
 import { RhinoNativeArgumentError, RhinoNativeScriptPreflightError } from './rhinoArgumentRecovery';
+import { inspectRhinoPythonEnumMembers } from './rhinoScriptPreflight';
 
 export type RhinoRuntimeModule = typeof bundled;
 type RuntimeLocation = { path: string; version: string; sha256: string } | null;
@@ -49,8 +50,16 @@ export async function ensureRhinoRuntimeLoaded(): Promise<void> {
 }
 
 export const rhinoRuntimeStatus = () => ({ version: activeVersion, error: loadError });
-export const inspectRhinoScript: RhinoRuntimeModule['inspectRhinoScript'] = (...args) => active.inspectRhinoScript(...args);
-export const rhinoScriptFailureExplanation: RhinoRuntimeModule['rhinoScriptFailureExplanation'] = (...args) => active.rhinoScriptFailureExplanation(...args);
+export const inspectRhinoScript: RhinoRuntimeModule['inspectRhinoScript'] = (name, script) => {
+  const issues = active.inspectRhinoScript(name, script);
+  if (active === bundled || name !== 'rhino_native_run_python') return issues;
+  // A cached older modeling module must not bypass the desktop's enum checks.
+  const currentEnumIssues = inspectRhinoPythonEnumMembers(script);
+  return [...issues, ...currentEnumIssues.filter(issue => !issues.some(existing =>
+    existing.code === issue.code && existing.line === issue.line && existing.api === issue.api))];
+};
+export const rhinoScriptFailureExplanation: RhinoRuntimeModule['rhinoScriptFailureExplanation'] = error =>
+  active.rhinoScriptFailureExplanation(error) ?? (active !== bundled ? bundled.rhinoScriptFailureExplanation(error) : undefined);
 export const buildRhinoWorkflowInstruction: RhinoRuntimeModule['buildRhinoWorkflowInstruction'] = (...args) => active.buildRhinoWorkflowInstruction(...args);
 export const guardRhinoGeometryStageScript: RhinoRuntimeModule['guardRhinoGeometryStageScript'] = (...args) => active.guardRhinoGeometryStageScript(...args);
 export const guardRhinoGhScript: RhinoRuntimeModule['guardRhinoGhScript'] = (...args) => active.guardRhinoGhScript(...args);

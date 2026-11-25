@@ -5,6 +5,7 @@ import { getRhinoNativeWorkflowPhase, isRhinoNativeReadOnlyPhase } from './rhino
 export const RHINO_ARGUMENT_REJECTION = 'rhino_native_argument_validation';
 export const RHINO_RUNTIME_COMPATIBILITY_REJECTION = 'rhino_native_runtime_compatibility';
 export const RHINO_SCRIPT_PREFLIGHT_REJECTION = 'rhino_native_script_preflight';
+export const RHINO_HEADLESS_GEOMETRY_REJECTION = 'rhino_headless_geometry_rejection';
 export type RhinoGhReflectionRecoveryState = 'none' | 'inspect' | 'continue' | 'complete' | 'failed';
 
 /** Tracks the narrowly-scoped GH reflection fallback without inferring success from text. */
@@ -70,9 +71,38 @@ export const rhinoArgumentRepairCount = (calls: ChatToolCall[], toolName?: strin
     const result = JSON.parse(call.resultJson || '{}');
     return ([RHINO_ARGUMENT_REJECTION, RHINO_SCRIPT_PREFLIGHT_REJECTION].includes(result.kind) && result.dispatched === false)
       || (result.kind === RHINO_RUNTIME_COMPATIBILITY_REJECTION && result.documentChanged === false && result.scriptExecuted === false)
+      || (result.kind === RHINO_HEADLESS_GEOMETRY_REJECTION && result.documentChanged === false)
       || (result.kind === 'rhino_geometry_preflight' && result.documentChanged === false);
   } catch { return false; }
 }).length;
+
+export function headlessGeometryRepairExhausted(calls: ChatToolCall[], toolName: string) {
+  let total = 0;
+  let consecutive = 0;
+  for (const call of calls) {
+    if (call.toolName !== toolName) continue;
+    try {
+      const receipt = JSON.parse(call.resultJson || '{}');
+      if (call.status === 'completed' && receipt.committed === true && !receipt.reusedCompletedReceipt) consecutive = 0;
+      if (receipt.kind === RHINO_HEADLESS_GEOMETRY_REJECTION && receipt.documentChanged === false) {
+        total++;
+        consecutive++;
+      }
+    } catch { /* Unknown receipts cannot authorize retries or reset the budget. */ }
+  }
+  return consecutive >= 2 || total >= 6;
+}
+
+export const headlessGeometryRejection = (toolName: string, error: Error, args: Record<string, unknown>, dispatched: boolean) => ({
+  kind: RHINO_HEADLESS_GEOMETRY_REJECTION,
+  correctionTool: toolName,
+  operation: typeof args.operation === 'string' ? args.operation.slice(0, 50) : undefined,
+  part: typeof args.name === 'string' ? args.name.trim().slice(0, 100) : undefined,
+  error: error.message,
+  dispatched,
+  documentChanged: false,
+  instruction: 'The trusted Rhino kernel rejected this geometry without saving a change to the working document. Correct the failed part using its original name and the zero-based vertex, edge and face indices in the diagnostic. Keep previously committed objects.',
+});
 
 /** Independent read searches do not share an unresolved repair chain once a real
  * successful call intervenes. Keep a total cap; writes retain the old strict budget.
@@ -129,14 +159,26 @@ export const unresolvedRhinoArgumentRejection = (calls: ChatToolCall[]) => {
   if (lastIndex < 0) return undefined;
   const rejected = calls[lastIndex];
   let correctionTool: string | undefined;
+  let headlessPart: string | undefined;
+  let headlessRejection = false;
   try {
-    const value = JSON.parse(rejected.resultJson || '{}').correctionTool;
-    if (typeof value === 'string') correctionTool = value;
+    const receipt = JSON.parse(rejected.resultJson || '{}');
+    if (typeof receipt.correctionTool === 'string') correctionTool = receipt.correctionTool;
+    headlessRejection = receipt.kind === RHINO_HEADLESS_GEOMETRY_REJECTION;
+    if (headlessRejection && typeof receipt.part === 'string') headlessPart = receipt.part;
   } catch { /* Keep the original tool name when the receipt is unstructured. */ }
   const laterCalls = calls.slice(lastIndex + 1);
   const repaired = laterCalls.some(call => {
     if (call.status !== 'completed') return false;
-    try { if (JSON.parse(call.resultJson || '{}').reusedCompletedReceipt) return false; } catch { /* Unstructured native receipts remain valid. */ }
+    try {
+      const receipt = JSON.parse(call.resultJson || '{}');
+      if (receipt.reusedCompletedReceipt) return false;
+      if (headlessRejection) {
+        if (call.toolName !== rejected.toolName || receipt.committed !== true) return false;
+        const name = JSON.parse(call.argumentsJson || '{}').name;
+        return !headlessPart || typeof name === 'string' && name.trim().slice(0, 100) === headlessPart;
+      }
+    } catch { if (headlessRejection) return false; }
     const phase = getRhinoNativeWorkflowPhase(call.toolName);
     return call.toolName === rejected.toolName || (call.toolName.startsWith('rhino_native_')
       && phase !== 'lifecycle' && !isRhinoNativeReadOnlyPhase(phase));
