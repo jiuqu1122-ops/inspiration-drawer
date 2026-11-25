@@ -1136,10 +1136,21 @@ fn is_valid_reference_upload_object_key(value: &str) -> bool {
 }
 
 fn parse_reference_upload_ticket(body: &str) -> Result<ReferenceUploadTicket, String> {
+    parse_reference_upload_ticket_for_namespace(body, false)
+}
+
+fn parse_reference_upload_ticket_for_namespace(body: &str, video_media: bool) -> Result<ReferenceUploadTicket, String> {
     let ticket: ReferenceUploadTicket =
         serde_json::from_str(body).map_err(|_| "上传授权响应无效".to_string())?;
+    let valid_key = if video_media {
+        ticket.object_key.strip_prefix("reference-video-inputs/")
+            .is_some_and(|filename| !filename.is_empty() && !matches!(filename, "." | "..")
+                && filename.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+    } else {
+        is_valid_reference_upload_object_key(&ticket.object_key)
+    };
     if !ticket.method.eq_ignore_ascii_case("PUT")
-        || !is_valid_reference_upload_object_key(&ticket.object_key)
+        || !valid_key
     {
         return Err("上传授权参数无效".to_string());
     }
@@ -1323,6 +1334,16 @@ mod reference_upload_contract_tests {
             ticket.object_key,
             "reference-images/12d2e7bb-6e3f-4ba0-bdb0-b82023a67e23.png"
         );
+    }
+
+    #[test]
+    fn validates_media_tickets_only_for_the_video_reference_namespace() {
+        let video = r#"{"objectKey":"reference-video-inputs/reference.mp4",
+            "uploadUrl":"https://storage.example.test/signed-upload","method":"PUT","headers":{}}"#;
+        assert!(super::parse_reference_upload_ticket_for_namespace(video, true).is_ok());
+        assert!(parse_reference_upload_ticket(video).is_err());
+        let traversal = video.replace("reference.mp4", "..");
+        assert!(super::parse_reference_upload_ticket_for_namespace(&traversal, true).is_err());
     }
 
     #[test]
@@ -13018,6 +13039,7 @@ async fn upload_wallet_reference_image(
     access_token: &str,
     index: usize,
     object: R2PreparedObject,
+    video_media: bool,
 ) -> Result<(usize, String), ReferenceUploadFailure> {
     let extension = object.ext.trim().trim_start_matches('.');
     let filename = format!("reference-{}.{}", index + 1, extension);
@@ -13027,6 +13049,8 @@ async fn upload_wallet_reference_image(
         "mime": object.content_type,
         "sizeBytes": upload_bytes,
     });
+    let ticket_path = if video_media { "/v1/ai/videos/reference-upload-ticket" }
+        else { "/v1/ai/reference-images/upload-ticket" };
     let ticket_response = commands::license::send_cloud_request_detailed(
         app_handle,
         Duration::from_secs(120),
@@ -13038,7 +13062,7 @@ async fn upload_wallet_reference_image(
         |client| {
             client
                 .post(format!(
-                    "{INSPIRATION_SPACE_API_BASE_URL}/v1/ai/reference-images/upload-ticket"
+                    "{INSPIRATION_SPACE_API_BASE_URL}{ticket_path}"
                 ))
                 .bearer_auth(access_token)
                 .header("x-client-version", env!("CARGO_PKG_VERSION"))
@@ -13071,7 +13095,12 @@ async fn upload_wallet_reference_image(
             commands::license::CloudTransportFailure::from_reqwest(&error, false, false),
         )
     })?;
-    let ticket = parse_reference_upload_ticket(&ticket_response_body).map_err(|detail| {
+    let parsed = if video_media {
+        parse_reference_upload_ticket_for_namespace(&ticket_response_body, true)
+    } else {
+        parse_reference_upload_ticket(&ticket_response_body)
+    };
+    let ticket = parsed.map_err(|detail| {
         let reason = if detail == "上传授权响应无效" {
             ReferenceUploadFailureReason::InvalidResponse
         } else {
@@ -13151,11 +13180,26 @@ async fn prepare_and_upload_wallet_reference(
     index: usize,
     source: String,
     preserve_image: bool,
+    video_media: bool,
 ) -> Result<(usize, String), ReferenceUploadFailure> {
     // Bound decoding, compression, memory and network work across ALL nodes.
     let permit = reference_upload::uploads().acquire().await;
     let object = tauri::async_runtime::spawn_blocking(move || {
-        if preserve_image {
+        if video_media {
+            // Bound memory before the bulk read of a local media reference.
+            let path = local_path_from_url_like(&source).unwrap_or_else(|| PathBuf::from(&source));
+            let max_bytes = if guess_mime_from_path(&path).starts_with("audio/") {
+                32 * 1024 * 1024
+            } else {
+                128 * 1024 * 1024
+            };
+            if source.starts_with("data:") {
+                if source.len() > max_bytes * 4 / 3 + 256 { return Err("Video reference is too large".to_string()); }
+            } else if fs::metadata(&path).map_err(|_| "Video reference cannot be read".to_string())?.len() > max_bytes as u64 {
+                return Err("Video reference is too large".to_string());
+            }
+        }
+        if preserve_image && !video_media {
             prepare_wallet_reference_image_without_conversion(&source)
         } else {
             source_to_r2_object(&source)
@@ -13163,7 +13207,11 @@ async fn prepare_and_upload_wallet_reference(
     })
         .await.map_err(|_| ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::PrepareReference, ReferenceUploadFailureReason::TaskTerminated))?
         .map_err(|_| ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::PrepareReference, ReferenceUploadFailureReason::LocalPreparation))?;
-    if !object.content_type.starts_with("image/") {
+    let valid_media = if video_media {
+        (object.content_type.starts_with("video/") && object.bytes.len() <= 128 * 1024 * 1024)
+            || (object.content_type.starts_with("audio/") && object.bytes.len() <= 32 * 1024 * 1024)
+    } else { object.content_type.starts_with("image/") };
+    if !valid_media {
         return Err(ReferenceUploadFailure::new(Some(index), ReferenceUploadOperation::PrepareReference, ReferenceUploadFailureReason::UnsupportedImage));
     }
     // A queued upload may start after the access token expires. Refresh it,
@@ -13176,7 +13224,7 @@ async fn prepare_and_upload_wallet_reference(
     let key = reference_upload::cache_key(&token, &object.content_type, &object.bytes);
     reference_upload::uploads().run(key, || async move {
         let _permit = permit;
-        upload_wallet_reference_image(&app_handle, &token, index, object).await.map(|(_, key)| key)
+        upload_wallet_reference_image(&app_handle, &token, index, object, video_media).await.map(|(_, key)| key)
     }).await.map(|key| (index, key)).map_err(|mut failure| {
         failure.reference_index = Some(index);
         failure
@@ -13202,6 +13250,7 @@ async fn upload_wallet_reference_images(
     app_handle: tauri::AppHandle,
     sources: Vec<String>,
     preserve_image: Option<bool>,
+    video_media: Option<bool>,
 ) -> Result<Vec<String>, String> {
     let command_started_at = Instant::now();
     if sources.is_empty() || sources.len() > 32 {
@@ -13216,13 +13265,14 @@ async fn upload_wallet_reference_images(
     let mut failures = Vec::new();
     let mut pending = sources.into_iter().enumerate();
     let preserve_image = preserve_image.unwrap_or(false);
+    let video_media = video_media.unwrap_or(false);
     loop {
         let batch = pending.by_ref().take(reference_upload::CONCURRENCY).collect::<Vec<_>>();
         if batch.is_empty() { break; }
         let handles = batch.into_iter().map(|(index, source)| {
             let app = app_handle.clone();
             let token = access_token.clone();
-            (index, tauri::async_runtime::spawn(prepare_and_upload_wallet_reference(app, token, index, source, preserve_image)))
+            (index, tauri::async_runtime::spawn(prepare_and_upload_wallet_reference(app, token, index, source, preserve_image, video_media)))
         }).collect::<Vec<_>>();
         for (index, handle) in handles {
             match handle.await {
@@ -19618,6 +19668,7 @@ fn main() {
             commands::license::recover_cloud_image_generation,
             commands::license::get_cloud_image_models,
             commands::license::generate_cloud_videos,
+            commands::license::get_cloud_video_by_request,
             commands::license::get_cloud_video_status,
             commands::license::import_license,
             commands::license::remove_license,

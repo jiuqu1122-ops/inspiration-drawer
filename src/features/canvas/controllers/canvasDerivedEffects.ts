@@ -1,3 +1,4 @@
+import { getRecoveredVideoTask, isVideoLookupMissing, isVideoLookupUnsupported, type WalletVideoRequest } from '../../cloudVideoTasks';
 import { createCanvasBackgroundQueue } from '../canvasBackgroundQueue';
 import { convertFileSrc,invoke } from '@tauri-apps/api/core';
 import React from 'react';
@@ -10,7 +11,7 @@ import { CANVAS_AI_OUTPUT_SOURCE_RECOVERY_CONCURRENCY } from '../../../utils/can
 import { createCanvasAiOutputBufferItem,getCanvasAiOutputDisplaySource } from '../../../utils/canvasItemSelectors';
 import { getCanvasAiOutputForAction,getCanvasAiOutputPreviewSlots } from '../../../utils/canvasWorkflowRuntime';
 import { getAutoRecoverableAiMediaResultSource } from '../../aiImageResultRecovery';
-import { getCloudWalletImageGenerationByRequest,getCloudWalletImageLookupImages,getCloudWalletVideoDeliveredResults,getCloudWalletVideoStatus } from '../../canvasAiImage';
+import { getCloudWalletImageGenerationByRequest,getCloudWalletImageLookupImages,getCloudWalletVideoByRequest,getCloudWalletVideoDeliveredResults,getCloudWalletVideoStatus,isCloudWalletVideoRequestWatched } from '../../canvasAiImage';
 import { buildCanvasAiOutputRemoteResultPatch } from '../../canvasAiOutputs';
 import { getCanvasAiMediaType } from '../../canvasAiRuntime';
 import { getCanvasAiTimedOutRecoveryCandidates,isCanvasAiImageLookupPending,getCanvasAiLookupRetrySchedule,getCanvasAiLookupRetryDelay,isCanvasAiLookupTerminalError,isCanvasAiLookupGatewayLimitError } from '../../canvasAiTimedOutRecovery';
@@ -30,9 +31,10 @@ export const runDerivedUiEffect01 = (ctx: Pick<derivedUiEffectContext, 'activeCa
     if (availableSlots === 0) return;
 
     const candidates = getCanvasAiTimedOutRecoveryCandidates(canvasItems)
-      .filter(({ canvasItem, output, outputIndex, clientRequestId }) => {
+      .filter(({ canvasItem, output, outputIndex, clientRequestId, mediaType }) => {
         const recoveryKey = `${canvasItem.id}:${output.id || outputIndex}:${clientRequestId}`;
-        return !canvasAiTimedOutRecoverySettledRef.current.has(recoveryKey)
+        return !(mediaType === 'video' && isCloudWalletVideoRequestWatched(clientRequestId))
+          && !canvasAiTimedOutRecoverySettledRef.current.has(recoveryKey)
           && !canvasAiTimedOutRecoveryInFlightRef.current.has(recoveryKey)
           && getCanvasAiLookupRetrySchedule(canvasAiTimedOutRecoveryInFlightRef.current).canRetry(recoveryKey);
       })
@@ -51,33 +53,67 @@ export const runDerivedUiEffect01 = (ctx: Pick<derivedUiEffectContext, 'activeCa
       let retryDelay = 8_000;
 
       const isVideo = candidate.mediaType === 'video';
-      const requestedTaskId = String(output.taskId || clientRequestId).trim();
+      let requestedTaskId = String(output.taskId || clientRequestId).trim();
+      const failVideoSlot = (error: string) => {
+        updateCanvasItemsImmediate(previous => previous.map(item => {
+          const outputs = item.ai?.outputs;
+          if (item.id !== canvasItem.id || !outputs || outputs[outputIndex]?.clientRequestId !== clientRequestId
+            || outputs[outputIndex]?.id !== output.id || outputs[outputIndex]?.status === 'success') return item;
+          const next = outputs.map((current, index) => index === outputIndex
+            ? { ...current, status: 'error' as const, error } : current);
+          return { ...item, ai: { ...item.ai!, outputs: next,
+            status: next.some(current => ['working', 'recovery'].includes(current.status || '')) ? 'recovery' : 'error',
+            error,
+          } };
+        }));
+        scheduleCanvasChangedNodesPatchSave([canvasItem.id]);
+        canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
+        void refreshCloudAccount(true).catch(() => {});
+      };
       const lookupPromise = isVideo
-        ? getCloudWalletVideoStatus(requestedTaskId, clientRequestId)
+        ? getCloudWalletVideoByRequest(clientRequestId)
+          .then(request => ({ request }))
+          .catch(async (error: unknown) => {
+            if (!isVideoLookupUnsupported(error)) throw error;
+            return { legacy: await getCloudWalletVideoStatus(requestedTaskId, clientRequestId) };
+          })
         : getCloudWalletImageGenerationByRequest(clientRequestId);
       void lookupPromise
         .then(async (lookup) => {
           let recoveredSources: string[] = [];
           if (isVideo) {
-            recoveredSources = getCloudWalletVideoDeliveredResults(lookup, requestedTaskId);
-            if (recoveredSources.length === 0) {
-              const status = (() => {
-                const visit = (value: unknown, depth = 0): string => {
-                  if (!value || typeof value !== 'object' || depth > 8) return '';
-                  if (Array.isArray(value)) return value.map(item => visit(item, depth + 1)).find(Boolean) || '';
-                  const record = value as Record<string, unknown>;
-                  const direct = record.status ?? record.state ?? record.task_status ?? record.taskStatus;
-                  if (typeof direct === 'string') return direct.trim().toLowerCase().replace(/[\s-]+/g, '_');
-                  return Object.values(record).map(item => visit(item, depth + 1)).find(Boolean) || '';
-                };
-                return visit(lookup);
-              })();
-              if (!status || isCanvasAiImageLookupPending(status)) {
-                shouldPollAgain = true;
-              } else {
-                canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
+            const { request, legacy } = lookup as { request?: WalletVideoRequest; legacy?: unknown };
+            if (request) {
+              const task = getRecoveredVideoTask(request, requestedTaskId, outputIndex);
+              if (task) {
+                requestedTaskId = task.taskId;
+                recoveredSources = getCloudWalletVideoDeliveredResults(task, task.taskId);
+              } else if (request.status === 'succeeded') {
+                const historical = request.results?.filter((item): item is string => typeof item === 'string') ?? [];
+                const source = historical[historical.length === 1 ? 0 : outputIndex];
+                if (source) recoveredSources = getCloudWalletVideoDeliveredResults({
+                  taskId: requestedTaskId, status: 'succeeded', resultUrl: source,
+                }, requestedTaskId);
               }
-              return;
+              if (!recoveredSources.length && (task?.status === 'failed' || request.status === 'failed')) {
+                const error = task?.error || request.error || '视频生成失败';
+                failVideoSlot(error);
+                return;
+              }
+              if (!recoveredSources.length) {
+                shouldPollAgain = request.status === 'processing';
+                retryDelay = Math.max(2_500, Math.min(30_000, task?.pollAfterMs ?? 8_000));
+                if (!shouldPollAgain) canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
+                return;
+              }
+            } else {
+              recoveredSources = getCloudWalletVideoDeliveredResults(legacy, requestedTaskId);
+              if (!recoveredSources.length) {
+                const status = (legacy as { status?: string } | undefined)?.status?.toLowerCase();
+                shouldPollAgain = !status || isCanvasAiImageLookupPending(status) || status === 'pending_confirmation';
+                if (!shouldPollAgain) canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
+                return;
+              }
             }
           } else {
             const imageLookup = lookup as { status?: string; images?: string[]; };
@@ -106,7 +142,8 @@ export const runDerivedUiEffect01 = (ctx: Pick<derivedUiEffectContext, 'activeCa
           if (
             !latestCanvasItem
             || !latestOutput
-            || latestOutput.clientRequestId !== clientRequestId
+            || (latestOutput.clientRequestId || latestOutput.taskId) !== clientRequestId
+            || latestOutput.id !== output.id
           ) {
             canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
             return;
@@ -133,7 +170,8 @@ export const runDerivedUiEffect01 = (ctx: Pick<derivedUiEffectContext, 'activeCa
             ai: {
               ...latestCanvasItem.ai!,
               outputs: recoveredOutputs,
-              status: allRecovered ? 'success' : 'error',
+              status: allRecovered ? 'success' : isVideo && recoveredOutputs.some(current =>
+                ['working', 'recovery'].includes(current.status || '')) ? 'recovery' : 'error',
               error: allRecovered ? undefined : latestCanvasItem.ai?.error,
               generatedAt: recoveredAt,
             },
@@ -169,7 +207,15 @@ export const runDerivedUiEffect01 = (ctx: Pick<derivedUiEffectContext, 'activeCa
         })
         .catch((error) => {
           const message = error instanceof Error ? error.message : String(error || '');
-          if (/image_request_not_found|video_task_not_found/i.test(message)
+          if (isVideo && isVideoLookupMissing(error)) {
+            if (Date.now() - (output.generatedAt ?? 0) < 120_000) {
+              shouldPollAgain = true;
+            } else {
+              failVideoSlot('服务端未受理这笔视频请求，可以重试。');
+            }
+            return;
+          }
+          if (/image_request_not_found|video_task_not_found|video_request_not_found/i.test(message)
             || (isCanvasAiLookupTerminalError(error) && !isCanvasAiLookupGatewayLimitError(error))) {
             canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
             return;

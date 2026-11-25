@@ -757,6 +757,8 @@ pub struct CloudVideoGenerationResult {
     provider: String,
     model: String,
     charged_credits: String,
+    #[serde(default)]
+    request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3068,6 +3070,25 @@ pub async fn generate_cloud_videos(
 }
 
 #[tauri::command]
+pub async fn get_cloud_video_by_request(
+    app_handle: tauri::AppHandle,
+    client_request_id: String,
+) -> Result<serde_json::Value, String> {
+    let id = client_request_id.trim();
+    if id.len() < 8 || id.len() > 128 {
+        return Err("invalid_request: 视频请求 ID 无效".to_string());
+    }
+    let encoded = url::form_urlencoded::byte_serialize(id.as_bytes()).collect::<String>();
+    let access_token = cloud_access_token(&app_handle).await?;
+    get_cloud_with_bearer(
+        &app_handle,
+        &format!("/v1/ai/videos/by-request/{encoded}"),
+        &access_token,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn get_cloud_video_status(
     app_handle: tauri::AppHandle,
     task_id: String,
@@ -3283,6 +3304,19 @@ mod tests {
         assert!(serialized.get("provider").is_none());
         assert!(serialized.get("providerChannelId").is_none());
         assert!(serialized.get("preserveReferenceIdentity").is_none());
+    }
+
+    #[test]
+    fn video_submission_receipt_keeps_the_request_id_and_accepts_legacy_responses() {
+        let mut response = serde_json::json!({
+            "results": [], "provider": "managed", "model": "minimax-h3", "chargedCredits": "0",
+            "requestId": "wallet-video-request-id"
+        });
+        let queued: super::CloudVideoGenerationResult = serde_json::from_value(response.clone()).unwrap();
+        assert_eq!(queued.request_id.as_deref(), Some("wallet-video-request-id"));
+        response.as_object_mut().unwrap().remove("requestId");
+        let legacy: super::CloudVideoGenerationResult = serde_json::from_value(response).unwrap();
+        assert!(legacy.request_id.is_none());
     }
 
     #[test]

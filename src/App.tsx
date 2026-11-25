@@ -4088,7 +4088,7 @@ function MainApp() {
     maxUrlLength = 64,
   ) => { return publishLocalAiInputsImpl({ CLOUDFLARED_DISCLAIMER_ACCEPTED_STORAGE_KEY, getCanvasAiErrorSummary, getLatestFileCacheDir, setShowUpdateLog, showUpdateLogRef }, sources, preference, maxUrlLength); };
 
-  const uploadWalletReferenceInputs = async (sources: string[]) => { return uploadWalletReferenceInputsImpl({}, sources); };
+  const uploadWalletReferenceInputs = async (sources: string[], videoMedia = false) => { return uploadWalletReferenceInputsImpl({}, sources, videoMedia); };
 
   const uploadXaisReferenceInputs = async (
     sources: string[],
@@ -4664,7 +4664,7 @@ function MainApp() {
       clientRequestId?: string;
       requireLocalImageOutputs?: boolean;
     }
-  ) => { return runCanvasAiGeneratorTargetImpl({ AI_GENERATED_VIDEO_FOLDER_NAME, activeCanvasIdRef, addGeneratedImagesToDrawer, addGeneratedVideosToDrawer, cacheCanvasGeneratedImageSource, canvasAiApiKey, canvasAiApiProvider, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiEndpoint, canvasAiHeadersText, canvasAiNewApiVideoKey, canvasAiProvider, canvasAiUnifiedImageModelOptions, canvasItemsRef, canvasesRef, createCanvasAiOutputDrafts, createCanvasImagePreviewThumbnail, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiGatewayKind, effectiveCanvasAiModel, effectiveCanvasAiProvider, getCanvasAiErrorSummary, getCanvasAiResolvedModel, getCanvasImageInputBufferItemsForNode, getCanvasImageInputsForNode, getCanvasTextInputsForNode, isCanvasAiLicenseManaged, notifyCanvasAiGenerationResult, pushDrawerUndoSnapshot, refreshCloudAccount, setCanvasAiOutputSourceRecoveryTick, showToast, stopTemporaryReferenceShares, updateDrawerItemsDeferred }, target, options); };
+  ) => { return runCanvasAiGeneratorTargetImpl({ enqueueCanvasBackgroundNodePatch, AI_GENERATED_VIDEO_FOLDER_NAME, activeCanvasIdRef, addGeneratedImagesToDrawer, addGeneratedVideosToDrawer, cacheCanvasGeneratedImageSource, canvasAiApiKey, canvasAiApiProvider, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiEndpoint, canvasAiHeadersText, canvasAiNewApiVideoKey, canvasAiProvider, canvasAiUnifiedImageModelOptions, canvasItemsRef, canvasesRef, createCanvasAiOutputDrafts, createCanvasImagePreviewThumbnail, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiGatewayKind, effectiveCanvasAiModel, effectiveCanvasAiProvider, getCanvasAiErrorSummary, getCanvasAiResolvedModel, getCanvasImageInputBufferItemsForNode, getCanvasImageInputsForNode, getCanvasTextInputsForNode, isCanvasAiLicenseManaged, notifyCanvasAiGenerationResult, pushDrawerUndoSnapshot, refreshCloudAccount, setCanvasAiOutputSourceRecoveryTick, showToast, stopTemporaryReferenceShares, updateDrawerItemsDeferred }, target, options); };
 
   const getFrameInterpolationVideoInput = (target: CanvasImageItem) => { return getFrameInterpolationVideoInputImpl({ canvasItemsRef }, target); };
 

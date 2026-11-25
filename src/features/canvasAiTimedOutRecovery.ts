@@ -36,7 +36,8 @@ export const getCanvasAiTimedOutRecoveryCandidates = (
     const generatedAt = Number(output.generatedAt || canvasItem.ai?.generatedAt || 0);
     const outputAge = generatedAt > 0 ? now - generatedAt : -1;
     const isRecoverableState = (output.status === 'error' || output.status === 'success')
-      || (output.status === 'working' && outputAge >= CANVAS_AI_STALE_WORKING_RECOVERY_AGE_MS);
+      || (mediaType === 'video' && output.status === 'recovery')
+      || (output.status === 'working' && (mediaType === 'video' || outputAge >= CANVAS_AI_STALE_WORKING_RECOVERY_AGE_MS));
     // Video requests can outlive the image reconciliation window and their
     // result is persisted by the server. Keep those historical receipts
     // recoverable after an app restart; image lookups retain the old bound.

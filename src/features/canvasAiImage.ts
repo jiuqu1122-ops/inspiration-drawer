@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { isUncertainVideoSubmit, waitForWalletVideoRequest, type WalletVideoRequest } from './cloudVideoTasks';
 import { getCanvasAiLookupRetryDelay, isCanvasAiLookupTerminalError } from './canvasAiTimedOutRecovery';
 import type { AiGatewayKind } from './agentModel';
 import type {
@@ -643,7 +644,15 @@ export const getCloudWalletVideoStatus = async (
   ...(clientRequestId?.trim() ? { clientRequestId: clientRequestId.trim() } : {}),
 });
 
+export const getCloudWalletVideoByRequest = (clientRequestId: string) =>
+  invoke<WalletVideoRequest>('get_cloud_video_by_request', { clientRequestId: clientRequestId.trim() });
+
+const watchedWalletVideoRequests = new Set<string>();
+export const isCloudWalletVideoRequestWatched = (clientRequestId: string) =>
+  watchedWalletVideoRequests.has(clientRequestId);
+
 type CloudVideoGenerationResult = {
+  requestId?: string | null;
   results: unknown[];
   provider: string;
   model: string;
@@ -823,10 +832,11 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
     inputAudios.length,
   );
   if (referenceError) throw new Error(referenceError);
+  watchedWalletVideoRequests.add(clientRequestId);
   try {
     // One deadline covers submit plus every status request.  A phase change
     // must not silently restart the 25-minute generation budget.
-    const generationDeadline = Date.now() + 25 * 60 * 1000;
+    const generationDeadline = Date.now() + (options.timeoutSecs ?? 25 * 60) * 1000;
     const duration = serverDriven
       ? normalizeVideoDurationSelection(options.videoCapabilities!, options.duration)
       : options.duration;
@@ -859,7 +869,27 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
         inputMode: isFirstLastFrame ? 'FLF' : 'REF',
         count: requestCount,
       },
+    }).catch((error: unknown) => {
+      // The same ID is used for recovery. Never make another POST on a
+      // transport timeout, duplicate receipt or inconclusive upstream error.
+      if (isUncertainVideoSubmit(error)) return null;
+      throw error;
     });
+    if (!result || result.requestId) {
+      const request = await waitForWalletVideoRequest({
+        lookup: () => getCloudWalletVideoByRequest(clientRequestId),
+        wait: delay,
+        deadline: generationDeadline,
+      });
+      const output = request.tasks.length
+        ? [...request.tasks].sort((a, b) => a.outputIndex - b.outputIndex)
+          .flatMap(task => task.status === 'succeeded' && task.resultUrl && isCloudWalletVideoResultSource(task.resultUrl)
+            ? [task.resultUrl] : [])
+        : (request.results ?? []).filter((value): value is string =>
+          typeof value === 'string' && isCloudWalletVideoResultSource(value));
+      if (output.length) return output.slice(0, requestCount);
+      throw new Error(request.error || request.tasks.find(task => task.error)?.error || '视频生成失败');
+    }
     const directOutput: string[] = [];
     const taskIds: string[] = [];
     const taskOutputById = new Map<string, string[]>();
@@ -888,7 +918,7 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
       throw new Error('云端视频渠道没有返回任务 ID 或视频地址');
     }
     const taskFailures: string[] = [];
-    for (const taskId of taskIds) {
+    await Promise.all(taskIds.map(async taskId => {
       let lastStatus: unknown = initialTaskStatuses.get(taskId) ?? null;
       while (Date.now() < generationDeadline) {
         await delay(getCloudVideoPollAfterMs(lastStatus));
@@ -902,7 +932,10 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
           // A transient GET failure does not change the upstream task identity.
           // Keep polling the same task after its requested backoff; only clear
           // authentication/validation failures escape as terminal errors.
-          if (!isRetryableServerError(error)) throw error;
+          if (!isRetryableServerError(error)) {
+            taskFailures.push(getErrorMessage(error));
+            return;
+          }
           lastStatus = error;
           continue;
         }
@@ -932,7 +965,7 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
       }
       const failure = getNewApiVideoFailureMessage(lastStatus);
       if (failure && !taskFailures.includes(failure)) taskFailures.push(failure);
-    }
+    }));
     const output = initialOutput();
     if (output.length === 0) {
       throw new Error(taskFailures.join('；') || '云端视频任务超时或没有返回视频地址');
@@ -941,7 +974,9 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
     // accounting: two valid outputs may point at the same CDN URL.
     return output.slice(0, requestCount);
   } catch (error) {
-    throw new Error(getErrorMessage(error));
+    throw error instanceof Error ? error : new Error(getErrorMessage(error));
+  } finally {
+    watchedWalletVideoRequests.delete(clientRequestId);
   }
 };
 
