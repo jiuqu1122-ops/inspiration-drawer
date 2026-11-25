@@ -20,7 +20,7 @@ fn main() {
         unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), flags) }
     }
 
-    if show("为当前 Windows 账户离线安装或修复 Rhino 8 / 9 插件。", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK {
+    if show("为当前 Windows 账户离线安装并启用灵感抽屉 Rhino 8 / 9 插件。", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK {
         return;
     }
 
@@ -29,7 +29,7 @@ fn main() {
             let versions = result.installed.iter().filter(|item| item.installed)
                 .map(|item| format!("Rhino {}", item.major_version)).collect::<Vec<_>>().join("、");
             let next = if result.restart_required { "请保存工程并重启 Rhino。" } else { "请启动 Rhino。" };
-            let mut message = format!("{versions} 的插件文件和命令已注册。\n{next}启动后输入 InspirationDrawer。");
+            let mut message = format!("{versions} 的灵感抽屉插件已安装并启用。\n{next}启动后输入 InspirationDrawer。");
             if result.repaired_conflicts > 0 {
                 message.push_str("\n检测到的同 ID 旧包已备份。");
             }

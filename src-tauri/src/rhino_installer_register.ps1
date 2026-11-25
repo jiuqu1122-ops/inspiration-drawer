@@ -13,8 +13,15 @@ foreach ($registration in $registrations) {
   $target = [string]$registration.pluginPath
   if (-not (Test-Path -LiteralPath $target -PathType Leaf) -or [IO.Path]::GetFileName($target) -ne 'InspirationDrawer.Rhino.rhp') { throw "Invalid Rhino $version plugin payload: $target" }
   $guid = 'b55c8d32-2c2f-4da2-84ca-b7c88c1a8de5'
-  $root = "SOFTWARE\McNeel\Rhinoceros\$version.0\Plug-Ins\$guid"
-  $plans += [pscustomobject]@{ version=$version; target=$target; root=$root; commandKeyPath="$root\CommandList"; pluginKeyPath="$root\PlugIn" }
+  $rhinoRoot = "SOFTWARE\McNeel\Rhinoceros\$version.0"
+  $root = "$rhinoRoot\Plug-Ins\$guid"
+  $plans += [pscustomobject]@{
+    version=$version; target=$target; root=$root; commandKeyPath="$root\CommandList"; pluginKeyPath="$root\PlugIn"
+    enableOnInstall=($registration.enableOnInstall -is [bool] -and $registration.enableOnInstall)
+    protectionKeyPath="$rhinoRoot\Global Options\Plug-ins\$guid"
+    legacyProtectionKeyPath="$rhinoRoot\Global Settings\Plug-ins\$guid"
+    protectionKeys=@()
+  }
 }
 function Read-RegistrySnapshot([string]$keyPath, [string]$name) {
   $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($keyPath)
@@ -43,10 +50,19 @@ foreach ($plan in $plans) {
     @{keyPath=$plan.root;name='EnglishName'},
     @{keyPath=$plan.root;name='Type'},
     @{keyPath=$plan.root;name='IsDotNETPlugIn'},
-    @{keyPath=$plan.root;name='LoadMode'},
     @{keyPath=$plan.commandKeyPath;name='InspirationDrawer'},
     @{keyPath=$plan.pluginKeyPath;name='FileName'}
   )) { $snapshots += Read-RegistrySnapshot $value.keyPath $value.name }
+  if ($plan.enableOnInstall) {
+    $snapshots += Read-RegistrySnapshot $plan.root 'LoadMode'
+    $plan.protectionKeys += $plan.protectionKeyPath
+    $snapshots += Read-RegistrySnapshot $plan.protectionKeyPath 'LoadProtection'
+    $legacy = Read-RegistrySnapshot $plan.legacyProtectionKeyPath 'LoadProtection'
+    if ($legacy.exists) {
+      $plan.protectionKeys += $plan.legacyProtectionKeyPath
+      $snapshots += $legacy
+    }
+  }
 }
 try {
   foreach ($plan in $plans) {
@@ -57,7 +73,9 @@ try {
       $parent.SetValue('EnglishName','InspirationDrawer.Rhino',[Microsoft.Win32.RegistryValueKind]::String)
       $parent.SetValue('Type',16,[Microsoft.Win32.RegistryValueKind]::DWord)
       $parent.SetValue('IsDotNETPlugIn',1,[Microsoft.Win32.RegistryValueKind]::DWord)
-      $parent.SetValue('LoadMode',1,[Microsoft.Win32.RegistryValueKind]::DWord)
+      if ($plan.enableOnInstall) {
+        $parent.SetValue('LoadMode',1,[Microsoft.Win32.RegistryValueKind]::DWord)
+      }
     } finally { $parent.Dispose() }
     $commands = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($plan.commandKeyPath)
     if (-not $commands) { throw "Could not create Rhino $($plan.version) command registry key" }
@@ -77,10 +95,21 @@ try {
     } finally { $plugin.Dispose() }
     $verify = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($plan.root)
     try {
-      if (-not $verify -or $verify.GetValue('LoadMode',0) -ne 1 -or $verify.GetValue('IsDotNETPlugIn',0) -ne 1) {
+      if (-not $verify -or $verify.GetValue('IsDotNETPlugIn',0) -ne 1 -or ($plan.enableOnInstall -and $verify.GetValue('LoadMode',0) -ne 1)) {
         throw "Rhino $($plan.version) load settings verification failed"
       }
     } finally { if ($verify) { $verify.Dispose() } }
+    foreach ($protectionPath in $plan.protectionKeys) {
+      $protection = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($protectionPath)
+      if (-not $protection) { throw "Could not open Rhino $($plan.version) plugin load preference" }
+      try {
+        # Rhino's per-plugin preference 1 allows loading without a confirmation dialog.
+        $protection.SetValue('LoadProtection','1',[Microsoft.Win32.RegistryValueKind]::String)
+        if ($protection.GetValue('LoadProtection','') -ne '1' -or $protection.GetValueKind('LoadProtection') -ne [Microsoft.Win32.RegistryValueKind]::String) {
+          throw "Rhino $($plan.version) plugin enablement verification failed"
+        }
+      } finally { $protection.Dispose() }
+    }
   }
 } catch {
   $failure = $_.Exception.Message

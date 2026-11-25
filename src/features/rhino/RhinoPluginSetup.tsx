@@ -123,7 +123,7 @@ export function RhinoPluginSetup({ expanded, onToggle }: { expanded: boolean; on
         <ChevronDown className={`h-4 w-4 text-stone-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />
       </button>
       {expanded && <div className="space-y-3 border-t border-stone-100 p-3 dark:border-stone-700/60">
-        <p className="text-[11px] leading-relaxed text-stone-500 dark:text-stone-400">为当前 Windows 账户安装 Rhino 8 / 9 插件。本地安装完成后再检查在线更新。</p>
+        <p className="text-[11px] leading-relaxed text-stone-500 dark:text-stone-400">为当前 Windows 账户安装并启用 Rhino 8 / 9 的灵感抽屉插件，下次启动 Rhino 时生效。</p>
         {versions?.map(version => {
           return <div key={version.majorVersion} className="space-y-1 rounded-lg bg-stone-50 px-3 py-2 text-xs dark:bg-stone-900/50">
             <div className="flex items-center justify-between gap-2">
@@ -138,8 +138,7 @@ export function RhinoPluginSetup({ expanded, onToggle }: { expanded: boolean; on
               <code className="mt-1 block break-all">{version.pluginPath}</code>
             </details>}
             {version.running && version.runningAsCurrentUser === false && <p role="status" className="text-[10px] leading-relaxed text-amber-700 dark:text-amber-400">{'\u68c0\u6d4b\u5230 Rhino \u662f\u4ee5\u53e6\u4e00 Windows \u8d26\u6237\u8fd0\u884c\uff1b\u6b64\u63d2\u4ef6\u5b89\u88c5\u5728\u62bd\u5c49\u5f53\u524d\u8d26\u6237\uff0c\u53e6\u4e00\u8d26\u6237\u4e0d\u4f1a\u770b\u5230\u6b64\u6ce8\u518c\u9879\u3002'}</p>}
-            {version.installed && version.loadMode === 0 && <p role="status" className="text-[10px] leading-relaxed text-amber-700 dark:text-amber-400">{'\u8bf7\u5728 Rhino \u7684 PlugInManager \u4e2d\u68c0\u67e5\u5e76\u91cd\u65b0\u542f\u7528\u63d2\u4ef6\u3002'}</p>}
-            {version.loadProtection != null && version.loadProtection > 1 && <p role="status" className="text-[10px] leading-relaxed text-amber-700 dark:text-amber-400">{'Rhino \u5f53\u524d\u8bbe\u7f6e\u4e86\u52a0\u8f7d\u4fdd\u62a4\u786e\u8ba4\uff1b\u5982\u672a\u52a0\u8f7d\uff0c\u8bf7\u5728 Rhino \u7684 PlugInManager \u5141\u8bb8\u52a0\u8f7d\u6b64\u63d2\u4ef6\u3002'}</p>}
+            {((version.installed && version.loadMode === 0) || (version.loadProtection ?? 0) > 1) && <p role="status" className="text-[10px] leading-relaxed text-amber-700 dark:text-amber-400">{(version.loadProtection ?? 0) > 1 ? '此插件需要加载保护确认。' : '此插件已停用。'}点击「一键安装 / 更新插件」可重新启用。</p>}
           </div>;
         })}
         {versions?.length === 0 && <p className="text-[11px] text-stone-500">尚未检测到 Rhino 8 或 9，仍可检查并准备组件更新。</p>}
@@ -160,7 +159,7 @@ export function RhinoPluginSetup({ expanded, onToggle }: { expanded: boolean; on
             {components?.components.map(component => <p key={component.id}>
               {componentNames[component.id] || component.id}（已准备）　{component.error ? `校验失败 · ${component.error}` : component.version}
             </p>)}
-            <p>已注册表示文件校验通过。启动 Rhino 后可刷新检测实际加载状态。软件升级后会自动同步已启用的托管插件。</p>
+            <p>启动 Rhino 后可刷新检测实际加载状态。软件升级后会自动同步已启用的托管插件。</p>
             {automaticSync && <p className="break-words whitespace-pre-wrap">最近一次自动同步　{automaticSync.message}</p>}
             <button type="button" disabled={busy || !components?.canRollback} onClick={() => void rollback()}
               className="rounded-lg border border-stone-200 px-2 py-1.5 disabled:opacity-40 dark:border-stone-600">

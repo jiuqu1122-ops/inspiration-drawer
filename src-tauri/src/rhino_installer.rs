@@ -357,7 +357,7 @@ pub(crate) fn install() -> Result<RhinoInstallResult, String> {
     if versions.is_empty() {
         return Err("Rhino 8 or Rhino 9 was not found. Install Rhino first, then refresh.".into());
     }
-    install_versions(versions)
+    install_versions(versions, true)
 }
 
 pub(crate) fn sync_managed_plugins() -> Result<RhinoAutoUpdateResult, String> {
@@ -373,7 +373,7 @@ pub(crate) fn sync_managed_plugins() -> Result<RhinoAutoUpdateResult, String> {
         });
     }
     let updated_versions = outdated.iter().map(|item| item.major_version).collect::<Vec<_>>();
-    let install_result = install_versions(outdated)?;
+    let install_result = install_versions(outdated, false)?;
     Ok(RhinoAutoUpdateResult {
         updated_versions,
         skipped_disabled_versions,
@@ -391,7 +391,7 @@ fn outdated_managed(detected: Vec<RhinoInstallation>, root: &Path) -> (Vec<Rhino
     (outdated, disabled)
 }
 
-fn install_versions(versions: Vec<RhinoInstallation>) -> Result<RhinoInstallResult, String> {
+fn install_versions(versions: Vec<RhinoInstallation>, enable_on_install: bool) -> Result<RhinoInstallResult, String> {
     if versions.is_empty() {
         return Err("No Rhino versions were selected for plugin installation.".into());
     }
@@ -409,7 +409,7 @@ fn install_versions(versions: Vec<RhinoInstallation>) -> Result<RhinoInstallResu
     #[cfg(windows)]
     {
         let registrations = versions.iter().zip(prepared_payloads.iter()).map(|(item, plugin_path)| {
-            serde_json::json!({ "version": item.major_version, "pluginPath": plugin_path })
+            serde_json::json!({ "version": item.major_version, "pluginPath": plugin_path, "enableOnInstall": enable_on_install })
         }).collect::<Vec<_>>();
         let registrations = serde_json::to_string(&registrations).map_err(|error| error.to_string())?;
         run_powershell(
@@ -429,11 +429,12 @@ fn install_versions(versions: Vec<RhinoInstallation>) -> Result<RhinoInstallResu
     }
     let installed = detect().map_err(|error| format!("Rhino post-install verification failed: {error}"))?;
     let selected_installed = installed.iter().filter(|item| selected_versions.contains(&item.major_version)).collect::<Vec<_>>();
-    let invalid = |item: &&RhinoInstallation| !item.installed || item.load_mode != Some(1)
+    let invalid = |item: &&RhinoInstallation| !item.installed
+        || (enable_on_install && (item.load_mode != Some(1) || item.load_protection != Some(1)))
         || item.command_registered != Some(true) || !item.conflicting_package_paths.is_empty();
     if selected_installed.len() != selected_versions.len() || selected_installed.iter().any(invalid) {
         let details = selected_installed.iter().filter(|item| invalid(item))
-            .map(|item| format!("Rhino {}: files verified={}, command registered={:?}, load mode={:?}, duplicate packages={}", item.major_version, item.installed, item.command_registered, item.load_mode, item.conflicting_package_paths.len()))
+            .map(|item| format!("Rhino {}: files verified={}, command registered={:?}, load mode={:?}, load protection={:?}, duplicate packages={}", item.major_version, item.installed, item.command_registered, item.load_mode, item.load_protection, item.conflicting_package_paths.len()))
             .collect::<Vec<_>>().join("; ");
         return Err(format!("Rhino registration verification failed after writing payloads. {details}. Existing models and conversations were not changed."));
     }

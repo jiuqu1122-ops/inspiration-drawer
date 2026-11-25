@@ -40,13 +40,17 @@ const fakeRegistry = [
   '$p=$hive.CreateSubKey("$r\\PlugIn")',
   '$p.SetValue("FileName","previous.rhp",[Microsoft.Win32.RegistryValueKind]::String)',
   '}',
+  '$protection = @($roots | ForEach-Object { $_.Replace("\\Plug-Ins\\", "\\Global Options\\Plug-ins\\") })',
+  '$legacyProtection = $protection[0].Replace("Global Options", "Global Settings")',
+  '$hive.CreateSubKey($protection[1]).SetValue("LoadProtection","2",[Microsoft.Win32.RegistryValueKind]::String)',
+  '$hive.CreateSubKey($legacyProtection).SetValue("LoadProtection",2,[Microsoft.Win32.RegistryValueKind]::DWord)',
 ].join('\n');
-function fixtureRegistrations() {
+function fixtureRegistrations(enableOnInstall = true) {
   const dir = mkdtempSync(join(tmpdir(), 'rhino-registry-fixture-'));
   return [8,9].map(version => {
     const folder=join(dir,String(version)); mkdirSync(folder);
     const pluginPath=join(folder,'InspirationDrawer.Rhino.rhp'); writeFileSync(pluginPath,'never loaded');
-    return {version,pluginPath};
+    return {version,pluginPath,enableOnInstall};
   });
 }
 const mockScript = registration.replaceAll('[Microsoft.Win32.Registry]::CurrentUser', '[FixtureRegistry]::CurrentUser');
@@ -55,19 +59,32 @@ const capture = [
   '$k=$hive.OpenSubKey($_); $p=$hive.OpenSubKey("$_\\PlugIn")',
   '[ordered]@{name=$k.GetValue("Name","missing");mode=$k.GetValue("LoadMode",-1);extra=$k.GetValue("EnglishName","missing");custom=$k.GetValue("UserCustomValue","missing");path=$p.GetValue("FileName","missing")}',
   '})',
-  '@{error=$failure;values=$values} | ConvertTo-Json -Compress -Depth 6',
+  '$preferences=@($protection | ForEach-Object { $key=$hive.OpenSubKey($_); if ($key) { $key.GetValue("LoadProtection", -1) } else { -1 } })',
+  '@{error=$failure;values=$values;preferences=$preferences;legacy=$hive.OpenSubKey($legacyProtection).GetValue("LoadProtection")} | ConvertTo-Json -Compress -Depth 6',
 ].join('\n');
 describe.runIf(process.platform === 'win32')('Rhino PowerShell registrar and runtime detection fixtures', { timeout: powershellTimeoutMs + 5_000 }, () => {
-  it('registers both versions without touching unrelated user values', () => {
+  it('enables both versions during manual installation without touching unrelated user values', () => {
     const plans=fixtureRegistrations();
     const result=run(fakeRegistry+'\n$failure=$null\n& {\n'+mockScript+'\n} | Out-Null\n'+capture,{DRAWER_RHINO_REGISTRATIONS:JSON.stringify(plans)});
     expect(result.error).toBeNull();
     result.values.forEach((v,i) => expect(v).toMatchObject({name:'InspirationDrawer.Rhino',mode:1,custom:'untouched',path:plans[i].pluginPath}));
+    expect(result.preferences).toEqual(['1', '1']);
+    expect(result.legacy).toBe('1');
+  });
+  it('preserves load preferences during automatic synchronization', () => {
+    const plans=fixtureRegistrations(false);
+    const result=run(fakeRegistry+'\n$failure=$null\n& {\n'+mockScript+'\n} | Out-Null\n'+capture,{DRAWER_RHINO_REGISTRATIONS:JSON.stringify(plans)});
+    expect(result.error).toBeNull();
+    result.values.forEach((v,i) => expect(v).toMatchObject({mode:0,path:plans[i].pluginPath}));
+    expect(result.preferences).toEqual([-1, '2']);
+    expect(result.legacy).toBe(2);
   });
   it('restores both versions if the second registration fails', () => {
     const result=run(fakeRegistry+'\n$hive.FailPath=$roots[1]+"\\PlugIn"\n$failure=$null\ntry { & {\n'+mockScript+'\n} | Out-Null } catch { $failure=$_.Exception.Message }\n'+capture,{DRAWER_RHINO_REGISTRATIONS:JSON.stringify(fixtureRegistrations())});
     expect(result.error).toContain('all touched current-user registry values were restored');
     expect(result.values).toEqual([8,9].map(() => ({name:'previous-name',mode:0,extra:'missing',custom:'untouched',path:'previous.rhp'})));
+    expect(result.preferences).toEqual([-1, '2']);
+    expect(result.legacy).toBe(2);
   });
   it('does not misidentify a Rhino 9 executable as Rhino 8 through a stale install registry key', () => {
     const helper = detection.slice(detection.indexOf('function Find-RhinoExecutable('), detection.indexOf('function Get-RhinoRuntimeMode('));

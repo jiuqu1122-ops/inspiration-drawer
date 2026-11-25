@@ -93,9 +93,17 @@ foreach ($version in @(8,9)) {
     try { $commandRegistered = $commandKey.GetValue('InspirationDrawer','') -eq '2;InspirationDrawer' }
     finally { $commandKey.Dispose() }
   }
-  $protectionKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("SOFTWARE\McNeel\Rhinoceros\$version.0\Global Settings\Plug-ins\$guid")
   $loadProtection = $null
-  if ($protectionKey) { try { $loadProtection = $protectionKey.GetValue('LoadProtection',$null) } finally { $protectionKey.Dispose() } }
+  foreach ($protectionBranch in @('Global Options','Global Settings')) {
+    $protectionKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("SOFTWARE\McNeel\Rhinoceros\$version.0\$protectionBranch\Plug-ins\$guid")
+    if (-not $protectionKey) { continue }
+    try { $rawProtection = $protectionKey.GetValue('LoadProtection',$null) } finally { $protectionKey.Dispose() }
+    $protectionValue = [uint32]0
+    if ([uint32]::TryParse([string]$rawProtection,[ref]$protectionValue)) {
+      $loadProtection = $protectionValue
+      break
+    }
+  }
   $uncertainProcesses = @($processes | Where-Object { -not $_.Path })
   $matchingProcesses = @($processes | Where-Object { -not $_.Path -or [string]::Equals($_.Path,$path,[StringComparison]::OrdinalIgnoreCase) })
   # Inaccessible/elevated Rhino processes must defer file cleanup rather than look closed.

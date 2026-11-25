@@ -29,10 +29,11 @@ mod windows_host {
     use std::{ffi::OsString, fs, io::{BufRead, BufReader, Read, Write}, os::windows::{ffi::OsStringExt, process::CommandExt}, path::{Path, PathBuf}, process::{Command, Stdio}, thread, time::{Duration, Instant}};
     use tauri::{path::BaseDirectory, Manager};
     use tokio::sync::Mutex;
-    use winapi::um::winreg::{RegGetValueW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY};
+    use winapi::um::winreg::{RegGetValueW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY};
     use winapi::shared::minwindef::HKEY;
 
     const WORKER: &str = "InspirationDrawer.Rhino.Headless.exe";
+    const DRAWER_PLUGIN_ID: &str = "b55c8d32-2c2f-4da2-84ca-b7c88c1a8de5";
     const RESPONSE_LIMIT: usize = 4 * 1024 * 1024;
     static KERNEL: Mutex<()> = Mutex::const_new(());
     static LAUNCHED_RHINO9: Mutex<Option<u64>> = Mutex::const_new(None);
@@ -43,7 +44,7 @@ mod windows_host {
         instance: Option<String>,
     }
 
-    fn registry_path(root: HKEY, subkey: &str, value_name: &str) -> Option<PathBuf> {
+    fn registry_string(root: HKEY, subkey: &str, value_name: &str) -> Option<OsString> {
         let subkey: Vec<u16> = subkey.encode_utf16().chain([0]).collect();
         let name: Vec<u16> = value_name.encode_utf16().chain([0]).collect();
         let mut value = [0u16; 4096];
@@ -52,7 +53,11 @@ mod windows_host {
         let status = unsafe { RegGetValueW(root, subkey.as_ptr(), name.as_ptr(), RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY,
             std::ptr::null_mut(), value.as_mut_ptr().cast(), &mut bytes) };
         if status != 0 || bytes < 2 { return None; }
-        let path = PathBuf::from(OsString::from_wide(&value[..(bytes as usize / 2) - 1]));
+        Some(OsString::from_wide(&value[..(bytes as usize / 2) - 1]))
+    }
+
+    fn registry_path(root: HKEY, subkey: &str, value_name: &str) -> Option<PathBuf> {
+        let path = PathBuf::from(registry_string(root, subkey, value_name)?);
         path.is_absolute().then_some(path)
     }
 
@@ -62,10 +67,35 @@ mod windows_host {
             .filter(|path| path.join("RhinoCommon.dll").is_file() && path.join("RhinoCore.dll").is_file())
     }
 
+    fn rhino9_requires_plugin_confirmation() -> bool {
+        let name = "LoadProtection";
+        let wide_name: Vec<u16> = name.encode_utf16().chain([0]).collect();
+        for branch in ["Global Options", "Global Settings"] {
+            let subkey = format!(r"SOFTWARE\McNeel\Rhinoceros\9.0\{branch}\Plug-ins\{DRAWER_PLUGIN_ID}");
+            if let Some(value) = registry_string(HKEY_CURRENT_USER, &subkey, name)
+                .and_then(|value| value.to_str()?.trim().parse::<u32>().ok()) {
+                return value == 2;
+            }
+            let wide_subkey: Vec<u16> = subkey.encode_utf16().chain([0]).collect();
+            let mut value = 0u32;
+            let mut size = std::mem::size_of::<u32>() as u32;
+            let status = unsafe {
+                RegGetValueW(HKEY_CURRENT_USER, wide_subkey.as_ptr(), wide_name.as_ptr(),
+                    RRF_RT_REG_DWORD | RRF_SUBKEY_WOW6464KEY, std::ptr::null_mut(),
+                    (&mut value as *mut u32).cast(), &mut size)
+            };
+            if status == 0 { return value == 2; }
+        }
+        false
+    }
+
     fn launch_rhino9(system: PathBuf) -> Result<u64, String> {
-        let registration = r"SOFTWARE\McNeel\Rhinoceros\9.0\Plug-Ins\b55c8d32-2c2f-4da2-84ca-b7c88c1a8de5\PlugIn";
-        if !registry_path(HKEY_CURRENT_USER, registration, "FileName").is_some_and(|path| path.is_file()) {
+        let registration = format!(r"SOFTWARE\McNeel\Rhinoceros\9.0\Plug-Ins\{DRAWER_PLUGIN_ID}\PlugIn");
+        if !registry_path(HKEY_CURRENT_USER, &registration, "FileName").is_some_and(|path| path.is_file()) {
             return Err("请先在设置中安装或更新 Rhino 9 插件。".into());
+        }
+        if rhino9_requires_plugin_confirmation() {
+            return Err("Rhino 9 的灵感抽屉插件需要加载确认。请在灵感抽屉设置中点「一键安装 / 更新插件」后重试。".into());
         }
         let exe = system.join("Rhino.exe");
         if !exe.is_file() { return Err("找不到 Rhino 9 启动程序。".into()); }
