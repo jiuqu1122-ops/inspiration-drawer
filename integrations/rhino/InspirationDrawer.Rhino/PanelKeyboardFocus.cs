@@ -52,7 +52,7 @@ internal sealed class PanelKeyboardFocus : IDisposable
         // WebView2's renderer is a child in a different process. Match the
         // exact Eto view's public HwndHost/WinForms handle, not another plugin's browser.
         IntPtr host;
-        try { host = view.ControlObject?.GetType().GetProperty("Handle")?.GetValue(view.ControlObject) is IntPtr handle ? handle : IntPtr.Zero; }
+        try { host = DrawerFloatingPanel.NativeHandle(view); }
         catch { return IntPtr.Zero; }
         if (host == IntPtr.Zero || !IsWindow(host) || (hwnd != host && !IsChild(host, hwnd))) return IntPtr.Zero;
         for (var depth = 0; depth < 32 && hwnd != IntPtr.Zero && IsWindow(hwnd); depth++, hwnd = GetParent(hwnd))

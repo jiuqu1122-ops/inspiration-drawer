@@ -201,6 +201,7 @@ public sealed class DrawerPanel : Eto.Forms.Panel
             {
                 if (args.Uri == null || args.Uri.Scheme != "http" || args.Uri.Host != "127.0.0.1" || args.Uri.Port != new Uri(server.Url).Port) args.Cancel = true;
             };
+            view.DocumentLoaded += (_, _) => DrawerFloatingPanel.ApplyInitialSize(view);
             view.Url = target;
 #if RHINO8
             // Do not give the native WebView a fixed Size: Rhino 8 can treat it as

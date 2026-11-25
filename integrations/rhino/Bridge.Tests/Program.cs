@@ -309,6 +309,9 @@ try
     Check((await Request("panel/parts?documentId=7", auth: false)).Code == HttpStatusCode.Unauthorized, "parts inventory requires instance authentication");
     var baseCss = await RequestText("/panel.css");
     Check(DrawerPanelLayout.MinimumWidth == 340 && DrawerPanelLayout.MinimumHeight == 420, "Rhino panel can shrink to the responsive 340x420 compact minimum");
+    Check(DrawerPanelLayout.FirstFloatingSize(new(300, 300), new(1920, 1040), 96) == new System.Drawing.Size(480, 680), "fresh floating panel opens at a usable size");
+    Check(DrawerPanelLayout.FirstFloatingSize(new(450, 450), new(900, 920), 144) == new System.Drawing.Size(720, 920), "initial floating size respects monitor scaling and available height");
+    Check(DrawerPanelLayout.FirstFloatingSize(new(440, 540), new(1920, 1040), 96) == new System.Drawing.Size(440, 540), "a usable saved window size is preserved");
     Check(baseCss.Code == HttpStatusCode.OK && !baseCss.Text.Contains("min-width:280px") && baseCss.Text.Contains("overflow-x:hidden"), "edge-docked panel does not enforce a horizontal minimum width");
     Check(baseCss.Text.Contains(".rhino-composer { display:flex;") && baseCss.Text.Contains("@media (max-width: 340px)") && baseCss.Text.Contains("grid-template-columns:minmax(0,1fr) minmax(56px,22%) minmax(54px,18%)"), "edge-docked image controls remain in one compact Chat-style composer row at the panel minimum");
     Check(baseCss.Text.Contains(".tool-history {" ) && baseCss.Text.Contains(".tool-history__summary"), "Rhino internal tool history is styled as a compact disclosure");
