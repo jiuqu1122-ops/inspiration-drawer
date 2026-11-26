@@ -6,6 +6,8 @@ import { blobToDataUrl } from '../../../utils/canvasImageData';
 import type { AgentCanvasSelectionItem } from '../../agentModel';
 import type { PendingChatAttachment } from '../model/chatTypes';
 import { createChatVisionAttachmentResolver } from '../attachments/chatVisionAttachmentResolver';
+import { chatLocalAttachmentName, getChatLocalFileExtension } from '../attachments/chatLocalFileAttachments';
+import { readChatLocalFile, decodeChatText, resolveChatFileContent } from '../attachments/chatFileContent';
 import {
   setCanvasChatVisibility,
   useCanvasChatVisibility,
@@ -44,18 +46,38 @@ export type ChatHostProps = Omit<ChatViewProps, 'runtime'> & {
   resolveRhinoSelectedItems?: () => AgentCanvasSelectionItem[];
 };
 
-const prepareChatAttachment = async (attachment: PendingChatAttachment) => {
-  if (attachment.type === 'workflow') {
+const prepareChatAttachment = async ({ droppedFile, ...attachment }: PendingChatAttachment) => {
+  if (droppedFile) {
+    const path = await invoke<string>('save_dropped_file', {
+      fileName: droppedFile.name,
+      dataUrl: await blobToDataUrl(droppedFile),
+    });
+    attachment.path = path;
+    if (attachment.type === 'image') attachment.thumbnailPath = path;
+  }
+  const fileName = chatLocalAttachmentName(attachment);
+  const maybeJsonWorkflow = attachment.type === 'file' && getChatLocalFileExtension(fileName) === 'json';
+  if (attachment.type === 'workflow' || maybeJsonWorkflow) {
     const source = attachment.path.trim();
     if (!source || /^workflow:\/\//i.test(source)) return attachment;
+    if (maybeJsonWorkflow) {
+      try {
+        const json = JSON.parse(decodeChatText(await readChatLocalFile(source, fileName)));
+        const workflow = Array.isArray(json?.workflows) ? json.workflows[0] : json;
+        if (!Array.isArray(workflow?.nodes) || (!Array.isArray(json.workflows)
+          && !workflow.nodes.some((node: { id?: unknown; inputs?: unknown }) => node?.id && Array.isArray(node.inputs)))) {
+          return attachment;
+        }
+      } catch { return attachment; }
+    }
     const payload = await invoke<unknown>('read_canvas_template_json', { path: source });
     const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
     const workflow = Array.isArray(record.workflows) ? record.workflows[0] : record;
     const workflowRecord = workflow && typeof workflow === 'object' ? workflow as Record<string, unknown> : {};
     const nodes = Array.isArray(workflowRecord.nodes) ? workflowRecord.nodes : [];
-    const snapshot = createCanvasWorkflowSnapshot(nodes, String(workflowRecord.label || source.split(/[\\/]/).pop() || '导入工作流'), 'file');
+    const snapshot = createCanvasWorkflowSnapshot(nodes, String(workflowRecord.label || fileName), 'file');
     const structureHash = workflowSnapshotHash(snapshot);
-    return { ...attachment, path: `workflow://${structureHash}`, metadataJson: JSON.stringify({ snapshot, structureHash, raw: payload }) };
+    return { ...attachment, type: 'workflow', path: `workflow://${structureHash}`, metadataJson: JSON.stringify({ snapshot, structureHash, raw: payload }) };
   }
   if (attachment.type !== 'image') return attachment;
   const source = attachment.path.trim();
@@ -161,6 +183,7 @@ export function ChatHost({
     cloudWalletMode: cloudWalletMode ?? serverManagedChannelFailover === true,
     onWalletSettlementComplete: scheduleQuotaRefresh,
     prepareAttachment: prepareChatAttachment,
+    resolveFileAttachment: resolveChatFileContent,
     createVisionAttachmentResolver: createChatVisionAttachmentResolver,
   };
   const runtime = useChatRuntime({

@@ -339,6 +339,7 @@ fn process_job_inner(
         "native-drop",
         NativeDropPayload {
             source: job.source.clone(),
+            drop_position: job.drop_position,
             paths,
             web_images: Vec::new(),
             texts: Vec::new(),

@@ -25,6 +25,42 @@ const message = (
 });
 
 describe('Chat context builder', () => {
+  it('sends the local attachment body with its display name and reloads it for follow-ups', async () => {
+    const latest = message('message-1', 'user', '能看到这个文件吗', {
+      attachments: [{
+        id: 'design-file', messageId: 'message-1', type: 'file',
+        path: 'C:/private/cache-123.md', metadataJson: '{"fileName":"设计提示词.md"}', createdAt: 1,
+      }],
+    });
+    const resolveFileAttachment = vi.fn(async () => ({ text: '项目编号 DRAWER-7347' }));
+    const first = await buildChatContext({ messages: [latest], latestUserMessage: latest, resolveFileAttachment });
+    const request = first[first.length - 1];
+    expect(request.content).toEqual([
+      { type: 'text', text: latest.content },
+      { type: 'text', text: expect.stringContaining('项目编号 DRAWER-7347') },
+    ]);
+    expect(JSON.stringify(request)).toContain('设计提示词.md');
+    expect(JSON.stringify(request)).not.toContain('C:/private');
+    const followUp = message('message-3', 'user', '项目编号是多少？');
+    const second = await buildChatContext({ messages: [latest, followUp], latestUserMessage: followUp, resolveFileAttachment });
+    expect(JSON.stringify(second[second.length - 1])).toContain('历史文件附件');
+    expect(JSON.stringify(second[second.length - 1])).toContain('DRAWER-7347');
+    expect(resolveFileAttachment).toHaveBeenCalledTimes(2);
+  });
+
+  it('makes attachment read failures visible to the user and explicit in model context', async () => {
+    const latest = message('message-1', 'user', '能看到文件吗', {
+      attachments: [{ id: 'missing', messageId: 'message-1', type: 'file', path: 'C:/cache/设计.pdf', createdAt: 1 }],
+    });
+    const onFileAttachmentNotice = vi.fn();
+    const context = await buildChatContext({
+      messages: [latest], latestUserMessage: latest, onFileAttachmentNotice,
+      resolveFileAttachment: async () => { throw new Error('无法打开附件。'); },
+    });
+    expect(JSON.stringify(context[context.length - 1])).toContain('未能读取文件内容');
+    expect(onFileAttachmentNotice).toHaveBeenCalledWith('设计.pdf：无法打开附件。');
+  });
+
   it('adds the selected agent instructions to this turn while preserving the core prompt', async () => {
     const latest = message('message-1', 'user', '请做一个产品方案');
     const context = await buildChatContext({

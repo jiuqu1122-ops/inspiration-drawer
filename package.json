@@ -23,6 +23,7 @@
     "rhino:update:pack": "node scripts/rhino-updates.mjs pack"
   },
   "dependencies": {
+    "@file-viewer/doc": "3.3.6",
     "@react-three/drei": "^10.7.8",
     "@react-three/fiber": "^9.7.0",
     "@tauri-apps/api": "^2.10.1",
@@ -38,6 +39,7 @@
     "fflate": "0.8.3",
     "framer-motion": "^12.35.2",
     "lucide-react": "^0.577.0",
+    "pdfjs-dist": "5.7.284",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
@@ -47,6 +49,7 @@
     "remark-parse": "^11.0.0",
     "three": "^0.185.1",
     "unified": "^11.0.5",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zod": "^4.5.4"
   },
   "devDependencies": {

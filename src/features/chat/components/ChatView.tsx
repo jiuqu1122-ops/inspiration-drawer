@@ -3,7 +3,7 @@ import { collectChatHtmlArtifacts } from '../html/chatHtmlArtifacts';
 import { ChatHtmlPreview } from './ChatHtmlPreview';
 import { conversationDisplayTitle } from '../model/chatConversationTitle';
 import { Bot, Check, MessageSquarePlus, PanelLeft, PanelsTopLeft, Sparkles, Trash2, Workflow, X } from 'lucide-react';
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentCanvasSelectionItem, WorkflowResultCardData } from '../../agentModel';
 import type { ChatGeneratedMedia, ChatImageModelOption, PendingChatAttachment } from '../model/chatTypes';
 import { getVisibleSelectionChatAttachments, selectionToChatAttachments } from '../attachments/chatSelectionAttachments';
@@ -16,7 +16,7 @@ import {
 } from '../attachments/chatWorkflowAttachments';
 import { clearChatWorkflowDraft, loadChatWorkflowDraft, saveChatWorkflowDraft } from '../attachments/chatWorkflowDraftStore';
 import { setCanvasChatSidebarWidth } from '../runtime/canvasChatVisibility';
-import { CHAT_SKILLS_CHANGED_EVENT, getSelectedChatSkill, importChatSkillMarkdown, loadChatSkills, MAX_SKILL_MARKDOWN_LENGTH, saveChatSkill, selectChatSkill, suggestChatSkill, type ChatSkill } from '../skills/chatSkills';
+import { CHAT_SKILLS_CHANGED_EVENT, getSelectedChatSkill, loadChatSkills, selectChatSkill, suggestChatSkill, type ChatSkill } from '../skills/chatSkills';
 import { normalizeSupportedChatModel, resolveAvailableChatModels } from '../runtime/chatModelSelection';
 import type { useChatRuntime } from '../runtime/useChatRuntime';
 import { ChatComposer } from './ChatComposer';
@@ -119,7 +119,6 @@ export const ChatView = memo(function ChatView({
   useEffect(() => { void refreshGithubSkills().catch(() => {}); }, []);
   const [skillRevision, setSkillRevision] = useState(0);
   const [agentPanelOpen, setAgentPanelOpen] = useState(false);
-  const [agentImportFeedback, setAgentImportFeedback] = useState('');
   const [suggestedSkill, setSuggestedSkill] = useState<ChatSkill | null>(null);
   const [attachments, setAttachments] = useState<PendingChatAttachment[]>([]);
   const [ignoredSelectionAttachmentIds, setIgnoredSelectionAttachmentIds] = useState<string[]>([]);
@@ -313,31 +312,12 @@ export const ChatView = memo(function ChatView({
   const shellStyle = variant === 'canvas'
     ? { width: canvasRenderedWidth, top: `var(--canvas-chat-top, ${topOffset}px)` }
     : undefined;
-  const handleAgentDrop = async (event: DragEvent<HTMLElement>) => {
-    const file = Array.from(event.dataTransfer.files).find(candidate => /\.md$/i.test(candidate.name));
-    if (!file) return;
-    event.preventDefault();
-    event.stopPropagation();
-    try {
-      if (file.size > MAX_SKILL_MARKDOWN_LENGTH * 4) throw new Error('Markdown 文件过大，请精简后再导入。');
-      const skill = importChatSkillMarkdown(await file.text(), file.name);
-      saveChatSkill(skill);
-      setAgentImportFeedback(`已导入智能体“${skill.name}”，可在智能体模块中检查并启用。`);
-      setAgentPanelOpen(true);
-    } catch (cause) {
-      setAgentImportFeedback(cause instanceof Error ? cause.message : '智能体导入失败');
-    }
-  };
   return (
     <section
       className={`chat-shell chat-shell--${variant} ${historyOpen ? 'is-history-open' : 'is-history-closed'}`}
       style={{ ...shellStyle, ...(visible ? {} : { visibility: 'hidden', pointerEvents: 'none' }) }}
       data-chat-view="true"
       aria-hidden={!visible}
-      onDragOver={event => {
-        if (event.dataTransfer.types.includes('Files') || Array.from(event.dataTransfer.items).some(item => item.kind === 'file')) event.preventDefault();
-      }}
-      onDrop={event => { void handleAgentDrop(event); }}
     >
       {variant === 'canvas' && onWidthChange && (
         <div className="chat-resize" onPointerDown={event => { resizeRef.current = { startX: event.clientX, startWidth: width || 480 }; }} />
@@ -403,7 +383,6 @@ export const ChatView = memo(function ChatView({
           workflowResult={workflowResult}
         />
         <div className="chat-composer-wrap">
-          {agentImportFeedback && <div className="chat-agent-import-feedback" role="status">{agentImportFeedback}<button type="button" onClick={() => setAgentImportFeedback('')} aria-label="关闭导入提示"><X size={12} /></button></div>}
           {suggestedSkill && <div className="chat-agent-suggestion" role="status">
             <span>这条消息可能适合 <strong>{suggestedSkill.name}</strong>。是否{selectedSkill ? '切换' : '启用'}？</span>
             <button type="button" onClick={() => { selectChatSkill(runtime.activeConversationId, suggestedSkill.id); void send(true); }}><Check size={12} />{selectedSkill ? '切换' : '启用'}并发送</button>

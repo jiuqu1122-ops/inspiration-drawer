@@ -21,7 +21,7 @@ mod win {
     use winapi::shared::guiddef::{GUID, REFIID};
     use winapi::shared::minwindef::{BOOL, DWORD, HGLOBAL, TRUE, UINT, ULONG};
     use winapi::shared::ntdef::HRESULT;
-    use winapi::shared::windef::{HWND, POINTL};
+    use winapi::shared::windef::{HWND, POINT, POINTL};
     use winapi::shared::winerror::{E_NOINTERFACE, E_POINTER, S_OK};
     use winapi::um::objidl::{IDataObject, FORMATETC, STGMEDIUM};
     use winapi::um::ole2::{OleInitialize, RegisterDragDrop, RevokeDragDrop};
@@ -29,7 +29,7 @@ mod win {
     use winapi::um::shellapi::{DragQueryFileW, HDROP};
     use winapi::um::unknwnbase::{IUnknown, IUnknownVtbl};
     use winapi::um::winbase::{GlobalLock, GlobalSize, GlobalUnlock};
-    use winapi::um::winuser::{EnumChildWindows, FindWindowW, RegisterClipboardFormatW};
+    use winapi::um::winuser::{EnumChildWindows, FindWindowW, GetCursorPos, RegisterClipboardFormatW};
 
     const DROPEFFECT_COPY_VALUE: DWORD = 1;
     const CF_UNICODETEXT_VALUE: u16 = 13;
@@ -71,6 +71,7 @@ mod win {
     #[derive(Debug, Clone, Serialize)]
     pub struct NativeDropPayload {
         pub source: String,
+        pub drop_position: Option<(i32, i32)>,
         pub paths: Vec<String>,
         pub web_images: Vec<NativeWebImage>,
         pub texts: Vec<String>,
@@ -193,7 +194,7 @@ mod win {
         this: *mut IDropTarget,
         data_object: *const IDataObject,
         _key_state: DWORD,
-        pt: *const POINTL,
+        _pt: *const POINTL,
         effect: *mut DWORD,
     ) -> HRESULT {
         let callback_started = Instant::now();
@@ -204,8 +205,15 @@ mod win {
 
         if !data_object.is_null() {
             let target = target_from_idrop(this);
+            let mut position = POINT { x: 0, y: 0 };
+            let drop_position = if GetCursorPos(&mut position) != 0 {
+                Some((position.x, position.y))
+            } else {
+                None
+            };
             let mut payload = parse_data_object(data_object);
             payload.source = target.label.clone();
+            payload.drop_position = drop_position;
 
             let formats = virtual_drop::inspect_formats(data_object);
             let has_virtual_file = formats.file_descriptor && formats.file_contents;
@@ -221,11 +229,6 @@ mod win {
             }
 
             if (!has_primary_payload && has_virtual_file) || needs_web_file_fallback {
-                let drop_position = if pt.is_null() {
-                    None
-                } else {
-                    Some(((*pt).x, (*pt).y))
-                };
                 let source = if needs_web_file_fallback {
                     format!("{}/web-fallback", target.label)
                 } else {
@@ -236,7 +239,7 @@ mod win {
                     data_object,
                     source,
                     formats.names(),
-                    drop_position,
+                    payload.drop_position,
                 ) {
                     eprintln!("virtual drop enqueue failed: {err}");
                 }
@@ -356,6 +359,7 @@ mod win {
     fn parse_data_object(data: *const IDataObject) -> NativeDropPayload {
         let mut payload = NativeDropPayload {
             source: String::new(),
+            drop_position: None,
             paths: Vec::new(),
             web_images: Vec::new(),
             texts: Vec::new(),

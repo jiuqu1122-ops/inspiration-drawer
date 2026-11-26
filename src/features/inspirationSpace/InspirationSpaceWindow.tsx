@@ -18,7 +18,7 @@ import {
 import type { ChangeEvent, FormEvent } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { CHAT_SKILLS_CHANGED_EVENT, chatSkillToMarkdown, importChatSkillMarkdown, importSharedChatSkill, loadChatSkills, MAX_SKILL_MARKDOWN_LENGTH, saveChatSkill, type ChatSkill } from '../chat/skills/chatSkills';
+import { CHAT_SKILLS_CHANGED_EVENT, chatSkillToMarkdown, importChatSkillMarkdown, importSharedChatSkill, loadChatSkills, MAX_SHARED_SKILL_MARKDOWN_LENGTH, saveChatSkill, type ChatSkill } from '../chat/skills/chatSkills';
 import {
   INSPIRATION_SPACE_API_BASE_URL,
   isAgentSharePayload,
@@ -418,8 +418,9 @@ export function InspirationSpaceWindow({
     setProgress('正在分析 Markdown 并适配 Chat / 画布能力…');
     try {
       if (!/\.md$/i.test(file.name)) throw new Error('请选择 .md 格式的智能体文件');
-      if (file.size > MAX_SKILL_MARKDOWN_LENGTH * 4) throw new Error('Markdown 文件过大，请精简后再导入');
+      if (file.size > MAX_SHARED_SKILL_MARKDOWN_LENGTH * 4) throw new Error('Markdown 超过社区分享上限。可在 Chat 的智能体面板本地导入。');
       const markdown = await file.text();
+      if (markdown.length > MAX_SHARED_SKILL_MARKDOWN_LENGTH) throw new Error('Markdown 超过社区分享上限。可在 Chat 的智能体面板本地导入。');
       const skill = importChatSkillMarkdown(markdown, file.name);
       saveChatSkill(skill);
       setAgentMarkdown(markdown);
@@ -447,7 +448,7 @@ export function InspirationSpaceWindow({
     const skill = availableSkills.find(candidate => candidate.id === skillId);
     if (!skill) return;
     const markdown = chatSkillToMarkdown(skill);
-    if (markdown.length > MAX_SKILL_MARKDOWN_LENGTH) {
+    if (markdown.length > MAX_SHARED_SKILL_MARKDOWN_LENGTH) {
       setError('这个智能体的 Markdown 内容过长，暂时无法分享');
       return;
     }

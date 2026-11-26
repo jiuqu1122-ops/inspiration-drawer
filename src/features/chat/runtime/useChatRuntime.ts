@@ -61,6 +61,7 @@ import {
   writeActiveChatConversationId,
 } from '../storage/chatStorage';
 import { buildChatContext, buildSummaryRequestMessages, RequiredChatVisionError } from '../context/chatContextBuilder';
+import type { ChatFileContent } from '../attachments/chatFileContent';
 import { getSelectedChatSkill } from '../skills/chatSkills';
 import { estimateChatTokens } from '../context/chatContextBudget';
 import type { ChatVisionAttachmentResolver } from '../attachments/chatVisionAttachmentResolver';
@@ -200,6 +201,7 @@ export type UseChatRuntimeOptions = {
   conversationScope?: ChatConversationScope;
   defaultExecutionSource?: ChatExecutionSource;
   resolveAttachmentUrl?: (attachment: ChatAttachment) => Promise<string>;
+  resolveFileAttachment?: (attachment: ChatAttachment) => Promise<ChatFileContent>;
   createVisionAttachmentResolver?: () => ChatVisionAttachmentResolver;
   prepareAttachment?: (attachment: PendingChatAttachment) => Promise<PendingChatAttachment>;
   onNotice?: (message: string) => void;
@@ -3258,6 +3260,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         designMemoryRecall: recalledDesignMemory,
         presentationBrief: resolvePresentationTurnText(userMessage.content, getConversationMessages(conversationId)),
         resolveAttachmentUrl: visionResolver?.resolve || optionsRef.current.resolveAttachmentUrl,
+        resolveFileAttachment: optionsRef.current.resolveFileAttachment,
+        onFileAttachmentNotice: optionsRef.current.onNotice,
         // Rhino product reconstruction needs silhouettes and small transitions, not low-detail thumbnails.
         visionDetail: executionSource === 'rhino' ? 'high' : undefined,
         visionAttachments: visionImages,
@@ -3278,8 +3282,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       }
       if (visionImages.length > 0) {
         const content = providerMessages[providerMessages.length - 1]?.content;
-        const provided = Array.isArray(content) ? content.filter(part => part.type === 'image_url').length : 0;
-        const failed = visionImages.length - provided;
+        const failed = Array.isArray(content) ? content.filter(part => part.type === 'text'
+          && /^(?:历史生成图|历史图片附件|图片附件) \d+\nattachmentId: [^\n]+\n该图片暂时未成功加载。/.test(String(part.text))).length : visionImages.length;
+        const provided = visionImages.length - failed;
         patchThinkingStep(assistantMessage.id, 'attachments', {
           type: 'attachment',
           title: failed ? '参考图片加载有失败' : '参考图片已就绪',

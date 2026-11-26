@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { listen } from '@tauri-apps/api/event';
 import { cursorPosition } from '@tauri-apps/api/window';
+import { routeChatLocalPathDrop } from '../../chat/attachments/chatLocalFileAttachments';
 import React from 'react';
 import { flushSync } from 'react-dom';
 import { BufferItem } from '../../../types';
@@ -98,10 +99,10 @@ export const runDrawerAssetsEffect02 = (ctx: Pick<drawerAssetsEffectContext, 'ad
     let unlistenNativeDragEnter: (() => void) | undefined;
     let unlistenNativeDragLeave: (() => void) | undefined;
 
-    const readCurrentCanvasDropClient = async () => {
+    const readNativeDropClient = async (position?: [number, number] | null) => {
       try {
         const [cursor, innerPosition, scaleFactor] = await Promise.all([
-          cursorPosition(),
+          position ? Promise.resolve({ x: position[0], y: position[1] }) : cursorPosition(),
           appWindow.innerPosition(),
           appWindow.scaleFactor(),
         ]);
@@ -147,6 +148,7 @@ export const runDrawerAssetsEffect02 = (ctx: Pick<drawerAssetsEffectContext, 'ad
       if (stateRef.current.isAntiTouchMode) return;
       const payload = event.payload as {
         source?: string;
+        drop_position?: [number, number] | null;
         paths?: string[];
         web_images?: { url?: string; name?: string; fallback_urls?: string[] }[];
         texts?: string[];
@@ -170,11 +172,15 @@ export const runDrawerAssetsEffect02 = (ctx: Pick<drawerAssetsEffectContext, 'ad
       const webImages = Array.isArray(payload.web_images)
         ? payload.web_images.filter(image => image?.url)
         : [];
+      const localPaths = Array.isArray(payload.paths) ? payload.paths : [];
+      const client = (isCanvasModeRef.current || (payload.source === 'main' && localPaths.length > 0))
+        ? await readNativeDropClient(payload.drop_position)
+        : undefined;
+      if (payload.source === 'main' && webImages.length === 0 && routeChatLocalPathDrop(localPaths, client)) return;
 
       // 原生 OLE 拖网页图片时可能同时返回 paths + web_images。
       // 有 web_images 时只走网页图片缓存链路，避免把临时文件路径误加入抽屉。
       if (isCanvasModeRef.current) {
-        const client = await readCurrentCanvasDropClient();
         if (webImages.length > 0) {
           for (const image of webImages) {
             void addCanvasWebImageUrl(image.url as string, image.name, client, image.fallback_urls);
@@ -258,12 +264,13 @@ export const runDrawerAssetsEffect03 = (ctx: Pick<drawerAssetsEffectContext, 'ad
         // 这时不要再把临时文件当成本地图片加入抽屉，否则会绕过自定义网页缓存目录。
         if (Date.now() - lastWebImageDropAtRef.current < 1500) return;
         const paths = event.payload.paths;
+        const client = updateCanvasDragClientFromNativePosition(event.payload.position);
+        if (routeChatLocalPathDrop(paths || [], client)) return;
         if (isCanvasModeRef.current) {
           if (
             Date.now() - lastCanvasDropAtRef.current < 700
             && !(paths || []).some(isCanvasTemplateJsonFileName)
           ) return;
-          const client = updateCanvasDragClientFromNativePosition(event.payload.position);
           void addCanvasDroppedPaths(paths || [], client);
         } else {
           void addDroppedPaths(paths || []);

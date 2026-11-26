@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { MAX_CHAT_LOCAL_FILE_BYTES } from '../attachments/chatLocalFileAttachments';
 import { chatSkillToMarkdown, createChatSkill, getSelectedChatSkill, importChatSkillMarkdown, importSharedChatSkill, loadChatSkills, removeChatSkill, saveChatSkill, selectChatSkill, suggestChatSkill } from './chatSkills';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -41,7 +42,15 @@ print('external script')
 
   it('rejects empty or oversized imported skills', () => {
     expect(() => importChatSkillMarkdown('---\nname: empty\n---\n', 'SKILL.md')).toThrow();
-    expect(() => importChatSkillMarkdown('a'.repeat(40_001), 'SKILL.md')).toThrow();
+    expect(() => importChatSkillMarkdown('# Valid', 'SKILL.md', MAX_CHAT_LOCAL_FILE_BYTES + 1)).toThrow('30 MB');
+  });
+
+  it('imports Markdown above the former limit and keeps a bounded skill prompt', () => {
+    const skill = importChatSkillMarkdown('# 调研方法\n\n' + '正文内容。\n'.repeat(12_000), 'research.md');
+    expect(skill.name).toBe('调研方法');
+    expect(skill.instructions).toContain('正文内容。');
+    expect(skill.instructions.length).toBeLessThan(16_000);
+    expect(skill.conversionNotes).toContain('内容较长，已截取前 15,000 字符用于技能指令。');
   });
 
   it('persists agents and their conversation selection, then clears selection on deletion', () => {

@@ -17,7 +17,7 @@ export const loadChatWorkflowDraft = (conversationId: string): PendingChatAttach
 export const saveChatWorkflowDraft = (conversationId: string, attachments: PendingChatAttachment[]) => {
   if (!conversationId || typeof localStorage === 'undefined') return;
   try {
-    localStorage.setItem(keyFor(conversationId), JSON.stringify(attachments.filter(item => item.type === 'workflow')));
+    localStorage.setItem(keyFor(conversationId), JSON.stringify(attachments.filter(item => item.type === 'workflow' && !item.droppedFile)));
   } catch (_) {
     // A full localStorage should not prevent a Chat message from being sent.
   }

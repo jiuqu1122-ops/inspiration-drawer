@@ -1,4 +1,8 @@
 import { createChatId } from '../model/chatTypes';
+import { invoke } from '@tauri-apps/api/core';
+import { blobToDataUrl } from '../../../utils/canvasImageData';
+import { decodeChatText } from '../attachments/chatFileContent';
+import { assertChatLocalFileSize } from '../attachments/chatLocalFileAttachments';
 
 export type ChatSkill = {
   id: string;
@@ -10,6 +14,7 @@ export type ChatSkill = {
   github?: { version: string; repository: string; directory: string; enabled: boolean };
   disabled?: boolean;
   sourceFile?: string;
+  sourceMarkdownPath?: string;
   sourceShareId?: string;
   conversionNotes: string[];
   updatedAt: number;
@@ -18,7 +23,7 @@ export type ChatSkill = {
 const SKILLS_KEY = 'drawer_chat_skills_v1';
 const SELECTION_KEY = 'drawer_chat_skill_selection_v1';
 export const CHAT_SKILLS_CHANGED_EVENT = 'drawer-chat-skills-changed';
-export const MAX_SKILL_MARKDOWN_LENGTH = 40_000;
+export const MAX_SHARED_SKILL_MARKDOWN_LENGTH = 40_000;
 export const MAX_CHAT_SKILL_INSTRUCTION_LENGTH = 16_000;
 const MAX_IMPORTED_BODY_LENGTH = 15_000;
 
@@ -115,7 +120,7 @@ export const selectChatSkill = (conversationId: string, skillId: string | null) 
 };
 
 const parseFrontmatter = (markdown: string) => {
-  const match = markdown.match(/^\uFEFF?---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n/);
+  const match = markdown.match(/^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n/);
   if (!match) return { metadata: {} as Record<string, string>, body: markdown.trim() };
   const metadata: Record<string, string> = {};
   const lines = match[1].split(/\r?\n/);
@@ -136,16 +141,17 @@ const parseFrontmatter = (markdown: string) => {
   return { metadata, body: markdown.slice(match[0].length).trim() };
 };
 
-export const importChatSkillMarkdown = (markdown: string, fileName: string): ChatSkill => {
-  if (markdown.length > MAX_SKILL_MARKDOWN_LENGTH) throw new Error('Markdown 文件超过 40 KB，请精简后再导入。');
+export const importChatSkillMarkdown = (markdown: string, fileName: string, fileSize = new TextEncoder().encode(markdown).byteLength): ChatSkill => {
+  assertChatLocalFileSize(fileSize, fileName);
   const { metadata, body } = parseFrontmatter(markdown);
   if (!body) throw new Error('Markdown 文件没有可用的技能说明。');
-  const title = body.match(/^#\s+(.+)$/m)?.[1]?.trim();
-  const name = (metadata.name || title || fileName.replace(/\.md$/i, '') || '未命名技能').slice(0, 80);
-  const description = (metadata.description || body.replace(/^#.*$/m, '').trim().split(/\r?\n\s*\r?\n/)[0] || '').slice(0, 240);
+  const sample = body.slice(0, MAX_IMPORTED_BODY_LENGTH * 2);
+  const title = sample.match(/^#\s+(.+)$/m)?.[1]?.trim();
+  const name = (metadata.name || title || fileName.replace(/\.(?:md|markdown)$/i, '') || '未命名技能').slice(0, 80);
+  const description = (metadata.description || sample.replace(/^#.*$/m, '').trim().split(/\r?\n\s*\r?\n/)[0] || '').slice(0, 240);
   const triggers = (metadata.triggers || metadata.keywords || '').split(/[,，、]/).map(value => value.trim()).filter(Boolean).slice(0, 12);
   const conversionNotes: string[] = [];
-  let adapted = body;
+  let adapted = sample;
   const toolMappings: Array<[RegExp, string]> = [
     [/\bimage_gen(?:\.imagegen)?\b/g, 'generate_image'],
     [/\bweb(?:\.run|__run)\b/g, 'web_search'],
@@ -180,12 +186,29 @@ export const importChatSkillMarkdown = (markdown: string, fileName: string): Cha
     '',
     adapted.slice(0, MAX_IMPORTED_BODY_LENGTH),
   ].join('\n');
-  if (adapted.length > MAX_IMPORTED_BODY_LENGTH) conversionNotes.push('内容较长，已截取前 15,000 字符用于技能指令。');
+  if (body.length > sample.length || adapted.length > MAX_IMPORTED_BODY_LENGTH) {
+    conversionNotes.push('内容较长，已截取前 15,000 字符用于技能指令。');
+  }
   return {
     id: createChatId('chat-skill'), name, description, triggers, instructions,
     source: 'imported', sourceFile: fileName, conversionNotes, updatedAt: Date.now(),
   };
 };
+
+export async function importLocalChatSkillFile(file: File): Promise<ChatSkill> {
+  if (!/\.(?:md|markdown)$/i.test(file.name)) throw new Error('请选择 Markdown 智能体文件。');
+  assertChatLocalFileSize(file.size, file.name);
+  const skill = importChatSkillMarkdown(decodeChatText(new Uint8Array(await file.arrayBuffer())), file.name, file.size);
+  if (skill.conversionNotes.some(note => note.startsWith('内容较长'))) {
+    skill.sourceMarkdownPath = await invoke<string>('save_dropped_file', {
+      fileName: file.name,
+      dataUrl: await blobToDataUrl(file),
+    });
+    skill.conversionNotes.push('原始 Markdown 已完整保存，可从这里打开。');
+  }
+  saveChatSkill(skill);
+  return skill;
+}
 
 export const createChatSkill = (name: string, description: string, instructions: string, triggers: string[], existing?: ChatSkill): ChatSkill => {
   const trimmedName = name.trim();
@@ -201,6 +224,7 @@ export const createChatSkill = (name: string, description: string, instructions:
     instructions: trimmedInstructions,
     source: existing?.source || 'created',
     sourceFile: existing?.sourceFile,
+    sourceMarkdownPath: existing?.sourceMarkdownPath,
     sourceShareId: existing?.sourceShareId,
     conversionNotes: existing?.conversionNotes || [],
     updatedAt: Date.now(),

@@ -1,5 +1,6 @@
 import type { PendingChatAttachment } from '../model/chatTypes';
 import { createChatId } from '../model/chatTypes';
+import { chatLocalAttachmentName } from './chatLocalFileAttachments';
 
 export type ChatWorkflowAttachmentSource = 'canvas' | 'selection' | 'template' | 'file';
 
@@ -98,13 +99,6 @@ export const parseWorkflowAttachmentSnapshot = (attachment: PendingChatAttachmen
   }
 };
 
-const attachmentPathName = (path: string) => {
-  const normalized = String(path || '').trim();
-  if (!normalized) return '';
-  const name = normalized.split(/[\\/]/).pop() || '';
-  return name.trim();
-};
-
 /**
  * Returns the user-facing label for an attachment without changing its
  * persisted shape. Workflow attachments use the snapshot label because their
@@ -116,5 +110,5 @@ export const getChatAttachmentDisplayName = (attachment: PendingChatAttachment) 
     const label = String(snapshot?.label || '').trim();
     if (label) return label;
   }
-  return attachmentPathName(attachment.path) || '附件';
+  return chatLocalAttachmentName(attachment);
 };

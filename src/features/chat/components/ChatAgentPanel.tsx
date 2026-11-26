@@ -1,11 +1,11 @@
 import { GithubSkillManager } from './GithubSkillManager';
+import { invoke } from '@tauri-apps/api/core';
 import { Check, FileUp, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useRef, useState, type ChangeEvent } from 'react';
 import {
   createChatSkill,
-  importChatSkillMarkdown,
+  importLocalChatSkillFile,
   MAX_CHAT_SKILL_INSTRUCTION_LENGTH,
-  MAX_SKILL_MARKDOWN_LENGTH,
   removeChatSkill,
   saveChatSkill,
   selectChatSkill,
@@ -29,6 +29,8 @@ export function ChatAgentPanel({
   const [error, setError] = useState('');
   const [pendingDelete, setPendingDelete] = useState('');
   const [importedSkillId, setImportedSkillId] = useState('');
+  const [importing, setImporting] = useState(false);
+  const editingSkill = skills.find(skill => skill.id === editor?.id);
 
   const edit = (skill: ChatSkill) => {
     setEditor({
@@ -59,15 +61,15 @@ export function ChatAgentPanel({
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
+    setImporting(true);
+    setError('');
     try {
-      if (!/\.md$/i.test(file.name)) throw new Error('请选择 .md 格式的技能文件。');
-      if (file.size > MAX_SKILL_MARKDOWN_LENGTH * 4) throw new Error('Markdown 文件过大，请精简后再导入。');
-      const skill = importChatSkillMarkdown(await file.text(), file.name);
-      saveChatSkill(skill);
+      const skill = await importLocalChatSkillFile(file);
       setImportedSkillId(skill.id);
       edit(skill);
       onChange();
     } catch (cause) { setError(String(cause instanceof Error ? cause.message : cause)); }
+    finally { setImporting(false); }
   };
 
   return <div className="chat-agent-panel" role="dialog" aria-label="智能体管理">
@@ -77,8 +79,8 @@ export function ChatAgentPanel({
     </div>
     <div className="chat-agent-panel__actions">
       <button type="button" onClick={() => { setEditor(blankEditor()); setError(''); }}><Plus size={13} />新建智能体</button>
-      <button type="button" onClick={() => fileRef.current?.click()}><FileUp size={13} />导入 .md</button>
-      <input ref={fileRef} type="file" accept=".md,text/markdown" hidden onChange={event => void importFile(event)} />
+      <button type="button" disabled={importing} onClick={() => fileRef.current?.click()}><FileUp size={13} />{importing ? '正在导入…' : '导入 .md'}</button>
+      <input ref={fileRef} type="file" accept=".md,.markdown,text/markdown" hidden onChange={event => void importFile(event)} />
     </div>
     {error && <p className="chat-agent-panel__error" role="alert">{error}</p>}
     {importedSkillId && <p className="chat-agent-panel__notice" role="status">已按现有 Chat/画布能力适配导入内容。请检查转换提示，再编辑或启用。</p>}
@@ -87,7 +89,10 @@ export function ChatAgentPanel({
       <label>名称<input value={editor.name} maxLength={80} onChange={event => setEditor({ ...editor, name: event.target.value })} placeholder="例如：产品外观设计师" /></label>
       <label>适用场景<input value={editor.description} maxLength={240} onChange={event => setEditor({ ...editor, description: event.target.value })} placeholder="简单描述这个智能体负责什么" /></label>
       <label>触发关键词<small>用逗号隔开；Chat 会据此提示是否启用</small><input value={editor.triggers} onChange={event => setEditor({ ...editor, triggers: event.target.value })} placeholder="例如：产品外观，CMF，工业设计" /></label>
-      {skills.find(skill => skill.id === editor.id)?.conversionNotes.map(note => <p className="chat-agent-panel__note" key={note}>{note}</p>)}
+      {editingSkill?.conversionNotes.map(note => <p className="chat-agent-panel__note" key={note}>{note}</p>)}
+      {editingSkill?.sourceMarkdownPath && <button type="button" onClick={() => {
+        void invoke('open_file', { path: editingSkill.sourceMarkdownPath }).catch(() => setError('无法打开原始 Markdown。'));
+      }}>打开原始 Markdown</button>}
       <label>技能指令<textarea rows={12} maxLength={MAX_CHAT_SKILL_INSTRUCTION_LENGTH} value={editor.instructions} onChange={event => setEditor({ ...editor, instructions: event.target.value })} placeholder="写下角色、工作步骤、输出要求和画布使用方式" /></label>
       <div className="chat-agent-panel__editor-actions"><button type="button" onClick={() => { setEditor(null); setError(''); setImportedSkillId(''); }}>取消</button><button type="button" className="is-primary" onClick={save}>保存智能体</button></div>
     </div> : <div className="chat-agent-panel__list">

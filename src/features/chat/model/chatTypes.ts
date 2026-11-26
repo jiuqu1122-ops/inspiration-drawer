@@ -140,6 +140,7 @@ export type ChatUsage = {
 export type PendingChatAttachment = Omit<ChatAttachment, 'messageId' | 'createdAt'> & {
   messageId?: string;
   createdAt?: number;
+  droppedFile?: File;
 };
 
 export type ChatExecutionSource = 'desktop' | 'rhino';

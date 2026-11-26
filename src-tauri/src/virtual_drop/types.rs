@@ -177,6 +177,7 @@ pub struct NativeWebImage {
 #[derive(Clone, Serialize)]
 pub struct NativeDropPayload {
     pub source: String,
+    pub drop_position: Option<(i32, i32)>,
     pub paths: Vec<String>,
     pub web_images: Vec<NativeWebImage>,
     pub texts: Vec<String>,

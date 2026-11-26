@@ -3,7 +3,7 @@ import { ArrowUp, Check, ChevronDown, FileJson, Globe2, LoaderCircle, Paperclip,
 import { open } from '@tauri-apps/plugin-dialog';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChatImageModelOption, PendingChatAttachment } from '../model/chatTypes';
-import { createPendingChatAttachments, SUPPORTED_CHAT_LOCAL_FILE_EXTENSIONS } from '../attachments/chatLocalFileAttachments';
+import { CHAT_LOCAL_PATH_DROP_EVENT, createDroppedChatAttachment, createPendingChatAttachments, MAX_CHAT_ATTACHMENTS, SUPPORTED_CHAT_LOCAL_FILE_EXTENSIONS } from '../attachments/chatLocalFileAttachments';
 import { isAutomaticChatModel } from '../runtime/chatModelSelection';
 import { ChatAttachmentList } from './ChatAttachmentList';
 import { ChatImageSettings, type ChatImagePickerName } from './ChatImageSettings';
@@ -94,9 +94,11 @@ export function ChatComposer({
   onChooseWorkflow?: () => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
   useAutosizeChatInput(textareaRef, value);
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
+  const [attachmentError, setAttachmentError] = useState('');
   const [openPicker, setOpenPicker] = useState<ChatImagePickerName | 'llm' | null>(null);
   const modelOpen = openPicker === 'llm';
   const setModelOpen = useCallback((next: boolean) => setOpenPicker(next ? 'llm' : null), []);
@@ -133,10 +135,22 @@ export function ChatComposer({
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('keydown', onKeyDown); };
   }, [attachmentMenuOpen]);
-  const addPaths = (paths: string[]) => {
-    const added = createPendingChatAttachments(paths, attachments, 6);
-    onAttachmentsChange([...attachments, ...added]);
-  };
+  const addPaths = useCallback((paths: string[]) => {
+    const added = createPendingChatAttachments(paths, attachments);
+    if (added.length) onAttachmentsChange([...attachments, ...added]);
+    const distinctPaths = new Set([...attachments.map(attachment => attachment.path), ...paths.filter(Boolean)]);
+    setAttachmentError(distinctPaths.size > MAX_CHAT_ATTACHMENTS ? '每条消息最多添加 6 个附件。' : '');
+  }, [attachments, onAttachmentsChange]);
+  useEffect(() => {
+    const composer = composerRef.current;
+    const handleNativeDrop = (event: Event) => {
+      event.preventDefault();
+      setDragging(false);
+      addPaths((event as CustomEvent<string[]>).detail);
+    };
+    composer?.addEventListener(CHAT_LOCAL_PATH_DROP_EVENT, handleNativeDrop);
+    return () => composer?.removeEventListener(CHAT_LOCAL_PATH_DROP_EVENT, handleNativeDrop);
+  }, [addPaths]);
   const chooseFiles = async () => {
     const selected = await open({
       multiple: true,
@@ -150,20 +164,41 @@ export function ChatComposer({
   };
   return (
     <div
+      ref={composerRef}
+      data-chat-file-drop="true"
       className={`chat-composer ${dragging ? 'is-dragging' : ''} ${imageSettingsOpen ? 'has-image-settings' : ''}`}
-      onDragEnter={event => { event.preventDefault(); setDragging(true); }}
-      onDragOver={event => event.preventDefault()}
+      onDragEnter={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragging(true); } }}
+      onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); }}
       onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }}
       onDrop={event => {
+        const files = Array.from(event.dataTransfer.files);
+        if (!files.length) return;
         event.preventDefault();
+        event.stopPropagation();
         setDragging(false);
-        if (Array.from(event.dataTransfer.files).some(file => /\.md$/i.test(file.name))) return;
-        addPaths(Array.from(event.dataTransfer.files)
-          .map(file => (file as File & { path?: string }).path || '')
-          .filter(Boolean));
+        const next = [...attachments];
+        const errors: string[] = [];
+        for (const file of files) {
+          if (next.some(item => item.droppedFile?.name === file.name && item.droppedFile.size === file.size
+            && item.droppedFile.lastModified === file.lastModified)) continue;
+          if (next.length >= MAX_CHAT_ATTACHMENTS) {
+            errors.push('每条消息最多添加 6 个附件。');
+            break;
+          }
+          try {
+            const path = (file as File & { path?: string }).path;
+            if (path) next.push(...createPendingChatAttachments([path], next));
+            else next.push(createDroppedChatAttachment(file));
+          } catch (error) {
+            errors.push(error instanceof Error ? error.message : '无法添加文件。');
+          }
+        }
+        if (next.length !== attachments.length) onAttachmentsChange(next);
+        setAttachmentError(errors.join(' '));
       }}
     >
-      {dragging && <div className="chat-composer__drop">松开以添加文件或导入智能体</div>}
+      {dragging && <div className="chat-composer__drop">松开以添加聊天附件</div>}
+      {attachmentError && <div className="chat-agent-import-feedback" role="alert">{attachmentError}<button type="button" onClick={() => setAttachmentError('')} aria-label="关闭附件提示"><X size={12} /></button></div>}
       <ChatAttachmentList attachments={attachments} onRemove={id => onAttachmentsChange(attachments.filter(item => item.id !== id))} />
       <textarea
         ref={textareaRef}
