@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs, io::Read, path::{Path, PathBuf}, sync::Mutex, time::Duration};
 
+#[path = "rhino_update_transport.rs"]
+mod transport;
+use transport::{release_start, INDEX_FILE};
+
 static UPDATE_LOCK: Mutex<()> = Mutex::new(());
 const MAX_CATALOG: u64 = 256 * 1024;
 const MAX_BUNDLE: u64 = 48 * 1024 * 1024;
@@ -118,15 +122,8 @@ fn read_state(root: &Path) -> Result<State, String> {
 fn save_state(root: &Path, state: &State) -> Result<(), String> {
     write_atomic(&root.join("state.json"), &serde_json::to_vec(state).map_err(|e| e.to_string())?, false)
 }
-fn trusted_url(value: &str) -> Result<url::Url, String> {
-    let url = url::Url::parse(value).map_err(|e| e.to_string())?;
-    let release = (url.host_str() == Some("github.com") && url.path().starts_with("/jiuqu1122-ops/inspiration-drawer/releases/"))
-        || (url.host_str() == Some("gitee.com") && url.path().starts_with("/zibinyou/inspiration-drawer/releases/"));
-    let cdn = matches!(url.host_str(), Some("release-assets.githubusercontent.com" | "objects.githubusercontent.com" | "github-releases.githubusercontent.com"));
-    if url.scheme() != "https" || url.port_or_known_default() != Some(443) || !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() || (!release && !cdn) {
-        return Err("Rhino updates require HTTPS on the configured release service".into());
-    }
-    Ok(url)
+impl Component {
+    fn filename(&self) -> String { format!("rhino-{}-{}-{}.bundle.json", self.id, self.version, self.revision) }
 }
 fn verify_catalog(bytes: &[u8], channel: &Channel) -> Result<Catalog, String> {
     if bytes.len() as u64 > MAX_CATALOG { return Err("Rhino catalog exceeds size limit".into()); }
@@ -144,9 +141,10 @@ fn verify_catalog(bytes: &[u8], channel: &Channel) -> Result<Catalog, String> {
         if !matches!(component.id.as_str(), "runtime" | "plugin8" | "plugin9") || !seen.insert(&component.id)
             || component.version.is_empty() || component.version.len() > 80 || !component.version.bytes().all(|b| b.is_ascii_alphanumeric() || b".+-".contains(&b))
             || component.revision == 0 || component.revision > 9_007_199_254_740_991 || !digest_name(&component.sha256) || component.size == 0 || component.size > MAX_BUNDLE { return Err("Invalid Rhino component manifest".into()); }
-        trusted_url(&component.url)?;
+        let file = component.filename();
+        release_start(&component.url, &file)?;
         if component.urls.len() > 4 { return Err("Too many Rhino component mirrors".into()); }
-        for url in &component.urls { trusted_url(url)?; }
+        for url in &component.urls { release_start(url, &file)?; }
     }
     Ok(catalog)
 }
@@ -224,17 +222,23 @@ fn apply_catalog(root: &Path, envelope: &[u8], channel: &Channel, mut download: 
     }
     Ok(updated)
 }
-fn download(url: &str, limit: u64) -> Result<Option<Vec<u8>>, String> {
-    trusted_url(url)?;
-    let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(45))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 5 || trusted_url(attempt.url().as_str()).is_err() { attempt.error("Untrusted Rhino update redirect") } else { attempt.follow() }
-        })).user_agent("InspirationDrawer-RhinoUpdates/1").build().map_err(|e| e.to_string())?;
-    let response = client.get(url).send().map_err(|e| e.to_string())?;
+fn download(url: &str, file: &str, limit: u64) -> Result<Option<Vec<u8>>, String> {
+    let start = release_start(url, file)?;
+    let first = start.clone();
+    let file = file.to_owned();
+    // Dedicated anonymous client: no application headers, cookie store or Referer.
+    // Do not include a presigned CDN URL in an error returned to the UI.
+    let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(45)).referer(false)
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if transport::allowed_redirect(&first, &file, attempt.previous(), attempt.url()) { attempt.follow() }
+            else { attempt.error("Untrusted Rhino update redirect") }
+        })).user_agent("InspirationDrawer-RhinoUpdates/1").build().map_err(|e| e.without_url().to_string())?;
+    let response = client.get(start).send().map_err(|e| e.without_url().to_string())?;
     if response.status() == reqwest::StatusCode::NOT_FOUND { return Ok(None); }
-    let response = response.error_for_status().map_err(|e| e.to_string())?;
+    let response = response.error_for_status().map_err(|e| e.without_url().to_string())?;
+    if !response.status().is_success() { return Err("Incomplete Rhino update redirect".into()); }
     if response.content_length().is_some_and(|size| size > limit) { return Err("Rhino download exceeds size limit".into()); }
-    let mut bytes = Vec::new(); response.take(limit + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new(); response.take(limit + 1).read_to_end(&mut bytes).map_err(|e| format!("Cannot read Rhino update response: {:?}", e.kind()))?;
     if bytes.len() as u64 > limit { return Err("Rhino download exceeds size limit".into()); }
     Ok(Some(bytes))
 }
@@ -245,11 +249,15 @@ fn apply_installed_plugins(updated: &[String]) -> (bool, Option<String>) {
     }
 }
 fn download_component(component: &Component) -> Result<Vec<u8>, String> {
+    download_component_with(component, download)
+}
+fn download_component_with(component: &Component, mut get: impl FnMut(&str, &str, u64) -> Result<Option<Vec<u8>>, String>) -> Result<Vec<u8>, String> {
+    let filename = component.filename();
     let mut sources = component.urls.clone();
     if !sources.contains(&component.url) { sources.push(component.url.clone()); }
     let mut errors = Vec::new();
     for url in sources {
-        match download(&url, component.size) {
+        match get(&url, &filename, component.size) {
             Ok(Some(bytes)) => match decode_bundle(&bytes, component) { Ok(_) => return Ok(bytes), Err(e) => errors.push(e) },
             Ok(None) => errors.push("Rhino component release asset was not found".into()),
             Err(e) => errors.push(e),
@@ -262,7 +270,7 @@ fn check_updates(prepare_only: bool) -> Result<UpdateResult, String> {
     let channel = config()?; let root = root()?;
     let mut errors = Vec::new(); let mut envelope = None;
     for endpoint in &channel.endpoints {
-        match download(endpoint, MAX_CATALOG) {
+        match download(endpoint, INDEX_FILE, MAX_CATALOG) {
             Ok(Some(bytes)) => match verify_catalog(&bytes, &channel) { Ok(_) => { envelope = Some(bytes); break; }, Err(e) => errors.push(e) },
             Ok(None) => (), Err(error) => errors.push(error),
         }
@@ -324,9 +332,7 @@ pub(crate) fn prepare_runtime_probe(release: &Path, cache: &Path) -> Result<Runt
     let channel = config()?;
     let envelope = read_file(&release.join("latest.json"), MAX_CATALOG)?;
     apply_catalog(cache, &envelope, &channel, |component| {
-        let url = trusted_url(&component.url)?;
-        let filename = url.path_segments().and_then(|s| s.last()).ok_or("Missing release filename")?;
-        read_file(&release.join(filename), component.size)
+        read_file(&release.join(component.filename()), component.size)
     })?;
     runtime_at(cache, &channel)?.ok_or_else(|| "Probe release has no runtime component".into())
 }

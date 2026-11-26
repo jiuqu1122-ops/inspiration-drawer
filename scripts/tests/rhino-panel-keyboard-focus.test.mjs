@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import test from 'node:test';
+import { test } from 'vitest';
 import { runInNewContext } from 'node:vm';
 
 const panel = readFileSync(new URL('../../integrations/rhino/InspirationDrawer.Rhino/Panel/panel.js', import.meta.url), 'utf8');

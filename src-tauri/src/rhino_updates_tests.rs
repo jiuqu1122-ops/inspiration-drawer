@@ -19,7 +19,7 @@ fn package(id: &str, revision: u64) -> (Component, Vec<u8>) {
         }))).collect()
     };
     let bytes = serde_json::to_vec(&serde_json::json!({"schema":1,"id":id,"files":files})).unwrap();
-    (Component { id: id.into(), version: format!("1.0.{revision}"), revision, url: format!("https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/rhino-updates/{id}-{revision}.json"), urls: vec![], sha256: sha(&bytes), size: bytes.len() as u64 }, bytes)
+    (Component { id: id.into(), version: format!("1.0.{revision}"), revision, url: format!("https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/rhino-updates/rhino-{id}-1.0.{revision}-{revision}.bundle.json"), urls: vec![], sha256: sha(&bytes), size: bytes.len() as u64 }, bytes)
 }
 fn envelope(value: serde_json::Value) -> Vec<u8> {
     let signed = serde_json::to_vec(&value).unwrap();
@@ -79,7 +79,6 @@ fn altered_payloads_paths_and_wrong_rhino_runtime_are_rejected() {
     let wrong_bytes = serde_json::to_vec(&body).unwrap(); wrong_plugin.sha256 = sha(&wrong_bytes); wrong_plugin.size = wrong_bytes.len() as u64;
     assert!(decode_bundle(&wrong_bytes, &wrong_plugin).is_err());
     assert!(!bytes.is_empty());
-    for url in ["http://github.com/jiuqu1122-ops/inspiration-drawer/releases/x", "https://127.0.0.1/x", "https://github.com/other/repository/releases/x", "https://github.com@evil.test/x"] { assert!(trusted_url(url).is_err()); }
 }
 
 #[test]
@@ -107,4 +106,113 @@ fn explicit_rollback_is_not_undone_by_the_next_automatic_check() {
     let (newer, newer_bytes) = package("runtime", 3);
     apply_catalog(&root, &catalog(vec![newer]), &channel(), |_| Ok(newer_bytes.clone())).unwrap();
     assert_eq!(selected(&root, &read_state(&root).unwrap().current["runtime"], &channel()).unwrap().0.revision, 3);
+}
+
+const GITEE_INDEX: &str = "https://gitee.com/zibinyou/inspiration-drawer/releases/download/rhino-updates/latest.json";
+const ATTACHMENT: &str = "https://gitee.com/zibinyou/inspiration-drawer/attach_files/123/download/latest.json";
+const CDN: &str = "https://foruda.gitee.com/attach_file/987654321/latest.json?signature=test";
+const GITHUB_INDEX: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/rhino-updates/latest.json";
+const GH_CDN: &str = "https://release-assets.githubusercontent.com/github-production-release-asset/123/abc-def?test=1";
+
+#[test]
+fn release_start_is_bound_to_repo_tag_and_signed_component_filename() {
+    for good in [GITEE_INDEX.to_owned(), GITHUB_INDEX.to_owned(), GITEE_INDEX.replace("gitee.com/", "gitee.com:443/")] {
+        assert!(release_start(&good, INDEX_FILE).is_ok());
+    }
+    for bad in [ATTACHMENT.into(), CDN.into(), GH_CDN.into(), GITEE_INDEX.replace("https:", "http:"),
+        GITEE_INDEX.replace("gitee.com", "localhost"), GITEE_INDEX.replace("gitee.com", "gitee.com:444"),
+        GITEE_INDEX.replace("gitee.com", "u:p@gitee.com"), GITEE_INDEX.replace("gitee.com", "gitee.com.evil.test"),
+        GITEE_INDEX.replace("gitee.com", "@gitee.com"), GITEE_INDEX.replace("zibinyou", "other"),
+        GITEE_INDEX.replace("rhino-updates/", "latest/"), GITEE_INDEX.replace("/download/", "/download/test/../"),
+        GITEE_INDEX.replace("latest.json", "%6catest.json"), format!("{GITEE_INDEX}?x=y"), format!("{GITEE_INDEX}#x")] {
+        assert!(release_start(&bad, INDEX_FILE).is_err(), "accepted invalid start: {bad}");
+    }
+    let (component, _) = package("plugin8", 12);
+    for wrong in [component.url.replace("plugin8", "plugin9"), component.url.replace("1.0.12-12", "1.0.12-13"),
+                  component.url.replace("1.0.12-12", "1.0.13-12"), GITEE_INDEX.to_owned(), CDN.to_owned()] {
+        let mut altered = component.clone(); altered.urls.push(wrong);
+        assert!(verify_catalog(&catalog(vec![altered]), &channel()).is_err());
+    }
+}
+
+fn hop(from: &str, previous: &[&str], next: &str) -> bool {
+    let start = release_start(from, INDEX_FILE).unwrap();
+    let chain: Vec<_> = previous.iter().map(|u| url::Url::parse(u).unwrap()).collect();
+    transport::allowed_redirect(&start, INDEX_FILE, &chain, &url::Url::parse(next).unwrap())
+}
+
+#[test]
+fn gitee_requires_exact_attachment_then_exact_terminal_cdn() {
+    assert!(hop(GITEE_INDEX, &[GITEE_INDEX], ATTACHMENT));
+    assert!(hop(GITEE_INDEX, &[GITEE_INDEX, ATTACHMENT], CDN));
+    for bad in [CDN.into(), GH_CDN.into(), GITHUB_INDEX.into(), GITEE_INDEX.into(),
+        ATTACHMENT.replace("zibinyou", "other"), ATTACHMENT.replace("inspiration-drawer/", "inspiration-drawer-copy/"),
+        ATTACHMENT.replace("/123/", "/other/"), ATTACHMENT.replace("/123/", "//"), ATTACHMENT.replace("/123/", "/123/4/"),
+        ATTACHMENT.replace("latest.json", "different.json"), ATTACHMENT.replace("/download/", "/preview/"),
+        format!("{ATTACHMENT}?next=x"), format!("{ATTACHMENT}#x"), ATTACHMENT.replace("https://", "https://u:p@"),
+        ATTACHMENT.replace("gitee.com/", "gitee.com:444/"), ATTACHMENT.replace("latest.json", "%2Flatest.json")] {
+        assert!(!hop(GITEE_INDEX, &[GITEE_INDEX], &bad), "unexpected first hop: {bad}");
+    }
+    for bad in [GH_CDN.into(), ATTACHMENT.into(), GITEE_INDEX.into(), CDN.replace("https:", "http:"),
+        CDN.replace("foruda.gitee.com", "other.gitee.com"), CDN.replace("foruda.gitee.com", "foruda.gitee.com.evil.test"),
+        CDN.replace("foruda.gitee.com", "u:p@foruda.gitee.com"), CDN.replace("gitee.com/", "gitee.com:444/"),
+        CDN.replace("attach_file/", "anything/"), CDN.replace("/987654321/", "/id/"),
+        CDN.replace("latest.json", "other.bundle.json"), format!("{CDN}#x")] {
+        assert!(!hop(GITEE_INDEX, &[GITEE_INDEX, ATTACHMENT], &bad), "unexpected second hop: {bad}");
+    }
+    assert!(!hop(GITEE_INDEX, &[GITEE_INDEX, GITHUB_INDEX], CDN));
+    assert!(!hop(GITEE_INDEX, &[GITEE_INDEX, ATTACHMENT, CDN], CDN));
+    assert!(!hop(GITEE_INDEX, &[GITHUB_INDEX], ATTACHMENT));
+    assert!(!hop(GITEE_INDEX, &[], ATTACHMENT));
+}
+
+#[test]
+fn github_mirror_keeps_its_own_terminal_cdn() {
+    for host in ["release-assets.githubusercontent.com", "objects.githubusercontent.com", "github-releases.githubusercontent.com"] {
+        assert!(hop(GITHUB_INDEX, &[GITHUB_INDEX], &GH_CDN.replace("release-assets.githubusercontent.com", host)));
+    }
+    assert!(!hop(GITHUB_INDEX, &[GITHUB_INDEX], ATTACHMENT));
+    assert!(!hop(GITHUB_INDEX, &[GITHUB_INDEX], CDN));
+    assert!(!hop(GITHUB_INDEX, &[GITHUB_INDEX, GH_CDN], GH_CDN));
+    assert!(!hop(GITHUB_INDEX, &[GITHUB_INDEX], &GH_CDN.replace("github-production-release-asset", "other")));
+}
+
+#[test]
+fn refused_or_corrupt_mirror_falls_back_but_never_accepts_unverified_bytes() {
+    let (mut c, bytes) = package("runtime", 1);
+    let gitee = c.url.replace("github.com/jiuqu1122-ops", "gitee.com/zibinyou");
+    c.urls = vec![gitee.clone()]; // canonical GitHub URL is the final fallback
+    for refused in [true, false] {
+        let mut sources = Vec::new();
+        let verified = download_component_with(&c, |source, file, limit| {
+            sources.push(source.to_owned());
+            assert_eq!(file, c.filename()); assert_eq!(limit, c.size);
+            if source == gitee && refused { Err("Untrusted Rhino update redirect".into()) }
+            else if source == gitee { Ok(Some(vec![0; bytes.len()])) }
+            else { Ok(Some(bytes.clone())) }
+        }).unwrap();
+        assert_eq!(sources, [gitee.clone(), c.url.clone()]); assert_eq!(verified, bytes);
+    }
+    assert!(download_component_with(&c, |_, _, _| Ok(Some(vec![0; bytes.len()]))).is_err());
+}
+
+#[test]
+#[ignore = "Opt-in anonymous production GETs; baseline expects published plugin8/9 36.15 r12"]
+fn live_gitee_signed_36_15_readback() {
+    // No mirror substitution, cache writes, plugin registration, or installation.
+    let channel = config().unwrap();
+    assert!(channel.endpoints.iter().any(|s| s == GITEE_INDEX));
+    let envelope = download(GITEE_INDEX, INDEX_FILE, MAX_CATALOG).unwrap().expect("missing public fixed index");
+    let verified = verify_catalog(&envelope, &channel).unwrap();
+    println!("Rhino signed index: {} bytes SHA256 {}", envelope.len(), sha(&envelope));
+    for id in ["runtime", "plugin8", "plugin9"] {
+        let c = verified.components.iter().find(|c| c.id == id).expect("missing signed component");
+        if id != "runtime" { assert_eq!((c.version.as_str(), c.revision), ("0.1.0-beta.36.15", 12), "live baseline changed for {id}"); }
+        let bytes = download_component_with(c, |source, file, limit| {
+            // A passing run must use Gitee for each artifact, not succeed via GitHub fallback.
+            assert!(source.starts_with("https://gitee.com/"), "Gitee was not the successful component source");
+            download(source, file, limit)
+        }).unwrap();
+        println!("{id} {} r{}: {} bytes SHA256 {}", c.version, c.revision, bytes.len(), sha(&bytes));
+    }
 }
