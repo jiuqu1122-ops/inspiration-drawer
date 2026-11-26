@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Text;
 using Eto.Forms;
 
 namespace InspirationDrawer.Rhino;
@@ -13,7 +12,7 @@ internal sealed class PanelKeyboardFocus : IDisposable
 {
     private readonly WebView view;
     private readonly Hook callback; // Keep the unmanaged callback rooted until unhooked.
-    private IntPtr hook, browser;
+    private IntPtr hook;
     private bool dispatching, disposed;
     private static readonly HashSet<PanelKeyboardFocus> owners = new(); // Rhino UI thread only.
     internal PanelKeyboardFocus(WebView view)
@@ -40,32 +39,20 @@ internal sealed class PanelKeyboardFocus : IDisposable
     private void ReceiveFocusSignal(string message)
     {
         if (disposed) return;
-        if (message == "idraw:keyboard-release") { browser = IntPtr.Zero; return; }
         if (message != "idraw:keyboard-focus") return;
-        // This is sent only by a user-focused control, not by the heartbeat or a timer.
-        var focused = GetFocus();
-        if (BrowserRoot(focused) == IntPtr.Zero) { view.Focus(); focused = GetFocus(); }
-        browser = BrowserRoot(focused);
+        // A delayed DOM signal is not permission to take focus from Rhino or another app.
+        var host = DrawerFloatingPanel.NativeHandle(view);
+        if (Owns(host, ReadFocusedWindow()) || host == IntPtr.Zero || !IsWindowVisible(host) ||
+            !IsWindowEnabled(host) || GetAncestor(host, 2 /* GA_ROOT */) != GetForegroundWindow()) return;
+        if (GetCursorPos(out var point) && Owns(host, WindowFromPoint(point))) view.Focus();
     }
-    private IntPtr BrowserRoot(IntPtr hwnd)
+    private static IntPtr ReadFocusedWindow()
     {
-        // WebView2's renderer is a child in a different process. Match the
-        // exact Eto view's public HwndHost/WinForms handle, not another plugin's browser.
-        IntPtr host;
-        try { host = DrawerFloatingPanel.NativeHandle(view); }
-        catch { return IntPtr.Zero; }
-        if (host == IntPtr.Zero || !IsWindow(host) || (hwnd != host && !IsChild(host, hwnd))) return IntPtr.Zero;
-        for (var depth = 0; depth < 32 && hwnd != IntPtr.Zero && IsWindow(hwnd); depth++, hwnd = GetParent(hwnd))
-        {
-            GetWindowThreadProcessId(hwnd, out var processId);
-            var name = new StringBuilder(256); GetClassName(hwnd, name, name.Capacity);
-            if (processId == Environment.ProcessId && PanelKeyboardPolicy.IsBrowserClass(name.ToString())) return hwnd;
-            if (hwnd == host) break;
-        }
-        return IntPtr.Zero;
+        var info = new GuiThreadInfo { Size = Marshal.SizeOf<GuiThreadInfo>() };
+        return GetGUIThreadInfo(0, ref info) ? info.Focus : GetFocus();
     }
-    private bool Owns(IntPtr hwnd) => browser != IntPtr.Zero && IsWindow(browser) &&
-        (hwnd == browser || IsChild(browser, hwnd));
+    private static bool Owns(IntPtr host, IntPtr hwnd) => host != IntPtr.Zero && hwnd != IntPtr.Zero &&
+        (host == hwnd || IsChild(host, hwnd));
     private IntPtr OnMessage(int code, IntPtr removed, IntPtr data)
     {
         try
@@ -73,7 +60,9 @@ internal sealed class PanelKeyboardFocus : IDisposable
             if (!disposed && !dispatching && code >= 0 && removed == new IntPtr(1) && data != IntPtr.Zero)
             {
                 var message = Marshal.PtrToStructure<NativeMessage>(data);
-                if (PanelKeyboardPolicy.ShouldDispatch(code, true, message.Message, Owns(message.Window), Owns(GetFocus())))
+                if (!PanelKeyboardPolicy.IsKeyboardMessage(message.Message)) return CallNextHookEx(hook, code, removed, data);
+                var host = DrawerFloatingPanel.NativeHandle(view);
+                if (PanelKeyboardPolicy.ShouldDispatch(code, true, message.Message, Owns(host, message.Window), Owns(host, ReadFocusedWindow())))
                 {
                     dispatching = true;
                     try { TranslateMessage(ref message); DispatchMessage(ref message); }
@@ -89,8 +78,8 @@ internal sealed class PanelKeyboardFocus : IDisposable
     }
     internal static IDisposable PreserveBrowserFocus(Func<bool> mayRestore)
     {
-        var focused = GetFocus(); var foreground = GetForegroundWindow();
-        var owner = owners.FirstOrDefault(owner => !owner.disposed && owner.Owns(focused));
+        var focused = ReadFocusedWindow(); var foreground = GetForegroundWindow();
+        var owner = owners.FirstOrDefault(owner => !owner.disposed && Owns(DrawerFloatingPanel.NativeHandle(owner.view), focused));
         return new FocusRestore(owner, focused, foreground, mayRestore);
     }
     private sealed class FocusRestore(PanelKeyboardFocus? owner, IntPtr focused, IntPtr foreground, Func<bool> mayRestore) : IDisposable
@@ -100,18 +89,17 @@ internal sealed class PanelKeyboardFocus : IDisposable
             // Only restore the focus displaced synchronously by our own MCPStart command.
             // Never activate a window, override a modal command, or steal focus from another app.
             if (owner != null && !owner.disposed && focused != IntPtr.Zero && mayRestore() && GetForegroundWindow() == foreground &&
-                IsWindow(focused) && IsWindowVisible(focused) && IsWindowEnabled(focused))
+                IsWindow(focused) && Owns(DrawerFloatingPanel.NativeHandle(owner.view), focused) && IsWindowVisible(focused) && IsWindowEnabled(focused))
             {
                 owner.view.Focus();
                 SetFocus(focused);
-                owner.browser = owner.BrowserRoot(GetFocus());
             }
         }
     }
     public void Dispose()
     {
         if (disposed) return;
-        disposed = true; browser = IntPtr.Zero; owners.Remove(this);
+        disposed = true; owners.Remove(this);
 #if !RHINO8
         view.MessageReceived -= OnBrowserMessage;
 #endif
@@ -125,6 +113,15 @@ internal sealed class PanelKeyboardFocus : IDisposable
         internal IntPtr Window; internal uint Message; internal UIntPtr WParam; internal IntPtr LParam;
         internal uint Time; internal int X, Y; internal uint Private;
     }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GuiThreadInfo
+    {
+        internal int Size; internal uint Flags;
+        internal IntPtr Active, Focus, Capture, MenuOwner, MoveSize, Caret;
+        internal int Left, Top, Right, Bottom;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Point { internal int X, Y; }
     private delegate IntPtr Hook(int code, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr SetWindowsHookEx(int idHook, Hook callback, IntPtr module, uint threadId);
     [DllImport("user32.dll")] private static extern bool UnhookWindowsHookEx(IntPtr hook);
@@ -136,10 +133,11 @@ internal sealed class PanelKeyboardFocus : IDisposable
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern bool IsWindowEnabled(IntPtr hwnd);
-    [DllImport("user32.dll")] private static extern IntPtr GetParent(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
     [DllImport("user32.dll")] private static extern bool IsChild(IntPtr parent, IntPtr child);
-    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder text, int length);
+    [DllImport("user32.dll")] private static extern bool GetGUIThreadInfo(uint threadId, ref GuiThreadInfo info);
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll")] private static extern IntPtr WindowFromPoint(Point point);
     [DllImport("user32.dll")] private static extern bool TranslateMessage(ref NativeMessage message);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr DispatchMessage(ref NativeMessage message);
 }

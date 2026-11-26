@@ -1,7 +1,8 @@
 import { ensureRhinoRuntimeLoaded, guardRhinoGeometryStageScript, assertRhinoScriptPreflight, buildDocumentGeometrySnapshotScript, buildGhVerificationScript, guardRhinoGhScript, buildSafeProfileScript, buildGh2ParameterInspectionScript, buildGh2ModelScript } from './rhinoRuntime';
 import { GH2_VERIFY_MODEL_TOOL, GH2_REPAIR_OUTPUTS_TOOL, gh2ModelTools } from './rhinoGh2Model';
 import { GH2_PARAMETERS_TOOL, gh2ParametersTool } from './rhinoGh2Parameters';
-import { isConfirmedRhinoScriptFailure, RhinoNativeMcpToolError } from './rhinoScriptPreflight';
+import { nativePythonFailure } from './rhinoErrorDiagnostic';
+import { RhinoNativeMcpToolError } from './rhinoScriptPreflight';
 import { SNAPSHOT_DOCUMENT_GEOMETRY_TOOL } from './rhinoDocumentGeometry';
 import { ghVerificationTool, VERIFY_GH_TOOL } from './rhinoGhSafety';
 import { canUseSafeProfileTool, SAFE_PROFILE_TOOL, safeProfileTool } from './rhinoSafeModeling';
@@ -154,19 +155,11 @@ export async function callRhinoTool(binding: RhinoBinding, name: string, args: R
     params: { name, arguments: { ...args, documentId } },
   });
   if (response.error || !response.result) throw new Error(response.error?.message || 'Rhino MCP \u6ca1\u6709\u8fd4\u56de\u7ed3\u679c');
-  if (response.result.isError) throw new RhinoNativeMcpToolError(response.result.content.map(item => item.text || '').join('\n'));
   if (name === 'rhino_call_native_tool' && args.toolName === 'run_python') {
-    // Some MCP hosts report tool completion but put the Python exception in
-    // stderr. A traceback is not a successful geometry receipt.
-    for (const block of response.result.content) {
-      if (block.type !== 'text') continue;
-      let stderr: unknown;
-      try { stderr = JSON.parse(block.text || '{}').stderr; } catch { continue; }
-      if (typeof stderr === 'string') {
-        const failure = new RhinoNativeMcpToolError(stderr);
-        if (isConfirmedRhinoScriptFailure(failure)) throw failure;
-      }
-    }
+    const failure = nativePythonFailure(response.result.content ?? [], response.result.isError === true);
+    if (failure) throw new RhinoNativeMcpToolError(failure);
+  } else if (response.result.isError) {
+    throw new RhinoNativeMcpToolError(response.result.content.map(item => item.text || '').join('\n'));
   }
   return response.result.content;
 }

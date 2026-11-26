@@ -43,8 +43,10 @@ export type RhinoCommand = {
   content?: string;
   value?: string;
   maskLayer?: string;
+  modelingTarget?: 'draft';
   includeViewport?: boolean;
   includeCanvasSelection?: boolean;
+  canvasReferenceIds?: string[];
   localImages?: Array<{ name: string; dataUrl: string }>;
   toolCallId?: string;
   approved?: boolean;

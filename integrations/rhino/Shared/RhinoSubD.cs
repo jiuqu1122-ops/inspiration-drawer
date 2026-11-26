@@ -34,11 +34,23 @@ internal static class RhinoSubD
 
     internal static SubD Create(JsonObject input)
     {
-        if (input["cageVertices"] is not JsonArray vertices || vertices.Count is < 3 or > MaxCageVertices ||
-            input["cageFaces"] is not JsonArray faces || faces.Count is < 1 or > MaxCageFaces)
-            throw new ArgumentException($"A SubD cage needs 3–{MaxCageVertices} vertices and 1–{MaxCageFaces} faces.");
-
-        var points = vertices.Select((value, index) => ReadCageValue($"cageVertices[{index}]", () => Point(value))).ToArray();
+        bool requireClosed = input["requireClosed"]?.GetValue<bool>() ?? false;
+        Point3d[] points;
+        int[][] faceIndices;
+        if (input["sections"] is JsonArray sections)
+        {
+            if (input["cageVertices"] != null || input["cageFaces"] != null)
+                throw new ArgumentException("Provide either sections or an explicit cage, not both.");
+            (points, faceIndices) = CreateSectionCage(sections, requireClosed);
+        }
+        else
+        {
+            if (input["cageVertices"] is not JsonArray vertices || vertices.Count is < 3 or > MaxCageVertices ||
+                input["cageFaces"] is not JsonArray faces || faces.Count is < 1 or > MaxCageFaces)
+                throw new ArgumentException($"A SubD cage needs 3–{MaxCageVertices} vertices and 1–{MaxCageFaces} faces.");
+            points = vertices.Select((value, index) => ReadCageValue($"cageVertices[{index}]", () => Point(value))).ToArray();
+            faceIndices = faces.Select((value, index) => ReadCageValue($"cageFaces[{index}]", () => CageIndices(value, 3, 4, points.Length))).ToArray();
+        }
         var repeated = points.Select((point, index) => (point, index)).GroupBy(entry => entry.point).FirstOrDefault(group => group.Count() > 1);
         if (repeated != null)
             throw new ArgumentException($"Duplicate cageVertices at indices {string.Join(", ", repeated.Take(8).Select(entry => entry.index))}. Use one shared vertex index in the adjoining faces.");
@@ -47,9 +59,11 @@ internal static class RhinoSubD
         foreach (var point in points) mesh.Vertices.Add(point);
         var used = new HashSet<int>();
         var edges = new Dictionary<(int, int), List<(int Face, bool Forward)>>();
-        for (var faceIndex = 0; faceIndex < faces.Count; faceIndex++)
+        var loops = new HashSet<(int, int, int, int)>();
+        for (var faceIndex = 0; faceIndex < faceIndices.Length; faceIndex++)
         {
-            var indices = ReadCageValue($"cageFaces[{faceIndex}]", () => CageIndices(faces[faceIndex], 3, 4, points.Length));
+            var indices = faceIndices[faceIndex];
+            if (!loops.Add(FaceLoop(indices))) continue;
             used.UnionWith(indices);
             var added = indices.Length == 3 ? mesh.Faces.AddFace(indices[0], indices[1], indices[2])
                 : mesh.Faces.AddFace(indices[0], indices[1], indices[2], indices[3]);
@@ -86,7 +100,6 @@ internal static class RhinoSubD
                 throw new ArgumentException("The cage face directions cannot be made consistent." + location + " Reorder connected faces so each shared edge runs in opposite directions.");
             }
         }
-        bool requireClosed = input["requireClosed"]?.GetValue<bool>() ?? false;
         if (requireClosed && hasBoundary)
         {
             var openEdges = edges.Where(entry => entry.Value.Count == 1).Take(8).Select(entry => $"{entry.Key} on cageFaces[{entry.Value[0].Face}]");
@@ -122,6 +135,67 @@ internal static class RhinoSubD
             subd.Dispose();
             throw;
         }
+    }
+
+    // Rotations and reversals identify the same loop. Sorting all four indices would
+    // incorrectly discard a different quad loop with the same vertices.
+    private static (int, int, int, int) FaceLoop(int[] face)
+    {
+        var start = Array.IndexOf(face, face.Min());
+        var next = (start + 1) % face.Length;
+        var prev = (start + face.Length - 1) % face.Length;
+        return (face[start], Math.Min(face[next], face[prev]), face.Length == 3 ? Math.Max(face[next], face[prev]) : face[(start + 2) % 4],
+            face.Length == 3 ? -1 : Math.Max(face[next], face[prev]));
+    }
+
+    private static (Point3d[], int[][]) CreateSectionCage(JsonArray sections, bool closed)
+    {
+        if (sections.Count is < 2 or > 12) throw new ArgumentException("Provide 2–12 ordered SubD sections.");
+        var rings = sections.Select((node, index) =>
+        {
+            if (node is not JsonArray ring || ring.Count is < 3 or > 80)
+                throw new ArgumentException($"sections[{index}] needs 3–80 ordered vertices, without a repeated endpoint.");
+            return ring.Select((point, vertex) => ReadCageValue($"sections[{index}][{vertex}]", () => Point(point))).ToArray();
+        }).ToArray();
+        var width = rings[0].Length;
+        if (width * rings.Length > MaxCageVertices || rings.Any(ring => ring.Length != width))
+            throw new ArgumentException($"Sections need equal vertex counts and at most {MaxCageVertices} total vertices.");
+
+        var faces = new List<int[]>();
+        for (var row = 0; row + 1 < rings.Length; row++)
+            for (var i = 0; i < width; i++)
+            {
+                var next = (i + 1) % width;
+                faces.Add([row * width + i, row * width + next, (row + 1) * width + next, (row + 1) * width + i]);
+            }
+        if (closed)
+        {
+            AddSectionCap(rings[0], 0, faces);
+            AddSectionCap(rings[^1], width * (rings.Length - 1), faces);
+        }
+        if (faces.Count > MaxCageFaces) throw new ArgumentException($"Sections generate more than {MaxCageFaces} cage faces.");
+        return (rings.SelectMany(ring => ring).ToArray(), faces.ToArray());
+    }
+
+    private static void AddSectionCap(Point3d[] ring, int offset, List<int[]> faces)
+    {
+        using var cap = Mesh.CreateFromClosedPolyline(new Polyline(ring) { ring[0] });
+        if (cap == null || !cap.IsValid || cap.Faces.Count != ring.Length - 2)
+            throw new ArgumentException("Cannot cap a SubD section. Use a simple outline with consistent vertex order.");
+
+        // The cap mesh stores single-precision coordinates. Reuse the ring indices
+        // instead of introducing coincident vertices at the seam.
+        var indices = new int[cap.Vertices.Count];
+        for (var i = 0; i < indices.Length; i++)
+        {
+            var point = cap.Vertices.Point3dAt(i);
+            var vertex = Array.FindIndex(ring, p => (float)p.X == (float)point.X && (float)p.Y == (float)point.Y && (float)p.Z == (float)point.Z);
+            if (vertex < 0) throw new ArgumentException("The cap could not keep the section's original vertices.");
+            indices[i] = offset + vertex;
+        }
+        if (indices.Distinct().Count() != ring.Length)
+            throw new ArgumentException("The cap could not keep the section's original vertex indices.");
+        foreach (var face in cap.Faces) faces.Add([indices[face.A], indices[face.B], indices[face.C]]);
     }
 
     internal static SubD Edit(SubD original, JsonObject input)

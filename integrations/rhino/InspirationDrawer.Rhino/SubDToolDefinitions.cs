@@ -13,7 +13,7 @@ internal static class SubDToolDefinitions
     [
         Tool(Inspect, "List native Rhino SubD objects in the bound document, or inspect the control vertices and crease edges of one object by subdId. Use the returned IDs for edits.",
             true, [], new JsonObject { ["subdId"] = new JsonObject { ["type"] = "string" } }),
-        Tool(Build, "Create an editable native Rhino SubD in the bound document with operation subd. Supply an explicit cage of consistently wound triangle or quad faces (prefer quads) and optional crease edges. For edit_subd, inspect the target and supply subdId with control point or crease edits. All coordinates use the document units. Plan openings and mating surfaces in the cage topology.",
+        Tool(Build, "Create an editable native Rhino SubD in the bound document with operation subd. Supply ordered cross-sections for tapered housings, or an explicit cage of consistently wound triangle or quad faces when the shape requires openings or branches. For edit_subd, inspect the target and supply subdId with control point or crease edits. All coordinates use the document units.",
             false, ["operation"], new JsonObject
             {
                 ["operation"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("subd", "edit_subd") },
@@ -21,6 +21,7 @@ internal static class SubDToolDefinitions
                 ["subdId"] = new JsonObject { ["type"] = "string", ["description"] = "Existing native SubD object ID for edit_subd." },
                 ["cageVertices"] = ArrayOf(Xyz(), 3, 384, "XYZ control cage coordinates."),
                 ["cageFaces"] = ArrayOf(ArrayOf(Index(), 3, 4), 1, 512, "Each triangle or quad uses shared zero-based cage vertex indices."),
+                ["sections"] = ArrayOf(ArrayOf(Xyz(), 3, 80), 2, 12, "Alternative to cageVertices/cageFaces. Ordered rings with the same winding, start position and vertex count. Omit repeated endpoints; use at most 384 total vertices. Set requireClosed to cap both ends."),
                 ["creaseEdges"] = ArrayOf(ArrayOf(Index(), 2, 2), 0, 128, "Pairs of cage indices identifying actual edges to crease."),
                 ["requireClosed"] = new JsonObject { ["type"] = "boolean", ["description"] = "Require a closed SubD. Existing closed SubD remains closed when edited." },
                 ["cageEdits"] = ArrayOf(ObjectSchema(["vertexId", "point"], new JsonObject { ["vertexId"] = Id(), ["point"] = Xyz() }), 1, 384),

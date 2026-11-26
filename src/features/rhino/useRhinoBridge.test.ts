@@ -850,3 +850,27 @@ it('publishes all six saved reference thumbnails with stable preview indices', a
   expect(followUp.hiddenReferenceCount).toBe(0);
   expect(followUp.images).toHaveLength(6);
 });
+
+it.each([false, true])('reports an uncertain model reply without resending (completed tool: %s)', async completed => {
+  const { runtime } = setup();
+  runtime.sendMessage.mockImplementation(async () => {
+    runtime.messages.push({ id: 'this-turn', role: 'assistant', status: 'error', content: 'UPSTREAM_RESULT_UNKNOWN', toolCalls: completed ? [{ status: 'completed' }] : [] }); return false;
+  });
+  await settle();
+  expect(runtime.sendMessage).toHaveBeenCalledTimes(1);
+  expect(mocks.request).toHaveBeenCalledWith(connection, '/drawer/ack', expect.objectContaining({ status: 'failed', error: expect.stringContaining(completed ? '已执行的工具步骤已保留' : '本轮没有已完成的工具步骤') }));
+});
+it('never silently substitutes new canvas images when the preview selection changed before send', async () => {
+  const { runtime } = setup({ includeCanvasSelection: true, canvasReferenceIds: ['selection-no-longer-selected'] });
+  await settle(); expect(runtime.sendMessage).not.toHaveBeenCalled();
+  expect(mocks.request).toHaveBeenCalledWith(connection, '/drawer/ack', expect.objectContaining({ status: 'failed', error: expect.stringContaining('画布选择已变化') }));
+});
+it('routes an explicitly isolated panel draft through the scoped background preparation callback, without native MCP or viewport reads', async () => {
+  const {runtime}=setup({kind:'send',modelingTarget:'draft',content:'帮我建模一个独立外壳',includeViewport:true});
+  await settle(); expect(mocks.discoverNative).not.toHaveBeenCalled(); expect(mocks.call).not.toHaveBeenCalled();
+  expect(runtime.sendMessage).toHaveBeenCalledTimes(1);
+  const [text,attachments,,,,source,conversationId,prepare]=runtime.sendMessage.mock.calls[0];
+  expect(text).toBe('帮我建模一个独立外壳');expect(attachments).toEqual([]);expect(source).toBe('rhino');expect(prepare).toBeTypeOf('function');
+  mocks.invoke.mockResolvedValueOnce({rhinoVersion:'9.0',objects:[]}); const target=await prepare(conversationId);
+  try { expect(mocks.invoke).toHaveBeenCalledWith('rhino_headless_mcp_call',expect.objectContaining({tool:'context',conversationId})); } finally {target.release()}
+});

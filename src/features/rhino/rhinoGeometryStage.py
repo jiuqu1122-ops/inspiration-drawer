@@ -1,10 +1,117 @@
 # Trusted convenience helper for existing run_python capability, NOT a Python sandbox.
 # All of this helper's geometry checks run before its first document write.
+import json as _drawer_json
 import math as _drawer_math
 import System as _drawer_system
 import Rhino.Geometry as _drawer_rg
 import Rhino.DocObjects as _drawer_objects
 import scriptcontext as _drawer_sc
+
+
+class DrawerFeatureAcceptanceError(ValueError):
+    """No helper write was attempted. receipt is the same JSON-safe schema as preview."""
+    def __init__(self, receipt):
+        self.receipt = receipt
+        first = next((c for c in receipt["checks"] if not c["passed"]), receipt)
+        ValueError.__init__(self, "Feature acceptance failed before write: " + first["reason"])
+
+
+def _drawer_number(value):
+    n = float(value)
+    if _drawer_math.isnan(n) or _drawer_math.isinf(n):
+        raise ValueError("Expected a finite number")
+    return n
+
+
+def _drawer_xyz(value):
+    xyz = (value.X, value.Y, value.Z) if hasattr(value, "X") else value
+    if len(xyz) != 3:
+        raise ValueError("Expected three world coordinates")
+    return [_drawer_number(x) for x in xyz]
+
+
+def _drawer_solid(brep):
+    if not (isinstance(brep, _drawer_rg.Brep) and brep.IsValid and brep.IsSolid and brep.IsManifold):
+        raise ValueError("Groove evidence requires a valid closed manifold Brep")
+    pieces = brep.GetConnectedComponents()  # empty for a single connected Brep
+    if pieces is None or len(pieces) != 0:
+        for piece in pieces or []:
+            piece.Dispose()
+        raise ValueError("Groove evidence requires one connected boundary")
+    if str(brep.SolidOrientation) != "Outward":
+        raise ValueError("Groove evidence requires an outward solid")
+    props = _drawer_rg.VolumeMassProperties.Compute(brep)
+    if props is None:
+        raise ValueError("Missing volume evidence")
+    try:
+        volume, error = _drawer_number(props.Volume), _drawer_number(props.VolumeError)
+        if volume <= 0 or error < 0:
+            raise ValueError("Invalid solid volume or uncertainty")
+        return volume, error
+    finally:
+        props.Dispose()
+
+
+def _drawer_chord(brep, origin, inward, extent, tol):
+    """Front/back world-axis coordinates; unsupported if not a single material interval."""
+    line = _drawer_rg.LineCurve(origin - inward * extent, origin + inward * extent)
+    try:
+        ok, overlaps, points = _drawer_rg.Intersect.Intersection.CurveBrep(line, brep, tol)[:3]
+        try:
+            if not ok or overlaps is None or len(overlaps) or points is None or len(points) != 2:
+                raise ValueError("Probe requires exactly two isolated crossings (no overlap, tangency or multiple walls)")
+            depths = sorted(_drawer_number((p - origin) * inward) for p in points if p.IsValid)
+            if len(depths) != 2 or depths[1] - depths[0] <= 8 * tol:
+                raise ValueError("Unresolved material chord")
+            return depths
+        finally:
+            for curve in overlaps or []:
+                curve.Dispose()
+    finally:
+        line.Dispose()
+
+
+def _drawer_material(brep, point, inside, tol):
+    boundary = brep.ClosestPoint(point)
+    if not boundary.IsValid or _drawer_number(boundary.DistanceTo(point)) <= 2 * tol:
+        raise ValueError("Material witness too close to a boundary or unresolved")
+    if bool(brep.IsPointInside(point, tol, inside)) != inside:
+        raise ValueError("Material witness did not have the required occupancy")
+
+
+def _drawer_probe(before, after, sample, tol, evidence, boxes):
+    p = _drawer_rg.Point3d(*sample["point"])
+    axis = _drawer_rg.Vector3d(*sample["inward"])
+    side = _drawer_rg.Vector3d(*sample["across"])
+    if not (p.IsValid and axis.IsValid and side.IsValid and axis.Unitize() and side.Unitize()) or abs(axis * side) > 1e-6:
+        raise ValueError("Expected a valid point and perpendicular non-zero inward/across directions")
+    width, low, high = (sample[k] for k in ("flankDistance", "minDepth", "maxDepth"))
+    if min(width, low) <= 8 * tol or high < low:
+        raise ValueError("Flank distance and minimum depth must exceed 8 tolerances; require maxDepth >= minDepth")
+    for label, offset in (("center", 0), ("left", -width), ("right", width)):
+        q = p + side * offset
+        # From outside BOTH bounding boxes, including translated or enlarged candidates.
+        extent = _drawer_number(max(q.DistanceTo(b.Center) + b.Diagonal.Length for b in boxes) + 16 * tol)
+        a, b = (_drawer_chord(s, q, axis, extent, tol) for s in (before, after))
+        depth = _drawer_number(b[0] - a[0])
+        evidence[label] = {"beforeChord": a, "candidateChord": b, "frontDelta": depth}
+        if abs(b[1] - a[1]) > tol:
+            raise ValueError(label + ": opposite wall moved/missing")
+        if label == "center":
+            if abs(a[0]) > tol:
+                raise ValueError("Specified point is not on the original entry surface")
+            if not low <= depth <= high:
+                raise ValueError("No recess of the declared depth at the specified point")
+            void = q + axis * ((a[0] + b[0]) * 0.5)
+            _drawer_material(before, void, True, tol)
+            _drawer_material(after, void, False, tol)
+            evidence["removedAt"] = _drawer_xyz(void)
+        elif abs(depth) > tol:
+            raise ValueError(label + ": flank surface not retained")
+        backing = q + axis * ((max(a[0], b[0]) + min(a[1], b[1])) * 0.5)
+        for solid in (before, after):
+            _drawer_material(solid, backing, True, tol)
+        evidence[label]["retainedAt"] = _drawer_xyz(backing)
 
 
 class DrawerGeometryStage(object):
@@ -18,6 +125,7 @@ class DrawerGeometryStage(object):
         self.tolerance = self.doc.ModelAbsoluteTolerance
         self.parts = []
         self.reads = {}
+        self._requirements = []
         self.finished = False
 
     def _id(self, value):
@@ -202,11 +310,180 @@ class DrawerGeometryStage(object):
         result.update({"geometry": geometry, "kind": kind})
         return result
 
+    def _can_require(self):
+        if self.finished or len(self._requirements) >= 64:
+            raise ValueError("Cannot add requirements after commit or beyond the 64-check budget")
+
+    def _snapshot(self, object_id):
+        obj = self._object(object_id)
+        crc = obj.Geometry.DataCRC(0)
+        if self.reads.get(str(obj.Id), crc) != crc:
+            raise ValueError("Object changed since stage.copy: " + str(obj.Id))
+        return {"id": str(obj.Id), "serial": int(obj.RuntimeSerialNumber), "crc": crc,
+                "original": obj.Geometry.Duplicate()}
+
+    def require_preserved(self, object_id):
+        """Pin a separate existing object. No replacement (even a look-alike) is allowed."""
+        self._can_require()
+        spec = self._snapshot(object_id)
+        spec["type"] = "preservedObject"
+        self._requirements.append(spec)
+
+    def require_groove(self, part_name, samples, source_id=None, baseline=None):
+        """Bind a unique named candidate to one baseline BEFORE evaluating, in model units.
+
+        Exactly one of source_id (must replace that GUID) or baseline (new/add-only
+        part; caller attests the origin of this private original). Each world-space
+        sample: point, inward, across (3-vectors); flankDistance, minDepth, maxDepth.
+        Measures blind recesses only; not a proof of continuous toolpath or appearance.
+        """
+        self._can_require()
+        if (source_id is None) == (baseline is None):
+            raise ValueError("Specify exactly one of source_id or private baseline")
+        if not isinstance(samples, (list, tuple)) or not 1 <= len(samples) <= 128:
+            raise ValueError("Expected 1..128 explicit groove samples")
+        if sum(len(r.get("samples", [])) for r in self._requirements) + len(samples) > 128:
+            raise ValueError("Stage exceeds 128 total groove samples")
+        plan = []
+        for s in samples:
+            item = {k: _drawer_xyz(s[k]) for k in ("point", "inward", "across")}
+            item.update({k: _drawer_number(s[k]) for k in ("flankDistance", "minDepth", "maxDepth")})
+            plan.append(item)
+        spec = self._snapshot(source_id) if source_id is not None else {
+            "id": None, "original": self._native(baseline).Duplicate()}
+        spec.update({"type": "sampledGroove", "part": str(part_name), "samples": plan})
+        self._requirements.append(spec)
+
+    def _verify_reference(self, spec):
+        obj = self._object(spec["id"])
+        if (str(obj.Id) != spec["id"] or int(obj.RuntimeSerialNumber) != spec["serial"] or
+                not obj.Geometry.IsValid or obj.Geometry.DataCRC(0) != spec["crc"] or not
+                _drawer_rg.GeometryBase.GeometryEquals(spec["original"], obj.Geometry)):
+            raise ValueError("Pinned object identity or geometry changed: " + spec["id"])
+
+    def _measure_groove(self, spec, prepared, check):
+        named = [p for p in prepared if p["name"] == spec["part"]]
+        if len(named) != 1:
+            raise ValueError("Expected exactly one staged part named " + spec["part"])
+        part = named[0]
+        target = None if part["target"] is None else str(self._id(part["target"]))
+        if target != spec["id"]:
+            raise ValueError("Named candidate is not bound to the declared mother object/addition")
+        if target and sum(p["target"] is not None and str(self._id(p["target"])) == target for p in prepared) != 1:
+            raise ValueError("Ambiguous staged replacement for mother object")
+        original = spec["original"]
+        before = original.ToBrep() if isinstance(original, _drawer_rg.Extrusion) else original
+        try:
+            after = part["geometry"]  # exactly the prepared object about to be written
+            bv, be = _drawer_solid(before)
+            av, ae = _drawer_solid(after)
+            tol = _drawer_number(self.tolerance)
+            if tol <= 0 or tol != self.doc.ModelAbsoluteTolerance:
+                raise ValueError("Invalid or changed model tolerance")
+            delta = _drawer_number(bv - av)
+            noise = _drawer_number(max(tol ** 3, be + ae, max(bv, av) * 1e-9))
+            check.update({"beforeVolume": bv, "candidateVolume": av, "removedVolume": delta,
+                          "volumeNoiseFloor": noise, "samples": []})
+            if delta <= noise:
+                raise ValueError("No net material loss beyond volume uncertainty")
+            boxes = [s.GetBoundingBox(True) for s in (before, after)]
+            if not all(b.IsValid for b in boxes):
+                raise ValueError("Missing solid bounds")
+            for i, sample in enumerate(spec["samples"]):
+                row = {"index": i, "request": dict((k, list(v) if isinstance(v, list) else v)
+                       for k, v in sample.items()), "passed": False}
+                check["samples"].append(row)
+                try:
+                    _drawer_probe(before, after, sample, tol, row, boxes)
+                    row["passed"] = True
+                except Exception as error:
+                    row["reason"] = str(error)
+            failed = next((r for r in check["samples"] if not r["passed"]), None)
+            if failed is not None:
+                raise ValueError("Sample %d: %s" % (failed["index"], failed["reason"]))
+        finally:
+            if before is not None and before is not original:
+                before.Dispose()
+
+    def _feature_receipt(self, phase, prepared, preparation_error=None):
+        checks = []
+        for spec in self._requirements:
+            check = {"type": spec["type"], "objectId": spec["id"], "passed": False}
+            if "part" in spec:
+                check.update({"part": spec["part"], "requestedSampleCount": len(spec["samples"])})
+            checks.append(check)
+            try:
+                if preparation_error is not None:
+                    raise ValueError("Not measured: " + preparation_error)
+                if spec["id"] is not None:
+                    self._verify_reference(spec)
+                    check["objectSerial"] = spec["serial"]
+                if spec["type"] == "preservedObject":
+                    if any(p["target"] is not None and str(self._id(p["target"])) == spec["id"] for p in prepared):
+                        raise ValueError("Separate protected object is targeted for replacement")
+                    check["geometryEquals"] = True
+                else:
+                    self._measure_groove(spec, prepared, check)
+                check["passed"] = True
+            except Exception as error:
+                check["reason"] = str(error)
+        return {"schema": "drawer.featureAcceptance.v1", "phase": phase,
+                "documentSerial": int(self.doc.RuntimeSerialNumber), "units": str(self.doc.ModelUnitSystem),
+                "tolerance": self.tolerance, "checks": checks, "passed": bool(checks) and all(c["passed"] for c in checks)}
+
+    # Scheduler correlation only, NOT proof of authorship or absence of other script effects.
+    # Bounded including prefix (excluding line terminator); never truncate a check or ID.
+    MAX_FEATURE_MARKER_BYTES = 8192
+
+    def _feature_commit_line(self, prepared, ids, acceptance):
+        by_name = dict((p["name"], i) for p, i in zip(prepared, ids))
+        checks = []
+        for check in acceptance["checks"]:
+            item = {"type": check["type"], "passed": True}
+            if check["type"] == "sampledGroove":
+                item.update({"part": check["part"], "id": by_name[check["part"]]})
+            else:
+                item["id"] = check["objectId"]
+            checks.append(item)
+        line = "IDRAW_FEATURE_COMMIT_V1:" + _drawer_json.dumps(
+            {"partIds": ids, "checks": checks}, ensure_ascii=True, separators=(",", ":"))
+        if len(line) > self.MAX_FEATURE_MARKER_BYTES:
+            raise ValueError("Commit marker exceeds 8192 ASCII bytes; choose a smaller explicit stage")
+        return line
+
+    def _prepare_features(self, phase, prepared):
+        try:
+            for part in self.parts:
+                prepared.append(self._validate(part))
+            if not prepared:
+                raise ValueError("No staged geometry")
+        except Exception as error:
+            return self._feature_receipt(phase, prepared, str(error))
+        acceptance = self._feature_receipt(phase, prepared)
+        if acceptance["passed"]:
+            try:
+                # Real GUIDs have fixed width. Reject oversized receipts BEFORE the undo record.
+                self._feature_commit_line(prepared, [str(_drawer_system.Guid.Empty)] * len(prepared), acceptance)
+            except Exception as error:
+                acceptance.update({"passed": False, "reason": str(error)})
+        return acceptance
+
     def preview(self):
         """Read-only validated summary; never bake or assume a fixed GH output count."""
         if self.finished:
             raise RuntimeError("This geometry stage has already been committed or attempted")
         counts = {}
+        if self._requirements:
+            prepared = []
+            try:
+                acceptance = self._prepare_features("preview", prepared)
+                for p in prepared:
+                    counts[p["kind"]] = counts.get(p["kind"], 0) + 1
+                return {"stagedCount": len(self.parts), "kinds": counts, "documentWrites": False,
+                        "featureAcceptance": acceptance}
+            finally:
+                for p in prepared:
+                    p["geometry"].Dispose()
         for part in self.parts:
             prepared = self._validate(part)
             try:
@@ -219,9 +496,34 @@ class DrawerGeometryStage(object):
         if self.finished:
             raise RuntimeError("A geometry stage can be committed only once; never replay a failed write")
         self.finished = True
-        if not self.parts:
-            raise ValueError("No staged geometry to commit")
-        prepared = [self._validate(part) for part in self.parts]
+        prepared = []
+        try:
+            acceptance = None
+            if self._requirements:
+                acceptance = self._prepare_features("precommit", prepared)
+                if not acceptance["passed"]:
+                    raise DrawerFeatureAcceptanceError(acceptance)
+            else:
+                if not self.parts:
+                    raise ValueError("No staged geometry to commit")
+                for part in self.parts:
+                    prepared.append(self._validate(part))
+            result = self._write(prepared)
+            if acceptance is not None:
+                result.update({"featureAcceptance": acceptance, "structuralOnly": False})
+                try:
+                    print(self._feature_commit_line(prepared, [p["id"] for p in result["parts"]], acceptance))
+                except Exception as error:
+                    # A broken stdout cannot undo a committed edit or authorize a retry.
+                    result["featureMarkerWarning"] = str(error)
+            return result
+        finally:
+            for part in prepared:
+                part["geometry"].Dispose()
+            for spec in self._requirements:
+                spec["original"].Dispose()
+
+    def _write(self, prepared):
         targets = [str(self._id(part["target"])) for part in prepared if part["target"] is not None]
         if len(set(targets)) != len(targets):
             raise ValueError("A replacement target appears more than once")

@@ -5,12 +5,12 @@ import { ChatToolCallCard } from './ChatToolCallCard';
 
 // Match the Node-only component test setup; force just the disclosure state.
 const disclosure = vi.hoisted(() => ({ expanded: false }));
-vi.mock('react', async original => ({
-  ...await original<typeof import('react')>(),
-  useState: () => [disclosure.expanded, (update: (value: boolean) => boolean) => {
-    disclosure.expanded = update(disclosure.expanded);
-  }],
-}));
+vi.mock('react', async original => {
+  const react = await original<typeof import('react')>();
+  return { ...react, useState: (initial: unknown) => typeof initial === 'boolean'
+    ? [disclosure.expanded, (update: (value: boolean) => boolean) => { disclosure.expanded = update(disclosure.expanded); }]
+    : react.useState(initial) };
+});
 
 // Synthetic fixtures, NOT a captured remotePC search payload or a live search.
 const mozaResults = [
@@ -199,5 +199,42 @@ describe('ChatToolCallCard other tools remain unchanged', () => {
     }));
     expect(batch).toContain('1/3');
     expect(batch).toContain('chat-tool__batch-progress');
+  });
+});
+
+describe('Rhino viewport receipts', () => {
+  it.each([
+    ['rhino_review_viewport', '对照 Rhino 视口与参考图'],
+    ['rhino_native_get_viewport_image', '查看 Rhino 视口'],
+  ])('keeps the shared label and safe parameters/results for %s', (toolName, label) => {
+    const html = renderCard(searchCall({
+      documentId: 77, content: '视口已更新', viewportImageCount: 1,
+      reasoning: 'PRIVATE_REASONING', transientRhinoImages: [{ data: 'STALE_PIXELS' }],
+      rhinoStepPreview: { version: 1, count: 1 },
+      blocks: [{ type: 'image', mimeType: 'image/jpeg', data: 'SECRET_FRAME', width: 320 }],
+    }, { toolName, argumentsJson: '{"camera":"Perspective","image":"data:image/png;base64,SECRET_PAYLOAD"}' }), true);
+    for (const text of [label, toolName, '参数', 'Perspective', '结果', 'documentId', '77', '视口已更新', 'viewportImageCount', '320']) {
+      expect(html).toContain(text);
+    }
+    expect(html).not.toMatch(/PRIVATE_REASONING|STALE_PIXELS|SECRET_FRAME|SECRET_PAYLOAD|base64|rhinoStepPreview/);
+  });
+
+  it('keeps the native approval warning and actual camera parameters before approval without opening details', () => {
+    const html = renderCard(searchCall({}, { toolName: 'rhino_native_get_viewport_image', status: 'awaiting-approval',
+      argumentsJson: '{"viewport":"Perspective","cameraLocation":[10,20,30],"image":"data:image/jpeg;base64,PRIVATE_PIXELS"}',
+    }));
+    for (const text of ['将通过 RhinoAI 原生 MCP 操作当前绑定文档', '请核对工具名称和参数后确认',
+      'chat-tool__native-approval-args', 'Perspective', 'cameraLocation', '30', '允许', '拒绝']) expect(html).toContain(text);
+    expect(html).not.toMatch(/PRIVATE_PIXELS|base64|chat-tool__details/);
+  });
+
+  it('preserves specific errors, diagnostic data and legacy non-JSON failures', () => {
+    for (const resultJson of [JSON.stringify({ error: { code: 'CAMERA_BIND_FAILED', message: '无法绑定活动视口', data: '恢复相机后重试' } }),
+      'CAMERA_BIND_FAILED: 无法绑定活动视口；恢复相机后重试']) {
+      const html = renderCard(searchCall({}, { toolName: 'rhino_native_get_viewport_image', status: 'error',
+        argumentsJson: '{"viewport":"Front"}', resultJson }), true);
+      for (const text of ['失败', '参数', 'Front', '结果', 'CAMERA_BIND_FAILED', '无法绑定活动视口', '恢复相机后重试']) expect(html).toContain(text);
+      expect(html).not.toContain('chat-rhino-preview');
+    }
   });
 });

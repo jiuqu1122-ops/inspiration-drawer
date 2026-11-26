@@ -23,7 +23,8 @@
   </div>
   <footer>
     <form id="composer" class="rhino-composer" aria-label="聊天输入与模型设置">
-      <div id="local-image-list" class="local-image-list" aria-label="本地参考图片" hidden></div>
+      <span id="draft-target-hint" class="beta-note" hidden>独立草稿 · 本对话续改独立 3DM；编辑当前文档请新建对话</span>
+      <div id="local-image-list" class="local-image-list" aria-label="待发送的参考图片" hidden></div>
       <span id="local-image-status" class="visually-hidden" role="status"></span>
       <textarea id="input" rows="2" maxlength="12000" placeholder="发消息，或让 AI 使用 Rhino 与画布工具" aria-label="消息" title="Enter 发送 · Shift + Enter 换行"></textarea>
       <section id="image-settings" class="composer-model-settings" aria-label="图像生成设置">
@@ -39,6 +40,7 @@
       </section>
       <section id="reference-settings" class="composer-reference-settings" aria-label="参考图与视口设置" hidden>
         <div class="references">
+          <label id="draft-target-label" hidden><input id="draft-target" type="checkbox">独立 3DM 草稿（不改当前文档）</label>
           <label><input id="viewport" type="checkbox" checked>附带当前视口</label>
           <label><input id="canvas" type="checkbox" checked>画布选中图片</label>
           <label class="mask-toggle"><input id="mask" type="checkbox" disabled>自动导出对象遮罩</label>

@@ -27,6 +27,7 @@ describe('independent Rhino runtime contract and bundled fallback', () => {
     try {
       await ensureRhinoRuntimeLoaded();
       expect(rhinoRuntimeStatus().version).toBe('cached-fixture');
+      expect(guardRhinoGeometryStageScript('stage=DrawerGeometryStage()')).toContain('def require_groove(');
       expect(() => assertRhinoScriptPreflight('rhino_native_run_python', { script: 'import Rhino.Geometry as rg\ncap=rg.PipeCapMode.ROUND' })).toThrow(/PipeCapMode\.Round/);
     } finally { vi.unstubAllGlobals(); }
   });

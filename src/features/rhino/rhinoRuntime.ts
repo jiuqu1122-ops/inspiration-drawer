@@ -61,7 +61,7 @@ export const inspectRhinoScript: RhinoRuntimeModule['inspectRhinoScript'] = (nam
 export const rhinoScriptFailureExplanation: RhinoRuntimeModule['rhinoScriptFailureExplanation'] = error =>
   active.rhinoScriptFailureExplanation(error) ?? (active !== bundled ? bundled.rhinoScriptFailureExplanation(error) : undefined);
 export const buildRhinoWorkflowInstruction: RhinoRuntimeModule['buildRhinoWorkflowInstruction'] = (...args) => active.buildRhinoWorkflowInstruction(...args);
-export const guardRhinoGeometryStageScript: RhinoRuntimeModule['guardRhinoGeometryStageScript'] = (...args) => active.guardRhinoGeometryStageScript(...args);
+export const guardRhinoGeometryStageScript: RhinoRuntimeModule['guardRhinoGeometryStageScript'] = (...args) => (active.productStageVersion === 1 ? active : bundled).guardRhinoGeometryStageScript(...args);
 export const guardRhinoGhScript: RhinoRuntimeModule['guardRhinoGhScript'] = (...args) => active.guardRhinoGhScript(...args);
 export const buildGhVerificationScript: RhinoRuntimeModule['buildGhVerificationScript'] = (...args) => active.buildGhVerificationScript(...args);
 export const buildDocumentGeometrySnapshotScript: RhinoRuntimeModule['buildDocumentGeometrySnapshotScript'] = (...args) => active.buildDocumentGeometrySnapshotScript(...args);

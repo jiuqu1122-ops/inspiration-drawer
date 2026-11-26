@@ -8,12 +8,13 @@ vi.mock('../../designMemory/context', async original => ({ ...await original<typ
 vi.mock('../../designMemory/sources', () => ({ rememberExplicitChatDesign: vi.fn(async () => {}), designMemoryProjectId: (id: string) => id, beginChatDesignSummaryMemory: vi.fn(async () => null), completeChatDesignSummaryMemory: vi.fn(async () => {}) }));
 import { RHINO_REFERENCE_FIDELITY_ASSESSMENT_TOOL as quality } from '../../rhino/rhinoVisualFidelity';
 import { useChatRuntime } from './useChatRuntime';
+import * as stepPreviewCache from '../storage/rhinoStepPreviews';
 import { registerRhinoNativeTools, rhinoToolDefinitions, RHINO_REFERENCE_REVIEW_TOOL, type RhinoNativeTool } from '../../rhino/rhinoProtocol';
 import { readRhinoModelingSkillResource, RHINO_MODELING_SKILL_RESOURCE_TOOL } from '../../rhino/rhinoProductModelingKnowledge';
 import { gh2ModelTools, GH2_VERIFY_MODEL_TOOL, GH2_REPAIR_OUTPUTS_TOOL } from '../../rhino/rhinoGh2Model';
 import { RhinoDocumentGeometryWriteError } from '../../rhino/rhinoDocumentGeometry';
 import { RHINO_HEADLESS_BUILD_TOOL, RhinoHeadlessGeometryError } from '../../rhino/rhinoHeadless';
-const executed=vi.fn(async(_name:string)=>({source:'rhino',content:'{"hits":[]}'}));
+const executed=vi.fn<ChatToolExecutor>(async()=>({source:'rhino',content:'{"hits":[]}'}));
 const search='rhino_native_g1_search_components';
 const tools:RhinoNativeTool[]=[
  ...gh2ModelTools(),
@@ -788,4 +789,57 @@ describe('bundled Rhino product-modeling Skill resources in the real Chat tool l
   expect(JSON.stringify(h.requests[1].messages)).toContain('MatchSrf');
   expect(last().status).toBe('completed');
  });
+});
+
+it('does not mark a mesh deliverable complete on a NURBS turn or replay a dispatched script',async()=>{
+ const runtime=setup();executed.mockResolvedValueOnce({source:'rhino',documentId:12,geometryVerification:{status:'passed',documentChanged:true,addedCount:1,changedCount:0,deletedCount:0,added:[{id:'shell',geometryType:'Mesh',valid:true}],changed:[],deleted:[],truncated:false}});
+ h.replies.push(call('typed-shell',{script:'stage=DrawerGeometryStage();print(stage.commit())'},'rhino_native_run_python'),{content:'外壳完成。',toolCalls:[]},{content:'完成。',toolCalls:[]});
+ await runtime.sendMessage('请建模，要求 NURBS 曲面，不要网格',[],undefined,undefined,undefined,'rhino');
+ expect(last().status).toBe('error');expect(last().content).toContain('产品特征未验收');expect(executed).toHaveBeenCalledTimes(1);
+});
+it.each([true,false])('a panel draft requires a verified readback before offering its 3DM file (verified=%s)',async verified=>{
+ const name='rhino_native_headless_build';const release=vi.fn();
+ const prepare=vi.fn(async()=>({context:'{}',documentName:'测试草稿',release,exportModel:async()=>({files:[{format:'3dm',path:'C:/fixture/draft.3dm'}],readback:{verified}})}));
+ const runtime=setup(undefined,{additionalTools:(id,source)=>{
+  if(source!=='rhino')return [];const tool:RhinoNativeTool={name,description:'Build one draft part',readOnly:false,destructive:false,workflowPhase:'build',inputSchema:{type:'object',properties:{operation:{type:'string'}}}};registerRhinoNativeTools(id,[tool]);return [{type:'function',function:{name,description:tool.description,parameters:tool.inputSchema}}];}});
+ executed.mockResolvedValueOnce({committed:true,objects:[{id:'body',geometryType:'Brep',valid:true}]});h.replies.push(call('draft-box',{operation:'box'},name),{content:'草稿完成。',toolCalls:[]});
+ await runtime.sendMessage('帮我建模',[],undefined,undefined,undefined,'rhino',undefined,prepare);
+ expect(release).toHaveBeenCalledTimes(1);expect(last().status).toBe(verified?'completed':'error');
+ expect(last().toolCalls.some(c=>c.toolName==='rhino_headless_export')).toBe(verified);
+});
+// Capture the same observation as the model, without retaining original pixels in SQLite or adding model/tool calls.
+describe('canvas Chat Rhino step previews', () => {
+  const view = RHINO_REFERENCE_REVIEW_TOOL, nativeView = 'rhino_native_get_viewport_image';
+  const canvasRuntime = () => setup(undefined, { prepareCanvasRhinoTurn: async () => ({context:'{}', documentName:'测试文档', release:vi.fn()}) });
+  const shot = (data: string) => ({ source:'rhino', transientRhinoImages: [{mimeType:'image/png',data}], content:'当前视口' });
+  it('binds two observations to their own history records and passes only the original observations to the model', async () => {
+    const save = vi.spyOn(stepPreviewCache,'saveRhinoStepPreviews').mockResolvedValue(1);
+    executed.mockResolvedValueOnce(shot('QUJD')).mockResolvedValueOnce(shot('REVG'));
+    h.replies.push(call('before',{},view),call('after',{},nativeView),{content:'已对照两次视口。',toolCalls:[]});
+    await canvasRuntime().sendMessage('帮我建模');
+    const reply = last(), visits = reply.toolCalls;
+    expect(visits.map(c=>c.toolName)).toEqual([view,nativeView]);
+    expect(executed).toHaveBeenCalledTimes(2);
+    expect(save.mock.calls).toEqual(visits.map((c,i)=>[reply.id,c.id,[{mimeType:'image/png',data:i?'REVG':'QUJD'}],reply.conversationId]));
+    for (const c of visits) {
+      expect(c.status).toBe('completed'); expect(JSON.parse(c.resultJson!)).toMatchObject({ viewportImageCount:1,rhinoStepPreview:{version:1,count:1} });
+      expect(c.resultJson).not.toMatch(/transientRhinoImages|QUJD|REVG|data:image/);
+    }
+    expect(JSON.stringify(h.requests.map(r=>r.messages))).not.toContain('rhinoStepPreview');
+    expect(JSON.stringify(h.requests[1].messages)).toContain('data:image/png;base64,QUJD');
+  });
+  it('ignores empty or spoofed previews, and cache failures do not fail or retry the tool', async () => {
+    const save=vi.spyOn(stepPreviewCache,'saveRhinoStepPreviews').mockRejectedValue(new Error('quota exceeded'));
+    executed.mockResolvedValueOnce({ source:'rhino', viewportImageCount:1,rhinoStepPreview:{version:1,count:1} }).mockResolvedValueOnce(shot('QUJD'));
+    h.replies.push(call('empty',{},view),call('full',{},nativeView),{content:'已查看。',toolCalls:[]});
+    await canvasRuntime().sendMessage('帮我建模');
+    expect(save).toHaveBeenCalledTimes(1);expect(executed).toHaveBeenCalledTimes(2);
+    for (const c of last().toolCalls) { expect(c.status).toBe('completed');expect(c.resultJson).not.toContain('rhinoStepPreview'); }
+  });
+  it('does not record extra thumbnails for the native Rhino panel',async()=>{
+    const save=vi.spyOn(stepPreviewCache,'saveRhinoStepPreviews').mockResolvedValue(1);
+    executed.mockResolvedValueOnce(shot('QUJD'));h.replies.push(call('panel',{},view),{content:'已查看。',toolCalls:[]});
+    await setup().sendMessage('查看当前视口',[],undefined,undefined,undefined,'rhino');
+    expect(executed).toHaveBeenCalledTimes(1); expect(save).not.toHaveBeenCalled();
+  });
 });

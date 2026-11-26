@@ -1,0 +1,98 @@
+.chat-rhino-preview {
+  display: flex;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+
+.chat-rhino-preview__thumb {
+  position: relative;
+  flex: 0 1 144px;
+  min-width: 0;
+  aspect-ratio: 4 / 3;
+  padding: 0;
+  overflow: hidden;
+  cursor: zoom-in;
+  border: 1px solid var(--chat-border);
+  border-radius: 5px;
+  background: var(--chat-soft);
+  box-shadow: none;
+}
+
+.chat-rhino-preview__thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.chat-rhino-preview__thumb svg {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  box-sizing: content-box;
+  padding: 3px;
+  color: var(--chat-text);
+  background: var(--chat-raised);
+  border-radius: 3px;
+  opacity: 0;
+}
+
+.chat-rhino-preview__thumb:is(:hover, :focus-visible) svg { opacity: 1; }
+.chat-rhino-preview button:focus-visible,
+.chat-tool-call-group__show-all:focus-visible { outline: 2px solid var(--chat-accent); outline-offset: 1px; }
+
+.chat-tool-call-group__show-all {
+  margin-top: 5px;
+  padding: 4px 3px;
+  font-size: 10px;
+  color: var(--chat-text-soft);
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.chat-tool-call-group__show-all:hover { color: var(--chat-accent); text-decoration: underline; }
+
+/* Native modal: above the clipped chat panel, but still inherits its light/dark palette. */
+.chat-rhino-preview__dialog {
+  position: fixed;
+  inset: 0;
+  width: min(90vw, 960px);
+  max-height: 92vh;
+  margin: auto;
+  padding: 0;
+  color: var(--chat-text);
+  background: var(--chat-raised);
+  border: 1px solid var(--chat-border-strong);
+  border-radius: 8px;
+}
+
+.chat-rhino-preview__dialog::backdrop { background: rgb(12 14 16 / 72%); }
+.chat-rhino-preview__dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px 5px 12px;
+  font-size: 12px;
+}
+
+.chat-rhino-preview__dialog button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: var(--chat-text-soft);
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chat-rhino-preview__dialog button:hover { background: var(--chat-soft); }
+.chat-rhino-preview__dialog img {
+  display: block;
+  width: 100%;
+  max-height: calc(92vh - 46px);
+  object-fit: contain;
+  background: var(--chat-bg);
+}

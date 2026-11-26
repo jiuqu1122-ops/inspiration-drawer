@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readableRhinoMcpFailure, rhinoDiagnosticText, rhinoGeometryFailureExplanation } from './rhinoErrorDiagnostic';
+import { nativePythonFailure, STAGE_FAILURE_MARK, readableRhinoMcpFailure, rhinoDiagnosticText, rhinoGeometryFailureExplanation } from './rhinoErrorDiagnostic';
 import { isConfirmedRhinoScriptFailure, RhinoNativeMcpToolError, rhinoScriptFailureExplanation } from './rhinoScriptPreflight';
 const receipt = 'RhinoNativeMcpToolError: '+JSON.stringify({error:'Failed',message:"name 'System' is not defined"})+'\n'+JSON.stringify({stdout:'',stderr:'Traceback (most recent call last):\r\n  File "file:///C:/fixture/script.py", line 65, in <module>\r\nNameError: name \'System\' is not defined\r\n'});
 describe('readable native MCP diagnostics without changing raw receipts',()=>{
@@ -62,4 +62,67 @@ describe('readable GH bake failures and real source locations',()=>{
   const text=readableRhinoMcpFailure(traceback);expect(text).toContain('第 37 行');expect(text).not.toContain('第 140 行');
   expect(rhinoGeometryFailureExplanation(traceback)).toContain('脚本第 37 行');
  });
+});
+
+describe('bounded native Python failure evidence', () => {
+  const block = (text: string) => ({type: 'text', text});
+  const marker = STAGE_FAILURE_MARK + JSON.stringify({type: 'AssertionError', line: 7, fn: 'inner'});
+
+  it('distinguishes an empty explicit failure from silent success without inventing details', () => {
+    for (const content of [[], [block('')], [block('{"error":"Failed","message":""}')]]) {
+      const error = nativePythonFailure(content, true)!;
+      expect(error).toContain('执行失败');
+      expect(error).not.toMatch(/AssertionError|第 .* 行|零件：|阶段：/);
+      expect(isConfirmedRhinoScriptFailure(new RhinoNativeMcpToolError(error))).toBe(false);
+    }
+    expect(nativePythonFailure([block('{"stdout":"","stderr":""}')], false)).toBeUndefined();
+    expect(nativePythonFailure([block('{"error":"Failed","message":""}')], false)).toContain('执行失败');
+  });
+
+  it('takes the marker, not unrelated stderr, executable text, or the first generic Failed', () => {
+    const text = '{"error":"Failed","message":""}\n' + JSON.stringify({stdout: 'x'.repeat(70000) + '\n' + marker,
+      stderr: 'Traceback (most recent call last):\n  File "<native>", line 12\n    exec(compile(FULL_PRIVATE_SOURCE))\nRuntimeError: bearer private_credential'});
+    for (const show of [readableRhinoMcpFailure(text), readableRhinoMcpFailure(nativePythonFailure([block(text)], true))]) {
+      expect(show).toContain('AssertionError'); expect(show).toContain('第 7 行（inner）');
+      expect(show).not.toMatch(/RuntimeError|FULL_PRIVATE_SOURCE|credential|第 12 行|Failed|Traceback/);
+    }
+  });
+
+  it('does not treat unrelated stdout, warnings, source quoting the prefix, or malformed markers as failures', () => {
+    for (const stdout of ['AssertionError', 'Traceback (most recent call last):\nValueError: fake',
+      'print("' + marker + '")', STAGE_FAILURE_MARK + '{', STAGE_FAILURE_MARK + '{"type":42}']) {
+      expect(nativePythonFailure([block(JSON.stringify({stdout, stderr: 'RuntimeWarning: deprecated'}))], false)).toBeUndefined();
+    }
+  });
+
+  it('keeps a bare stderr exception failed and strips source, argument dumps and private frame paths', () => {
+    for (const stderr of ['AssertionError', 'Traceback (most recent call last):\n  File "private.py", line 3, in build\n    assert TOP_SECRET\nAssertionError: sk-SECRET']) {
+      const failure = nativePythonFailure([block(JSON.stringify({stderr, stdout: 'FULL_SOURCE'}))], false)!;
+      expect(readableRhinoMcpFailure(failure)).toContain('AssertionError: 断言未通过');
+      expect(failure).not.toMatch(/SECRET|private.py|FULL_SOURCE/);
+    }
+  });
+
+  it.each([
+    ['Invalid U and V counts. (System.InvalidOperationException)', 'System.InvalidOperationException: Invalid U and V counts. (System.InvalidOperationException)'],
+    ["AttributeError: 'BrepFace' object has no attribute 'DuplicateSurface'", "AttributeError: 'BrepFace' object has no attribute 'DuplicateSurface'"],
+    ['private diagnostic (System.ArithmeticException)', 'System.ArithmeticException: 未保存自由文本'],
+  ])('combines native error text with the actual user frame from the separate traceback block: %s', (message, expected) => {
+    const stderr = 'Traceback (most recent call last):\n  File "outer.py", line 2\n  File "<drawer-user-script>", line 31, in inner\n  File "<drawer-geometry-stage>", line 88, in _validate';
+    const failure = nativePythonFailure([block(JSON.stringify({error: 'Failed', message})), block(JSON.stringify({stderr}))], true);
+    const displayed = readableRhinoMcpFailure(failure);
+    expect(displayed).toContain(expected); expect(displayed).toContain('第 31 行（inner）');
+    expect(displayed).not.toMatch(/private diagnostic|outer.py|第 88 行/);
+  });
+
+  it('does not replace an unconfirmed transport outcome with a confirmed script failure', () => {
+    const failure = nativePythonFailure([block('RHINO_NATIVE_OUTCOME_UNCONFIRMED: timeout'), block(JSON.stringify({stdout: marker}))], true)!;
+    expect(failure).toMatch(/^RHINO_NATIVE_OUTCOME_UNCONFIRMED:/);
+    expect(isConfirmedRhinoScriptFailure(new RhinoNativeMcpToolError(failure))).toBe(false);
+  });
+
+  it('does not substitute an internal helper line when the user frame is unavailable', () => {
+    const failure = 'Traceback (most recent call last):\n  File "bridge", line 2\n  File "<drawer-geometry-stage>", line 103, in _validate\nAssertionError';
+    expect(readableRhinoMcpFailure(failure)).not.toMatch(/第 .* 行|_validate|bridge/);
+  });
 });

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+  <!-- Offline only. No RhinoCommon, Rhino.Inside, plugin, modeler or native host. -->
+  <ItemGroup>
+    <Compile Include="../Shared/BackgroundRhinoModel.DeliveryGate.cs" Link="DeliveryGate.cs" />
+    <Compile Include="../Shared/BackgroundRhinoModel.ReviewRaster.cs" Link="ReviewRaster.cs" />
+  </ItemGroup>
+</Project>

@@ -134,6 +134,11 @@ export const compactChatToolResult = (name: string, value: unknown): unknown => 
 
 export const compactChatToolResultForProvider = (name: string, value: unknown): unknown => {
   const compact = compactChatToolResult(name, value);
+  if ((name === 'rhino_review_viewport' || name === 'rhino_native_get_viewport_image') && compact && typeof compact === 'object') {
+    const { rhinoStepPreview: _uiMarker, ...receipt } = compact as Record<string, unknown>;
+    void _uiMarker;
+    return receipt;
+  }
   if((name==='create_svg'||name==='create_file')&&compact&&typeof compact==='object'){const {svgSource: _source,...receipt}=compact as Record<string,unknown>;void _source;return receipt;}
   if(name==='animate_ui_prototype'&&compact&&typeof compact==='object'){
     const {prototypeDocument: _document,...receipt}=compact as Record<string,unknown>;

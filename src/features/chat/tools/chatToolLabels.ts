@@ -4,6 +4,7 @@ const CHAT_TOOL_LABELS: Record<string, string> = {
   rhino_get_context: '读取 Rhino 上下文',
   rhino_reference_fidelity_assessment: '验收模型并规划完善',
   rhino_review_viewport: '对照 Rhino 视口与参考图',
+  rhino_native_get_viewport_image: '查看 Rhino 视口',
   rhino_list_objects: '查询 Rhino 对象',
   rhino_list_layers: '查询 Rhino 图层',
   rhino_read_modeling_skill_resource: '读取内置建模 Skill 资料',

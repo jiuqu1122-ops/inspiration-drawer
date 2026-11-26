@@ -45,6 +45,8 @@ internal sealed class BetaServer : IDisposable
     private readonly Dictionary<string, JsonObject> commands = new();
     private readonly Dictionary<string, (DateTime At, string Image)> imagePreviews = new();
     private JsonObject snapshot = new();
+    private JsonArray? selectedReferences;
+    private readonly HashSet<uint> currentDocuments = new();
     private string? owner;
     private DateTime lastHeartbeat = DateTime.MinValue;
 
@@ -159,9 +161,21 @@ internal sealed class BetaServer : IDisposable
                             ? savedSnapshot!.DeepClone() as JsonObject ?? new JsonObject()
                             : snapshot.DeepClone() as JsonObject ?? new JsonObject();
                         documentSnapshot["documentId"] = documentId;
+                        if (selectedReferences != null)
+                        {
+                            // Empty means select nothing; omit the field for count-only legacy heartbeats.
+                            // getContext validated this document. Before its first binding, use the shared canvas;
+                            // once it has a snapshot, only a binding in the current heartbeat can expose cards.
+                            var sameCanvas = Connected && (!hasDocumentSnapshot || currentDocuments.Contains(documentId)) &&
+                                snapshot["canvasId"] is JsonValue source && source.TryGetValue<string>(out var canvas) && !string.IsNullOrWhiteSpace(canvas) &&
+                                documentSnapshot["canvasId"] is JsonValue target && target.TryGetValue<string>(out var boundCanvas) && canvas == boundCanvas;
+                            documentSnapshot["selectedReferences"] = sameCanvas ? selectedReferences.DeepClone() : new JsonArray();
+                            documentSnapshot["selectedCount"] = sameCanvas ? selectedReferences.Count : 0;
+                        }
                         if (!hasDocumentSnapshot)
                         {
                             documentSnapshot["conversationId"] = "";
+                            documentSnapshot["isIsolatedDraft"] = false;
                             documentSnapshot["conversations"] = new JsonArray();
                             documentSnapshot["messages"] = new JsonArray();
                             documentSnapshot["busy"] = false;
@@ -233,16 +247,30 @@ internal sealed class BetaServer : IDisposable
             owner = caller;
             lastHeartbeat = DateTime.UtcNow;
             snapshot = body["state"]?.DeepClone() as JsonObject ?? throw new ApiError(400, "Missing runtime state");
+            // Selection is live canvas state, never part of a retained document snapshot.
+            selectedReferences = snapshot["selectedReferences"] as JsonArray;
+            snapshot.Remove("selectedReferences");
+            currentDocuments.Clear();
             if (snapshot["documents"] is JsonArray documentStates)
             {
                 foreach (var node in documentStates.OfType<JsonObject>())
                 {
                     var documentId = node["documentId"]?.GetValue<uint>() ?? 0;
-                    if (documentId > 0) documentSnapshots[documentId] = node.DeepClone().AsObject();
+                    if (documentId == 0) continue;
+                    currentDocuments.Add(documentId);
+                    var document = node.DeepClone().AsObject();
+                    document.Remove("selectedReferences");
+                    document.Remove("documents");
+                    documentSnapshots[documentId] = document;
                 }
             }
+            snapshot.Remove("documents");
             var activeDocumentId = snapshot["documentId"]?.GetValue<uint>() ?? 0;
-            if (activeDocumentId > 0) documentSnapshots[activeDocumentId] = snapshot.DeepClone().AsObject();
+            if (activeDocumentId > 0)
+            {
+                currentDocuments.Add(activeDocumentId);
+                documentSnapshots[activeDocumentId] = snapshot;
+            }
             // The renderer is shared, but each pending operation remains pinned
             // to its Rhino document and is checked against that document's runtime.
             var command = commands.Values.FirstOrDefault(value => value["status"]?.GetValue<string>() == "pending");
@@ -259,6 +287,10 @@ internal sealed class BetaServer : IDisposable
         var documentId = body["documentId"]?.GetValue<uint>() ?? 0;
         if (documentId == 0) throw new ApiError(400, "Missing target document");
         if (kind == "send" && (string.IsNullOrWhiteSpace(body["content"]?.GetValue<string>()) || body["content"]!.GetValue<string>().Length > 12_000)) throw new ApiError(400, "Message length must be 1..12000 characters");
+        if (body.TryGetPropertyValue("canvasReferenceIds", out var idsNode) &&
+            (kind != "send" || idsNode is not JsonArray ids || ids.Count > 6 ||
+             ids.Any(node => node is not JsonValue value || !value.TryGetValue<string>(out var referenceId) || string.IsNullOrWhiteSpace(referenceId))))
+            throw new ApiError(400, "canvasReferenceIds requires a send command and at most six nonblank string IDs");
         if (body["localImages"] is JsonNode imagesNode)
         {
             if (kind != "send" || imagesNode is not JsonArray images || images.Count > 6) throw new ApiError(400, "Invalid local reference images");
@@ -280,6 +312,10 @@ internal sealed class BetaServer : IDisposable
             var documentSnapshot = documentSnapshots.TryGetValue(documentId, out var saved)
                 ? saved
                 : snapshot;
+            if (body.TryGetPropertyValue("modelingTarget", out var target) &&
+                (kind != "send" || target is not JsonValue v || !v.TryGetValue<string>(out var mode) || mode != "draft" ||
+                 snapshot["supportsIsolatedDraft"]?.GetValue<bool>() != true))
+                throw new ApiError(409, "Independent 3DM drafts require a compatible desktop. Nothing was queued.");
             var snapshotDocumentId = documentSnapshot["documentId"]?.GetValue<uint>() ?? 0;
             var sameDocumentSnapshot = snapshotDocumentId == documentId;
             PruneImagePreviews();

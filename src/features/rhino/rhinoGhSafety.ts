@@ -99,7 +99,9 @@ export const keepRhinoViewportObservations = (messages: Array<Record<string, unk
 export const splitRhinoVisionObservation=(toolName:string,result:unknown,callId?:string)=>{
   if(!result||typeof result!=='object'||!(toolName.startsWith('rhino_native_') || toolName === RHINO_REFERENCE_REVIEW_TOOL))return {result,observation:undefined};
   const record=result as Record<string,unknown>;
-  const {transientRhinoImages,...persisted}=record;
+  // A UI receipt is issued only by the local preview cache, never accepted from tool output.
+  const {transientRhinoImages, rhinoStepPreview: _uiMarker, ...persisted}=record;
+  void _uiMarker;
   const images=Array.isArray(transientRhinoImages)?transientRhinoImages.filter((value):value is {mimeType:string;data:string}=>Boolean(value&&typeof value==='object'&&typeof value.data==='string'&&value.data.length>0&&value.data.length<=3_300_000&&/^[A-Za-z0-9+/=\r\n]+$/.test(value.data)&&['image/png','image/jpeg','image/webp'].includes(value.mimeType))):[];
   const isViewport = isRhinoViewportObservationTool(toolName);
   const observation = images.length ? {role:'user',content:[
@@ -107,5 +109,5 @@ export const splitRhinoVisionObservation=(toolName:string,result:unknown,callId?
     ...images.map(image=>({type:'image_url',image_url:{url:`data:${image.mimeType};base64,${image.data}`,detail:'high'}})),
   ]} : undefined;
   if (isViewport && observation && callId) viewportObservations.set(observation, callId);
-  return { result: isViewport ? { ...persisted, viewportImageCount: images.length } : persisted, observation };
+  return { result: isViewport ? { ...persisted, viewportImageCount: images.length } : persisted, observation, viewportImages: isViewport ? images.slice(0, 2) : undefined };
 };

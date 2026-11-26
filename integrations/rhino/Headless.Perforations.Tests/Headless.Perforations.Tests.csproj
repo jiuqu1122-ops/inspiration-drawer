@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Offline only: this executable references neither RhinoCommon nor a native Rhino host. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+  <ItemGroup><Compile Include="../Shared/BackgroundRhinoModel.Perforations.cs" Link="Perforations.cs" /></ItemGroup>
+</Project>

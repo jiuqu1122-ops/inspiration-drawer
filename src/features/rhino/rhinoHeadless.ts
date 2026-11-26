@@ -38,7 +38,21 @@ const backgroundTools: RhinoNativeTool[] = [
         radius: { type: 'number', minimum: 0.05 },
         height: { type: 'number', minimum: 0.05 },
         points: { ...points, description: 'Ordered XYZ profile for extrude; ordered meridian for revolve.' },
-        sections: { type: 'array', items: points, minItems: 2, maxItems: 12, description: 'Ordered planar loft profiles with corresponding vertices and consistent winding.' },
+        sections: { type: 'array', items: points, minItems: 2, maxItems: 12, description: 'Ordered planar loft profiles. For polyline supply corresponding vertices with consistent winding. For smooth use matching counts of at least 4 distinct points; a repeated closing point is optional and counts toward the 80-point input limit.' },
+        perforations: {
+          type: 'object', additionalProperties: false, required: ['rows', 'columns', 'firstCenter', 'pitch', 'radii'],
+          description: 'Extrude only; requires context.capabilities.planarPerforations === true. Through-holes in a simple planar polygon perpendicular to vector. Origin=points[0], U=first edge, N=normalized vector, V=N cross U. UV pairs in mm. rows*columns <= 800. All holes must clear each other and every outer edge by more than tolerance; invalid arrays reject the entire plate.',
+          properties: {
+            rows: { type: 'integer', minimum: 1, maximum: 800 }, columns: { type: 'integer', minimum: 1, maximum: 800 },
+            firstCenter: { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number', minimum: -100000, maximum: 100000 }, description: 'UV center of row 0, column 0.' },
+            pitch: { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number', minimum: 0.05, maximum: 100000 }, description: '[column pitch along U, row pitch along V].' },
+            radii: { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number', minimum: 0.05, maximum: 100000 }, description: 'Ellipse semiaxes [radiusU, radiusV]; equal for a circle.' },
+            oddRowOffset: { type: 'number', minimum: -100000, maximum: 100000, description: 'Signed U offset on odd (zero-based) rows; default 0.' },
+          },
+        },
+        profileCurve: { type: 'string', enum: ['polyline', 'smooth'], description: 'Loft only. Omit for the original polyline loft. Smooth interpolates each section with a closed periodic cubic NURBS, aligning direction and seam to the preceding section. Requires context.capabilities.smoothLoftProfiles.' },
+        preserveIds: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 16, uniqueItems: true, description: 'Difference only. Existing parts to keep with the same IDs and geometry CRC. Must not overlap ids (body or cutters). With verified witnesses the materialRemoval receipt also lists preservedIds. Requires context.capabilities.preserveIds.' },
+        removedMaterialPoints: { type: 'array', items: xyz, minItems: 1, maxItems: 32, description: 'Difference only. XYZ witnesses in mm at intended recess locations: each must be inside the original ids[0] and outside ALL resulting solids, more than 0.01 mm from either boundary. Only a committed materialRemoval receipt with status passed and still-present resultIds verifies the specified points. Requires context.capabilities.removedMaterialPoints.' },
         vector: { ...xyz, description: 'Extrusion direction and length, or translation for move.' },
         angleDegrees: { type: 'number', minimum: -360, maximum: 360 },
         ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 16 },
@@ -61,7 +75,19 @@ const backgroundTools: RhinoNativeTool[] = [
 ];
 
 type Target = { canvasId: string; workspaceId: string };
-const active = new Map<string, Target>();
+const geometryOptions = { profileCurve: 'smoothLoftProfiles', removedMaterialPoints: 'removedMaterialPoints', preserveIds: 'preserveIds', perforations: 'planarPerforations' } as const;
+type Capability = typeof geometryOptions[keyof typeof geometryOptions];
+const active = new Map<string, Target & { capabilities: ReadonlySet<Capability> }>();
+
+function geometryCapabilities(value: unknown) {
+  const result = new Set<Capability>();
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    for (const flag of Object.values(geometryOptions)) {
+      if (Object.prototype.hasOwnProperty.call(value, flag) && (value as Record<string, unknown>)[flag] === true) result.add(flag);
+    }
+  }
+  return result;
+}
 
 function workspaceFor(conversationId: string, canvasId: string) {
   const key = `rhino-headless-workspace:${conversationId}:${canvasId}`;
@@ -90,10 +116,11 @@ export function getHeadlessRhinoTools() {
 }
 
 export async function prepareBackgroundRhinoTurn(conversationId: string, canvasId: string, requestedMajor?: 8 | 9) {
-  const target = { canvasId, workspaceId: workspaceFor(conversationId, canvasId) };
+  const workspace = { canvasId, workspaceId: workspaceFor(conversationId, canvasId) };
   const unlock = lockRhinoCanvas(`rhino-headless:${conversationId}`);
   try {
-    const context = await call(conversationId, target, 'context', {}, requestedMajor);
+    const context = await call(conversationId, workspace, 'context', {}, requestedMajor);
+    const target = { ...workspace, capabilities: geometryCapabilities(context.capabilities) };
     active.set(conversationId, target);
     registerRhinoNativeTools(conversationId, backgroundTools);
     return {
@@ -122,6 +149,11 @@ export async function executeHeadlessRhinoTool(conversationId: string, canvasId:
     case RHINO_MODELING_SKILL_RESOURCE_TOOL: return readRhinoModelingSkillResource(args.resourcePath);
     case RHINO_HEADLESS_INSPECT_TOOL: return call(conversationId, target, 'inspect', args);
     case RHINO_HEADLESS_BUILD_TOOL:
+      // Old kernels silently ignore unknown JSON keys. Never send a request whose semantics they cannot honor.
+      for (const [field, flag] of Object.entries(geometryOptions)) {
+        if (field in args && !target.capabilities.has(flag))
+          throw new RhinoHeadlessGeometryError(`Host did not advertise ${flag}. Update the background host; do not retry by dropping ${field}.`, false);
+      }
       try { return await call(conversationId, target, 'build', args); }
       catch (error) {
         const message = String(error);

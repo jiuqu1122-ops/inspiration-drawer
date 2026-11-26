@@ -96,3 +96,11 @@ describe('Chat tool-result compaction', () => {
     expect(provider).toContain('方向 A');
   });
 });
+
+it('omits the UI-only viewport thumbnail marker when rebuilding historical tool context',()=>{
+  const stored={source:'rhino',viewportImageCount:2,rhinoStepPreview:{version:1,count:2}};
+  for(const name of ['rhino_review_viewport','rhino_native_get_viewport_image']){
+    expect(compactChatToolResultForProvider(name,stored)).toEqual({source:'rhino',viewportImageCount:2});
+    expect(stored.rhinoStepPreview.count).toBe(2);
+  }
+});

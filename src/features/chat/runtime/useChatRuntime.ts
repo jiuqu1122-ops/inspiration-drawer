@@ -5,6 +5,7 @@ import { PROTOTYPE_DELIVERY_RECOVERY, prototypeCapabilityInstruction, requestsPr
 import { mergeHtmlToolDraft, type HtmlToolDraftState } from '../html/chatHtmlToolDraft';
 import { collectChatHtmlArtifacts } from '../html/chatHtmlArtifacts';
 import { rhinoPostprocessFailure } from '../../rhino/rhinoPostprocessFailure';
+import { PRODUCT_REPAIR_MARKER, PRODUCT_RULES, productCompletionIssue, productRequest } from '../../rhino/rhinoProductTurn';
 import { readableRhinoMcpFailure, rhinoGeometryFailureExplanation } from '../../rhino/rhinoErrorDiagnostic';
 import { geometryFailureReceipt, geometryFailureSummary, MAX_GEOMETRY_PREFLIGHT_CORRECTIONS } from '../../rhino/rhinoGeometryRecovery';
 import { firstRequestTitle } from '../model/chatConversationTitle';
@@ -73,6 +74,7 @@ import {
   shouldExposeWebSearch,
 } from '../tools/chatToolDefinitions';
 import { routeChatToolCall } from '../tools/chatToolRouter';
+import { saveRhinoStepPreviews } from '../storage/rhinoStepPreviews';
 import { compactChatToolResult, compactChatToolResultForProvider, serializeChatToolResult } from '../tools/chatToolResult';
 import { selectBatchImageAttachments } from '../tools/batchImageOperation';
 import {
@@ -310,6 +312,8 @@ const parseArguments = (value: string) => {
   }
 };
 
+const requestFailureTitle = (error: unknown) => /\bUPSTREAM_RESULT_UNKNOWN\b/.test(String(error)) ? '渠道结果未确认' : '连接中断';
+
 const visibleChatRequestError = (error: unknown) => {
   const detail = String(error instanceof Error ? error.message : error || '未知错误')
     .replace(/^Error:\s*/i, '')
@@ -452,7 +456,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
   const activeBatchRunsRef = useRef(new Map<string, ActiveBatchRun>());
   const pendingApprovalsRef = useRef(new Map<string, PendingApprovalRun>());
   const activeToolMessagesRef = useRef(new Map<string, string>());
-  const canvasRhinoTurnsRef = useRef(new Map<string, { messageId: string; exportModel?: () => Promise<Record<string, unknown>>; release: () => void }>());
+  const canvasRhinoTurnsRef = useRef(new Map<string, { messageId: string; panelDraft?: boolean; exportModel?: () => Promise<Record<string, unknown>>; release: () => void }>());
   const steeringRef = useRef(new Map<string, ChatMessage[]>());
   const lastSteeringAtRef = useRef(new Map<string, number>());
   const cancelledToolRunsRef = useRef(new Set<string>());
@@ -628,9 +632,13 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     const writes = messageCacheRef.current.get(messageId)?.toolCalls.some(call =>
       call.toolName === RHINO_HEADLESS_BUILD_TOOL && call.status === 'completed');
     try {
+      if (turn.panelDraft && messageCacheRef.current.get(messageId)?.status !== 'completed') return; // Retain working.3dm, never label a failed or stopped draft as delivered.
       if (turn.exportModel && writes) {
         updateConversationBusy(conversationId, true);
         const exported = await turn.exportModel();
+        if (turn.panelDraft && ((exported.readback as {verified?:boolean}|undefined)?.verified !== true || !Array.isArray(exported.files) || !exported.files.some(file => file?.format === '3dm' && typeof file.path === 'string' && file.path))) {
+          throw new Error('未获得独立 3DM 文件的重读验收回执；请更新配套后台宿主。');
+        }
         const now = Date.now();
         const fileCall: ChatToolCall = {
           id: createChatId('rhino-export'), messageId, toolName: RHINO_HEADLESS_EXPORT_TOOL,
@@ -640,9 +648,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         patchMessage(messageId, current => ({ ...current, toolCalls: [...current.toolCalls, fileCall] }), true);
       }
     } catch (error) {
-      patchMessage(messageId, current => ({
-        ...current, content: `${current.content}\n\n当前模型已保存到后台文档。导出未完成：${String(error)}`.trim(),
-      }), true);
+      patchMessage(messageId, current => turn.panelDraft
+        ? finalizeChatMessageState({...current,content:`独立草稿已保留，但未完成文件交付：${String(error)}`},'error',Date.now(),'3DM 重读未通过')
+        : { ...current, content: `${current.content}\n\n当前模型已保存到后台文档。导出未完成：${String(error)}`.trim() }, true);
     } finally {
       canvasRhinoTurnsRef.current.delete(conversationId);
       turn.release();
@@ -952,7 +960,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         flushStreamDelta(active.messageId);
         patchThinkingStep(active.messageId, 'connection', {
           type: 'context',
-          title: '连接中断',
+          title: requestFailureTitle(streamEvent.error),
           detail: streamEvent.error || '流式响应提前结束',
           status: 'error',
         }, true);
@@ -1534,6 +1542,15 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
             });
           }
           call.completedAt = Date.now();
+          const canvasTurn = canvasRhinoTurnsRef.current.get(run.conversationId);
+          if (run.executionSource === 'rhino' && canvasTurn?.messageId === run.assistantMessageId && !canvasTurn.panelDraft
+            && call.status === 'completed' && !resultRecord.error && !resultRecord.reusedCompletedReceipt && observed.viewportImages?.length) {
+            // Same pixels as the model's live comparison. Store only a UI marker in the tool receipt.
+            try {
+              const count = await saveRhinoStepPreviews(call.messageId, call.id, observed.viewportImages, run.conversationId);
+              if (count > 0) call.resultJson = serializeChatToolResult({ ...resultRecord, rhinoStepPreview: { version: 1, count } });
+            } catch { /* Cache failure must not change tool status or trigger a new viewport capture. */ }
+          }
           patchThinkingStep(run.assistantMessageId, `tool-${index}`, {
             type: call.toolName === 'web_search' ? 'search' : 'tool',
             title: getChatToolStepTitle(call.toolName, call.status),
@@ -1990,9 +2007,12 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     );
     const gh2StructuralState = executionSource === 'rhino' ? gh2CompletionState(currentTurnToolCalls, name => getRhinoNativeTool(name, conversationId)?.readOnly === false) : undefined;
     const recoveryActive = rhinoFailureDiagnosisActive || rhinoFailureCorrectionActive || rhinoFailureVerificationActive;
-    const qualityReviewPending = !recoveryActive && (!gh2StructuralState || gh2StructuralState.passed) && visualReview?.inspected
+    const productDemand = executionSource === 'rhino' ? productRequest(userText, conversationMessages) : '';
+    const productIssue = productDemand ? productCompletionIssue(productDemand, currentTurnToolCalls) : undefined;
+    if (executionSource === 'rhino' && (rhinoGeometryRequest || productIssue)) requestInstructions.push({ role: 'system', content: PRODUCT_RULES });
+    const qualityReviewPending = !productIssue && !recoveryActive && (!gh2StructuralState || gh2StructuralState.passed) && visualReview?.inspected
       && Boolean(qualityReviewKey && lastProviderMessage?.role === 'system' && String(lastProviderMessage.content || '').startsWith(qualityReviewKey));
-    const qualityAccepted = executionSource === 'rhino' && !recoveryActive && (!gh2StructuralState || gh2StructuralState.passed) && qualityState.current?.status === 'complete';
+    const qualityAccepted = executionSource === 'rhino' && !productIssue && !recoveryActive && (!gh2StructuralState || gh2StructuralState.passed) && qualityState.current?.status === 'complete';
     const activeRefinement = !recoveryActive && qualityState.current?.status === 'needs_improvement' ? qualityState.current : undefined;
     const refinementActive = Boolean(activeRefinement);
     const toolsForRefinement = tools.filter(tool => {
@@ -2007,13 +2027,13 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       tools.splice(0, tools.length, rhinoReferenceFidelityAssessmentToolForCapabilities(toolsForRefinement.length > 0));
     }
     else if (qualityAccepted) tools.splice(0, tools.length);
-    else if (!recoveryActive && qualityState.improvementCount > 0) tools.splice(0, tools.length, ...tools.filter(tool => {
+    else if (!productIssue && !recoveryActive && qualityState.improvementCount > 0) tools.splice(0, tools.length, ...tools.filter(tool => {
       const native = getRhinoNativeTool(tool.function.name, conversationId);
       return (refinementActive && tool.function.name === 'web_search') || isRhinoReadTool(tool.function.name)
         || Boolean(native && (native.readOnly || (refinementActive && isRhinoVisualRefinementTool(native))));
     }));
     if (qualityAccepted) requestInstructions.push({ role: 'system', content: 'The runtime-bound semantic review passed for the latest geometry and viewport. Give a concise factual handoff, disclose unverified nonessential items, and do not claim numerical G1/G2 or manufacturing verification without measurements. Do not perform more tools or invent new scope.' });
-    const forcedVisualReview = !recoveryActive && !visualReview?.inspected
+    const forcedVisualReview = !productIssue && !recoveryActive && !visualReview?.inspected
       && Boolean(reviewKey && lastProviderMessage?.role === 'system' && String(lastProviderMessage.content || '').startsWith(reviewKey));
     if (forcedVisualReview) tools.splice(0, tools.length, ...tools.filter(tool => tool.function.name === RHINO_REFERENCE_REVIEW_TOOL));
     if (refinementActive && !qualityReviewPending && !forcedVisualReview && toolsForRefinement.length > 0) requestInstructions.push({
@@ -2383,7 +2403,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       if (psdProposalInResponse && call.name !== 'create_layered_psd') return false;
       if (qualityAccepted || call.name === RHINO_REFERENCE_FIDELITY_ASSESSMENT_TOOL) return false;
       if (nativeComponentOnly && /^rhino_native_run_/.test(call.name)) return false;
-      if (!recoveryActive && qualityState.improvementCount > 0) {
+      if (!productIssue && !recoveryActive && qualityState.improvementCount > 0) {
         if (!tools.some(tool => tool.function.name === call.name)) return false;
         if (getRhinoNativeTool(call.name, conversationId)?.readOnly === false) {
           if (acceptedRefinementWriteInResponse) return false;
@@ -2421,6 +2441,16 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       acceptedWebSearchQueries.add(query);
       return true;
     });
+    if (!toolCalls.length && productIssue && !recoveryActive) {
+      const alreadyNudged = providerMessages.some(m => m.role === 'system' && String(m.content || '').startsWith(PRODUCT_REPAIR_MARKER));
+      if (!alreadyNudged && canRunChatToolRound(depth + 1, executionSource)) {
+        await runModelLoopRef.current(conversationId, assistantMessageId, userText, requestModel, [...providerMessages,
+          { role:'system', content:`${PRODUCT_REPAIR_MARKER} ${productIssue} Inspect the existing result. A write has already run. Never replay the preceding script. Correct only a verified defect; if only evidence is missing do not cut again. Explain the limitation instead of claiming completion.` }], depth+1, undefined, emptyRecoveryCount, executionSource);
+        return;
+      }
+      patchMessage(assistantMessageId, message => finalizeChatMessageState({ ...message, content: appendRhinoVisibleProgress(rhinoProgressBeforeRequest, `产品特征未验收：${productIssue} 已保留当前结果，不自动重放写操作。`) }, 'error', Date.now(), 'Rhino product feature verification incomplete'), true);
+      updateConversationBusy(conversationId, false); return;
+    }
     if (qualityAccepted) {
       patchMessage(assistantMessageId, message => finalizeChatMessageState({ ...message,
         content: normalizeVisibleChatText(result.content) || '已按本次需求和参考图完成外观复核；未测量的制造、尺寸及连续性指标仍未验证。',
@@ -2514,7 +2544,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           return;
         }
       }
-      if (reviewKey && !visualReview?.inspected) {
+      if (!productIssue && reviewKey && !visualReview?.inspected) {
         const priorReviews = providerMessages.filter(message => message.role === 'system' && String(message.content || '').startsWith(RHINO_VISUAL_FIDELITY_INSTRUCTION_MARKER));
         const canGetView = tools.some(tool => tool.function.name === RHINO_REFERENCE_REVIEW_TOOL);
         if (canGetView && !priorReviews.some(message => String(message.content).startsWith(reviewKey))
@@ -2871,6 +2901,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     resumeRequestId?: string,
     executionSource: ChatExecutionSource = 'desktop',
     targetConversationId?: string,
+    preparePanelDraft?: UseChatRuntimeOptions['prepareCanvasRhinoTurn'],
   ) => {
     const text = content.trim();
     if (!text && pendingAttachments.length === 0) return false;
@@ -3122,7 +3153,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         console.warn('刷新 Chat 历史图片附件失败，将继续使用内存会话:', error);
       }
     }
-    let prepareCanvasRhino: UseChatRuntimeOptions['prepareCanvasRhinoTurn'];
+    // The panel supplies this callback only for an explicit isolated draft. Never fall back to the live document.
+    let prepareCanvasRhino = executionSource === 'rhino' ? preparePanelDraft : undefined;
     let rhinoRoutingText = userMessage.content;
     if (executionSource === 'desktop' && optionsRef.current.prepareCanvasRhinoTurn) {
       const previousTurn: ChatMessage[] = [];
@@ -3180,7 +3212,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         try {
           await ensureRhinoRuntimeLoaded();
           const target = await prepareCanvasRhino(conversationId, rhinoRoutingText);
-          canvasRhinoTurnsRef.current.set(conversationId, { messageId: assistantMessage.id, exportModel: target.exportModel, release: target.release });
+          canvasRhinoTurnsRef.current.set(conversationId, { messageId: assistantMessage.id, panelDraft: Boolean(preparePanelDraft), exportModel: target.exportModel, release: target.release });
           rhinoSceneContext = target.context;
           rhinoModelingInstruction = target.modelingInstruction;
           patchThinkingStep(assistantMessage.id, 'rhino-connection', {
@@ -3231,7 +3263,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         designMemoryProjectId(conversationId, memoryOptions.projectId),
         conversationId,
       );
-      const mayUseInstalledSkills = executionSource === 'desktop' || Boolean(prepareCanvasRhino);
+      const mayUseInstalledSkills = executionSource === 'desktop' || (Boolean(prepareCanvasRhino) && !preparePanelDraft);
       if (mayUseInstalledSkills) await refreshGithubSkills().catch(error => console.warn('GitHub 技能元数据刷新失败', error));
       const selectedSkill = getSelectedChatSkill(conversation.id);
       const turnSkill = selectedSkill?.source === 'github'
@@ -3359,7 +3391,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
               ? `Rhino MCP 后续步骤未完成：${visibleChatRequestError(error)}\n已执行的工具步骤已保留，不会自动重放。`
               : pendingPresentation ? presentationInterruptedMessage(message.toolCalls) + '\n' + visibleChatRequestError(error) : visibleChatRequestError(error))
             : pendingPresentation ? presentationInterruptedMessage(message.toolCalls) + '\n' + visibleChatRequestError(error) : message.content.trim() || (cancelled ? '已停止生成。' : visibleChatRequestError(error)),
-        }, cancelled ? 'cancelled' : 'error', Date.now(), cancelled ? '用户停止生成' : '连接中断'), true);
+        }, cancelled ? 'cancelled' : 'error', Date.now(), cancelled ? '用户停止生成' : requestFailureTitle(error)), true);
       const failedRequest = activeRequestsRef.current.get(conversationId);
       if (failedRequest?.messageId === assistantMessage.id) {
         if (!visibleCompletion && !cancelled && isRecoverableChatRequestError(error)) {

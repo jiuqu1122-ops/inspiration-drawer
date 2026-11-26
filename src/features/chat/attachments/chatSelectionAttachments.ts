@@ -1,10 +1,12 @@
 import type { AgentCanvasSelectionItem } from '../../agentModel';
 import type { PendingChatAttachment } from '../model/chatTypes';
 
-export const selectionToChatAttachments = (items: AgentCanvasSelectionItem[]): PendingChatAttachment[] => items
+export const selectedChatImageReferences = (items: AgentCanvasSelectionItem[]) => items
   .flatMap(item => item.references || [])
   .filter(reference => reference.mediaType === 'image' && Boolean(reference.path || reference.source))
-  .slice(0, 6)
+  .slice(0, 6);
+
+export const selectionToChatAttachments = (items: AgentCanvasSelectionItem[]): PendingChatAttachment[] => selectedChatImageReferences(items)
   .map(reference => ({
     id: `selection-${reference.id}`,
     type: 'image',

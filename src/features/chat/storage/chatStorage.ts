@@ -8,6 +8,8 @@ import type {
   ChatToolCall,
 } from '../model/chatTypes';
 
+import { deleteRhinoConversationPreviews } from './rhinoStepPreviews';
+
 const LEGACY_CONVERSATIONS_KEY = 'drawer_agent_conversations_v1';
 const LEGACY_MIGRATION_MARKER = 'drawer_chat_sqlite_migration_v1';
 const ACTIVE_CHAT_KEY = 'drawer_chat_active_conversation_v1';
@@ -24,9 +26,11 @@ export const upsertChatConversation = (conversation: ChatConversation) => (
   invoke<ChatConversation>('chat_upsert_conversation', { conversation })
 );
 
-export const deleteChatConversation = (id: string) => (
-  invoke<boolean>('chat_delete_conversation', { id })
-);
+export const deleteChatConversation = async (id: string) => {
+  const deleted = await invoke<boolean>('chat_delete_conversation', { id });
+  if (deleted) await deleteRhinoConversationPreviews(id).catch(() => {});
+  return deleted;
+};
 
 export const deleteChatConversations = async (ids: string[], onFailure?: (id: string, error: unknown) => void) => {
   const deleted: string[] = [];

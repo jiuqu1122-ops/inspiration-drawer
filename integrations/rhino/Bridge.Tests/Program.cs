@@ -251,6 +251,105 @@ async Task TestLocalReferenceImages()
     invalid["localImages"]![0]!["dataUrl"] = "data:image/svg+xml;base64,QUJD";
     Check((await Send("/panel/command", invalid)).Code == HttpStatusCode.BadRequest, "active-content image uploads are rejected at the host boundary");
 }
+async Task TestCanvasReferences(string owner)
+{
+    JsonObject Document(uint id, string? canvas) => new() { ["documentId"] = id, ["canvasId"] = canvas, ["conversationId"] = $"chat-{id}" };
+    JsonObject State(uint id, string? canvas, params JsonObject[] documents)
+    {
+        var state = Document(id, canvas);
+        state["documents"] = new JsonArray(documents);
+        state["selectedCount"] = 1;
+        state["selectedReferences"] = new JsonArray(new JsonObject { ["id"] = $"ref-{canvas}", ["src"] = $"thumbnail-{canvas}" });
+        return state;
+    }
+    async Task<JsonNode> Beat(JsonObject state)
+    {
+        var result = await Request("drawer/heartbeat", new JsonObject { ["owner"] = owner, ["state"] = state.DeepClone() });
+        if (result.Code != HttpStatusCode.OK) throw new Exception($"Canvas heartbeat failed: {result.Json}");
+        return result.Json;
+    }
+    async Task<JsonObject> Panel(uint id) => (await Request($"panel/state?documentId={id}")).Json["state"]!.AsObject();
+    bool NoCards(JsonObject state) => state["selectedReferences"] is JsonArray { Count: 0 } && state["selectedCount"]?.GetValue<int>() == 0;
+
+    JsonObject Command(string kind, uint documentId = 71) => new() { ["id"] = Guid.NewGuid().ToString(), ["kind"] = kind, ["documentId"] = documentId, ["content"] = "Use these images" };
+    async Task Complete(JsonObject cmd)
+    {
+        foreach (var status in new[] { "accepted", "completed" })
+            if ((await Request("drawer/ack", new JsonObject { ["id"] = cmd["id"]!.DeepClone(), ["owner"] = owner, ["status"] = status })).Code != HttpStatusCode.OK)
+                throw new Exception($"Canvas command acknowledgement failed: {status}");
+    }
+
+    const uint newDocument = 74;
+    var unbound = State(0, "A");
+    unbound["conversationId"] = "";
+    await Beat(unbound);
+    var newPanel = await Panel(newDocument);
+    Check(JsonNodeCompat.DeepEquals(newPanel["selectedReferences"], unbound["selectedReferences"]) && newPanel["selectedCount"]?.GetValue<int>() == 1,
+        "before any Rhino conversation is bound, a new panel shows the shared canvas selection");
+    var firstSend = Command("send", newDocument);
+    firstSend["includeCanvasSelection"] = true;
+    firstSend["canvasReferenceIds"] = new JsonArray(newPanel["selectedReferences"]![0]!["id"]!.DeepClone());
+    Check((await Request("panel/command", firstSend)).Code == HttpStatusCode.OK, "a new document can send its first message with the visible reference");
+    Check(JsonNodeCompat.DeepEquals((await Beat(unbound))["command"], firstSend), "the desktop receives the first send with its document and chosen reference ID intact");
+    await Complete(firstSend);
+
+    var first = State(71, "A", Document(72, "A"), Document(73, "B"));
+    await Beat(first);
+    foreach (uint id in new uint[] { 71, 72 })
+    {
+        var panel = await Panel(id);
+        Check(JsonNodeCompat.DeepEquals(panel["selectedReferences"], first["selectedReferences"]) &&
+            panel["conversationId"]?.GetValue<string>() == $"chat-{id}" && !panel.ContainsKey("documents"),
+            $"document {id} gets current canvas cards but only its own conversation");
+    }
+    Check(NoCards(await Panel(73)), "a listed document on another canvas gets no cards");
+    var anotherNewPanel = await Panel(75);
+    Check(JsonNodeCompat.DeepEquals(anotherNewPanel["selectedReferences"], first["selectedReferences"]) && anotherNewPanel["conversationId"]?.GetValue<string>() == "" &&
+        anotherNewPanel["messages"] is JsonArray { Count: 0 } && !anotherNewPanel.ContainsKey("documents"),
+        "a fresh document shares the active canvas selection, not another document's conversation");
+    var cleared = first.DeepClone().AsObject();
+    cleared["selectedReferences"] = new JsonArray();
+    cleared["selectedCount"] = 0;
+    await Beat(cleared);
+    Check(NoCards(await Panel(72)), "clearing a live selection updates a bound sibling panel");
+    await Beat(first);
+    await Beat(State(73, "B"));
+    Check(NoCards(await Panel(71)), "switching canvases hides both cached cards and the new canvas's cards");
+    await Beat(State(72, "A"));
+    Check(NoCards(await Panel(71)), "a cached binding alone cannot expose the live selection");
+    await Beat(State(71, null));
+    Check(NoCards(await Panel(71)), "two missing canvas IDs do not establish a binding");
+    var legacy = Document(71, "A");
+    legacy["selectedCount"] = 2;
+    await Beat(legacy);
+    var oldPanel = await Panel(71);
+    Check(!oldPanel.ContainsKey("selectedReferences") && oldPanel["selectedCount"]?.GetValue<int>() == 2,
+        "a legacy count-only heartbeat keeps the optional field absent");
+
+    var legacyNewPanel = await Panel(75);
+    Check(!legacyNewPanel.ContainsKey("selectedReferences") && legacyNewPanel["selectedCount"]?.GetValue<int>() == 2,
+        "a new document still inherits only the shared count from a legacy heartbeat");
+
+    foreach (var invalid in new[] { "null", "false", "123", "{}", "\"id\"", "[null]", "[1]", "[{}]", "[\"\"]", "[\"  \"]", "[\"1\",\"2\",\"3\",\"4\",\"5\",\"6\",\"7\"]" })
+    {
+        var cmd = Command("send");
+        cmd["canvasReferenceIds"] = JsonNode.Parse(invalid);
+        Check((await Request("panel/command", cmd)).Code == HttpStatusCode.BadRequest, $"send rejects invalid canvasReferenceIds: {invalid}");
+    }
+    var stop = Command("stop");
+    stop["canvasReferenceIds"] = new JsonArray();
+    Check((await Request("panel/command", stop)).Code == HttpStatusCode.BadRequest, "canvasReferenceIds is send-only, even when empty");
+    foreach (var ids in new JsonArray?[] { null, new(), new("one", "two", "three", "four", "five", "six") })
+    {
+        var cmd = Command("send");
+        if (ids != null) cmd["canvasReferenceIds"] = ids;
+        Check((await Request("panel/command", cmd)).Code == HttpStatusCode.OK, $"send accepts {ids?.Count.ToString() ?? "omitted"} reference IDs");
+        var delivered = (await Beat(legacy))["command"]!.AsObject();
+        Check(delivered["id"]!.GetValue<string>() == cmd["id"]!.GetValue<string>() && delivered.ContainsKey("canvasReferenceIds") == (ids != null) &&
+            JsonNodeCompat.DeepEquals(delivered["canvasReferenceIds"], ids), "heartbeat preserves omitted, empty, or ordered IDs exactly");
+        await Complete(cmd);
+    }
+}
 async Task TestIndependentRhinoInstances()
 {
     // Same serial on distinct listeners reproduces two independent Rhino.exe processes.
@@ -563,14 +662,20 @@ try
     Check(!dedup.TryBegin(true, out _), "return to running document supersedes intermediate queued switch");
     dedup.Request(14); dedup.TryBegin(true, out _); dedup.Complete(false); dedup.Request(14);
     Check(dedup.TryBegin(true, out _), "failed warmup may be requested again; it is not cached as success");
-    foreach (var key in new uint[] { 0x100, 0x101, 0x102, 0x103, 0x109, 0x286, 0x290, 0x291 })
+    uint[] panelKeys = [0x100, 0x101, 0x102, 0x103, 0x109, 0x10D, 0x10E, 0x10F,
+        0x281, 0x282, 0x283, 0x284, 0x285, 0x286, 0x288, 0x290, 0x291];
+    Check(Enumerable.Range(0, 0x10000).All(m => PanelKeyboardPolicy.IsKeyboardMessage((uint)m) == panelKeys.Contains((uint)m)),
+        "panel message allowlist excludes system keys, unrelated IME messages and mouse input");
+    foreach (var key in panelKeys)
+    {
         Check(PanelKeyboardPolicy.ShouldDispatch(0, true, key, true, true), "focused browser owns text/navigation/IME message " + key);
-    foreach (var state in new[] { (-1, true, true, true), (0, false, true, true), (0, true, false, true), (0, true, true, false) })
-        Check(!PanelKeyboardPolicy.ShouldDispatch(state.Item1, state.Item2, 0x100, state.Item3, state.Item4), "keyboard hook never consumes unowned, peeked, or inactive messages");
-    foreach (var message in new uint[] { 0x104, 0x105, 0x106, 0x200, 0x201 })
-        Check(!PanelKeyboardPolicy.ShouldDispatch(0, true, message, true, true), "OS Alt shortcuts and mouse messages remain with the host");
-    Check(!PanelKeyboardPolicy.IsBrowserClass("RhinoWindow") && PanelKeyboardPolicy.IsBrowserClass("Chrome_WidgetWin_0") && PanelKeyboardPolicy.IsBrowserClass("Internet Explorer_Server"), "native browser classes do not include Rhino command window");
+        foreach (var state in new[] { (-1, true, true, true), (0, false, true, true), (0, true, false, true), (0, true, true, false) })
+            Check(!PanelKeyboardPolicy.ShouldDispatch(state.Item1, state.Item2, key, state.Item3, state.Item4), "unowned or peeked key/IME message passes through");
+    }
+    foreach (var message in new uint[] { 0x104, 0x105, 0x106, 0x107, 0x110, 0x200, 0x201, 0x280, 0x287, 0x289, 0x292 })
+        Check(!PanelKeyboardPolicy.ShouldDispatch(0, true, message, true, true), "non-panel message remains with the host");
     NativeIdentityTests.Run(Check);
+    await TestCanvasReferences(owner);
     await TestLocalReferenceImages();
     await TestIndependentRhinoInstances();
     Console.WriteLine($"All {count} transport integration checks passed.");

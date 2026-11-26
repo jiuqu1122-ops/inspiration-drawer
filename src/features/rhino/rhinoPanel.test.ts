@@ -350,3 +350,37 @@ it('renders all six thumbnail buttons and the actual attachment count',async()=>
  expect(children.some(e=>e.textContent==='本条消息附带 6 张图片')).toBe(true);
  expect(children.flatMap(e=>e.children).flatMap(e=>e.children).map(e=>e.dataset.imageIndex)).toEqual(['0','1','2','3','4','5']);
 });
+
+it('shows draft thumbnails above the input and excludes removed canvas images from the send', async () => {
+  const { elements, requests, api, transport } = await setup();
+  const ref = { id: 'selection-a', name: '正视图.png', src: 'data:image/jpeg;base64,QQ==' };
+  Object.assign(transport.state, { selectedReferences: [ref] });
+  elements.get('canvas')!.checked = true;
+  await api.poll();
+  const list = elements.get('local-image-list')!;
+  expect(list.hidden).toBe(false);
+  expect(list.children[0].children[0]).toMatchObject({ src: ref.src, alt: ref.name });
+  expect(list.children[0].children[1].textContent).toBe(ref.name);
+  list.children[0].children[2].click(); await api.poll();
+  expect(list.hidden).toBe(true);
+  elements.get('input')!.value = '继续'; elements.get('input')!.listeners.get('input')?.();
+  elements.get('composer')!.listeners.get('submit')?.({ preventDefault: vi.fn() }); await settle();
+  expect(requests[0]).toMatchObject({ canvasReferenceIds: [], localImages: [] });
+});
+it('keeps the draft when local and selected canvas images exceed the shared reference limit', async () => {
+  const { elements, api, transport, requests } = await setup();
+  elements.get('canvas')!.checked = true;
+  Object.assign(transport.state, { selectedReferences: Array.from({ length: 6 }, (_, n) => ({ id: `selection-${n}`, name: `图 ${n}`, src: '' })) });
+  await api.poll(); api.stageLocalImages([{ name: '本地图', dataUrl: 'data:image/png;base64,QQ==' }]);
+  elements.get('input')!.value = '继续'; elements.get('input')!.listeners.get('input')?.();
+  elements.get('composer')!.listeners.get('submit')?.({ preventDefault: vi.fn() });
+  expect(requests).toHaveLength(0); expect(elements.get('notice')!.textContent).toContain('最多 6 张');
+  expect(elements.get('input')!.value).toBe('继续'); expect(elements.get('local-image-list')!.children).toHaveLength(7);
+});
+it('never sends an opted-in draft to an older desktop or attaches the live viewport', async()=>{
+  const {api,elements,transport,requests}=await setup(); const toggle=elements.get('draft-target')!;
+  toggle.checked=true; toggle.listeners.get('change')?.(); elements.get('input')!.value='建模';elements.get('input')!.listeners.get('input')?.();
+  const send=()=>elements.get('composer')!.listeners.get('submit')?.({preventDefault:vi.fn()});send();expect(requests).toHaveLength(0);
+  Object.assign(transport.state,{supportsIsolatedDraft:true});await api.poll();send();await settle();
+  expect(requests[0]).toMatchObject({kind:'send',modelingTarget:'draft',includeViewport:false});
+});

@@ -33,3 +33,30 @@ describe('compact tool execution history',()=>{
   expect(html).toContain('aria-expanded="true"');expect(html).toContain('chat-tool__approval');
  });
 });
+
+describe('Rhino comparison steps in a long history', () => {
+  const viewport = (index: number, toolName: string) => ({
+    ...call(index), toolName, resultJson: JSON.stringify({ rhinoStepPreview: { version: 1, count: 1 } }),
+  });
+  it.each([false, true])('shows each comparison card once, without opening dozens of other rows (active=%s)', active => {
+    const calls = Array.from({ length: 42 }, (_, index) => call(index));
+    calls[2] = viewport(2, 'rhino_review_viewport');
+    calls[28] = viewport(28, 'rhino_native_get_viewport_image');
+    if (active) calls[41] = call(41, 'awaiting-approval');
+    const html = renderToStaticMarkup(<ChatToolCallList messageId="m" calls={calls} onResolve={vi.fn()} />);
+    expect(html.match(/class="chat-tool__summary"/g)).toHaveLength(active ? 3 : 2);
+    expect(html.match(/对照 Rhino 视口与参考图/g)).toHaveLength(1);
+    expect(html.match(/查看 Rhino 视口/g)).toHaveLength(1);
+    expect(html.indexOf('对照 Rhino 视口与参考图')).toBeLessThan(html.indexOf('查看 Rhino 视口'));
+    expect(html).toContain('查看全部 42 步');
+    if (active) expect(html).toContain('允许');
+  });
+
+  it('keeps an unmarked viewport or unrelated result in ordinary collapsed history', () => {
+    const calls = [{ ...call(0), toolName: 'rhino_review_viewport', resultJson: '{"viewportImageCount":2}' },
+      viewport(1, 'rhino_native_g1_solve_graph')];
+    const html = renderToStaticMarkup(<ChatToolCallList messageId="m" calls={calls} onResolve={vi.fn()} />);
+    expect(html).not.toContain('chat-tool__summary');
+    expect(html).not.toContain('查看全部');
+  });
+});

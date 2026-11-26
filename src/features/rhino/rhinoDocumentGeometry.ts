@@ -1,3 +1,4 @@
+import { assessEditableNurbs } from './rhinoSurfaceContract';
 import { rhinoExecutableScriptCode } from './rhinoScriptPreflight';
 import type { RhinoNativeTool } from './rhinoProtocol';
 import snapshotProgram from './modeling/document_geometry_snapshot.py?raw';
@@ -12,7 +13,7 @@ export const parseDocumentGeometrySnapshot=(blocks:Array<{type:string;text?:stri
  const snapshot=snapshots[0];if(snapshot.objects.length>5000||snapshot.objectCount!==snapshot.objects.length||new Set(snapshot.objects.map(item=>item.id)).size!==snapshot.objects.length)throw new Error('Rhino geometry snapshot failed integrity checks.');
  return snapshot;
 };
-export const compareDocumentGeometrySnapshots=(before:DocumentGeometrySnapshot,after:DocumentGeometrySnapshot,requireClosedSolids=false)=>{
+export const compareDocumentGeometrySnapshots=(before:DocumentGeometrySnapshot,after:DocumentGeometrySnapshot,requireClosedSolids=false,requireSurfaces=false)=>{
  if(before.documentId!==after.documentId)throw new Error('Rhino document changed during geometry write; inspection cannot be compared.');
  const old=new Map(before.objects.map(item=>[String(item.id),item]));const next=new Map(after.objects.map(item=>[String(item.id),item]));
  const added:Record<string,unknown>[]=[],changed:Record<string,unknown>[]=[],deleted:Record<string,unknown>[]=[],unchanged:Record<string,unknown>[]=[];
@@ -28,7 +29,8 @@ export const compareDocumentGeometrySnapshots=(before:DocumentGeometrySnapshot,a
  const status=changedGeometry&&invalid.length===0&&inward.length===0&&(!requireClosedSolids||(openBreps.length===0&&openMeshes.length===0&&openSubDs.length===0&&closedSolidCount>0))?'passed':!changedGeometry?'no_geometry_change':'needs_attention';
  const summary=(item:Record<string,unknown>)=>({id:item.id,type:item.type,geometryType:item.geometryType,name:item.name,isMesh:item.isMesh,isSubD:item.isSubD,isClosed:item.isClosed,vertexCount:item.vertexCount,faceCount:item.faceCount,valid:item.valid,isValid:item.isValid,isSolid:item.isSolid,solidOrientation:item.solidOrientation,min:item.min,max:item.max,volume:item.volume,area:item.area});
  const limit=(items:Record<string,unknown>[])=>items.slice(0,32).map(summary);
- return {version:1,status,documentChanged:changedGeometry,documentId:after.documentId,units:after.units,structuralOnly:true,photoFidelityVerified:false,requireClosedSolids,beforeObjectCount:before.objectCount,afterObjectCount:after.objectCount,addedCount:added.length,changedCount:changed.length,deletedCount:deleted.length,added:limit(added),changed:limit(changed),deleted:limit(deleted),truncated:added.length+changed.length+deleted.length>96,unchangedCount:unchanged.length,invalidCount:invalid.length,invalid:limit(invalid),inwardCount:inward.length,inward:limit(inward),openBrepCount:openBreps.length,openBreps:limit(openBreps),openMeshCount:openMeshes.length,openMeshes:limit(openMeshes),openSubDCount:openSubDs.length,openSubDs:limit(openSubDs),closedSolidCount,explanation:status==='passed'?((openBreps.length+openMeshes.length+openSubDs.length)>0&&!requireClosedSolids?'A real valid geometry change was observed. Intentional open surfaces/meshes/SubDs are allowed; '+openBreps.length+' open Breps, '+openMeshes.length+' open/non-solid meshes, '+openSubDs.length+' open SubDs. Reference-image fidelity remains unverified.':'A real document geometry change was observed and all added/changed geometry is structurally valid; reference-image fidelity remains unverified.'):status==='no_geometry_change'?'No document geometry changed; a successful tool receipt is not evidence that modeling occurred.':'One or more added/changed objects failed validity, orientation or explicitly requested closed-solid checks.'};
+ const assessment = requireSurfaces && touched.length ? assessEditableNurbs({added,changed,addedCount:added.length,changedCount:changed.length,truncated:false}) : undefined;
+ return {version:1,status,...(assessment ? {surfaceRepresentation:{...assessment,reasons:assessment.reasons.slice(0,4)}} : {}),documentChanged:changedGeometry,documentId:after.documentId,units:after.units,structuralOnly:true,photoFidelityVerified:false,requireClosedSolids,beforeObjectCount:before.objectCount,afterObjectCount:after.objectCount,addedCount:added.length,changedCount:changed.length,deletedCount:deleted.length,added:limit(added),changed:limit(changed),deleted:limit(deleted),truncated:added.length+changed.length+deleted.length>96,unchangedCount:unchanged.length,invalidCount:invalid.length,invalid:limit(invalid),inwardCount:inward.length,inward:limit(inward),openBrepCount:openBreps.length,openBreps:limit(openBreps),openMeshCount:openMeshes.length,openMeshes:limit(openMeshes),openSubDCount:openSubDs.length,openSubDs:limit(openSubDs),closedSolidCount,explanation:status==='passed'?((openBreps.length+openMeshes.length+openSubDs.length)>0&&!requireClosedSolids?'A real valid geometry change was observed. Intentional open surfaces/meshes/SubDs are allowed; '+openBreps.length+' open Breps, '+openMeshes.length+' open/non-solid meshes, '+openSubDs.length+' open SubDs. Reference-image fidelity remains unverified.':'A real document geometry change was observed and all added/changed geometry is structurally valid; reference-image fidelity remains unverified.'):status==='no_geometry_change'?'No document geometry changed; a successful tool receipt is not evidence that modeling occurred.':'One or more added/changed objects failed validity, orientation or explicitly requested closed-solid checks.'};
 };
 export const isRhinoDocumentGeometryWrite=(tool:Pick<RhinoNativeTool,'name'|'readOnly'|'workflowPhase'>,args:Record<string,unknown>)=>{
  if(tool.readOnly===true||!['run_python','run_csharp','run_command'].some(name=>tool.name==='rhino_native_'+name))return false;
@@ -46,7 +48,7 @@ export class RhinoDocumentGeometryWriteError extends Error {
  }
 }
 
-export const runWithDocumentGeometryVerification=async <T>(input:{snapshot:()=>Promise<DocumentGeometrySnapshot>;write:()=>Promise<T>;requireClosedSolids?:boolean;inspectFailure?:(error:unknown)=>boolean}):Promise<{result:T;verification:ReturnType<typeof compareDocumentGeometrySnapshots>|Record<string,unknown>}>=>{
+export const runWithDocumentGeometryVerification=async <T>(input:{snapshot:()=>Promise<DocumentGeometrySnapshot>;write:()=>Promise<T>;requireClosedSolids?:boolean;requireSurfaces?:boolean;inspectFailure?:(error:unknown)=>boolean}):Promise<{result:T;verification:ReturnType<typeof compareDocumentGeometrySnapshots>|Record<string,unknown>}>=>{
  const before=await input.snapshot(); // Baseline failure prevents any document write.
  let result:T;
  try{result=await input.write();} // A dispatched write is never replayed here.
@@ -57,7 +59,7 @@ export const runWithDocumentGeometryVerification=async <T>(input:{snapshot:()=>P
   catch(inspectionError){verification={version:1,status:'inspection_failed',structuralOnly:true,photoFidelityVerified:false,writeFailed:true,documentWriteWasDispatched:true,error:String(inspectionError),instruction:'The write failed and current document state could not be inspected. Do not replay the script.'};}
   throw new RhinoDocumentGeometryWriteError(error,verification);
  }
- try{return {result,verification:compareDocumentGeometrySnapshots(before,await input.snapshot(),input.requireClosedSolids===true)};}
+ try{return {result,verification:compareDocumentGeometrySnapshots(before,await input.snapshot(),input.requireClosedSolids===true,input.requireSurfaces===true)};}
  catch(error){return {result,verification:{version:1,status:'inspection_failed',structuralOnly:true,photoFidelityVerified:false,error:String(error),documentWriteWasDispatched:true,instruction:'The geometry call already ran. Do not replay it; inspect current Rhino objects and viewport first.'}};}
 };
 

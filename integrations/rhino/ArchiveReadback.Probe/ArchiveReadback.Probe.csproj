@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+  <!-- Standalone openNURBS I/O only. No RhinoCommon, RhinoCore, Rhino.Inside, or plugin. -->
+  <ItemGroup>
+    <PackageReference Include="Rhino3dm" Version="8.35.0" />
+    <Compile Include="../Shared/BackgroundRhinoModel.Archive.cs" Link="Archive.cs" />
+  </ItemGroup>
+</Project>

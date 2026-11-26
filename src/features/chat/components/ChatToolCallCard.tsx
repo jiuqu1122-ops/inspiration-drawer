@@ -3,6 +3,7 @@ import { useState } from 'react';
 import type { ChatToolCall } from '../model/chatTypes';
 import type { LayeredPsdProposal } from '../tools/chatLayeredPsd';
 import { getChatToolLabel } from '../tools/chatToolLabels';
+import { ChatRhinoStepPreview, isRhinoViewportTool } from './ChatRhinoStepPreview';
 
 const STATUS_LABELS: Record<string, string> = {
   pending: '准备中',
@@ -20,6 +21,24 @@ const asRecord = (value: unknown): Record<string, unknown> => (
 
 const readJsonRecord = (json?: string | null) => {
   try { return asRecord(JSON.parse(json || '')); } catch { return {}; }
+};
+
+// Keep viewport parameters and diagnostics inspectable, including on failed/legacy calls.
+// Redact only display copies; never use receipt strings as image sources.
+const omitInlineImages = (text: string) => text.replace(/data:image\/[\w.+-]+;base64,[\w+/=-]+/gi, '[已省略图像数据]');
+const viewportJsonForDisplay = (json: string, indent?: number) => {
+  try {
+    return JSON.stringify(JSON.parse(json), function (key, value) {
+      if (key === 'rhinoStepPreview' || key === 'transientRhinoImages'
+        || /^(?:reasoning|reasoning_content|reasoningContent|modelReasoning)$/.test(key)) return undefined;
+      if (typeof value !== 'string') return value;
+      const imageBlock = this.type === 'image' || String(this.mimeType || this.mime_type || '').startsWith('image/');
+      if ((imageBlock && (key === 'data' || key === 'base64')) || /^(?:image_?base64|b64_json)$/i.test(key)) {
+        return '[已省略图像数据]';
+      }
+      return omitInlineImages(value);
+    }, indent);
+  } catch { return omitInlineImages(json); } // Some older failures contain just a diagnostic string.
 };
 
 const receiptText = (value: unknown, limit: number) => (
@@ -145,6 +164,7 @@ export function ChatToolCallCard({ call, onResolve }: {
     } catch { return ''; }
   })();
   const active = call.status === 'pending' || call.status === 'running';
+  const viewport = isRhinoViewportTool(call.toolName);
   const searchReceipt = readWebSearchReceipt(call);
   const searchWarning = searchReceipt?.outcome != null && searchReceipt.outcome !== 'success';
   const batchProgress = readBatchProgress(call);
@@ -166,7 +186,7 @@ export function ChatToolCallCard({ call, onResolve }: {
   ] : [];
   return (
     <div className={`chat-tool ${error ? 'chat-tool--error' : ''}`}>
-      <button type="button" className="chat-tool__summary" aria-expanded={searchReceipt ? expanded : undefined} onClick={() => setExpanded(value => !value)}>
+      <button type="button" className="chat-tool__summary" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>
         <span className="chat-tool__icon" style={searchWarning ? {
           color: searchReceipt?.outcome === 'error' ? '#dc2626' : 'var(--chat-muted)',
           background: 'var(--chat-soft)',
@@ -177,6 +197,7 @@ export function ChatToolCallCard({ call, onResolve }: {
         <span className="chat-tool__status">{searchReceipt ? searchReceipt.label : batchProgress ? batchStatusLabel(batchProgress) : STATUS_LABELS[call.status] || call.status}</span>
         <ChevronDown size={12} className={expanded ? 'chat-tool__chevron is-open' : 'chat-tool__chevron'} />
       </button>
+      {viewport && <ChatRhinoStepPreview call={call} />}
       {batchProgress && (
         <div className="chat-tool__batch-progress" aria-live="polite">
           <div className="chat-tool__batch-steps">
@@ -235,7 +256,7 @@ export function ChatToolCallCard({ call, onResolve }: {
           {call.toolName.startsWith('rhino_native_') ? (
             <>
               <span>将通过 RhinoAI 原生 MCP 操作当前绑定文档。请核对工具名称和参数后确认：</span>
-              <pre className="chat-tool__native-approval-args">{JSON.stringify(readJsonRecord(call.argumentsJson), null, 2).slice(0, 6000)}</pre>
+              <pre className="chat-tool__native-approval-args">{(viewport ? viewportJsonForDisplay(call.argumentsJson, 2) : JSON.stringify(readJsonRecord(call.argumentsJson), null, 2)).slice(0, 6000)}</pre>
             </>
           ) : <span>此操作可能产生费用或修改软件内容。</span>}
           <div>
@@ -268,8 +289,8 @@ export function ChatToolCallCard({ call, onResolve }: {
           ) : (
             <>
               <div><span>工具</span>{call.toolName}</div>
-              <div><span>参数</span><pre>{call.argumentsJson}</pre></div>
-              {call.resultJson && <div><span>结果</span><pre>{call.resultJson}</pre></div>}
+              <div><span>参数</span><pre>{viewport ? viewportJsonForDisplay(call.argumentsJson) : call.argumentsJson}</pre></div>
+              {call.resultJson && <div><span>结果</span><pre>{viewport ? viewportJsonForDisplay(call.resultJson) : call.resultJson}</pre></div>}
             </>
           )}
         </div>

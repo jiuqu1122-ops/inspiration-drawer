@@ -178,6 +178,7 @@ function renderMessages(messages) {
       const img=document.createElement('img');img.className='message-image message-image--preview';img.src=source;img.alt='图片 · 点击放大预览';img.loading='lazy';img.dataset.previewSrc=source;img.dataset.messageId=message.id;img.dataset.imageIndex=String(message.imageIndices?.[imagePosition] ?? imagePosition);button.append(img);imageContainer.append(button);
     }
     if (imageContainer !== element && imageContainer.children.length) element.append(imageContainer);
+    for (const path of message.draftFiles || []) { const file=document.createElement('p'); file.className='draft-file'; file.textContent='独立 3DM 草稿：'+path; element.append(file); }
     if (message.status === 'streaming' || message.status === 'error' || message.status === 'cancelled') { const status=document.createElement('div');status.className='status';status.textContent=message.status==='streaming'?'正在处理…':statuses[message.status];element.append(status); }
     return element;
   }));
@@ -193,14 +194,19 @@ async function poll() {
     if (deletingConversation && !(state.conversations || []).some(item => item.id === deletingConversation)) deletingConversation = '';
     if (deletingConversation && (result.commands || []).some(item => item.request?.kind === 'delete' && item.request?.conversationId === deletingConversation && ['completed','failed'].includes(item.status))) deletingConversation = '';
     byId('mask').checked = state.imageMaskEnabled === true;
+    const draftTarget = byId('draft-target');
+    if (state.isIsolatedDraft) draftTarget.checked = true;
+    else if (draftTarget.dataset.pinned === 'true') draftTarget.checked = false;
+    draftTarget.dataset.pinned = String(Boolean(state.isIsolatedDraft));
+    draftTarget.disabled = Boolean(state.isIsolatedDraft || state.busy || pendingConversation || submitting);
+    byId('draft-target-hint').hidden = !draftTarget.checked;
+    byId('draft-target-label').hidden = !state.supportsIsolatedDraft && !byId('draft-target').checked;
     byId('dot').classList.toggle('online',connected);
     byId('connection').textContent = connected ? state.busy ? '已连接 · Chat 正在执行' : pendingConversation ? '已连接 · 正在同步对话' : '已连接灵感抽屉' : '等待配套 Beta 桌面端';
     byId('document').textContent = `${result.context?.name || '未保存文档'} · 选中 ${result.context?.selection?.length || 0} 个 Rhino 对象`;
     if (result.processId) byId('document').textContent += ` \u00b7 \u7a97\u53e3 ${result.processId}`;
     byId('document').title = `Rhino ${result.instanceId || ''} / document ${documentId}`;
-    byId('selected-count').textContent = state.selectedCount || 0;
-    byId('selected-count').hidden = !(state.selectedCount > 0);
-    byId('reference-settings-toggle').title = `参考设置 · 画布图片 ${state.selectedCount || 0} 张 · ${byId('viewport').checked ? '附带视口' : '不附带视口'}${state.imageMaskEnabled ? ' · 已开启遮罩' : ''}`;
+    syncReferenceCards();
     choices('conversation',(state.conversations || []).map(item=>({value:item.id,label:item.title || '\u65b0\u5bf9\u8bdd'})),state.conversationId);
     choices('model',(state.modelOptions || []).map(value=>({value,label:value})),state.model);
     choices('image-model',state.imageModelOptions || [],state.imageModel);
@@ -221,7 +227,7 @@ async function poll() {
       if (found) { if(uncertain.kind==='send')clearComposerDraft();uncertain=undefined;submitting=false;notice('请求已收到，请等待结果。'); }
     }
     updateButtons();
-  } catch(error) { connected=false;byId('dot').classList.remove('online');byId('connection').textContent='连接中断，请检查 Rhino 文档是否仍然打开';updateButtons(); }
+  } catch(error) { connected=false;syncReferenceCards();byId('dot').classList.remove('online');byId('connection').textContent='连接中断，请检查 Rhino 文档是否仍然打开';updateButtons(); }
   finally { setTimeout(poll,1000); }
 }
 async function command(kind,extra={}) {
@@ -276,19 +282,47 @@ function resizeComposerInput() {
   input.style.height = Math.min(maxHeight, Math.max(46, input.scrollHeight || 46)) + 'px';
   input.style.overflowY = input.scrollHeight > (input.clientHeight || maxHeight) + 1 ? 'auto' : 'hidden';
 }
-function renderLocalImages() {
-  const list = byId('local-image-list');
-  list.replaceChildren(); list.hidden = localImages.length === 0;
-  for (const image of localImages) {
-    const item = document.createElement('div'); item.className = 'local-image-item';
-    const thumbnail = document.createElement('img'); thumbnail.src = image.dataUrl; thumbnail.alt = image.name;
-    const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '×'; remove.title = '移除 ' + image.name;
-    remove.addEventListener('click', () => { localImages = localImages.filter(value => value !== image); renderLocalImages(); });
-    item.append(thumbnail, remove); list.append(item);
+let excludedRefs = new Set(), lastReferenceView = '';
+function canvasCards() {
+  return connected && byId('canvas').checked && Array.isArray(state.selectedReferences) ? state.selectedReferences : [];
+}
+function updateReferenceBadge() {
+  const count = Array.isArray(state.selectedReferences) ? canvasCards().filter(r => !excludedRefs.has(r.id)).length : state.selectedCount || 0;
+  byId('selected-count').textContent = count;
+  byId('selected-count').hidden = !count;
+  byId('reference-settings-toggle').title = `参考设置 · 画布图片 ${count} 张 · ${byId('viewport').checked ? '附带视口' : '不附带视口'}${state.imageMaskEnabled ? ' · 已开启遮罩' : ''}`;
+}
+function syncReferenceCards() {
+  const refs = canvasCards();
+  if (connected && Array.isArray(state.selectedReferences)) {
+    const ids = new Set(state.selectedReferences.map(r => r.id));
+    for (const id of excludedRefs) if (!ids.has(id)) excludedRefs.delete(id);
   }
+  updateReferenceBadge();
+  const signature = JSON.stringify(refs);
+  if (signature !== lastReferenceView) renderLocalImages();
+}
+function renderLocalImages() {
+  const list = byId('local-image-list'), refs = canvasCards();
+  lastReferenceView = JSON.stringify(refs);
+  list.replaceChildren();
+  function addCard(name, src, dismiss) {
+    const item = document.createElement('div'); item.className = 'local-image-item'; item.title = name;
+    if (src) { const thumb = document.createElement('img'); thumb.src = src; thumb.alt = name; item.append(thumb); }
+    const label = document.createElement('span'); label.textContent = name;
+    const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '×'; remove.title = '移除 ' + name; remove.setAttribute('aria-label', remove.title);
+    remove.addEventListener('click', () => { dismiss(); renderLocalImages(); });
+    item.append(label, remove); list.append(item);
+  }
+  for (const image of localImages) addCard(image.name, image.dataUrl, () => { localImages = localImages.filter(x => x !== image); });
+  for (const ref of refs) if (!excludedRefs.has(ref.id)) addCard(ref.name, ref.src, () => excludedRefs.add(ref.id));
+  list.hidden = !list.children.length;
+  updateReferenceBadge();
   byId('local-image-status').textContent = localImages.length ? localImages.length + ' 张本地参考图' : '';
 }
-function clearComposerDraft() { byId('input').value = ''; localImages = []; renderLocalImages(); resizeComposerInput(); }
+byId('canvas').addEventListener('change', syncReferenceCards);
+byId('draft-target').addEventListener('change', () => { byId('draft-target-hint').hidden = !byId('draft-target').checked; });
+function clearComposerDraft() { byId('input').value = ''; localImages = []; excludedRefs.clear(); renderLocalImages(); resizeComposerInput(); }
 async function prepareLocalImage(file) {
   if (!/image\/(?:png|jpeg|webp|bmp)$/i.test(file.type) || file.size > 20 * 1024 * 1024) throw new Error('请选择 20MB 以内的 PNG、JPG、WebP 或 BMP 图片');
   // Match the host's img-src data: policy. blob: object URLs are deliberately
@@ -365,7 +399,20 @@ document.addEventListener?.('keydown', event => {
 globalThis.addEventListener?.('resize', placeReferenceSettings);
 
 
-byId('composer').addEventListener('submit',event=>{event.preventDefault();if(!byId('send').disabled)void command('send',{content:byId('input').value.trim(),includeViewport:byId('viewport').checked,includeCanvasSelection:byId('canvas').checked,localImages:localImages.map(image=>({...image}))});});
+byId('composer').addEventListener('submit', event => {
+  event.preventDefault();
+  if (byId('send').disabled) return;
+  const canvasReferenceIds = Array.isArray(state.selectedReferences)
+    ? canvasCards().filter(ref => !excludedRefs.has(ref.id)).map(ref => ref.id) : undefined;
+  // Check before queue acceptance clears the draft. Older desktops validate the combined limit themselves.
+  if (canvasReferenceIds && canvasReferenceIds.length + localImages.length > 6) {
+    notice('本地和画布参考图合计最多 6 张，请移除部分图片后再发送。'); return;
+  }
+  const draft = byId('draft-target').checked;
+  if (draft && !state.supportsIsolatedDraft) { notice('配套桌面端不支持独立草稿；未发送到当前文档。'); return; }
+  void command('send', { content: byId('input').value.trim(), ...(draft ? { modelingTarget: 'draft' } : {}), includeViewport: !draft && byId('viewport').checked,
+    includeCanvasSelection: byId('canvas').checked, canvasReferenceIds, localImages: localImages.map(image => ({ ...image })) });
+});
 // A narrow native focus signal; no text or keystrokes leave the page through this bridge.
 let keyboardFocusSequence = 0;
 function notifyKeyboardOwner(active) {
@@ -377,6 +424,8 @@ document.addEventListener?.('focusin', event => {
   if (event.target?.matches?.('input,textarea,select,button,[contenteditable="true"]')) notifyKeyboardOwner(true);
 });
 globalThis.addEventListener?.('blur', () => notifyKeyboardOwner(false));
+// A second click may leave the same DOM element focused while Rhino has taken native focus.
+byId('input').addEventListener('pointerdown', () => notifyKeyboardOwner(true));
 let composingInput = false;
 byId('input').addEventListener('compositionstart', () => { composingInput = true; });
 byId('input').addEventListener('compositionend', () => { composingInput = false; });
@@ -396,7 +445,7 @@ byId('mask').addEventListener('change', event => {
   void command('mask-mode', { value: enabled ? 'on' : 'off', maskLayer: byId('mask-layer').value || 'selection' }).then(queued => {
     if (!queued || !enabled) return;
     byId('viewport').checked = true;
-    byId('canvas').checked = true;
+    byId('canvas').checked = true; syncReferenceCards();
   }).catch(() => { checkbox.checked = false; });
 });
 byId('mask-layer').addEventListener('change', event => {

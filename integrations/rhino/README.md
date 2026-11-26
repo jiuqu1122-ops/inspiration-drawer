@@ -388,3 +388,11 @@ These host/bridge changes require the initial desktop base upgrade. The independ
 
 GH2 completion now also requires a fresh `g2_verify_model` receipt after the final mutation. The fixed native helper audits exact final output IDs, CLR item types before Python.NET unwrapping, every non-null geometry item without an item-count quota, null/mixed data, connected-empty inputs, unloaded placeholders, unsolved components, faults and preview cache/display data. Concrete native tool timeouts remain applicable. It applies to arbitrary models. `g2_repair_output_conversion` rechecks the diagnosed GH2 document and only enables output marshalling on selected final components that actually emit opaque Python objects; it preserves code, wires, intermediate Python data and all other conversion settings. A setting-change receipt never passes the model gate: solve and audit again. Failed or uncertain later writes invalidate previous acceptance. Premature completion text is withheld while acceptance is pending. Camera framing and full design fidelity remain separate checks.
 
+
+### 产品建模预览（主分支本地测试版）
+
+- Rhino 面板的「参考图与视口设置」可选择「独立 3DM 草稿」。这是新建工作文档，不是当前文档的副本；本地/画布参考图仍可用，但不会导入活动文档的几何、选区或视口。首次选择后这段对话只续改自己的 `working.3dm`；编辑当前文档请另开对话。配套桌面端缺少草稿能力时不发送，不降级到当前文档。需要原生 Grasshopper 画布的任务仍应使用当前文档模式。
+- 草稿 `loft(profileCurve="smooth")` 构造周期三次插值截面。`difference` 可带 `removedMaterialPoints` 和 `preserveIds`：分别验证指定位置原来有料、完成后已去料，以及指定的既有独立件没有被消耗或改形。各参数需由所选宿主显式声明；不以 Rhino 大版本猜测能力。实体相交或去除总体积不是指定位置凹槽的证明。
+- 当前文档模式下，`DrawerGeometryStage` 支持 `require_groove(...)` 与 `require_preserved(id)`；`preview()` 不写入，`commit()` 会重新校验再写入。盲槽测量有适用范围：闭合、朝外的单体 Brep，输入原表面的采样点、方向、深度范围和侧壁位置，证明的是这些位置，不是整条槽连续。独立件保持验证针对既有对象；新建按钮不能靠声称保留旧 ID 代替验收。Helper 不约束脚本中另行调用的 Rhino API，不是脚本沙箱。
+- 贵重/真实文件中不要把「结果未知」当成「零写入」。阶段诊断只回传有证据的异常、函数、原脚本行号和受限的可显示信息。修正应基于回执与现状；不能自动重放未知写入。明确要求 NURBS/非网格时按目标实际几何类型验收；该检查不证明光顺性、制造公差或指定接缝的 G1/G2。
+- 独立草稿交付以重新读取导出的 `.3dm` 校验回执为准，并从读回几何生成正、斜、侧、顶四视图。视图用于外观复核；未通过、取消或未取得读回回执的面板草稿不作为已交付文件。

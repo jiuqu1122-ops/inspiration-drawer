@@ -1,5 +1,7 @@
 using System.Drawing;
 using System.Runtime.InteropServices;
+using System.Windows.Interop;
+using System.Windows.Media;
 using Eto.Forms;
 using Rhino;
 using Rhino.UI;
@@ -48,10 +50,20 @@ internal static class DrawerFloatingPanel
         catch (Exception error) { StartupDiagnostics.Write("panel.initial-size.failed", error); }
     }
 
-    internal static IntPtr NativeHandle(WebView view)
+    internal static IntPtr NativeHandle(WebView view) => view.ControlObject switch
     {
-        var control = view.ControlObject;
-        return control?.GetType().GetProperty("Handle")?.GetValue(control) is IntPtr handle ? handle : IntPtr.Zero;
+        System.Windows.Forms.Control control when control.IsHandleCreated => control.Handle,
+        Visual visual => FindWindowHost(visual)?.Handle ?? IntPtr.Zero,
+        _ => IntPtr.Zero,
+    };
+
+    // Search only this WebView's visual subtree, not its containing Rhino window.
+    private static HwndHost? FindWindowHost(Visual visual)
+    {
+        if (visual is HwndHost host) return host;
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(visual); i++)
+            if (VisualTreeHelper.GetChild(visual, i) is Visual child && FindWindowHost(child) is { } found) return found;
+        return null;
     }
 
     [StructLayout(LayoutKind.Sequential)]

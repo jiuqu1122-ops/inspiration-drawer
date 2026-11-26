@@ -4,12 +4,20 @@
 
 ## 下载
 
-当前已发布版本：**9.0.7**
+当前已发布版本：**9.0.8**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v9.0.7/Inspiration.Drawer_9.0.7_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v9.0.7)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v9.0.8/Inspiration.Drawer_9.0.8_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v9.0.8)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 9.0.8 更新
+
+- 画布 Chat 在 Rhino 视口对比步骤中显示可放大的本地缩略图。
+- 配合 Rhino 8/9 插件 `0.1.0-beta.36.16`，可选择独立 3DM 草稿；支持平滑放样、采样验槽、保留独立件及导出后重读。
+
+- 桌面 Chat 可以读取本地文档和表格附件，按内容回答问题。
+- 重新打开画布后，可继续查看通过积分钱包提交的视频任务；提交超时后按原请求查询，不会重复提交。
 
 ## 9.0.7 更新
 

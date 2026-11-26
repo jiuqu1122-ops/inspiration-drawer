@@ -1,6 +1,9 @@
-﻿import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
-import { chatConversationInScope } from './chatStorage';
+import { invoke } from '@tauri-apps/api/core';
+import { deleteRhinoConversationPreviews } from './rhinoStepPreviews';
+import { chatConversationInScope, deleteChatConversation, deleteChatConversations } from './chatStorage';
+vi.mock('./rhinoStepPreviews', () => ({deleteRhinoConversationPreviews: vi.fn(async()=>{})}));
 import type { ChatConversation } from '../model/chatTypes';
 
 const conversation = (id: string, title: string): ChatConversation => ({
@@ -22,4 +25,12 @@ describe('chat conversation scope isolation', () => {
     expect(chatConversationInScope(legacyRhino, 'desktop')).toBe(false);
     expect(chatConversationInScope(legacyRhino, 'rhino')).toBe(true);
   });
+});
+
+it('purges only the thumbnails of successfully deleted chats, including batch deletion',async()=>{
+  vi.mocked(invoke).mockResolvedValueOnce(false).mockResolvedValueOnce(true).mockRejectedValueOnce(new Error('busy'));
+  await expect(deleteChatConversations(['kept','removed','busy'])).resolves.toEqual(['removed']);
+  expect(vi.mocked(deleteRhinoConversationPreviews).mock.calls).toEqual([['removed']]);
+  vi.mocked(invoke).mockResolvedValueOnce(true);vi.mocked(deleteRhinoConversationPreviews).mockRejectedValueOnce(new Error('unavailable'));
+  await expect(deleteChatConversation('another')).resolves.toBe(true);
 });

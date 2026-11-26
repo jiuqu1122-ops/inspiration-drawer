@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Offline fixture: deliberately no Rhino assemblies, resolver, NuGet packages or native host. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Shared/BackgroundRhinoModel.LoftRing.cs" Link="LoftRing.cs" />
+    <Compile Include="../Shared/BackgroundRhinoModel.MaterialRemoval.cs" Link="MaterialRemoval.cs" />
+  </ItemGroup>
+</Project>
